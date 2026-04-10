@@ -14,6 +14,25 @@ import (
 	"ssm/internal/vault"
 )
 
+func runList() {
+	v, err := config.Load(masterPass)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if len(v.Connections) == 0 {
+		fmt.Println("No connections.")
+		return
+	}
+	for _, c := range v.Connections {
+		group := ""
+		if c.Group != "" {
+			group = " [" + c.Group + "]"
+		}
+		fmt.Printf("%s\t%s@%s:%d%s\n", c.Name, c.User, c.Host, c.Port, group)
+	}
+}
+
 func runTUI() {
 	mergeCloudVault()
 	for {

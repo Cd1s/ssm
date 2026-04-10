@@ -59,6 +59,7 @@ Usage:
   ssm add              add a new connection
   ssm edit <name>      edit a connection
   ssm remove <name>    remove a connection
+  ssm list             list all connections
   ssm exec <name> <cmd> run a command on a remote server
   ssm keys             list saved SSH keys
   ssm keys add         add a new SSH key
@@ -124,6 +125,9 @@ Shortcuts (in TUI):
 		} else {
 			runKeysList()
 		}
+	case "list", "ls":
+		unlock()
+		runList()
 	case "exec":
 		if len(os.Args) < 4 {
 			fmt.Println("Usage: ssm exec <name> <command>")
@@ -143,7 +147,7 @@ Shortcuts (in TUI):
 		runPull()
 	default:
 		fmt.Printf("Unknown command: %s\n", os.Args[1])
-		fmt.Println("Usage: ssm [add|remove|edit|keys|exec|update|login|register|push|pull|logout]")
+		fmt.Println("Usage: ssm [add|remove|edit|list|keys|exec|update|login|register|push|pull|logout]")
 		os.Exit(1)
 	}
 }
