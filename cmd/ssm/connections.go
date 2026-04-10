@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -14,12 +15,41 @@ import (
 	"ssm/internal/vault"
 )
 
-func runList() {
+type connectionJSON struct {
+	Name  string `json:"name"`
+	Host  string `json:"host"`
+	Port  int    `json:"port"`
+	User  string `json:"user"`
+	Group string `json:"group,omitempty"`
+}
+
+func runList(jsonOutput bool) {
 	v, err := config.Load(masterPass)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	if jsonOutput {
+		items := make([]connectionJSON, len(v.Connections))
+		for i, c := range v.Connections {
+			items[i] = connectionJSON{
+				Name:  c.Name,
+				Host:  c.Host,
+				Port:  c.Port,
+				User:  c.User,
+				Group: c.Group,
+			}
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(items); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if len(v.Connections) == 0 {
 		fmt.Println("No connections.")
 		return

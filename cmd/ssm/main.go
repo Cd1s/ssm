@@ -59,7 +59,7 @@ Usage:
   ssm add              add a new connection
   ssm edit <name>      edit a connection
   ssm remove <name>    remove a connection
-  ssm list             list all connections
+  ssm list [--json]    list all connections
   ssm exec <name> <cmd> run a command on a remote server
   ssm keys             list saved SSH keys
   ssm keys add         add a new SSH key
@@ -126,8 +126,9 @@ Shortcuts (in TUI):
 			runKeysList()
 		}
 	case "list", "ls":
+		jsonFlag := len(os.Args) > 2 && os.Args[2] == "--json"
 		unlock()
-		runList()
+		runList(jsonFlag)
 	case "exec":
 		if len(os.Args) < 4 {
 			fmt.Println("Usage: ssm exec <name> <command>")
