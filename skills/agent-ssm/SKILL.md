@@ -68,6 +68,5 @@ sshctl sync
 
 - Do not print domains, identities, passwords, private keys, tokens, `master.pass`, or `cloud.json`.
 - Do not use `sshpass`, `expect`, or tmux prompt guessing.
-- Do not use legacy `hssh/hrun/hopen/hbg/hpeek/hattach/hclose/hstat/hscp`.
 - Use `sshctl list` to find exact aliases.
 - Use `nohup`, `systemd-run`, `screen`, or target-native supervisors for long remote work.
