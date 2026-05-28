@@ -16,7 +16,8 @@ import (
 )
 
 const (
-	cooldown = 6 * time.Hour
+	defaultRepo = "Cd1s/ssm"
+	cooldown    = 6 * time.Hour
 )
 
 func flagPath() string {
@@ -170,7 +171,10 @@ func releaseRepo() string {
 			return repo
 		}
 	}
-	return strings.TrimSpace(config.LoadSettings().UpdateRepo)
+	if repo := strings.TrimSpace(config.LoadSettings().UpdateRepo); repo != "" {
+		return repo
+	}
+	return defaultRepo
 }
 
 func newerVersion(latest, current string) bool {

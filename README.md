@@ -5,18 +5,18 @@ Headless SSH manager for agents. It stores SSH hosts in a local encrypted vault,
 ## Install
 
 ```bash
-curl -fsSL https://github.com/<owner>/<repo>/releases/latest/download/install.sh | SSM_REPO=<owner>/<repo> sh
+curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 ```
 
-The installer downloads `ssm-<os>-<arch>`, installs `/usr/local/bin/ssm`, creates `/usr/local/bin/sshctl -> /usr/local/bin/ssm`, and stores the release repo in local private settings for auto update.
+The installer downloads `ssm-<os>-<arch>` from `Cd1s/ssm`, installs `/usr/local/bin/ssm`, creates `/usr/local/bin/sshctl -> /usr/local/bin/ssm`, and stores the release repo in local private settings for auto update.
 
 ## Agent Install Prompt
 
-Give this to another agent or machine, replacing placeholders locally:
+Give this to another agent or machine. Provide private sync files separately:
 
 ```text
-Install headless SSM from <owner>/<repo>. Run:
-curl -fsSL https://github.com/<owner>/<repo>/releases/latest/download/install.sh | SSM_REPO=<owner>/<repo> sh
+Install headless SSM from Cd1s/ssm. Run:
+curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 Then place the provided /root/.config/ssm/master.pass and /root/.config/ssm/cloud.json with chmod 600, run sshctl sync, verify sshctl status and sshctl list. Use sshctl run <alias> '<command>', sshctl shell <alias>, and sshctl put <alias> <local> <remote>. Do not use sshpass, expect, tmux prompt scraping, legacy h* helpers, or print secrets.
 ```
 
@@ -85,10 +85,10 @@ Put it behind your own HTTPS reverse proxy, for example `<sync-server-url> -> 12
 
 ## Auto Update
 
-Version `1.0.0` and later checks the repo configured in local private settings, `/root/.config/ssm/update_repo`, or `SSM_UPDATE_REPO`. It replaces the current binary when a newer release exists. Manual update:
+Version `1.0.0` and later checks `Cd1s/ssm` by default. It replaces the current binary when a newer release exists. Manual update:
 
 ```bash
-SSM_UPDATE_REPO=<owner>/<repo> ssm update
+ssm update
 ```
 
 Release assets use these names:

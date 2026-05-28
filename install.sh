@@ -1,11 +1,7 @@
 #!/bin/sh
 set -eu
 
-repo="${SSM_REPO:-}"
-if [ -z "$repo" ]; then
-  echo "set SSM_REPO=owner/repo" >&2
-  exit 2
-fi
+repo="${SSM_REPO:-Cd1s/ssm}"
 prefix="${SSM_PREFIX:-/usr/local/bin}"
 config_dir="${SSM_CONFIG_DIR:-$HOME/.config/ssm}"
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"

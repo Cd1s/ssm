@@ -10,7 +10,7 @@ Use `/usr/local/bin/sshctl` for SSH. It is the same binary as `/usr/local/bin/ss
 ## Install
 
 ```bash
-curl -fsSL https://github.com/<owner>/<repo>/releases/latest/download/install.sh | SSM_REPO=<owner>/<repo> sh
+curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 ```
 
 Required private client files:
