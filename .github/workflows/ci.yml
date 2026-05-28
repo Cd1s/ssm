@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [dev]
+    branches: [agent-headless-sync, dev, main]
   pull_request:
-    branches: [dev, main]
+    branches: [agent-headless-sync, dev, main]
 
 jobs:
   check:
