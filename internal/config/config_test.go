@@ -64,6 +64,49 @@ func TestSettingsAndPasswordCacheUsePrivateFiles(t *testing.T) {
 	}
 }
 
+func TestLoadSettingsDefaultsMissingBooleansToEnabled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := WritePrivateFile(settingsPath(), []byte(`{"password_cache":"session"}`)); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	s := LoadSettings()
+
+	if s.PasswordCache != "session" {
+		t.Fatalf("PasswordCache = %q, want session", s.PasswordCache)
+	}
+	if !s.VimKeys {
+		t.Fatal("VimKeys defaulted to false")
+	}
+	if !s.AutoUpdate {
+		t.Fatal("AutoUpdate defaulted to false")
+	}
+	if !s.AutoSync {
+		t.Fatal("AutoSync defaulted to false")
+	}
+}
+
+func TestLoadSettingsPreservesExplicitFalseBooleans(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := WritePrivateFile(settingsPath(), []byte(`{"vim_keys":false,"auto_update":false,"auto_sync":false}`)); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	s := LoadSettings()
+
+	if s.VimKeys {
+		t.Fatal("VimKeys explicit false was not preserved")
+	}
+	if s.AutoUpdate {
+		t.Fatal("AutoUpdate explicit false was not preserved")
+	}
+	if s.AutoSync {
+		t.Fatal("AutoSync explicit false was not preserved")
+	}
+}
+
 func TestMergeVaultsKeepsStableOrderAndRemoteWinsConflicts(t *testing.T) {
 	local := &Vault{
 		Connections: []Connection{

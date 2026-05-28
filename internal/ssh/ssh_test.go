@@ -72,6 +72,38 @@ func TestHostKeyCallbackSavesUnknownHost(t *testing.T) {
 	}
 }
 
+func TestSaveHostKeyReportsDirectoryErrors(t *testing.T) {
+	dir := t.TempDir()
+	notDir := filepath.Join(dir, "not-dir")
+	if err := os.WriteFile(notDir, []byte("file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := saveHostKey(filepath.Join(notDir, "known_hosts"), "127.0.0.1:22", testPublicKey(t))
+	if err == nil {
+		t.Fatal("expected directory creation error")
+	}
+}
+
+func TestMarkSessionClosedLockedIsIdempotent(t *testing.T) {
+	m := NewSessionManager(&config.Vault{}, nil)
+	s := &SSHSession{done: make(chan struct{})}
+
+	m.mu.Lock()
+	m.markSessionClosedLocked(s)
+	m.markSessionClosedLocked(s)
+	m.mu.Unlock()
+
+	if !s.closed {
+		t.Fatal("session was not marked closed")
+	}
+	select {
+	case <-s.done:
+	default:
+		t.Fatal("session done channel was not closed")
+	}
+}
+
 func testPublicKey(t *testing.T) gossh.PublicKey {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)

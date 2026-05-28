@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -60,5 +61,12 @@ func TestRedactStringKeepsPlainWrongPasswordDiagnostic(t *testing.T) {
 	got := redactString("wrong password or corrupted file")
 	if got != "wrong password or corrupted file" {
 		t.Fatalf("diagnostic = %q", got)
+	}
+}
+
+func TestRedactErrorCoversSecretBearingPaths(t *testing.T) {
+	got := redactError(&os.PathError{Op: "open", Path: "/tmp/password=hunter2", Err: os.ErrNotExist})
+	if strings.Contains(got, "hunter2") {
+		t.Fatalf("redacted path still contains secret: %q", got)
 	}
 }

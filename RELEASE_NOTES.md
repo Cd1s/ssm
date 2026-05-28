@@ -1,5 +1,22 @@
 # Release Notes Draft
 
+## v1.0.4
+
+### Fixes
+
+- Reject empty and oversized cloud pull responses before writing `connections.enc`.
+- Preserve enabled-by-default settings when older or partial `settings.json` files omit boolean fields.
+- Route master-pass file and cloud password-file read errors through the shared secret redactor.
+- Lock SSH session closed-state updates and make the transition idempotent for multi-session shutdown paths.
+- Return `known_hosts` directory creation errors instead of discarding them during host-key save.
+
+### Validation
+
+- `go test ./...`
+- `go test -race ./...`
+- `go build ./cmd/ssm`
+- `scripts/ssh_matrix_test.sh`
+
 ## v1.0.3
 
 ### Fixes

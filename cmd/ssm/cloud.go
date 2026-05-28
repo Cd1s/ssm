@@ -192,7 +192,7 @@ func parseCloudAuthFlags(name string, args []string) (cloudAuthFlags, bool) {
 func readSecretFile(path, label string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %s file: %v\n", label, err)
+		printError(fmt.Errorf("%s file: %w", label, err))
 		os.Exit(1)
 	}
 	secret := strings.TrimRight(string(data), "\r\n")

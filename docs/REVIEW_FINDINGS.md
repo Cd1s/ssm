@@ -69,6 +69,16 @@ This document records the review evidence for the OpenSpec change
 - Fix: empty server error payloads now fall back to `server error (<status>)`.
 - Regression coverage: `TestParseErrorFallsBackForEmptyServerError`.
 
+### Cloud pull trusted empty or oversized response bodies
+
+- Area: `internal/cloud`
+- Symptom: `Pull` accepted any `200 OK` body from a sync endpoint and wrote it directly over the local vault path.
+- Risk: a misbehaving or incompatible sync endpoint could replace the local vault with an empty blob, and an oversized body could consume memory before failing later.
+- Reproduction: run `Pull` against an HTTP test server that returns `200 OK` with no body or a body larger than the configured pull limit.
+- Root cause: the client mirrored the server write path but did not enforce the same non-empty opaque-blob and maximum-size boundaries on downloads.
+- Fix: pull now reads through a bounded reader, rejects blobs larger than 64 MiB, rejects empty blobs, and only writes the vault after those checks pass.
+- Regression coverage: `TestPullRejectsEmptyBlobWithoutOverwritingVault`, `TestPullRejectsOversizedBlobWithoutWritingVault`.
+
 ### Sync server auth and size limits needed explicit regression coverage
 
 - Area: `internal/syncserver`
@@ -82,8 +92,8 @@ This document records the review evidence for the OpenSpec change
 - Area: `cmd/ssm`, `sshctl`
 - Symptom: `sshctl list` used redaction, but many other CLI paths printed raw `Error: %v`, including sync, update, vault, SSH, and panic recovery errors.
 - Risk: malicious or unexpected error strings containing `password=...`, `token=...`, bearer headers, or private-key blocks could be copied into bug reports or logs.
-- Fix: added shared `printError`/`redactString` helpers and routed CLI error prints through them; panic recovery now redacts the panic value before printing.
-- Regression coverage: `TestRedactStringRemovesSensitiveFields`, `TestRedactStringRemovesPrivateKeyBlocks`.
+- Fix: added shared `printError`/`redactString` helpers and routed CLI error prints through them; panic recovery, master-pass file errors, and cloud password-file errors now redact before printing.
+- Regression coverage: `TestRedactStringRemovesSensitiveFields`, `TestRedactStringRemovesPrivateKeyBlocks`, `TestRedactErrorCoversSecretBearingPaths`.
 
 ### Malformed `known_hosts` was trusted
 
@@ -92,6 +102,16 @@ This document records the review evidence for the OpenSpec change
 - Risk: a corrupted or malformed host-key database weakened host-key verification.
 - Fix: malformed or unreadable `known_hosts` now rejects the key with explicit context; a missing file still uses trust-on-first-use.
 - Regression coverage: `TestHostKeyCallbackRejectsMalformedKnownHosts`, `TestHostKeyCallbackSavesUnknownHost`.
+
+### Host-key save ignored directory creation failures
+
+- Area: `internal/ssh`
+- Symptom: `saveHostKey` ignored failures from `os.MkdirAll(filepath.Dir(path), 0700)` and then attempted to open the target file.
+- Risk: when the known-hosts parent path was invalid, diagnostics pointed at the later open instead of the actual directory creation failure, making host-key setup harder to debug.
+- Reproduction: call `saveHostKey` with a known-hosts path whose parent component is an existing regular file.
+- Root cause: the directory creation error was discarded.
+- Fix: `saveHostKey` now returns the `MkdirAll` error immediately.
+- Regression coverage: `TestSaveHostKeyReportsDirectoryErrors`.
 
 ### Empty SSH auth produced poor diagnostics
 
@@ -108,6 +128,16 @@ This document records the review evidence for the OpenSpec change
 - Risk: noisy or misleading remote errors during `sshctl put`.
 - Fix: upload command now uses `cat > path && chmod mode path`.
 - Regression coverage: `TestUploadCommandRequiresSuccessfulWriteBeforeChmod`, `scripts/ssh_matrix_test.sh`.
+
+### Session manager closed-state updates were not consistently locked
+
+- Area: `internal/ssh`
+- Symptom: session shutdown wrote `SSHSession.closed` before taking the session manager mutex, while resize and detach paths read it while holding that mutex.
+- Risk: interactive multi-session SSH could develop a data race under concurrent session exit and terminal resize/detach, making full-screen behavior harder to debug.
+- Reproduction: inspect `waitSession`, `resize`, and detach handling; the same field was accessed under different synchronization.
+- Root cause: the done-channel close and closed flag update were not centralized behind the manager lock.
+- Fix: closed-state updates now go through `markSessionClosedLocked`, making the flag/channel transition idempotent under the manager mutex.
+- Regression coverage: `TestMarkSessionClosedLockedIsIdempotent`, `go test -race ./internal/ssh`.
 
 ### `cloud.json` save failed in a fresh config directory
 
@@ -133,6 +163,16 @@ This document records the review evidence for the OpenSpec change
 - Fix: `SSM_UPDATE_REPO=off`, `none`, or `disabled` disables release repo resolution.
 - Regression coverage: `TestReleaseRepoCanBeDisabledByEnvironment`.
 
+### Partial settings files disabled enabled-by-default behavior
+
+- Area: `internal/config`, `internal/update`, `internal/cloud`
+- Symptom: `LoadSettings` unmarshaled JSON into a zero-value `Settings`, so a settings file missing `auto_update`, `auto_sync`, or `vim_keys` interpreted those booleans as `false`.
+- Risk: older or hand-written settings files could silently disable auto-update or auto-sync even though defaults require those capabilities to stay enabled.
+- Reproduction: write `{"password_cache":"session"}` to `settings.json`, then call `LoadSettings`; before the fix `AutoUpdate` and `AutoSync` were false.
+- Root cause: boolean absence was indistinguishable from explicit `false` when loading directly into the final struct.
+- Fix: settings now load by overlaying pointer fields onto `DefaultSettings`, preserving explicit `false` while keeping missing booleans enabled.
+- Regression coverage: `TestLoadSettingsDefaultsMissingBooleansToEnabled`, `TestLoadSettingsPreservesExplicitFalseBooleans`.
+
 ## SSH Matrix
 
 `scripts/ssh_matrix_test.sh` starts an isolated local `sshd` with temporary keys, temporary HOME, and a temporary SSM vault. It covers:
@@ -155,4 +195,4 @@ This document records the review evidence for the OpenSpec change
 
 - Interactive `sshctl shell` and the multi-tab TUI session manager still require terminal/manual validation for full-screen behavior.
 - CI prepares `openssh-server` before the SSH matrix; the matrix still assumes an Ubuntu-like runner with `/usr/lib/openssh/sftp-server`.
-- Release publication and post-release self-update still require the final tag/release run after this review pass is committed.
+- `zap-hosting-de` has the new binary installed and `sshctl --help` works, but `sshctl status` cannot unlock a vault there because `/root/.config/ssm/master.pass` is absent; creating or copying that secret is outside this review.

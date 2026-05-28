@@ -18,7 +18,7 @@ import (
 var (
 	masterPass     string
 	masterPassFile string
-	version        = "1.0.3"
+	version        = "1.0.4"
 )
 
 func main() {
@@ -230,7 +230,7 @@ func unlock() {
 	if masterPassFile != "" {
 		data, err := os.ReadFile(masterPassFile)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: master pass file: %v\n", err)
+			printError(fmt.Errorf("master pass file: %w", err))
 			os.Exit(1)
 		}
 		pass := strings.TrimRight(string(data), "\r\n")

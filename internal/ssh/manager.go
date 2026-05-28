@@ -211,11 +211,10 @@ func (m *SessionManager) readOutput(s *SSHSession) {
 
 func (m *SessionManager) waitSession(s *SSHSession) {
 	_ = s.session.Wait()
-	s.closed = true
-	close(s.done)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.markSessionClosedLocked(s)
 
 	idx := -1
 	for i, sess := range m.sessions {
@@ -299,6 +298,13 @@ func (m *SessionManager) resize() {
 	}
 	m.renderTabBar()
 	m.mu.Unlock()
+}
+
+func (m *SessionManager) markSessionClosedLocked(s *SSHSession) {
+	if !s.closed {
+		s.closed = true
+		close(s.done)
+	}
 }
 
 func (m *SessionManager) Start() error {

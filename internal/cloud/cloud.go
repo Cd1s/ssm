@@ -24,6 +24,8 @@ type CloudConfig struct {
 
 var httpClient = &http.Client{Timeout: 15 * time.Second}
 
+var maxPullBlobBytes int64 = 64 << 20
+
 func cloudPath() string {
 	return filepath.Join(config.Dir(), "cloud.json")
 }
@@ -152,10 +154,18 @@ func Pull(cfg *CloudConfig) error {
 		return parseError(resp)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxPullBlobBytes+1))
 	if err != nil {
 		config.Debug("pull: read body error: %v", err)
 		return err
+	}
+	if int64(len(data)) > maxPullBlobBytes {
+		config.Debug("pull: sync blob too large")
+		return fmt.Errorf("sync blob too large")
+	}
+	if len(data) == 0 {
+		config.Debug("pull: empty sync blob")
+		return fmt.Errorf("sync blob is empty")
 	}
 
 	if err := config.WritePrivateFile(config.Path(), data); err != nil {

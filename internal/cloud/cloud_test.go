@@ -71,6 +71,63 @@ func TestPullWritesVaultAndRemoteETagPrivately(t *testing.T) {
 	}
 }
 
+func TestPullRejectsEmptyBlobWithoutOverwritingVault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	existing := []byte("existing encrypted bytes")
+	vaultPath := filepath.Join(home, ".config", "ssm", "connections.enc")
+	if err := os.MkdirAll(filepath.Dir(vaultPath), 0700); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(vaultPath, existing, 0600); err != nil {
+		t.Fatalf("write existing vault: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	err := Pull(&CloudConfig{Server: srv.URL, Token: "token"})
+	if err == nil {
+		t.Fatal("expected empty sync blob error")
+	}
+	if got := err.Error(); got != "sync blob is empty" {
+		t.Fatalf("error = %q, want empty blob error", got)
+	}
+	data, readErr := os.ReadFile(vaultPath)
+	if readErr != nil {
+		t.Fatalf("read vault: %v", readErr)
+	}
+	if string(data) != string(existing) {
+		t.Fatalf("vault overwritten on empty pull: %q", data)
+	}
+}
+
+func TestPullRejectsOversizedBlobWithoutWritingVault(t *testing.T) {
+	oldMax := maxPullBlobBytes
+	maxPullBlobBytes = 8
+	t.Cleanup(func() { maxPullBlobBytes = oldMax })
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("too many bytes"))
+	}))
+	defer srv.Close()
+
+	err := Pull(&CloudConfig{Server: srv.URL, Token: "token"})
+	if err == nil {
+		t.Fatal("expected oversized sync blob error")
+	}
+	if got := err.Error(); got != "sync blob too large" {
+		t.Fatalf("error = %q, want oversized blob error", got)
+	}
+	if _, statErr := os.Stat(filepath.Join(home, ".config", "ssm", "connections.enc")); !os.IsNotExist(statErr) {
+		t.Fatalf("vault was written or stat failed unexpectedly: %v", statErr)
+	}
+}
+
 func TestCloudRequestsTrimServerTrailingSlash(t *testing.T) {
 	var paths []string
 	var contentTypes []string

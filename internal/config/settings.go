@@ -40,14 +40,41 @@ func LoadSettings() *Settings {
 	if err != nil {
 		return DefaultSettings()
 	}
-	var s Settings
-	if err := json.Unmarshal(data, &s); err != nil {
+	var raw struct {
+		PasswordCache *string `json:"password_cache"`
+		VimKeys       *bool   `json:"vim_keys"`
+		AutoUpdate    *bool   `json:"auto_update"`
+		AutoSync      *bool   `json:"auto_sync"`
+		UpdateRepo    *string `json:"update_repo"`
+		LastPush      *string `json:"last_push"`
+		LastPull      *string `json:"last_pull"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return DefaultSettings()
 	}
-	if s.PasswordCache == "" {
-		s.PasswordCache = "always"
+	s := DefaultSettings()
+	if raw.PasswordCache != nil && *raw.PasswordCache != "" {
+		s.PasswordCache = *raw.PasswordCache
 	}
-	return &s
+	if raw.VimKeys != nil {
+		s.VimKeys = *raw.VimKeys
+	}
+	if raw.AutoUpdate != nil {
+		s.AutoUpdate = *raw.AutoUpdate
+	}
+	if raw.AutoSync != nil {
+		s.AutoSync = *raw.AutoSync
+	}
+	if raw.UpdateRepo != nil {
+		s.UpdateRepo = *raw.UpdateRepo
+	}
+	if raw.LastPush != nil {
+		s.LastPush = *raw.LastPush
+	}
+	if raw.LastPull != nil {
+		s.LastPull = *raw.LastPull
+	}
+	return s
 }
 
 func SaveSettings(s *Settings) error {
