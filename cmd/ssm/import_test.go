@@ -48,3 +48,40 @@ func TestLoadServerImportPreservesManifestAliases(t *testing.T) {
 		t.Fatal("key auth was not imported")
 	}
 }
+
+func TestDecodeImportServersSortsMapShapes(t *testing.T) {
+	servers, err := decodeImportServers([]byte(`{
+		"z-host":{"host":"192.0.2.3","user":"root","password":"secret"},
+		"a-host":{"host":"192.0.2.1","user":"root","password":"secret"},
+		"m-host":{"host":"192.0.2.2","user":"root","password":"secret"}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{servers[0].Alias, servers[1].Alias, servers[2].Alias}; got[0] != "a-host" || got[1] != "m-host" || got[2] != "z-host" {
+		t.Fatalf("aliases = %v, want sorted map keys", got)
+	}
+
+	rootServers, err := decodeImportServers([]byte(`{"servers":{
+		"z-host":{"host":"192.0.2.3","user":"root","password":"secret"},
+		"a-host":{"host":"192.0.2.1","user":"root","password":"secret"}
+	}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{rootServers[0].Alias, rootServers[1].Alias}; got[0] != "a-host" || got[1] != "z-host" {
+		t.Fatalf("root aliases = %v, want sorted map keys", got)
+	}
+}
+
+func TestConvertImportServerRejectsEmptyPasswordAuth(t *testing.T) {
+	_, _, _, err := convertImportServer(importServer{
+		Alias:    "empty-password",
+		Host:     "192.0.2.1",
+		User:     "root",
+		AuthType: "password",
+	}, map[string]string{}, map[string]bool{}, map[string]bool{})
+	if err == nil {
+		t.Fatal("expected empty password auth error")
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"ssm/internal/config"
 )
@@ -20,6 +21,8 @@ type CloudConfig struct {
 	Token  string `json:"token"`
 	Email  string `json:"email,omitempty"`
 }
+
+var httpClient = &http.Client{Timeout: 15 * time.Second}
 
 func cloudPath() string {
 	return filepath.Join(config.Dir(), "cloud.json")
@@ -53,12 +56,13 @@ func DeleteCloud() error {
 }
 
 func Register(server, email, password string) (string, error) {
+	server = strings.TrimRight(server, "/")
 	body, _ := json.Marshal(map[string]string{
 		"email":    email,
 		"password": password,
 	})
 
-	resp, err := http.Post(server+"/auth/register", "application/json", bytes.NewReader(body))
+	resp, err := postJSON(server+"/auth/register", body)
 	if err != nil {
 		return "", fmt.Errorf("connection failed: %w", err)
 	}
@@ -68,12 +72,13 @@ func Register(server, email, password string) (string, error) {
 }
 
 func Login(server, email, password string) (string, error) {
+	server = strings.TrimRight(server, "/")
 	body, _ := json.Marshal(map[string]string{
 		"email":    email,
 		"password": password,
 	})
 
-	resp, err := http.Post(server+"/auth/login", "application/json", bytes.NewReader(body))
+	resp, err := postJSON(server+"/auth/login", body)
 	if err != nil {
 		return "", fmt.Errorf("connection failed: %w", err)
 	}
@@ -83,13 +88,14 @@ func Login(server, email, password string) (string, error) {
 }
 
 func Push(cfg *CloudConfig) error {
+	server := strings.TrimRight(cfg.Server, "/")
 	data, err := os.ReadFile(config.Path())
 	if err != nil {
 		config.Debug("push: no local vault: %v", err)
 		return fmt.Errorf("no local vault found")
 	}
 
-	req, err := http.NewRequest("PUT", cfg.Server+"/sync", bytes.NewReader(data))
+	req, err := http.NewRequest("PUT", server+"/sync", bytes.NewReader(data))
 	if err != nil {
 		config.Debug("push: request error: %v", err)
 		return err
@@ -97,7 +103,7 @@ func Push(cfg *CloudConfig) error {
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	req.Header.Set("Content-Type", "application/octet-stream")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		config.Debug("push: connection failed: %v", err)
 		return fmt.Errorf("connection failed: %w", err)
@@ -119,14 +125,15 @@ func Push(cfg *CloudConfig) error {
 }
 
 func Pull(cfg *CloudConfig) error {
-	req, err := http.NewRequest("GET", cfg.Server+"/sync", nil)
+	server := strings.TrimRight(cfg.Server, "/")
+	req, err := http.NewRequest("GET", server+"/sync", nil)
 	if err != nil {
 		config.Debug("pull: request error: %v", err)
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		config.Debug("pull: connection failed: %v", err)
 		return fmt.Errorf("connection failed: %w", err)
@@ -162,13 +169,14 @@ func Pull(cfg *CloudConfig) error {
 }
 
 func RemoteETag(cfg *CloudConfig) (string, error) {
-	req, err := http.NewRequest("HEAD", cfg.Server+"/sync", nil)
+	server := strings.TrimRight(cfg.Server, "/")
+	req, err := http.NewRequest("HEAD", server+"/sync", nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("connection failed: %w", err)
 	}
@@ -215,13 +223,14 @@ func parseTokenResponse(resp *http.Response) (string, error) {
 }
 
 func CheckVerified(cfg *CloudConfig) bool {
-	req, err := http.NewRequest("GET", cfg.Server+"/auth/status", nil)
+	server := strings.TrimRight(cfg.Server, "/")
+	req, err := http.NewRequest("GET", server+"/auth/status", nil)
 	if err != nil {
 		return false
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return false
 	}
@@ -237,6 +246,15 @@ func CheckVerified(cfg *CloudConfig) bool {
 		return false
 	}
 	return result.Verified
+}
+
+func postJSON(url string, body []byte) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return httpClient.Do(req)
 }
 
 func AutoPush() {

@@ -3,6 +3,7 @@ package syncserver
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -359,16 +360,23 @@ func (s *userStore) getByToken(tokenHash string) (user, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, u := range s.Users {
-		if u.TokenHash == tokenHash && tokenHash != "" {
+		if constantTimeEqual(u.TokenHash, tokenHash) {
 			return u, true
 		}
 		for _, candidate := range u.TokenHashes {
-			if candidate == tokenHash && tokenHash != "" {
+			if constantTimeEqual(candidate, tokenHash) {
 				return u, true
 			}
 		}
 	}
 	return user{}, false
+}
+
+func constantTimeEqual(a, b string) bool {
+	if a == "" || b == "" || len(a) != len(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 func (s *userStore) saveLocked() error {

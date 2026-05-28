@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -112,10 +113,13 @@ func decodeImportServers(data []byte) ([]importServer, error) {
 		return root.Servers, nil
 	}
 
-	var raw map[string]importServer
-	if err := json.Unmarshal(data, &raw); err == nil {
-		out := make([]importServer, 0, len(raw))
-		for key, item := range raw {
+	var rootMap struct {
+		Servers map[string]importServer `json:"servers"`
+	}
+	if err := json.Unmarshal(data, &rootMap); err == nil && rootMap.Servers != nil {
+		out := make([]importServer, 0, len(rootMap.Servers))
+		for _, key := range sortedKeys(rootMap.Servers) {
+			item := rootMap.Servers[key]
 			if item.Alias == "" {
 				item.Alias = key
 			}
@@ -124,12 +128,11 @@ func decodeImportServers(data []byte) ([]importServer, error) {
 		return out, nil
 	}
 
-	var rootMap struct {
-		Servers map[string]importServer `json:"servers"`
-	}
-	if err := json.Unmarshal(data, &rootMap); err == nil && rootMap.Servers != nil {
-		out := make([]importServer, 0, len(rootMap.Servers))
-		for key, item := range rootMap.Servers {
+	var raw map[string]importServer
+	if err := json.Unmarshal(data, &raw); err == nil {
+		out := make([]importServer, 0, len(raw))
+		for _, key := range sortedKeys(raw) {
+			item := raw[key]
 			if item.Alias == "" {
 				item.Alias = key
 			}
@@ -185,6 +188,9 @@ func convertImportServer(s importServer, keyByMaterial map[string]string, usedCo
 
 	switch {
 	case authType == "password":
+		if s.Password == "" {
+			return config.Connection{}, nil, false, fmt.Errorf("%s: password auth has empty password", name)
+		}
 		c.Password = s.Password
 	case keyMaterial != "":
 		keyName, exists := keyByMaterial[keyMaterial]
@@ -201,6 +207,15 @@ func convertImportServer(s importServer, keyByMaterial map[string]string, usedCo
 	}
 
 	return c, newKey, true, nil
+}
+
+func sortedKeys[K ~string, V any](m map[K]V) []K {
+	keys := make([]K, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	return keys
 }
 
 func parsePort(v any) (int, error) {

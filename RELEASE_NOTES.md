@@ -1,5 +1,23 @@
 # Release Notes Draft
 
+## v1.0.2
+
+### Fixes
+
+- Fix GitHub Actions release workflow discovery by adding `workflow_dispatch` and making CI run on the default branch.
+- Make JSON imports deterministic for map-shaped inputs and correctly handle `{"servers": {...}}` before treating JSON as a bare host map.
+- Reject `auth_type=password` imports when the password is empty, preventing unusable no-auth connections.
+- Normalize cloud sync server URLs with trailing slashes across login, register, status, push, pull, and remote hash requests.
+- Route cloud HTTP requests through a timeout client for a clearer, testable network boundary.
+- Compare sync bearer token hashes with constant-time comparison.
+
+### Validation
+
+- `go test ./...`
+- `go test -race ./...`
+- `go build ./cmd/ssm`
+- `scripts/ssh_matrix_test.sh`
+
 ## v1.0.1
 
 ### Fixes

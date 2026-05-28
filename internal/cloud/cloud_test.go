@@ -1,8 +1,13 @@
 package cloud
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -23,4 +28,80 @@ func TestSaveCloudCreatesConfigDir(t *testing.T) {
 	if info.Mode().Perm() != 0600 {
 		t.Fatalf("cloud config mode = %o, want 600", info.Mode().Perm())
 	}
+}
+
+func TestCloudRequestsTrimServerTrailingSlash(t *testing.T) {
+	var paths []string
+	var contentTypes []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		contentTypes = append(contentTypes, r.Header.Get("Content-Type"))
+		switch r.URL.Path {
+		case "/auth/login", "/auth/register":
+			_ = json.NewEncoder(w).Encode(map[string]string{"token": "token"})
+		case "/auth/status":
+			_ = json.NewEncoder(w).Encode(map[string]bool{"verified": true})
+		case "/sync":
+			w.Header().Set("ETag", `"etag"`)
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	server := srv.URL + "/"
+	if _, err := Login(server, "agent@example.test", "long-password"); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	if _, err := Register(server, "agent@example.test", "long-password"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if ok := CheckVerified(&CloudConfig{Server: server, Token: "token"}); !ok {
+		t.Fatal("CheckVerified returned false")
+	}
+	if _, err := RemoteETag(&CloudConfig{Server: server, Token: "token"}); err != nil {
+		t.Fatalf("RemoteETag: %v", err)
+	}
+
+	for _, path := range paths {
+		if len(path) > 1 && path[:2] == "//" {
+			t.Fatalf("path %q has double slash", path)
+		}
+	}
+	for i, contentType := range contentTypes[:2] {
+		if contentType != "application/json" {
+			t.Fatalf("request %d content type = %q, want application/json", i, contentType)
+		}
+	}
+}
+
+func TestCloudUsesConfiguredHTTPClient(t *testing.T) {
+	oldClient := httpClient
+	defer func() { httpClient = oldClient }()
+
+	httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/auth/login" {
+			t.Fatalf("path = %q, want /auth/login", req.URL.Path)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"token":"token"}`)),
+		}, nil
+	})}
+
+	token, err := Login("https://sync.example.test/", "agent@example.test", "long-password")
+	if err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	if token != "token" {
+		t.Fatalf("token = %q, want token", token)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }

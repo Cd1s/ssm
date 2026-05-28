@@ -231,6 +231,21 @@ func TestSyncRequiresBearerToken(t *testing.T) {
 	}
 }
 
+func TestConstantTimeEqualRejectsEmptyAndMismatchedValues(t *testing.T) {
+	if constantTimeEqual("", "") {
+		t.Fatal("empty values must not match")
+	}
+	if constantTimeEqual("abc", "abd") {
+		t.Fatal("different values matched")
+	}
+	if constantTimeEqual("abc", "ab") {
+		t.Fatal("different lengths matched")
+	}
+	if !constantTimeEqual("abc", "abc") {
+		t.Fatal("identical non-empty values did not match")
+	}
+}
+
 func authCall(t *testing.T, url, email, password string) string {
 	t.Helper()
 	body, err := json.Marshal(map[string]string{
