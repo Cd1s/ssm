@@ -86,7 +86,7 @@ func (m *SessionManager) renderTabBar() {
 
 	for i, s := range m.sessions {
 		if i == m.active {
-			fmt.Printf("\033[1;35m[%d: %s]\033[0m ", i+1, s.Name)
+			fmt.Printf("\033[1;36m[%d: %s]\033[0m ", i+1, s.Name)
 		} else {
 			fmt.Printf("\033[90m[%d: %s]\033[0m ", i+1, s.Name)
 		}

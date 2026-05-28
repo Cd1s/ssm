@@ -1,18 +1,43 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"ssm/internal/cloud"
+	"ssm/internal/config"
 	"ssm/internal/tui"
 )
 
-const defaultServer = "https://api.gossm.sh"
+const defaultServer = ""
 
-func runRegister() {
+func runRegister(args []string) {
+	opts, ok := parseCloudAuthFlags("register", args)
+	if ok {
+		if opts.passwordFile == "" {
+			fmt.Fprintln(os.Stderr, "Error: --password-file required for noninteractive register")
+			os.Exit(1)
+		}
+		password := readSecretFile(opts.passwordFile, "password")
+		fmt.Println("Creating account...")
+		token, err := cloud.Register(opts.server, opts.email, password)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		cfg := &cloud.CloudConfig{Server: opts.server, Token: token, Email: opts.email}
+		if err := cloud.SaveCloud(cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Account registered.")
+		return
+	}
+
 	fields := []tui.Field{
 		{Label: "Server", Value: defaultServer},
 		{Label: "Email", Required: true},
@@ -72,7 +97,30 @@ func runRegister() {
 	}
 }
 
-func runLogin() {
+func runLogin(args []string) {
+	opts, ok := parseCloudAuthFlags("login", args)
+	if ok {
+		if opts.passwordFile == "" {
+			fmt.Fprintln(os.Stderr, "Error: --password-file required for noninteractive login")
+			os.Exit(1)
+		}
+		password := readSecretFile(opts.passwordFile, "password")
+		fmt.Println("Logging in...")
+		token, err := cloud.Login(opts.server, opts.email, password)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+		cfg := &cloud.CloudConfig{Server: opts.server, Token: token, Email: opts.email}
+		if err := cloud.SaveCloud(cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Logged in.")
+		return
+	}
+
 	fields := []tui.Field{
 		{Label: "Server", Value: defaultServer},
 		{Label: "Email", Required: true},
@@ -111,6 +159,50 @@ func runLogin() {
 	}
 }
 
+type cloudAuthFlags struct {
+	server       string
+	email        string
+	passwordFile string
+}
+
+func parseCloudAuthFlags(name string, args []string) (cloudAuthFlags, bool) {
+	if len(args) == 0 {
+		return cloudAuthFlags{}, false
+	}
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	opts := cloudAuthFlags{}
+	fs.StringVar(&opts.server, "server", defaultServer, "sync server URL")
+	fs.StringVar(&opts.email, "email", "", "account email")
+	fs.StringVar(&opts.passwordFile, "password-file", "", "file containing account password")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+	if opts.email == "" {
+		fmt.Fprintln(os.Stderr, "Error: --email required")
+		os.Exit(1)
+	}
+	opts.server = strings.TrimRight(opts.server, "/")
+	if opts.server == "" {
+		fmt.Fprintln(os.Stderr, "Error: --server required")
+		os.Exit(1)
+	}
+	return opts, true
+}
+
+func readSecretFile(path, label string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s file: %v\n", label, err)
+		os.Exit(1)
+	}
+	secret := strings.TrimRight(string(data), "\r\n")
+	if secret == "" {
+		fmt.Fprintf(os.Stderr, "Error: %s file is empty\n", label)
+		os.Exit(1)
+	}
+	return secret
+}
+
 func runLogout() {
 	if err := cloud.DeleteCloud(); err != nil {
 		fmt.Fprintln(os.Stderr, "Not logged in.")
@@ -131,6 +223,50 @@ func runPush() {
 		os.Exit(1)
 	}
 	fmt.Println("Vault pushed to cloud.")
+}
+
+func runRemoteHash() {
+	cfg, err := cloud.LoadCloud()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	etag, err := cloud.RemoteETag(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(etag)
+}
+
+func runPullIfChanged() {
+	cfg, err := cloud.LoadCloud()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	changed, err := cloud.PullIfChanged(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if changed {
+		fmt.Println("Vault pulled from cloud.")
+	} else {
+		fmt.Println("Vault unchanged.")
+	}
+}
+
+func pullIfChanged() {
+	cfg, err := cloud.LoadCloud()
+	if err != nil {
+		return
+	}
+	if _, err := cloud.PullIfChanged(cfg); err != nil {
+		config.Debug("pull-if-changed: %v", err)
+	}
 }
 
 func runPull() {

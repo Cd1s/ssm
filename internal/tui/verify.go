@@ -73,7 +73,7 @@ func (m VerifyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m VerifyModel) View() string {
 	var content strings.Builder
 
-	content.WriteString(titleStyle.Render("  ~ gossm"))
+	content.WriteString(titleStyle.Render("  ~ ssm"))
 	content.WriteString("\n\n")
 
 	if m.verified {

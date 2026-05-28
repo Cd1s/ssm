@@ -18,6 +18,7 @@ type Settings struct {
 	VimKeys       bool   `json:"vim_keys"`
 	AutoUpdate    bool   `json:"auto_update"`
 	AutoSync      bool   `json:"auto_sync"`
+	UpdateRepo    string `json:"update_repo,omitempty"`
 	LastPush      string `json:"last_push,omitempty"`
 	LastPull      string `json:"last_pull,omitempty"`
 }

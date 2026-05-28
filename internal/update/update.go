@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,8 +16,6 @@ import (
 )
 
 const (
-	repo     = "Dilgo-dev/ssm"
-	apiURL   = "https://api.github.com/repos/" + repo + "/releases/latest"
 	cooldown = 6 * time.Hour
 )
 
@@ -24,29 +23,28 @@ func flagPath() string {
 	return filepath.Join(config.Dir(), ".update-available")
 }
 
-func CheckInBackground(currentVersion string) {
-	go func() {
-		if !shouldCheck() {
-			return
-		}
-		latest, err := checkLatest()
-		if err != nil || latest == "" || latest == currentVersion {
-			return
-		}
-		_ = os.WriteFile(flagPath(), []byte(latest+"\n"+fmt.Sprint(time.Now().Unix())), 0600)
-	}()
+func Auto(currentVersion string) error {
+	if !shouldCheck() {
+		return nil
+	}
+	markChecked("")
+	repo := releaseRepo()
+	if repo == "" {
+		return nil
+	}
+	latest, err := checkLatest()
+	if err != nil || latest == "" || !newerVersion(latest, currentVersion) {
+		return err
+	}
+	return DownloadVersion(latest, false)
 }
 
-func GetAvailable(currentVersion string) string {
-	data, err := os.ReadFile(flagPath())
-	if err != nil {
-		return ""
+func markChecked(latest string) {
+	if latest == "" {
+		latest = "-"
 	}
-	parts := strings.SplitN(string(data), "\n", 2)
-	if len(parts) == 0 || parts[0] == currentVersion {
-		return ""
-	}
-	return parts[0]
+	_ = os.MkdirAll(config.Dir(), 0700)
+	_ = os.WriteFile(flagPath(), []byte(latest+"\n"+fmt.Sprint(time.Now().Unix())), 0600)
 }
 
 func ClearFlag() {
@@ -62,10 +60,15 @@ func Download() error {
 		return fmt.Errorf("no release found")
 	}
 
-	goos := runtime.GOOS
-	goarch := runtime.GOARCH
-	binary := fmt.Sprintf("ssm-%s-%s", goos, goarch)
-	url := fmt.Sprintf("https://github.com/%s/releases/latest/download/%s", repo, binary)
+	return DownloadVersion(latest, true)
+}
+
+func DownloadVersion(version string, verbose bool) error {
+	repo := releaseRepo()
+	if repo == "" {
+		return fmt.Errorf("update repo is not configured")
+	}
+	url := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repo, version, assetName())
 
 	resp, err := http.Get(url) //nolint:gosec
 	if err != nil {
@@ -105,22 +108,18 @@ func Download() error {
 	}
 
 	ClearFlag()
-	printBanner(latest)
+	if verbose {
+		fmt.Printf("Updated to %s\n", version)
+	}
 	return nil
 }
 
-func printBanner(ver string) {
-	purple := "\033[35m"
-	reset := "\033[0m"
-	fmt.Printf("%s", purple)
-	fmt.Println(` _____ ________  ___`)
-	fmt.Println(`/  ___/  ___|  \/  |`)
-	fmt.Println(`\ ` + "`" + `--.\ ` + "`" + `--.| .  . |`)
-	fmt.Println("  `--. \\`--. \\ |\\/| |")
-	fmt.Println(`/\__/ /\__/ / |  | |`)
-	fmt.Println(`\____/\____/\_|  |_/`)
-	fmt.Printf("%s\n", reset)
-	fmt.Printf("  Updated to %s%s%s\n", purple, ver, reset)
+func assetName() string {
+	name := fmt.Sprintf("ssm-%s-%s", runtime.GOOS, runtime.GOARCH)
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return name
 }
 
 func shouldCheck() bool {
@@ -138,8 +137,12 @@ func shouldCheck() bool {
 }
 
 func checkLatest() (string, error) {
+	repo := releaseRepo()
+	if repo == "" {
+		return "", nil
+	}
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(apiURL)
+	resp, err := client.Get("https://api.github.com/repos/" + repo + "/releases/latest")
 	if err != nil {
 		return "", err
 	}
@@ -156,4 +159,42 @@ func checkLatest() (string, error) {
 		return "", err
 	}
 	return release.TagName, nil
+}
+
+func releaseRepo() string {
+	if repo := strings.TrimSpace(os.Getenv("SSM_UPDATE_REPO")); repo != "" {
+		return repo
+	}
+	return strings.TrimSpace(config.LoadSettings().UpdateRepo)
+}
+
+func newerVersion(latest, current string) bool {
+	l := parseVersion(latest)
+	c := parseVersion(current)
+	if len(l) == 0 || len(c) == 0 {
+		return latest != current
+	}
+	for i := 0; i < 3; i++ {
+		if l[i] != c[i] {
+			return l[i] > c[i]
+		}
+	}
+	return false
+}
+
+func parseVersion(v string) []int {
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	parts := strings.Split(v, ".")
+	if len(parts) < 3 {
+		return nil
+	}
+	out := make([]int, 3)
+	for i := 0; i < 3; i++ {
+		n, err := strconv.Atoi(parts[i])
+		if err != nil {
+			return nil
+		}
+		out[i] = n
+	}
+	return out
 }

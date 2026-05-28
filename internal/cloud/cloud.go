@@ -2,12 +2,15 @@ package cloud
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"ssm/internal/config"
 )
@@ -102,6 +105,11 @@ func Push(cfg *CloudConfig) error {
 		config.Debug("push: server error %d", resp.StatusCode)
 		return parseError(resp)
 	}
+	etag := strings.Trim(resp.Header.Get("ETag"), `"`)
+	if etag == "" {
+		etag = hashBytes(data)
+	}
+	_ = saveRemoteETag(etag)
 	config.Debug("push: success")
 	config.RecordSync("push")
 	return nil
@@ -142,9 +150,52 @@ func Pull(cfg *CloudConfig) error {
 		config.Debug("pull: write vault error: %v", err)
 		return err
 	}
+	if etag := strings.Trim(resp.Header.Get("ETag"), `"`); etag != "" {
+		_ = saveRemoteETag(etag)
+	}
 	config.Debug("pull: success")
 	config.RecordSync("pull")
 	return nil
+}
+
+func RemoteETag(cfg *CloudConfig) (string, error) {
+	req, err := http.NewRequest("HEAD", cfg.Server+"/sync", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("connection failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 404 {
+		return "", fmt.Errorf("no vault found on server (run: ssm push)")
+	}
+	if resp.StatusCode != 200 {
+		return "", parseError(resp)
+	}
+	return strings.Trim(resp.Header.Get("ETag"), `"`), nil
+}
+
+func PullIfChanged(cfg *CloudConfig) (bool, error) {
+	remote, err := RemoteETag(cfg)
+	if err != nil {
+		return false, err
+	}
+	local := loadRemoteETag()
+	if remote != "" && remote == local {
+		return false, nil
+	}
+	if err := Pull(cfg); err != nil {
+		return false, err
+	}
+	if remote != "" {
+		_ = saveRemoteETag(remote)
+	}
+	return true, nil
 }
 
 func parseTokenResponse(resp *http.Response) (string, error) {
@@ -196,11 +247,9 @@ func AutoPush() {
 		config.Debug("auto-push: skipped (%v)", err)
 		return
 	}
-	go func() {
-		if err := Push(cfg); err != nil {
-			config.Debug("auto-push: %v", err)
-		}
-	}()
+	if err := Push(cfg); err != nil {
+		config.Debug("auto-push: %v", err)
+	}
 }
 
 func AutoPull() {
@@ -227,4 +276,29 @@ func parseError(resp *http.Response) error {
 		return fmt.Errorf("server error (%d)", resp.StatusCode)
 	}
 	return fmt.Errorf("%s", result.Error)
+}
+
+func remoteETagPath() string {
+	return filepath.Join(config.Dir(), "remote.etag")
+}
+
+func loadRemoteETag() string {
+	data, err := os.ReadFile(remoteETagPath())
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func saveRemoteETag(etag string) error {
+	if etag == "" {
+		return nil
+	}
+	_ = os.MkdirAll(config.Dir(), 0700)
+	return os.WriteFile(remoteETagPath(), []byte(etag+"\n"), 0600)
+}
+
+func hashBytes(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }

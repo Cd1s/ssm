@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -24,6 +25,7 @@ type connectionJSON struct {
 }
 
 func runList(jsonOutput bool) {
+	pullIfChanged()
 	v, err := config.Load(masterPass)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -196,6 +198,7 @@ func runRemove(name string) {
 }
 
 func runExec(name, cmd string) {
+	pullIfChanged()
 	v, err := config.Load(masterPass)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -209,6 +212,143 @@ func runExec(name, cmd string) {
 	}
 	fmt.Printf("Connection \"%s\" not found.\n", name)
 	os.Exit(1)
+}
+
+func runShell(name string) {
+	pullIfChanged()
+	v, err := config.Load(masterPass)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	for _, c := range v.Connections {
+		if c.Name == name {
+			if err := ssh.ConnectInteractive(c, v); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
+	fmt.Printf("Connection \"%s\" not found.\n", name)
+	os.Exit(1)
+}
+
+func runPut(name, localPath, remotePath string) {
+	pullIfChanged()
+	v, err := config.Load(masterPass)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	for _, c := range v.Connections {
+		if c.Name == name {
+			if err := ssh.UploadFile(c, v, localPath, remotePath); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
+	fmt.Printf("Connection \"%s\" not found.\n", name)
+	os.Exit(1)
+}
+
+func runImportJSON(args []string) {
+	opts, err := parseImportJSONArgs(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Println("Usage: ssm import-json <path> [--manifest <path>] [--expect-count <n>]")
+		os.Exit(1)
+	}
+
+	imported, err := loadServerImport(opts.path, opts.manifestPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if opts.expectCount > 0 && len(imported.Connections) != opts.expectCount {
+		fmt.Fprintf(os.Stderr, "Error: imported host count %d does not match expected %d\n", len(imported.Connections), opts.expectCount)
+		os.Exit(1)
+	}
+
+	current, err := config.Load(masterPass)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if opts.replace {
+		current.Connections = imported.Connections
+		current.Keys = imported.Keys
+	} else {
+		current = config.MergeVaults(current, imported)
+	}
+
+	if err := config.Save(current, masterPass); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Imported %d connections and %d keys.\n", len(imported.Connections), len(imported.Keys))
+}
+
+type importJSONOptions struct {
+	path         string
+	manifestPath string
+	expectCount  int
+	replace      bool
+}
+
+func parseImportJSONArgs(args []string) (importJSONOptions, error) {
+	opts := importJSONOptions{replace: true}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--manifest":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--manifest requires a path")
+			}
+			opts.manifestPath = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--manifest="):
+			opts.manifestPath = strings.TrimPrefix(arg, "--manifest=")
+		case arg == "--expect-count":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--expect-count requires a number")
+			}
+			n, err := strconv.Atoi(args[i+1])
+			if err != nil {
+				return opts, fmt.Errorf("--expect-count: %w", err)
+			}
+			opts.expectCount = n
+			i++
+		case strings.HasPrefix(arg, "--expect-count="):
+			n, err := strconv.Atoi(strings.TrimPrefix(arg, "--expect-count="))
+			if err != nil {
+				return opts, fmt.Errorf("--expect-count: %w", err)
+			}
+			opts.expectCount = n
+		case arg == "--replace":
+			opts.replace = true
+		case arg == "--replace=false":
+			opts.replace = false
+		case arg == "--merge":
+			opts.replace = false
+		case strings.HasPrefix(arg, "-"):
+			return opts, fmt.Errorf("unknown flag %s", arg)
+		default:
+			if opts.path != "" {
+				return opts, fmt.Errorf("multiple import paths provided")
+			}
+			opts.path = arg
+		}
+	}
+	if opts.path == "" {
+		return opts, fmt.Errorf("import path required")
+	}
+	return opts, nil
 }
 
 func runEdit(name string) {

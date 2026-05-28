@@ -2,9 +2,9 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability, please report it privately via email:
+If you discover a security vulnerability, report it privately:
 
-**contact@gossm.sh**
+Use a private GitHub security advisory or contact the repository owner privately.
 
 Do not open a public issue for security vulnerabilities.
 

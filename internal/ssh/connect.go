@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -20,6 +21,8 @@ import (
 
 	"ssm/internal/config"
 )
+
+const dialTimeout = 15 * time.Second
 
 func ConnectWithManager(c config.Connection, v *config.Vault, picker PickerFunc) {
 	fmt.Printf("Connecting to %s...\n", c.Display())
@@ -52,6 +55,10 @@ func Connect(c config.Connection, v *config.Vault) {
 	shellConnect(c)
 }
 
+func ConnectInteractive(c config.Connection, v *config.Vault) error {
+	return nativeConnect(c, v)
+}
+
 func nativeConnect(c config.Connection, v *config.Vault) error {
 	auth, err := buildAuth(c, v)
 	if err != nil {
@@ -70,6 +77,7 @@ func nativeConnect(c config.Connection, v *config.Vault) error {
 		User:            c.User,
 		Auth:            auth,
 		HostKeyCallback: hostKeyCallback,
+		Timeout:         dialTimeout,
 	}
 
 	client, err := ssh.Dial("tcp", addr, cfg)
