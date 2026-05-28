@@ -5,7 +5,7 @@ Headless SSH manager for agents. It stores SSH hosts in a local encrypted vault,
 ## Install
 
 ```bash
-SSM_REPO=<owner>/<repo> curl -fsSL https://github.com/<owner>/<repo>/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/<owner>/<repo>/releases/latest/download/install.sh | SSM_REPO=<owner>/<repo> sh
 ```
 
 The installer downloads `ssm-<os>-<arch>`, installs `/usr/local/bin/ssm`, creates `/usr/local/bin/sshctl -> /usr/local/bin/ssm`, and stores the release repo in local private settings for auto update.
@@ -16,7 +16,7 @@ Give this to another agent or machine, replacing placeholders locally:
 
 ```text
 Install headless SSM from <owner>/<repo>. Run:
-SSM_REPO=<owner>/<repo> curl -fsSL https://github.com/<owner>/<repo>/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/<owner>/<repo>/releases/latest/download/install.sh | SSM_REPO=<owner>/<repo> sh
 Then place the provided /root/.config/ssm/master.pass and /root/.config/ssm/cloud.json with chmod 600, run sshctl sync, verify sshctl status and sshctl list. Use sshctl run <alias> '<command>', sshctl shell <alias>, and sshctl put <alias> <local> <remote>. Do not use sshpass, expect, tmux prompt scraping, legacy h* helpers, or print secrets.
 ```
 
