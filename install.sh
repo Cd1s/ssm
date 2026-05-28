@@ -36,6 +36,8 @@ mkdir -p "$prefix"
 install -m 755 "$tmp" "$prefix/ssm"
 ln -sfn "$prefix/ssm" "$prefix/sshctl"
 mkdir -p "$config_dir"
+printf '%s\n' "$repo" > "$config_dir/update_repo"
+chmod 600 "$config_dir/update_repo"
 if [ ! -s "$config_dir/settings.json" ]; then
   cat > "$config_dir/settings.json" <<EOF
 {"password_cache":"always","vim_keys":true,"auto_update":true,"auto_sync":true,"update_repo":"$repo"}

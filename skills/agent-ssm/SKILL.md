@@ -19,6 +19,7 @@ Required private client files:
 /root/.config/ssm/master.pass
 /root/.config/ssm/cloud.json
 /root/.config/ssm/settings.json
+/root/.config/ssm/update_repo
 ```
 
 Set them to mode `600`, then run:

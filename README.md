@@ -43,6 +43,7 @@ Local private files:
 /root/.config/ssm/master.pass
 /root/.config/ssm/cloud.json
 /root/.config/ssm/settings.json
+/root/.config/ssm/update_repo
 ```
 
 The sync server URL is private configuration. Set it during login/register:
@@ -84,7 +85,7 @@ Put it behind your own HTTPS reverse proxy, for example `<sync-server-url> -> 12
 
 ## Auto Update
 
-Version `1.0.0` and later checks the repo configured in local private settings or `SSM_UPDATE_REPO`. It replaces the current binary when a newer release exists. Manual update:
+Version `1.0.0` and later checks the repo configured in local private settings, `/root/.config/ssm/update_repo`, or `SSM_UPDATE_REPO`. It replaces the current binary when a newer release exists. Manual update:
 
 ```bash
 SSM_UPDATE_REPO=<owner>/<repo> ssm update

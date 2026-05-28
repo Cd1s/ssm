@@ -165,6 +165,11 @@ func releaseRepo() string {
 	if repo := strings.TrimSpace(os.Getenv("SSM_UPDATE_REPO")); repo != "" {
 		return repo
 	}
+	if data, err := os.ReadFile(filepath.Join(config.Dir(), "update_repo")); err == nil {
+		if repo := strings.TrimSpace(string(data)); repo != "" {
+			return repo
+		}
+	}
 	return strings.TrimSpace(config.LoadSettings().UpdateRepo)
 }
 
