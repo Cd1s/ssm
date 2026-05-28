@@ -87,3 +87,9 @@ Version `1.0.0` and later checks GitHub releases from `Cd1s/ssm` by default and 
 ```bash
 ssm update
 ```
+
+For headless tests, offline environments, or runs that must not touch the network on startup, disable release checks:
+
+```bash
+SSM_UPDATE_REPO=off ssm --version
+```

@@ -87,3 +87,9 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 ```bash
 ssm update
 ```
+
+无头测试、离线环境或不希望程序启动时触网时，可以禁用 release 检查：
+
+```bash
+SSM_UPDATE_REPO=off ssm --version
+```

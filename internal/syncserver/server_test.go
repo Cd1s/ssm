@@ -177,6 +177,60 @@ func TestServerStoresPrivateFiles(t *testing.T) {
 	}
 }
 
+func TestRegisterRejectsMalformedAndShortAuthRequests(t *testing.T) {
+	srv, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	httpSrv := httptest.NewServer(srv.Handler())
+	defer httpSrv.Close()
+
+	cases := []struct {
+		name string
+		body string
+		want int
+	}{
+		{name: "invalid json", body: `{`, want: http.StatusBadRequest},
+		{name: "invalid email", body: `{"email":"agent","password":"long-password"}`, want: http.StatusBadRequest},
+		{name: "short password", body: `{"email":"agent@example.test","password":"short"}`, want: http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := http.Post(httpSrv.URL+"/auth/register", "application/json", bytes.NewBufferString(tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tc.want {
+				data, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status = %d body=%s, want %d", resp.StatusCode, data, tc.want)
+			}
+		})
+	}
+}
+
+func TestSyncRequiresBearerToken(t *testing.T) {
+	srv, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	httpSrv := httptest.NewServer(srv.Handler())
+	defer httpSrv.Close()
+
+	req, err := http.NewRequest(http.MethodHead, httpSrv.URL+"/sync", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
 func authCall(t *testing.T, url, email, password string) string {
 	t.Helper()
 	body, err := json.Marshal(map[string]string{

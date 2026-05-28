@@ -62,8 +62,7 @@ func UploadFile(c config.Connection, v *config.Vault, localPath, remotePath stri
 	session.Stdout = os.Stdout
 	session.Stderr = os.Stderr
 
-	mode := uint32(info.Mode().Perm())
-	cmd := fmt.Sprintf("umask 077; cat > %s; chmod %04o %s", shellQuote(remotePath), mode, shellQuote(remotePath))
+	cmd := uploadCommand(remotePath, info.Mode())
 	if err := session.Start(cmd); err != nil {
 		return err
 	}
@@ -77,6 +76,11 @@ func UploadFile(c config.Connection, v *config.Vault, localPath, remotePath stri
 		return err
 	}
 	return session.Wait()
+}
+
+func uploadCommand(remotePath string, mode os.FileMode) string {
+	quotedPath := shellQuote(remotePath)
+	return fmt.Sprintf("umask 077; cat > %s && chmod %04o %s", quotedPath, uint32(mode.Perm()), quotedPath)
 }
 
 func shellQuote(s string) string {

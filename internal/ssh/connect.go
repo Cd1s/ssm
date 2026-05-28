@@ -155,20 +155,30 @@ func buildAuth(c config.Connection, v *config.Vault) ([]ssh.AuthMethod, error) {
 		methods = append(methods, ssh.Password(c.Password))
 	}
 
+	if len(methods) == 0 {
+		return nil, fmt.Errorf("no authentication configured for %q", c.Name)
+	}
+
 	return methods, nil
 }
 
 func buildHostKeyCallback() ssh.HostKeyCallback {
 	home, _ := os.UserHomeDir()
 	knownHostsPath := filepath.Join(home, ".ssh", "known_hosts")
+	return buildHostKeyCallbackForPath(knownHostsPath)
+}
 
+func buildHostKeyCallbackForPath(knownHostsPath string) ssh.HostKeyCallback {
 	if _, err := os.Stat(knownHostsPath); err != nil {
-		return acceptAndSaveHostKey(knownHostsPath)
+		if os.IsNotExist(err) {
+			return acceptAndSaveHostKey(knownHostsPath)
+		}
+		return rejectHostKey(fmt.Errorf("known_hosts stat failed: %w", err))
 	}
 
 	cb, err := knownhosts.New(knownHostsPath)
 	if err != nil {
-		return acceptAndSaveHostKey(knownHostsPath)
+		return rejectHostKey(fmt.Errorf("known_hosts parse failed: %w", err))
 	}
 
 	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
@@ -181,6 +191,12 @@ func buildHostKeyCallback() ssh.HostKeyCallback {
 			return err
 		}
 		return saveHostKey(knownHostsPath, hostname, key)
+	}
+}
+
+func rejectHostKey(err error) ssh.HostKeyCallback {
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		return err
 	}
 }
 

@@ -25,14 +25,14 @@ func flagPath() string {
 }
 
 func Auto(currentVersion string) error {
-	if !shouldCheck() {
-		return nil
-	}
-	markChecked("")
 	repo := releaseRepo()
 	if repo == "" {
 		return nil
 	}
+	if !shouldCheck() {
+		return nil
+	}
+	markChecked("")
 	latest, err := checkLatest()
 	if err != nil || latest == "" || !newerVersion(latest, currentVersion) {
 		return err
@@ -164,17 +164,35 @@ func checkLatest() (string, error) {
 
 func releaseRepo() string {
 	if repo := strings.TrimSpace(os.Getenv("SSM_UPDATE_REPO")); repo != "" {
+		if updateDisabled(repo) {
+			return ""
+		}
 		return repo
 	}
 	if data, err := os.ReadFile(filepath.Join(config.Dir(), "update_repo")); err == nil {
 		if repo := strings.TrimSpace(string(data)); repo != "" {
+			if updateDisabled(repo) {
+				return ""
+			}
 			return repo
 		}
 	}
 	if repo := strings.TrimSpace(config.LoadSettings().UpdateRepo); repo != "" {
+		if updateDisabled(repo) {
+			return ""
+		}
 		return repo
 	}
 	return defaultRepo
+}
+
+func updateDisabled(repo string) bool {
+	switch strings.ToLower(strings.TrimSpace(repo)) {
+	case "off", "none", "disabled":
+		return true
+	default:
+		return false
+	}
 }
 
 func newerVersion(latest, current string) bool {

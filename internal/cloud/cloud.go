@@ -42,6 +42,9 @@ func SaveCloud(cfg *CloudConfig) error {
 	if err != nil {
 		return err
 	}
+	if err := os.MkdirAll(config.Dir(), 0700); err != nil {
+		return err
+	}
 	return os.WriteFile(cloudPath(), data, 0600)
 }
 

@@ -142,25 +142,39 @@ func MergeVaults(local, remote *Vault) *Vault {
 	merged := &Vault{}
 
 	connMap := make(map[string]Connection)
+	var connOrder []string
 	for _, c := range local.Connections {
+		if _, exists := connMap[c.Name]; !exists {
+			connOrder = append(connOrder, c.Name)
+		}
 		connMap[c.Name] = c
 	}
 	for _, c := range remote.Connections {
+		if _, exists := connMap[c.Name]; !exists {
+			connOrder = append(connOrder, c.Name)
+		}
 		connMap[c.Name] = c
 	}
-	for _, c := range connMap {
-		merged.Connections = append(merged.Connections, c)
+	for _, name := range connOrder {
+		merged.Connections = append(merged.Connections, connMap[name])
 	}
 
 	keyMap := make(map[string]SSHKey)
+	var keyOrder []string
 	for _, k := range local.Keys {
+		if _, exists := keyMap[k.Name]; !exists {
+			keyOrder = append(keyOrder, k.Name)
+		}
 		keyMap[k.Name] = k
 	}
 	for _, k := range remote.Keys {
+		if _, exists := keyMap[k.Name]; !exists {
+			keyOrder = append(keyOrder, k.Name)
+		}
 		keyMap[k.Name] = k
 	}
-	for _, k := range keyMap {
-		merged.Keys = append(merged.Keys, k)
+	for _, name := range keyOrder {
+		merged.Keys = append(merged.Keys, keyMap[name])
 	}
 
 	return merged
