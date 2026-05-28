@@ -53,8 +53,6 @@ jobs:
           merge-multiple: true
       - name: Checksums
         run: sha256sum ssm-* > checksums.txt
-      - name: Add installer
-        run: cp install.sh .
       - uses: softprops/action-gh-release@v2
         with:
           files: |
