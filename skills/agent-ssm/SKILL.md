@@ -13,7 +13,7 @@ Use `/usr/local/bin/sshctl` for SSH. It is the same binary as `/usr/local/bin/ss
 curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 ```
 
-Required private client files:
+Optional sync files:
 
 ```text
 /root/.config/ssm/master.pass
@@ -42,7 +42,7 @@ SSH starts from the local agent machine. The center server is only encrypted syn
 
 ## Sync
 
-The sync server URL is private config in `/root/.config/ssm/cloud.json`.
+Sync configuration is read from `/root/.config/ssm/cloud.json`.
 
 Read commands auto-pull when the remote encrypted vault changed:
 
@@ -66,7 +66,7 @@ sshctl sync
 
 ## Rules
 
-- Do not print domains, identities, passwords, private keys, tokens, `master.pass`, or `cloud.json`.
+- Do not print passwords, private keys, tokens, `master.pass`, `cloud.json`, or vault contents.
 - Do not use `sshpass`, `expect`, or tmux prompt guessing.
 - Use `sshctl list` to find exact aliases.
 - Use `nohup`, `systemd-run`, `screen`, or target-native supervisors for long remote work.

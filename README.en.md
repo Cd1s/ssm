@@ -24,19 +24,9 @@ sshctl put <alias> ./local-file /remote/file
 sshctl push
 ```
 
-## Sync
+## Optional Sync
 
-Private local files:
-
-```text
-/root/.config/ssm/connections.enc
-/root/.config/ssm/master.pass
-/root/.config/ssm/cloud.json
-/root/.config/ssm/settings.json
-/root/.config/ssm/update_repo
-```
-
-Keep the sync server URL private. Use placeholders when registering or logging in:
+You can run your own center server to sync the encrypted vault across machines:
 
 ```bash
 ssm register --server <sync-server-url> --email <email> --password-file <sync-password-file>
@@ -77,16 +67,15 @@ WantedBy=multi-user.target
 
 ## Agent Prompt
 
-Send this to another machine's agent. Transfer private sync files separately.
+Send this to another machine's agent:
 
 ```text
 Install SSM from Cd1s/ssm:
 curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 
-Create /root/.config/ssm. Put the provided private master.pass and cloud.json there with chmod 600.
-Run sshctl sync, then verify with sshctl status and sshctl list.
+If sync is already configured, put master.pass and cloud.json in /root/.config/ssm with chmod 600.
+Then run sshctl sync and verify with sshctl status and sshctl list.
 Use sshctl run <alias> '<command>', sshctl shell <alias>, and sshctl put <alias> <local> <remote>.
-Never print sync URLs, passwords, tokens, master.pass, cloud.json, private keys, or vault contents.
 ```
 
 Project agent skill: `skills/agent-ssm/SKILL.md`.
@@ -98,7 +87,3 @@ Version `1.0.0` and later checks GitHub releases from `Cd1s/ssm` by default and 
 ```bash
 ssm update
 ```
-
-## Safety
-
-Do not put real sync domains, account names, emails, passwords, tokens, private keys, `master.pass`, `cloud.json`, or vault contents in public docs, logs, commits, release notes, or chat.

@@ -24,19 +24,9 @@ sshctl put <alias> ./local-file /remote/file
 sshctl push
 ```
 
-## 同步
+## 可选同步
 
-本机私有文件：
-
-```text
-/root/.config/ssm/connections.enc
-/root/.config/ssm/master.pass
-/root/.config/ssm/cloud.json
-/root/.config/ssm/settings.json
-/root/.config/ssm/update_repo
-```
-
-同步服务器地址属于私有配置，不要写进公开仓库。注册或登录时使用占位参数：
+你可以自己部署一个中心服务器，用来在多台机器之间同步加密后的 vault：
 
 ```bash
 ssm register --server <sync-server-url> --email <email> --password-file <sync-password-file>
@@ -77,16 +67,15 @@ WantedBy=multi-user.target
 
 ## Agent 一键提示词
 
-把下面内容发给另一台机器上的 agent。私有同步文件需要单独安全传递，不要贴到公开聊天或仓库里。
+把下面内容发给另一台机器上的 agent：
 
 ```text
 从 Cd1s/ssm 安装 SSM：
 curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 
-创建 /root/.config/ssm，把提供的私有 master.pass 和 cloud.json 放进去，并执行 chmod 600。
-执行 sshctl sync，然后用 sshctl status 和 sshctl list 验证。
-以后连接服务器只使用 sshctl run <alias> '<command>'、sshctl shell <alias>、sshctl put <alias> <local> <remote>。
-不要打印同步地址、密码、token、master.pass、cloud.json、私钥或 vault 内容。
+如果已有同步配置，把 master.pass 和 cloud.json 放到 /root/.config/ssm，并执行 chmod 600。
+然后执行 sshctl sync，用 sshctl status 和 sshctl list 验证。
+连接服务器使用 sshctl run <alias> '<command>'、sshctl shell <alias>、sshctl put <alias> <local> <remote>。
 ```
 
 项目内 agent skill 在 `skills/agent-ssm/SKILL.md`。
@@ -98,7 +87,3 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 ```bash
 ssm update
 ```
-
-## 安全规则
-
-不要把真实同步域名、账号、邮箱、密码、token、私钥、`master.pass`、`cloud.json` 或 vault 内容写进公开文档、日志、提交、release notes 或聊天。
