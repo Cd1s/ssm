@@ -1,6 +1,68 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestSaveWritesVaultAtomicallyWithPrivatePermissions(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	v := &Vault{Connections: []Connection{{Name: "local", Host: "127.0.0.1", User: "root", Port: 22}}}
+	if err := Save(v, "master-pass"); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	dirInfo, err := os.Stat(Dir())
+	if err != nil {
+		t.Fatalf("stat config dir: %v", err)
+	}
+	if dirInfo.Mode().Perm() != 0700 {
+		t.Fatalf("config dir mode = %o, want 700", dirInfo.Mode().Perm())
+	}
+	info, err := os.Stat(Path())
+	if err != nil {
+		t.Fatalf("stat vault: %v", err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("vault mode = %o, want 600", info.Mode().Perm())
+	}
+	assertNoPrivateTempFiles(t, Dir())
+}
+
+func TestSettingsAndPasswordCacheUsePrivateFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("TMPDIR", t.TempDir())
+
+	if err := SaveSettings(DefaultSettings()); err != nil {
+		t.Fatalf("SaveSettings: %v", err)
+	}
+	CachePassword("master-pass")
+	if got := GetCachedPassword(); got != "master-pass" {
+		t.Fatalf("cached password = %q", got)
+	}
+
+	for _, path := range []string{settingsPath(), cachePath()} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		if info.Mode().Perm() != 0600 {
+			t.Fatalf("%s mode = %o, want 600", path, info.Mode().Perm())
+		}
+	}
+	cacheDirInfo, err := os.Stat(filepath.Dir(cachePath()))
+	if err != nil {
+		t.Fatalf("stat cache dir: %v", err)
+	}
+	if cacheDirInfo.Mode().Perm() != 0700 {
+		t.Fatalf("cache dir mode = %o, want 700", cacheDirInfo.Mode().Perm())
+	}
+}
 
 func TestMergeVaultsKeepsStableOrderAndRemoteWinsConflicts(t *testing.T) {
 	local := &Vault{
@@ -37,6 +99,20 @@ func TestMergeVaultsKeepsStableOrderAndRemoteWinsConflicts(t *testing.T) {
 	}
 	if merged.Keys[1].PrivateKey != "remote-shared" {
 		t.Fatalf("shared key = %q, want remote value", merged.Keys[1].PrivateKey)
+	}
+}
+
+func assertNoPrivateTempFiles(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir %s: %v", dir, err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, ".") && strings.HasSuffix(name, ".tmp") {
+			t.Fatalf("leftover temp file: %s", filepath.Join(dir, name))
+		}
 	}
 }
 

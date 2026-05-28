@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -83,5 +84,26 @@ func TestConvertImportServerRejectsEmptyPasswordAuth(t *testing.T) {
 	}, map[string]string{}, map[string]bool{}, map[string]bool{})
 	if err == nil {
 		t.Fatal("expected empty password auth error")
+	}
+}
+
+func TestParsePortRejectsFractionalAndOutOfRangeValues(t *testing.T) {
+	for _, value := range []any{22.5, float64(0), float64(65536), "-1", "70000"} {
+		t.Run(fmt.Sprint(value), func(t *testing.T) {
+			if _, err := parsePort(value); err == nil {
+				t.Fatalf("expected port %v to be rejected", value)
+			}
+		})
+	}
+}
+
+func TestParseImportJSONArgsRejectsNegativeExpectCount(t *testing.T) {
+	for _, args := range [][]string{
+		{"hosts.json", "--expect-count", "-1"},
+		{"hosts.json", "--expect-count=-1"},
+	} {
+		if _, err := parseImportJSONArgs(args); err == nil {
+			t.Fatalf("parseImportJSONArgs(%v) accepted negative expect-count", args)
+		}
 	}
 }

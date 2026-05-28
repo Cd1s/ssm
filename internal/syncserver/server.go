@@ -204,18 +204,7 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	}
 
 	path := s.vaultPath(u.Email)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not store sync blob")
-		return
-	}
-	if err := os.Chmod(tmp, 0600); err != nil {
-		_ = os.Remove(tmp)
-		writeError(w, http.StatusInternalServerError, "could not secure sync blob")
-		return
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	if err := writePrivateFile(path, data); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not store sync blob")
 		return
 	}
@@ -387,15 +376,7 @@ func (s *userStore) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmp, 0600); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return os.Rename(tmp, s.path)
+	return writePrivateFile(s.path, data)
 }
 
 func newToken() (string, string, error) {
@@ -446,6 +427,42 @@ func chmodPrivateDir(path string) error {
 		return fmt.Errorf("%s is not a directory", path)
 	}
 	return os.Chmod(path, 0700)
+}
+
+func writePrivateFile(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	if err := os.Chmod(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

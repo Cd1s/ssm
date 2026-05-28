@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -175,6 +176,17 @@ func TestServerStoresPrivateFiles(t *testing.T) {
 	if info.Mode().Perm() != 0600 {
 		t.Fatalf("vault mode = %o, want 600", info.Mode().Perm())
 	}
+	for _, root := range []string{dir, filepath.Join(dir, "vaults")} {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), ".") && strings.HasSuffix(entry.Name(), ".tmp") {
+				t.Fatalf("leftover temp file in %s: %s", root, entry.Name())
+			}
+		}
+	}
 }
 
 func TestRegisterRejectsMalformedAndShortAuthRequests(t *testing.T) {
@@ -229,6 +241,70 @@ func TestSyncRequiresBearerToken(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", resp.StatusCode)
 	}
+}
+
+func TestSyncRejectsEmptyBearerToken(t *testing.T) {
+	srv, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	httpSrv := httptest.NewServer(srv.Handler())
+	defer httpSrv.Close()
+
+	req, err := http.NewRequest(http.MethodGet, httpSrv.URL+"/sync", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer ")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestSyncRejectsOversizedBlobWithoutWritingVault(t *testing.T) {
+	dir := t.TempDir()
+	srv, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	httpSrv := httptest.NewServer(srv.Handler())
+	defer httpSrv.Close()
+
+	token := authCall(t, httpSrv.URL+"/auth/register", "agent@example.test", "long-password")
+	req, err := http.NewRequest(http.MethodPut, httpSrv.URL+"/sync", io.LimitReader(zeroReader{}, maxBlobBytes+1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", resp.StatusCode)
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "vaults"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("vaults written after oversized push: %d", len(entries))
+	}
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
 }
 
 func TestConstantTimeEqualRejectsEmptyAndMismatchedValues(t *testing.T) {

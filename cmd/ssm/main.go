@@ -18,7 +18,7 @@ import (
 var (
 	masterPass     string
 	masterPassFile string
-	version        = "1.0.2"
+	version        = "1.0.3"
 )
 
 func main() {
@@ -29,7 +29,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "\n\033[1;31mssm crashed!\033[0m\n\n")
 			fmt.Fprintf(os.Stderr, "Version: %s\n", version)
 			fmt.Fprintf(os.Stderr, "OS:      %s/%s\n", runtime.GOOS, runtime.GOARCH)
-			fmt.Fprintf(os.Stderr, "Error:   %v\n\n", r)
+			fmt.Fprintf(os.Stderr, "Error:   %s\n\n", redactString(fmt.Sprint(r)))
 			fmt.Fprintf(os.Stderr, "Stack trace:\n%s\n\n", buf[:n])
 			fmt.Fprintf(os.Stderr, "Please include the info above when reporting this issue.\n")
 		}
@@ -47,7 +47,7 @@ func main() {
 
 	args, err := parseGlobalArgs(os.Args[1:])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 
@@ -101,7 +101,7 @@ Shortcuts (in TUI):
 	case "update":
 		fmt.Println("Checking for updates...")
 		if err := update.Download(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			printError(err)
 			os.Exit(1)
 		}
 		return
@@ -242,14 +242,14 @@ func unlock() {
 		if !config.Exists() {
 			masterPass = pass
 			if err := config.Save(&config.Vault{}, masterPass); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				printError(err)
 				os.Exit(1)
 			}
 			return
 		}
 
 		if _, err := config.Load(pass); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			printError(err)
 			os.Exit(1)
 		}
 		masterPass = pass
@@ -260,7 +260,7 @@ func unlock() {
 		p := tea.NewProgram(tui.NewUnlockModel(tui.UnlockCreate), tea.WithAltScreen())
 		result, err := p.Run()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			printError(err)
 			os.Exit(1)
 		}
 		m := result.(tui.UnlockModel)
@@ -292,7 +292,7 @@ func unlock() {
 		p := tea.NewProgram(m, tea.WithAltScreen())
 		result, err := p.Run()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			printError(err)
 			os.Exit(1)
 		}
 		um := result.(tui.UnlockModel)
@@ -309,7 +309,7 @@ func unlock() {
 			return
 		}
 		if err != vault.ErrWrongPassword {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			printError(err)
 			os.Exit(1)
 		}
 	}

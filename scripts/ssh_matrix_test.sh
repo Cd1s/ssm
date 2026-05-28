@@ -22,6 +22,7 @@ require() {
 
 require ssh
 require ssh-keygen
+require script
 
 SSHD=${SSHD:-$(command -v sshd 2>/dev/null || true)}
 if [ -z "$SSHD" ] && [ -x /usr/sbin/sshd ]; then
@@ -143,6 +144,17 @@ echo "ok persistent_script"
 printf 'payload' > "$TMP/payload.txt"
 run_sshctl put local "$TMP/payload.txt" "$TMP/uploaded.txt"
 expect_output put_upload "payload" "cat '$TMP/uploaded.txt'"
+
+cat > "$TMP/run_shell.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export HOME="$TMP/home"
+export SSM_UPDATE_REPO=off
+exec "$TMP/sshctl" shell local
+EOF
+chmod 700 "$TMP/run_shell.sh"
+printf 'exit\r' | script -qfec "$TMP/run_shell.sh" /dev/null >/dev/null
+echo "ok shell"
 
 set +e
 missing_auth=$(HOME="$TMP/home" SSM_UPDATE_REPO=off "$BIN" --master-pass-file "$TMP/home/.config/ssm/master.pass" exec missing true 2>&1)

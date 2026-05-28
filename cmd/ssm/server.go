@@ -20,7 +20,7 @@ func runServer(args []string) {
 
 	srv, err := syncserver.New(*dataDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 
@@ -32,7 +32,7 @@ func runServer(args []string) {
 
 	fmt.Printf("ssm sync server listening on %s\n", *listen)
 	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 }

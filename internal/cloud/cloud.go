@@ -45,10 +45,7 @@ func SaveCloud(cfg *CloudConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(config.Dir(), 0700); err != nil {
-		return err
-	}
-	return os.WriteFile(cloudPath(), data, 0600)
+	return config.WritePrivateFile(cloudPath(), data)
 }
 
 func DeleteCloud() error {
@@ -88,6 +85,9 @@ func Login(server, email, password string) (string, error) {
 }
 
 func Push(cfg *CloudConfig) error {
+	if err := requireToken(cfg); err != nil {
+		return err
+	}
 	server := strings.TrimRight(cfg.Server, "/")
 	data, err := os.ReadFile(config.Path())
 	if err != nil {
@@ -125,6 +125,9 @@ func Push(cfg *CloudConfig) error {
 }
 
 func Pull(cfg *CloudConfig) error {
+	if err := requireToken(cfg); err != nil {
+		return err
+	}
 	server := strings.TrimRight(cfg.Server, "/")
 	req, err := http.NewRequest("GET", server+"/sync", nil)
 	if err != nil {
@@ -155,8 +158,7 @@ func Pull(cfg *CloudConfig) error {
 		return err
 	}
 
-	_ = os.MkdirAll(config.Dir(), 0700)
-	if err := os.WriteFile(config.Path(), data, 0600); err != nil {
+	if err := config.WritePrivateFile(config.Path(), data); err != nil {
 		config.Debug("pull: write vault error: %v", err)
 		return err
 	}
@@ -169,6 +171,9 @@ func Pull(cfg *CloudConfig) error {
 }
 
 func RemoteETag(cfg *CloudConfig) (string, error) {
+	if err := requireToken(cfg); err != nil {
+		return "", err
+	}
 	server := strings.TrimRight(cfg.Server, "/")
 	req, err := http.NewRequest("HEAD", server+"/sync", nil)
 	if err != nil {
@@ -223,6 +228,9 @@ func parseTokenResponse(resp *http.Response) (string, error) {
 }
 
 func CheckVerified(cfg *CloudConfig) bool {
+	if err := requireToken(cfg); err != nil {
+		return false
+	}
 	server := strings.TrimRight(cfg.Server, "/")
 	req, err := http.NewRequest("GET", server+"/auth/status", nil)
 	if err != nil {
@@ -296,7 +304,18 @@ func parseError(resp *http.Response) error {
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return fmt.Errorf("server error (%d)", resp.StatusCode)
 	}
-	return fmt.Errorf("%s", result.Error)
+	msg := strings.TrimSpace(result.Error)
+	if msg == "" {
+		return fmt.Errorf("server error (%d)", resp.StatusCode)
+	}
+	return fmt.Errorf("%s", msg)
+}
+
+func requireToken(cfg *CloudConfig) error {
+	if cfg == nil || strings.TrimSpace(cfg.Token) == "" {
+		return fmt.Errorf("cloud token is not configured (run: ssm login)")
+	}
+	return nil
 }
 
 func remoteETagPath() string {
@@ -315,8 +334,7 @@ func saveRemoteETag(etag string) error {
 	if etag == "" {
 		return nil
 	}
-	_ = os.MkdirAll(config.Dir(), 0700)
-	return os.WriteFile(remoteETagPath(), []byte(etag+"\n"), 0600)
+	return config.WritePrivateFile(remoteETagPath(), []byte(etag+"\n"))
 }
 
 func hashBytes(data []byte) string {

@@ -32,7 +32,7 @@ func settingsPath() string {
 }
 
 func cachePath() string {
-	return filepath.Join(os.TempDir(), fmt.Sprintf("ssm-cache-%s", userID()))
+	return filepath.Join(os.TempDir(), "ssm", fmt.Sprintf("cache-%s", userID()))
 }
 
 func LoadSettings() *Settings {
@@ -51,12 +51,11 @@ func LoadSettings() *Settings {
 }
 
 func SaveSettings(s *Settings) error {
-	_ = os.MkdirAll(Dir(), 0700)
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(settingsPath(), data, 0600)
+	return WritePrivateFile(settingsPath(), data)
 }
 
 func cacheKey() string {
@@ -76,7 +75,7 @@ func CachePassword(password string) {
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(cachePath(), encrypted, 0600)
+	_ = WritePrivateFile(cachePath(), encrypted)
 }
 
 func GetCachedPassword() string {

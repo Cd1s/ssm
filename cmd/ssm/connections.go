@@ -28,7 +28,7 @@ func runList(jsonOutput bool) {
 	pullIfChanged()
 	v, err := config.Load(masterPass)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 
@@ -46,7 +46,7 @@ func runList(jsonOutput bool) {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(items); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			printError(err)
 			os.Exit(1)
 		}
 		return
@@ -70,14 +70,14 @@ func runTUI() {
 	for {
 		v, err := config.Load(masterPass)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			printError(err)
 			os.Exit(1)
 		}
 
 		p := tea.NewProgram(tui.NewApp(v, masterPass), tea.WithAltScreen())
 		result, err := p.Run()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			printError(err)
 			os.Exit(1)
 		}
 
@@ -122,7 +122,7 @@ func runAdd() {
 	p := tea.NewProgram(tui.NewFormModel("New connection", fields), tea.WithAltScreen())
 	result, err := p.Run()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		return
 	}
 
@@ -162,7 +162,7 @@ func runAdd() {
 
 	v.Connections = append(v.Connections, conn)
 	if err := config.Save(v, masterPass); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 	cloud.AutoPush()
@@ -172,7 +172,7 @@ func runAdd() {
 func runRemove(name string) {
 	v, err := config.Load(masterPass)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 
@@ -190,7 +190,7 @@ func runRemove(name string) {
 
 	v.Connections = append(v.Connections[:found], v.Connections[found+1:]...)
 	if err := config.Save(v, masterPass); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 	cloud.AutoPush()
@@ -201,7 +201,7 @@ func runExec(name, cmd string) {
 	pullIfChanged()
 	v, err := config.Load(masterPass)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 
@@ -218,14 +218,14 @@ func runShell(name string) {
 	pullIfChanged()
 	v, err := config.Load(masterPass)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 
 	for _, c := range v.Connections {
 		if c.Name == name {
 			if err := ssh.ConnectInteractive(c, v); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				printError(err)
 				os.Exit(1)
 			}
 			return
@@ -239,14 +239,14 @@ func runPut(name, localPath, remotePath string) {
 	pullIfChanged()
 	v, err := config.Load(masterPass)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 
 	for _, c := range v.Connections {
 		if c.Name == name {
 			if err := ssh.UploadFile(c, v, localPath, remotePath); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				printError(err)
 				os.Exit(1)
 			}
 			return
@@ -259,14 +259,14 @@ func runPut(name, localPath, remotePath string) {
 func runImportJSON(args []string) {
 	opts, err := parseImportJSONArgs(args)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		fmt.Println("Usage: ssm import-json <path> [--manifest <path>] [--expect-count <n>]")
 		os.Exit(1)
 	}
 
 	imported, err := loadServerImport(opts.path, opts.manifestPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 	if opts.expectCount > 0 && len(imported.Connections) != opts.expectCount {
@@ -276,7 +276,7 @@ func runImportJSON(args []string) {
 
 	current, err := config.Load(masterPass)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 	if opts.replace {
@@ -287,7 +287,7 @@ func runImportJSON(args []string) {
 	}
 
 	if err := config.Save(current, masterPass); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 
@@ -322,12 +322,18 @@ func parseImportJSONArgs(args []string) (importJSONOptions, error) {
 			if err != nil {
 				return opts, fmt.Errorf("--expect-count: %w", err)
 			}
+			if n < 0 {
+				return opts, fmt.Errorf("--expect-count must be non-negative")
+			}
 			opts.expectCount = n
 			i++
 		case strings.HasPrefix(arg, "--expect-count="):
 			n, err := strconv.Atoi(strings.TrimPrefix(arg, "--expect-count="))
 			if err != nil {
 				return opts, fmt.Errorf("--expect-count: %w", err)
+			}
+			if n < 0 {
+				return opts, fmt.Errorf("--expect-count must be non-negative")
 			}
 			opts.expectCount = n
 		case arg == "--replace":
@@ -354,7 +360,7 @@ func parseImportJSONArgs(args []string) (importJSONOptions, error) {
 func runEdit(name string) {
 	v, err := config.Load(masterPass)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 
@@ -388,7 +394,7 @@ func runEdit(name string) {
 	p := tea.NewProgram(tui.NewFormModel("Edit: "+name, fields), tea.WithAltScreen())
 	result, err := p.Run()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		return
 	}
 
@@ -416,7 +422,7 @@ func runEdit(name string) {
 
 	v.Connections[found] = c
 	if err := config.Save(v, masterPass); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 	cloud.AutoPush()
@@ -456,7 +462,7 @@ func mergeCloudVault() {
 
 	if err != vault.ErrWrongPassword {
 		config.Debug("merge: unexpected error: %v", err)
-		_ = os.WriteFile(config.Path(), localBackup, 0600)
+		_ = config.WritePrivateFile(config.Path(), localBackup)
 		return
 	}
 
@@ -466,13 +472,13 @@ func mergeCloudVault() {
 		p := tea.NewProgram(m, tea.WithAltScreen())
 		result, err := p.Run()
 		if err != nil {
-			_ = os.WriteFile(config.Path(), localBackup, 0600)
+			_ = config.WritePrivateFile(config.Path(), localBackup)
 			return
 		}
 		um := result.(tui.UnlockModel)
 		if um.Canceled {
 			config.Debug("merge: user cancelled")
-			_ = os.WriteFile(config.Path(), localBackup, 0600)
+			_ = config.WritePrivateFile(config.Path(), localBackup)
 			return
 		}
 
@@ -481,7 +487,7 @@ func mergeCloudVault() {
 			continue
 		}
 		if err != nil {
-			_ = os.WriteFile(config.Path(), localBackup, 0600)
+			_ = config.WritePrivateFile(config.Path(), localBackup)
 			return
 		}
 
@@ -497,5 +503,5 @@ func mergeCloudVault() {
 	}
 
 	config.Debug("merge: 3 failed attempts, restoring local vault")
-	_ = os.WriteFile(config.Path(), localBackup, 0600)
+	_ = config.WritePrivateFile(config.Path(), localBackup)
 }

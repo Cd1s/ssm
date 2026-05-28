@@ -11,8 +11,7 @@ var debugEnabled bool
 
 func EnableDebug() {
 	debugEnabled = true
-	_ = os.MkdirAll(Dir(), 0700)
-	_ = os.WriteFile(debugPath(), []byte{}, 0600)
+	_ = WritePrivateFile(debugPath(), []byte{})
 }
 
 func debugPath() string {

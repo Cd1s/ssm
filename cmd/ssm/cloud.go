@@ -26,12 +26,12 @@ func runRegister(args []string) {
 		fmt.Println("Creating account...")
 		token, err := cloud.Register(opts.server, opts.email, password)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			printError(err)
 			os.Exit(1)
 		}
 		cfg := &cloud.CloudConfig{Server: opts.server, Token: token, Email: opts.email}
 		if err := cloud.SaveCloud(cfg); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			printError(err)
 			os.Exit(1)
 		}
 		fmt.Println("Account registered.")
@@ -48,7 +48,7 @@ func runRegister(args []string) {
 	p := tea.NewProgram(tui.NewFormModel("Create account", fields), tea.WithAltScreen())
 	result, err := p.Run()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 
@@ -69,7 +69,7 @@ func runRegister(args []string) {
 	fmt.Println("Creating account...")
 	token, err := cloud.Register(server, email, password)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 
@@ -108,13 +108,13 @@ func runLogin(args []string) {
 		fmt.Println("Logging in...")
 		token, err := cloud.Login(opts.server, opts.email, password)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			printError(err)
 			os.Exit(1)
 		}
 
 		cfg := &cloud.CloudConfig{Server: opts.server, Token: token, Email: opts.email}
 		if err := cloud.SaveCloud(cfg); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			printError(err)
 			os.Exit(1)
 		}
 		fmt.Println("Logged in.")
@@ -130,7 +130,7 @@ func runLogin(args []string) {
 	p := tea.NewProgram(tui.NewFormModel("Login", fields), tea.WithAltScreen())
 	result, err := p.Run()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 
@@ -146,7 +146,7 @@ func runLogin(args []string) {
 	fmt.Println("Logging in...")
 	token, err := cloud.Login(server, email, password)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 
@@ -214,12 +214,12 @@ func runLogout() {
 func runPush() {
 	cfg, err := cloud.LoadCloud()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 
 	if err := cloud.Push(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 	fmt.Println("Vault pushed to cloud.")
@@ -228,13 +228,13 @@ func runPush() {
 func runRemoteHash() {
 	cfg, err := cloud.LoadCloud()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 
 	etag, err := cloud.RemoteETag(cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 	fmt.Println(etag)
@@ -243,13 +243,13 @@ func runRemoteHash() {
 func runPullIfChanged() {
 	cfg, err := cloud.LoadCloud()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 
 	changed, err := cloud.PullIfChanged(cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 	if changed {
@@ -272,12 +272,12 @@ func pullIfChanged() {
 func runPull() {
 	cfg, err := cloud.LoadCloud()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 
 	if err := cloud.Pull(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 	fmt.Println("Vault pulled from cloud.")

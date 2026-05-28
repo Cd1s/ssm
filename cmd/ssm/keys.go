@@ -15,7 +15,7 @@ import (
 func runKeysList() {
 	v, err := config.Load(masterPass)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 
@@ -39,7 +39,7 @@ func runKeysAdd() string {
 	p := tea.NewProgram(tui.NewFormModel("Add SSH key", fields), tea.WithAltScreen())
 	result, err := p.Run()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		return ""
 	}
 
@@ -65,7 +65,7 @@ func runKeysAdd() string {
 	})
 
 	if err := config.Save(v, masterPass); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 	cloud.AutoPush()
@@ -76,7 +76,7 @@ func runKeysAdd() string {
 func runKeysRemove(name string) {
 	v, err := config.Load(masterPass)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 
@@ -94,7 +94,7 @@ func runKeysRemove(name string) {
 
 	v.Keys = append(v.Keys[:found], v.Keys[found+1:]...)
 	if err := config.Save(v, masterPass); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 	cloud.AutoPush()

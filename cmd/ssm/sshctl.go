@@ -10,12 +10,16 @@ import (
 	"ssm/internal/config"
 )
 
-var redactPattern = regexp.MustCompile(`(?i)(password|passwd|pass|token|secret|private_key|authorization: bearer)[=: ][^\s]+`)
+var (
+	redactAssignmentPattern = regexp.MustCompile(`(?i)\b(password|passwd|pass|token|secret|private_key)\s*[:=]\s*[^\s]+`)
+	redactBearerPattern     = regexp.MustCompile(`(?i)\bauthorization\s*:\s*bearer\s+[^\s]+`)
+	privateKeyBlockPattern  = regexp.MustCompile(`(?is)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----`)
+)
 
 func runSSHCTL(args []string) {
 	parsed, err := parseGlobalArgs(args)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		printError(err)
 		os.Exit(1)
 	}
 	args = parsed
@@ -85,7 +89,7 @@ func runSSHCTLList() {
 	pullIfChanged()
 	v, err := config.Load(masterPass)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %s\n", redactError(err))
+		printError(err)
 		os.Exit(1)
 	}
 	for _, c := range v.Connections {
@@ -134,7 +138,17 @@ func redactError(err error) string {
 	if err == nil {
 		return ""
 	}
-	out := redactPattern.ReplaceAllString(err.Error(), "$1=<redacted>")
+	return redactString(err.Error())
+}
+
+func redactString(value string) string {
+	out := privateKeyBlockPattern.ReplaceAllString(value, "<redacted-private-key>")
+	out = redactBearerPattern.ReplaceAllString(out, "authorization: bearer <redacted>")
+	out = redactAssignmentPattern.ReplaceAllString(out, "$1=<redacted>")
 	out = strings.ReplaceAll(out, "-----BEGIN OPENSSH PRIVATE KEY-----", "<redacted-private-key>")
 	return out
+}
+
+func printError(err error) {
+	fmt.Fprintf(os.Stderr, "Error: %s\n", redactError(err))
 }

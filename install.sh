@@ -23,15 +23,42 @@ ext=""
 [ "$os" = "windows" ] && ext=".exe"
 asset="ssm-$os-$arch$ext"
 url="https://github.com/$repo/releases/latest/download/$asset"
+checksums_url="https://github.com/$repo/releases/latest/download/checksums.txt"
 
 tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT
+checksums="$(mktemp)"
+trap 'rm -f "$tmp" "$checksums"' EXIT
 curl -fsSL "$url" -o "$tmp"
+curl -fsSL "$checksums_url" -o "$checksums"
+expected="$(awk -v asset="$asset" '$2 == asset { print $1 }' "$checksums")"
+if [ -z "$expected" ]; then
+  echo "checksum for $asset not found" >&2
+  exit 1
+fi
+case "$expected" in
+  *'
+'*)
+    echo "multiple checksums found for $asset" >&2
+    exit 1
+    ;;
+esac
+if command -v sha256sum >/dev/null 2>&1; then
+  actual="$(sha256sum "$tmp" | awk '{ print $1 }')"
+elif command -v shasum >/dev/null 2>&1; then
+  actual="$(shasum -a 256 "$tmp" | awk '{ print $1 }')"
+else
+  echo "sha256sum or shasum is required" >&2
+  exit 1
+fi
+if [ "$actual" != "$expected" ]; then
+  echo "checksum mismatch for $asset" >&2
+  exit 1
+fi
 chmod 755 "$tmp"
-mkdir -p "$prefix"
+mkdir -p "$prefix" "$config_dir"
 install -m 755 "$tmp" "$prefix/ssm"
 ln -sfn "$prefix/ssm" "$prefix/sshctl"
-mkdir -p "$config_dir"
+chmod 700 "$config_dir"
 printf '%s\n' "$repo" > "$config_dir/update_repo"
 chmod 600 "$config_dir/update_repo"
 if [ ! -s "$config_dir/settings.json" ]; then

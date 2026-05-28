@@ -91,7 +91,7 @@ func Exists() bool {
 }
 
 func Load(masterPass string) (*Vault, error) {
-	_ = os.MkdirAll(Dir(), 0700)
+	_ = EnsurePrivateDir(Dir())
 	data, err := os.ReadFile(Path())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -120,7 +120,6 @@ func Load(masterPass string) (*Vault, error) {
 }
 
 func Save(v *Vault, masterPass string) error {
-	_ = os.MkdirAll(Dir(), 0700)
 	plaintext, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
@@ -131,11 +130,7 @@ func Save(v *Vault, masterPass string) error {
 		return err
 	}
 
-	tmp := Path() + ".tmp"
-	if err := os.WriteFile(tmp, encrypted, 0600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, Path())
+	return WritePrivateFile(Path(), encrypted)
 }
 
 func MergeVaults(local, remote *Vault) *Vault {

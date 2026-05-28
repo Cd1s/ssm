@@ -1,5 +1,25 @@
 # Release Notes Draft
 
+## v1.0.3
+
+### Fixes
+
+- Verify `ssm update` and installer downloads against `checksums.txt` before replacing binaries.
+- Make manual GitHub release runs require an explicit semver tag and build every asset with that prepared version.
+- Use unique temporary files during update replacement to avoid stale `.new` file collisions.
+- Write vault, cloud, settings, sync cache, and sync server blobs through private unique temp files before atomic rename.
+- Reject fractional or out-of-range JSON import ports and negative `--expect-count` values.
+- Fail cloud sync requests locally when the bearer token is missing, and fall back to status text for empty server errors.
+- Add regression coverage for empty sync bearer tokens and oversized opaque blob rejection.
+- Redact sensitive fields and private-key blocks consistently in CLI error output and panic messages.
+
+### Validation
+
+- `go test ./...`
+- `go test -race ./...`
+- `go build ./cmd/ssm`
+- `scripts/ssh_matrix_test.sh`
+
 ## v1.0.2
 
 ### Fixes
@@ -32,13 +52,4 @@
 ### Validation
 
 - Added Go tests for SSH auth/host-key/upload helpers, cloud config persistence, deterministic vault merge, sync server request validation, and update disabling.
-- Added `scripts/ssh_matrix_test.sh` covering `sshctl run` quoting, stdin, non-zero exit codes, long-running commands, persistent background scripts, `sshctl put`, missing connection errors, and known_hosts creation against an isolated local sshd.
-
-### Release Checklist
-
-- [x] `go test ./...`
-- [x] `go test -race ./...`
-- [x] `go build ./cmd/ssm`
-- [x] `scripts/ssh_matrix_test.sh`
-- [x] Choose version tag: `v1.0.1`
-- [ ] Push tag: `git tag v1.0.1 && git push origin v1.0.1`
+- Added `scripts/ssh_matrix_test.sh` covering `sshctl run` quoting, stdin, non-zero exit codes, long-running commands, persistent background scripts, `sshctl put`, `sshctl shell`, missing connection errors, and known_hosts creation against an isolated local sshd.

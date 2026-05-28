@@ -1,8 +1,10 @@
 package update
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"os"
@@ -16,8 +18,17 @@ import (
 )
 
 const (
-	defaultRepo = "Cd1s/ssm"
-	cooldown    = 6 * time.Hour
+	defaultRepo    = "Cd1s/ssm"
+	checksumsAsset = "checksums.txt"
+	cooldown       = 6 * time.Hour
+)
+
+var (
+	httpClient      = &http.Client{Timeout: 15 * time.Second}
+	apiBaseURL      = "https://api.github.com"
+	downloadBaseURL = "https://github.com"
+	executablePath  = os.Executable
+	evalSymlinks    = filepath.EvalSymlinks
 )
 
 func flagPath() string {
@@ -44,8 +55,7 @@ func markChecked(latest string) {
 	if latest == "" {
 		latest = "-"
 	}
-	_ = os.MkdirAll(config.Dir(), 0700)
-	_ = os.WriteFile(flagPath(), []byte(latest+"\n"+fmt.Sprint(time.Now().Unix())), 0600)
+	_ = config.WritePrivateFile(flagPath(), []byte(latest+"\n"+fmt.Sprint(time.Now().Unix())))
 }
 
 func ClearFlag() {
@@ -69,9 +79,18 @@ func DownloadVersion(version string, verbose bool) error {
 	if repo == "" {
 		return fmt.Errorf("update repo is not configured")
 	}
-	url := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repo, version, assetName())
 
-	resp, err := http.Get(url) //nolint:gosec
+	asset := assetName()
+	checksums, err := downloadReleaseAsset(repo, version, checksumsAsset)
+	if err != nil {
+		return err
+	}
+	expected, err := checksumForAsset(checksums, asset)
+	if err != nil {
+		return err
+	}
+
+	resp, err := getReleaseAsset(repo, version, asset)
 	if err != nil {
 		return fmt.Errorf("download failed: %w", err)
 	}
@@ -81,32 +100,44 @@ func DownloadVersion(version string, verbose bool) error {
 		return fmt.Errorf("download failed: %s", resp.Status)
 	}
 
-	exe, err := os.Executable()
+	exe, err := executablePath()
 	if err != nil {
 		return fmt.Errorf("cannot find current binary: %w", err)
 	}
-	exe, err = filepath.EvalSymlinks(exe)
+	exe, err = evalSymlinks(exe)
 	if err != nil {
 		return err
 	}
 
-	tmp := exe + ".new"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	tmpFile, err := os.CreateTemp(filepath.Dir(exe), "."+filepath.Base(exe)+".*.new")
 	if err != nil {
 		return err
 	}
+	tmp := tmpFile.Name()
+	keepTmp := false
+	defer func() {
+		if !keepTmp {
+			_ = os.Remove(tmp)
+		}
+	}()
 
-	_, err = io.Copy(f, resp.Body)
-	f.Close()
-	if err != nil {
-		_ = os.Remove(tmp)
+	if err := tmpFile.Chmod(0755); err != nil {
+		_ = tmpFile.Close()
 		return err
 	}
 
+	h := sha256.New()
+	if err := copyAndVerify(tmpFile, resp.Body, h, expected); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
 	if err := os.Rename(tmp, exe); err != nil {
-		_ = os.Remove(tmp)
 		return err
 	}
+	keepTmp = true
 
 	ClearFlag()
 	if verbose {
@@ -121,6 +152,63 @@ func assetName() string {
 		name += ".exe"
 	}
 	return name
+}
+
+func getReleaseAsset(repo, version, asset string) (*http.Response, error) {
+	url := fmt.Sprintf("%s/%s/releases/download/%s/%s", strings.TrimRight(downloadBaseURL, "/"), repo, version, asset)
+	resp, err := httpClient.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != 200 {
+		defer resp.Body.Close()
+		return nil, fmt.Errorf("%s: %s", asset, resp.Status)
+	}
+	return resp, nil
+}
+
+func downloadReleaseAsset(repo, version, asset string) ([]byte, error) {
+	resp, err := getReleaseAsset(repo, version, asset)
+	if err != nil {
+		return nil, fmt.Errorf("download failed: %w", err)
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
+}
+
+func checksumForAsset(data []byte, asset string) (string, error) {
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		name := strings.TrimPrefix(fields[1], "*")
+		if name != asset {
+			continue
+		}
+		sum := strings.ToLower(fields[0])
+		if len(sum) != sha256.Size*2 {
+			return "", fmt.Errorf("invalid checksum for %s", asset)
+		}
+		for _, r := range sum {
+			if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+				return "", fmt.Errorf("invalid checksum for %s", asset)
+			}
+		}
+		return sum, nil
+	}
+	return "", fmt.Errorf("checksum for %s not found", asset)
+}
+
+func copyAndVerify(dst io.Writer, src io.Reader, h hash.Hash, expected string) error {
+	if _, err := io.Copy(io.MultiWriter(dst, h), src); err != nil {
+		return err
+	}
+	actual := fmt.Sprintf("%x", h.Sum(nil))
+	if actual != strings.ToLower(expected) {
+		return fmt.Errorf("checksum mismatch: got %s, want %s", actual, expected)
+	}
+	return nil
 }
 
 func shouldCheck() bool {
@@ -142,8 +230,7 @@ func checkLatest() (string, error) {
 	if repo == "" {
 		return "", nil
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("https://api.github.com/repos/" + repo + "/releases/latest")
+	resp, err := httpClient.Get(strings.TrimRight(apiBaseURL, "/") + "/repos/" + repo + "/releases/latest")
 	if err != nil {
 		return "", err
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -223,7 +224,10 @@ func parsePort(v any) (int, error) {
 	case nil:
 		return 22, nil
 	case float64:
-		return int(p), nil
+		if math.Trunc(p) != p {
+			return 0, fmt.Errorf("port must be an integer")
+		}
+		return validatePort(int(p))
 	case string:
 		if strings.TrimSpace(p) == "" {
 			return 22, nil
@@ -232,10 +236,17 @@ func parsePort(v any) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		return i, nil
+		return validatePort(i)
 	default:
 		return 0, fmt.Errorf("unsupported port type %T", v)
 	}
+}
+
+func validatePort(port int) (int, error) {
+	if port < 1 || port > 65535 {
+		return 0, fmt.Errorf("port %d out of range", port)
+	}
+	return port, nil
 }
 
 func firstNonEmpty(values ...string) string {
