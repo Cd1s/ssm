@@ -103,23 +103,6 @@ Never print sync URLs, passwords, tokens, master.pass, cloud.json, private keys,
 ssm update
 ```
 
-## 多平台二进制
-
-Release 里有多个平台文件：
-
-```text
-ssm-linux-amd64
-ssm-linux-arm64
-ssm-darwin-amd64
-ssm-darwin-arm64
-ssm-windows-amd64.exe
-ssm-windows-arm64.exe
-install.sh
-checksums.txt
-```
-
-这些是 Go 的交叉编译产物。构建机可以是 x86，也能用 `GOOS/GOARCH` 生成 Linux ARM、macOS、Windows 等目标平台二进制；安装脚本会按当前机器系统和架构选择正确文件。
-
 ## 安全规则
 
 不要把真实同步域名、账号、邮箱、密码、token、私钥、`master.pass`、`cloud.json` 或 vault 内容写进公开文档、日志、提交、release notes 或聊天。
@@ -224,23 +207,6 @@ Version `1.0.0` and later checks GitHub releases from `Cd1s/ssm` by default and 
 ```bash
 ssm update
 ```
-
-## Release Binaries
-
-Release assets:
-
-```text
-ssm-linux-amd64
-ssm-linux-arm64
-ssm-darwin-amd64
-ssm-darwin-arm64
-ssm-windows-amd64.exe
-ssm-windows-arm64.exe
-install.sh
-checksums.txt
-```
-
-These are Go cross-compiled artifacts. An x86 build machine can produce Linux ARM, macOS, and Windows binaries with `GOOS/GOARCH`; the installer picks the asset matching the current machine.
 
 ## Safety
 
