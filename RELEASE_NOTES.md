@@ -1,5 +1,18 @@
 # Release Notes Draft
 
+## v1.0.5
+
+### Fixes
+
+- Make interactive `ssm login` and `ssm register` fail visibly if `cloud.json` cannot be saved.
+
+### Validation
+
+- `go test ./...`
+- `go test -race ./...`
+- `go build ./cmd/ssm`
+- `scripts/ssh_matrix_test.sh`
+
 ## v1.0.4
 
 ### Fixes

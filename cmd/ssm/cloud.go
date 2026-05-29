@@ -74,7 +74,10 @@ func runRegister(args []string) {
 	}
 
 	cfg := &cloud.CloudConfig{Server: server, Token: token, Email: email}
-	_ = cloud.SaveCloud(cfg)
+	if err := cloud.SaveCloud(cfg); err != nil {
+		printError(err)
+		os.Exit(1)
+	}
 
 	check := func() bool {
 		return cloud.CheckVerified(cfg)
@@ -151,7 +154,10 @@ func runLogin(args []string) {
 	}
 
 	cfg := &cloud.CloudConfig{Server: server, Token: token, Email: email}
-	_ = cloud.SaveCloud(cfg)
+	if err := cloud.SaveCloud(cfg); err != nil {
+		printError(err)
+		os.Exit(1)
+	}
 	fmt.Println("Logged in.")
 
 	if err := cloud.Pull(cfg); err == nil {

@@ -147,6 +147,16 @@ This document records the review evidence for the OpenSpec change
 - Fix: `SaveCloud` now creates the config directory with `0700` before writing `cloud.json` as `0600`.
 - Regression coverage: `TestSaveCloudCreatesConfigDir`.
 
+### Interactive cloud auth ignored sync config save failures
+
+- Area: `cmd/ssm`, `internal/cloud`
+- Symptom: interactive `ssm register` and `ssm login` called `cloud.SaveCloud(cfg)` and discarded the returned error, while the noninteractive paths handled it.
+- Risk: an account login/register could appear successful even though `cloud.json` was not written, leaving later sync commands with misleading "not logged in" failures.
+- Reproduction: make the SSM config path unwritable during interactive login/register after the server returns a token; before the fix the save error was ignored.
+- Root cause: interactive and noninteractive cloud auth paths had inconsistent error handling.
+- Fix: interactive register/login now check `cloud.SaveCloud` and exit through the shared redacted error path on failure.
+- Regression coverage: code review of the unified save-error handling plus `go test ./cmd/ssm`; TUI form interaction remains manually validated.
+
 ### Vault merge order was nondeterministic
 
 - Area: `internal/config`

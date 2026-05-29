@@ -18,7 +18,7 @@ import (
 var (
 	masterPass     string
 	masterPassFile string
-	version        = "1.0.4"
+	version        = "1.0.5"
 )
 
 func main() {
