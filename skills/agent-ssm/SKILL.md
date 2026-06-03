@@ -1,61 +1,42 @@
 ---
 name: agent-ssm
-description: Use headless SSM SSH vault to sync server inventory, add/edit hosts non-interactively, and run SSH commands from the local agent machine.
+description: "Use when managing SSH hosts through Cd1s/ssm encrypted vault: list exact aliases, add/edit/remove servers non-interactively, sync inventory, and run SSH commands from the local agent machine."
+version: 1.2.0
+metadata:
+  hermes:
+    tags: [ssh, ssm, servers, vault]
 ---
 
 # Agent SSM
 
-Use `/usr/local/bin/sshctl` for SSH. It is the same binary as `/usr/local/bin/ssm`, selected by executable name.
+SSM is the source of truth for server credentials. SSH connections start from the local agent machine; the sync server only stores encrypted vault blobs.
 
-SSH starts from the local agent machine. The center server is only encrypted sync storage.
+- Vault: `/root/.config/ssm/connections.enc`
+- Master password file: `/root/.config/ssm/master.pass`
+- Optional sync config: `/root/.config/ssm/cloud.json`
+- Binaries: `/usr/local/bin/ssm` and `/usr/local/bin/sshctl` (same binary, behavior selected by executable name)
+- Project: `https://github.com/Cd1s/ssm`
 
-## Install
+## Common workflow
 
-```bash
-curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
-```
-
-Optional sync files:
-
-```text
-/root/.config/ssm/master.pass
-/root/.config/ssm/cloud.json
-/root/.config/ssm/settings.json
-/root/.config/ssm/update_repo
-```
-
-Set them to mode `600`, then run:
+Find exact aliases before operating:
 
 ```bash
-sshctl sync
 sshctl status
-sshctl list
-```
-
-## Connect
-
-Always find the exact alias first:
-
-```bash
+sshctl sync
 sshctl list | grep -Ei '<alias-or-host-fragment>'
 sshctl run <exact-alias> 'hostname; uname -sr'
 sshctl shell <exact-alias>
 sshctl put <exact-alias> ./local-file /remote/file
 ```
 
-If multiple aliases match, show the candidates instead of guessing.
+If multiple aliases match, show candidates or choose only when obvious.
 
-## Add or edit hosts non-interactively
+## Add / edit servers non-interactively
 
-For agent/non-TTY sessions, prefer `ssm import-json --merge` over the interactive TUI.
+Use `ssm import-json --merge`; **never run bare `ssm import-json <file>` for one-host changes** because the default is replace and can overwrite the vault.
 
-Important pitfalls learned from real use:
-
-- `ssm import-json <file>` defaults to replace and can overwrite the whole vault. Use `--merge` for one-off add/edit.
-- `ssm import-json` should be given `--master-pass-file`; relying on `SSM_MASTER_PASS=... ssm ...` can fail with `/dev/tty` unlock errors in headless sessions.
-- If a platform redacts a pasted private key, ask the user to save it to a local file path. Verify file presence/mode only; do not print key material.
-
-Private-key example:
+Use `--master-pass-file` for `ssm` commands in agent/non-TTY sessions. `SSM_MASTER_PASS=... ssm ...` can fail with `/dev/tty` unlock errors.
 
 ```bash
 chmod 600 /path/to/private.key
@@ -80,57 +61,41 @@ sshctl run example-alias 'hostname; uname -sr'
 sshctl push
 ```
 
-Password example:
+To modify a server, import the same `alias` with updated fields and `--merge`. Same-name connections/keys are replaced; other vault entries are preserved.
 
-```json
-{
-  "servers": [
-    {
-      "alias": "example-alias",
-      "host": "203.0.113.10",
-      "port": 22,
-      "user": "root",
-      "auth_type": "password",
-      "password": "..."
-    }
-  ]
-}
-```
+For password auth, import JSON uses `"auth_type": "password"` and `"password": "..."`.
 
-To edit an existing host, import the same `alias` with updated `host`/`port`/`user`/auth material and `--merge`. Merge replaces same-name connections/keys while preserving other vault entries.
+For full import shapes, supported fields, test-add-cleanup pattern, and pitfalls, load `references/import-json.md`.
 
-Supported import fields include `alias`, `host_alias`, `name`, `host`, `port`, `user`, `auth_type`, `password`, `private_key`, `private_key_path`, `key_path`, and `notes`.
-
-## Sync
-
-Sync configuration is read from `/root/.config/ssm/cloud.json`.
-
-Read commands auto-pull when the remote encrypted vault changed:
+## Remove servers / cleanup tests
 
 ```bash
-sshctl list
-sshctl run <alias> 'hostname'
-sshctl shell <alias>
-sshctl status
-```
-
-After local add/edit/remove, verify and push:
-
-```bash
-sshctl list | grep -Ei '<alias-or-host-fragment>'
-sshctl run <alias> 'hostname; uname -sr'
+ssm --master-pass-file ~/.config/ssm/master.pass remove <alias>
+ssm --master-pass-file ~/.config/ssm/master.pass keys remove <alias>  # if import created a same-name key
+sshctl list | grep -F '<alias>' || echo 'removed'
 sshctl push
 ```
 
-Manual refresh:
+When doing a temporary test server, add with a clearly disposable alias like `zz-ssm-skill-test-*`, verify `sshctl run`, then remove both connection and same-name key and push cleanup.
 
-```bash
-sshctl sync
-```
+## Sync behavior
+
+- `sshctl list/run/shell/status` auto-pull if remote encrypted vault changed and sync is configured.
+- After local add/edit/remove, verify then explicitly `sshctl push`.
+- Manual refresh: `sshctl sync` (pull).
 
 ## Rules
 
-- Do not print passwords, private keys, tokens, `master.pass`, `cloud.json`, or vault contents.
-- Do not use `sshpass`, `expect`, bare `ssh`, or tmux prompt guessing.
-- Use `sshctl list` to find exact aliases.
-- Use `nohup`, `systemd-run`, `screen`, or target-native supervisors for long remote work.
+- Do not print `master.pass`, `cloud.json`, private keys, passwords, tokens, or decrypted vault contents.
+- If a pasted private key is redacted by the platform, ask the user to save it to a local file path; verify only with `stat`, not file content.
+- Do not recreate or read old `servers.json`; ssm vault is the source of truth.
+- Do not use bare `ssh`, `sshpass`, `expect`, or prompt-guessing wrappers.
+- For long remote work, use target-side `nohup`, `systemd-run`, `screen`, or service units.
+
+## Verification checklist
+
+- [ ] `sshctl list` shows the exact alias and host after add/edit.
+- [ ] `sshctl run <alias> 'hostname; uname -sr'` succeeds.
+- [ ] `sshctl push` succeeds after changes.
+- [ ] For cleanup, test alias and same-name key are gone.
+- [ ] `sshctl status` reports `vault=present` and, when configured, `sync=configured`.
