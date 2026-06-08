@@ -49,6 +49,16 @@ func TestRedactStringRemovesSensitiveFields(t *testing.T) {
 	}
 }
 
+func TestRedactStringRemovesJSONStyleSensitiveFields(t *testing.T) {
+	in := `{"password":"value-to-hide","token":"token-to-hide","private_key":"key-to-hide","authorization":"Bearer bearer-to-hide","nested":{"secret":"secret-to-hide"}}`
+	got := redactString(in)
+	for _, secret := range []string{"value-to-hide", "token-to-hide", "key-to-hide", "bearer-to-hide", "secret-to-hide"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("redacted string %q still contains %q", got, secret)
+		}
+	}
+}
+
 func TestRedactStringRemovesPrivateKeyBlocks(t *testing.T) {
 	in := "bad key -----BEGIN OPENSSH PRIVATE KEY-----\nsecret-key\n-----END OPENSSH PRIVATE KEY-----"
 	got := redactString(in)
