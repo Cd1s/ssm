@@ -1,5 +1,16 @@
 # Release Notes Draft
 
+## v1.0.7
+
+### Cleanup
+
+- Remove agent-only development manuals and OpenSpec scaffolding from the public repository.
+- Keep the public `agent-ssm` skill and Claude marketplace metadata.
+
+### Validation
+
+- Confirmed no remaining references to `AGENTS`, `OpenSpec`, `openspec`, `REVIEW_FINDINGS`, or `.codex`.
+
 ## v1.0.6
 
 ### Fixes
