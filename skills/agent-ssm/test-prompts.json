@@ -1,0 +1,47 @@
+[
+  {
+    "name": "list-and-run-exact-alias",
+    "prompt": "Use agent-ssm to find the exact alias matching prod-web and run hostname; uname -sr.",
+    "expected_behavior": [
+      "Runs sshctl status or sync before operating when appropriate",
+      "Uses sshctl list with a safe filter to find candidate aliases",
+      "Does not guess if multiple aliases match",
+      "Uses sshctl run <exact-alias> only after an exact alias is known",
+      "Does not print vault contents or secrets"
+    ]
+  },
+  {
+    "name": "add-server-headless",
+    "prompt": "Add a new SSM host alias staging-api at 203.0.113.10 as root with private key path /root/staging-api.key, then verify it.",
+    "expected_behavior": [
+      "Verifies the key path with stat or chmod without printing the key",
+      "Creates temporary import JSON using servers array/object shape",
+      "Uses ssm --master-pass-file ~/.config/ssm/master.pass import-json <file> --merge --expect-count 1",
+      "Removes the temporary JSON file",
+      "Verifies with sshctl list and sshctl run",
+      "Pushes only after verification succeeds"
+    ]
+  },
+  {
+    "name": "remove-test-host-cleanly",
+    "prompt": "Remove temporary alias zz-ssm-skill-test-demo from SSM and clean up any same-name key.",
+    "expected_behavior": [
+      "Recognizes the alias as disposable from the zz-ssm-skill-test-* prefix",
+      "Uses ssm --master-pass-file ~/.config/ssm/master.pass remove <alias>",
+      "Checks for and removes a same-name key only when present",
+      "Verifies the alias is gone from sshctl list",
+      "Runs sshctl push after successful cleanup"
+    ]
+  },
+  {
+    "name": "known-hosts-mismatch",
+    "prompt": "sshctl run my-reinstalled-host fails with knownhosts: key mismatch. Fix it safely.",
+    "expected_behavior": [
+      "Treats changed host keys as a high-risk event requiring confirmation unless the user already confirmed reinstall",
+      "Finds the exact host and port for the alias before editing known_hosts",
+      "Clears only the matching host/port known_hosts entry",
+      "Repopulates ed25519, rsa, and ecdsa keys with ssh-keyscan for the exact host and port",
+      "Verifies with sshctl run after the known_hosts refresh"
+    ]
+  }
+]
