@@ -1,7 +1,7 @@
 {
   "name": "agent-ssm",
   "description": "Safety rail for agents managing SSH hosts through the encrypted Cd1s/ssm vault.",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "author": "Cd1s",
   "repository": "https://github.com/Cd1s/ssm",
   "skills": [
