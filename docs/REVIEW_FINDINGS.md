@@ -205,4 +205,4 @@ This document records the review evidence for the OpenSpec change
 
 - Interactive `sshctl shell` and the multi-tab TUI session manager still require terminal/manual validation for full-screen behavior.
 - CI prepares `openssh-server` before the SSH matrix; the matrix still assumes an Ubuntu-like runner with `/usr/lib/openssh/sftp-server`.
-- `zap-hosting-de` has the new binary installed and `sshctl --help` works, but `sshctl status` cannot unlock a vault there because `/root/.config/ssm/master.pass` is absent; creating or copying that secret is outside this review.
+- A sanitized remote test host has the new binary installed and `sshctl --help` works, but `sshctl status` cannot unlock a vault there because `/root/.config/ssm/master.pass` is absent; creating or copying that secret is outside this review.

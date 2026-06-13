@@ -1,5 +1,16 @@
 # Release Notes Draft
 
+## v1.0.6
+
+### Fixes
+
+- Polish the public `agent-ssm` skill with shorter safety-first instructions, install docs, marketplace metadata, and dry-run validation prompts.
+- Remove host-identifying review notes and replace real-looking skill examples with documentation-reserved addresses.
+
+### Validation
+
+- Luban skill repository check for `skills/agent-ssm` reports `FAIL: 0`.
+
 ## v1.0.5
 
 ### Fixes

@@ -121,7 +121,7 @@ Use a clearly disposable alias:
 
 ```bash
 alias='zz-ssm-skill-test-greencloud'
-host='172.93.217.235'
+host='203.0.113.50'
 key='/root/greencloud'
 
 chmod 600 "$key"
