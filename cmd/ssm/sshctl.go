@@ -11,8 +11,8 @@ import (
 )
 
 var (
-	redactAssignmentPattern = regexp.MustCompile(`(?i)\b(password|passwd|pass|token|secret|private_key)\s*[:=]\s*[^\s]+`)
-	redactBearerPattern     = regexp.MustCompile(`(?i)\bauthorization\s*:\s*bearer\s+[^\s]+`)
+	redactAssignmentPattern = regexp.MustCompile(`(?i)(["']?\b(?:password|passwd|pass|token|secret|private_key)\b["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)`)
+	redactBearerPattern     = regexp.MustCompile(`(?i)(["']?\bauthorization\b["']?\s*:\s*["']?bearer\s+)(?:"[^"]*"|'[^']*'|[^\s,}]+)`)
 	privateKeyBlockPattern  = regexp.MustCompile(`(?is)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----`)
 )
 
@@ -143,8 +143,8 @@ func redactError(err error) string {
 
 func redactString(value string) string {
 	out := privateKeyBlockPattern.ReplaceAllString(value, "<redacted-private-key>")
-	out = redactBearerPattern.ReplaceAllString(out, "authorization: bearer <redacted>")
-	out = redactAssignmentPattern.ReplaceAllString(out, "$1=<redacted>")
+	out = redactBearerPattern.ReplaceAllString(out, "${1}***")
+	out = redactAssignmentPattern.ReplaceAllString(out, "${1}<redacted>")
 	out = strings.ReplaceAll(out, "-----BEGIN OPENSSH PRIVATE KEY-----", "<redacted-private-key>")
 	return out
 }
