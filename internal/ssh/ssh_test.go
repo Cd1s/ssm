@@ -35,6 +35,49 @@ func TestUploadCommandRequiresSuccessfulWriteBeforeChmod(t *testing.T) {
 	if !strings.Contains(got, "'/tmp/remote file'\"'\"'s name'") {
 		t.Fatalf("upload command = %q, remote path was not shell-quoted", got)
 	}
+	if !strings.Contains(got, "mkdir -p '/tmp'") {
+		t.Fatalf("upload command = %q, want mkdir -p parent", got)
+	}
+}
+
+func TestUploadCommandNestedParent(t *testing.T) {
+	got := uploadCommand("/var/tmp/a/b/c.txt", 0600)
+	if !strings.Contains(got, "mkdir -p '/var/tmp/a/b'") {
+		t.Fatalf("upload command = %q", got)
+	}
+}
+
+func TestDownloadCommandQuotesPath(t *testing.T) {
+	got := downloadCommand("/tmp/file's name")
+	if !strings.Contains(got, "cat -- ") {
+		t.Fatalf("download command = %q", got)
+	}
+	if !strings.Contains(got, "'/tmp/file'\"'\"'s name'") {
+		t.Fatalf("download command = %q, path not quoted", got)
+	}
+}
+
+func TestRemoteParentDir(t *testing.T) {
+	tests := map[string]string{
+		"/a/b/c": "/a/b",
+		"/a":     "/",
+		"rel/x":  "rel",
+		"plain":  "",
+		"/":      "",
+	}
+	for in, want := range tests {
+		if got := RemoteParentDir(in); got != want {
+			t.Fatalf("RemoteParentDir(%q)=%q want %q", in, got, want)
+		}
+	}
+}
+
+func TestSuggestNames(t *testing.T) {
+	names := []string{"limee-hk", "limee-sg", "hk-200m", "aws-sg"}
+	got := SuggestNames("limee-hkx", names, 3)
+	if len(got) == 0 || got[0] != "limee-hk" {
+		t.Fatalf("SuggestNames = %#v, want limee-hk first", got)
+	}
 }
 
 func TestHostKeyCallbackRejectsMalformedKnownHosts(t *testing.T) {

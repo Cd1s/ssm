@@ -1,7 +1,7 @@
 ---
 name: agent-ssm
 description: "Use when an agent manages SSH hosts with Cd1s/ssm: find exact aliases, add/edit/remove hosts safely, sync encrypted vaults, run sshctl commands without quote hell, and never leak secrets."
-version: 1.5.0
+version: 1.6.0
 metadata:
   hermes:
     tags: [ssh, ssm, servers, vault]
@@ -30,11 +30,23 @@ sshctl run <exact-alias> hostname
 sshctl run <exact-alias> uname -sr
 sshctl run <exact-alias> bash -c 'echo "hello world"'
 sshctl run <exact-alias> printf %s 'value with spaces'
+sshctl run <exact-alias> FOO=bar printenv FOO    # env assigns work in multi-arg
 # SSH-like shorthand (same as run):
 sshctl <exact-alias> bash -c 'echo hi'
+# Debug the exact remote line when unsure about quotes:
+SSM_TRACE=1 sshctl run <exact-alias> bash -c 'echo hi'
+# or: sshctl run <exact-alias> --trace bash -c 'echo hi'
 ```
 
 Do **not** wrap the whole remote line in extra outer quotes unless it is a **single** shell-script argument.
+
+### Files
+
+```bash
+sshctl put <exact-alias> ./local /remote/dir/file   # creates remote parents
+sshctl get <exact-alias> /remote/file ./local       # creates local parents
+sshctl list --json                                  # machine-readable aliases
+```
 
 ### 2. Heredoc script (best for multi-line / any quotes)
 
@@ -78,9 +90,11 @@ sshctl run <exact-alias> uname -sr
 sshctl shell <exact-alias>
 # or: sshctl <exact-alias>   # opens shell
 sshctl put <exact-alias> ./local-file /remote/file
+sshctl get <exact-alias> /remote/file ./local-file
 ```
 
 If multiple aliases match, show candidates and stop. Do not guess.
+If an alias is mistyped, read the `Did you mean:` line and re-run with the exact name.
 
 ## Add / Edit
 

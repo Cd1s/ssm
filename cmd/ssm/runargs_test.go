@@ -38,6 +38,26 @@ func TestParseRemoteRunArgsRawJoin(t *testing.T) {
 	}
 }
 
+func TestParseRemoteRunArgsEnvPrefix(t *testing.T) {
+	spec, err := parseRemoteRunArgs([]string{"FOO=bar", "printenv", "FOO"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Command != "FOO='bar' 'printenv' 'FOO'" {
+		t.Fatalf("command = %q", spec.Command)
+	}
+}
+
+func TestParseRemoteRunArgsTrace(t *testing.T) {
+	spec, err := parseRemoteRunArgs([]string{"--trace", "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !spec.Trace || spec.Command != "true" {
+		t.Fatalf("spec = %+v", spec)
+	}
+}
+
 func TestParseRemoteRunArgsDoubleDash(t *testing.T) {
 	spec, err := parseRemoteRunArgs([]string{"--", "echo", "hello world"})
 	if err != nil {

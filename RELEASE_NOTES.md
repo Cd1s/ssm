@@ -1,5 +1,21 @@
 # Release Notes Draft
 
+## v1.0.9
+
+### Agent UX (from real-host testing)
+
+- Add `sshctl get` / `ssm get` to download remote files (creates local parent dirs; atomic temp+rename).
+- `sshctl put` now `mkdir -p` remote parent directories so nested uploads work.
+- Multi-arg leading `NAME=value` tokens become remote env assignments (no more `FOO=bar: command not found` without `--raw`).
+- Missing aliases print `Did you mean: ...` suggestions (typo-friendly for agents).
+- `sshctl list --json` for machine-readable inventory.
+- `--trace` / `-v` / `SSM_TRACE=1` print the exact remote command line for quote debugging.
+
+### Validation
+
+- `go test ./...`
+- Live checks against a real host: run/put/get/env/suggest/heredoc paths.
+
 ## v1.0.8
 
 ### Agent / quoting UX

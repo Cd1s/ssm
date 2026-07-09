@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"golang.org/x/crypto/ssh"
@@ -27,22 +28,7 @@ func UploadFile(c config.Connection, v *config.Vault, localPath, remotePath stri
 		return fmt.Errorf("%s is not a regular file", localPath)
 	}
 
-	auth, err := buildAuth(c, v)
-	if err != nil {
-		return err
-	}
-
-	port := c.Port
-	if port == 0 {
-		port = 22
-	}
-
-	client, err := ssh.Dial("tcp", net.JoinHostPort(c.Host, strconv.Itoa(port)), &ssh.ClientConfig{
-		User:            c.User,
-		Auth:            auth,
-		HostKeyCallback: buildHostKeyCallback(),
-		Timeout:         dialTimeout,
-	})
+	client, err := dialSSH(c, v)
 	if err != nil {
 		return err
 	}
@@ -77,7 +63,91 @@ func UploadFile(c config.Connection, v *config.Vault, localPath, remotePath stri
 	return session.Wait()
 }
 
+// DownloadFile copies remotePath from the server to localPath.
+// Parent directories of localPath are created as needed.
+func DownloadFile(c config.Connection, v *config.Vault, remotePath, localPath string) error {
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o700); err != nil {
+		return fmt.Errorf("create local parent dir: %w", err)
+	}
+
+	// Write via temp then rename so a failed download never leaves a partial file
+	// at the final path.
+	dir := filepath.Dir(localPath)
+	tmp, err := os.CreateTemp(dir, ".ssm-get-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	keepTemp := false
+	defer func() {
+		_ = tmp.Close()
+		if !keepTemp {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	client, err := dialSSH(c, v)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	session, err := client.NewSession()
+	if err != nil {
+		return err
+	}
+	defer session.Close()
+
+	session.Stdout = tmp
+	session.Stderr = os.Stderr
+
+	cmd := downloadCommand(remotePath)
+	if err := session.Run(cmd); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, localPath); err != nil {
+		return err
+	}
+	keepTemp = true // renamed into place; do not remove
+	return nil
+}
+
+func dialSSH(c config.Connection, v *config.Vault) (*ssh.Client, error) {
+	auth, err := buildAuth(c, v)
+	if err != nil {
+		return nil, err
+	}
+
+	port := c.Port
+	if port == 0 {
+		port = 22
+	}
+
+	return ssh.Dial("tcp", net.JoinHostPort(c.Host, strconv.Itoa(port)), &ssh.ClientConfig{
+		User:            c.User,
+		Auth:            auth,
+		HostKeyCallback: buildHostKeyCallback(),
+		Timeout:         dialTimeout,
+	})
+}
+
 func uploadCommand(remotePath string, mode os.FileMode) string {
 	quotedPath := ShellQuote(remotePath)
-	return fmt.Sprintf("umask 077; cat > %s && chmod %04o %s", quotedPath, uint32(mode.Perm()), quotedPath)
+	parent := RemoteParentDir(remotePath)
+	prefix := "umask 077; "
+	if parent != "" {
+		prefix += "mkdir -p " + ShellQuote(parent) + " && "
+	}
+	return fmt.Sprintf("%scat > %s && chmod %04o %s", prefix, quotedPath, uint32(mode.Perm()), quotedPath)
+}
+
+func downloadCommand(remotePath string) string {
+	// cat is enough for regular files; fail clearly on missing paths.
+	return "cat -- " + ShellQuote(remotePath)
 }

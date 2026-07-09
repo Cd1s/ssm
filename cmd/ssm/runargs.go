@@ -12,6 +12,7 @@ import (
 // remoteRunSpec is the resolved remote command for sshctl run / ssm exec.
 type remoteRunSpec struct {
 	Command string
+	Trace   bool
 }
 
 // parseRemoteRunArgs parses options and command parts after the host alias.
@@ -23,12 +24,14 @@ type remoteRunSpec struct {
 //	--raw <command...>           # OpenSSH-style space join, no quoting
 //	-s | --script                # read remote script from stdin (heredoc-friendly)
 //	-f <path> | --file <path>    # read remote script from a local file
+//	--trace | -v                 # print exact remote command line to stderr
 func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 	var (
-		raw      bool
+		raw       bool
 		fromStdin bool
-		filePath string
-		parts    []string
+		filePath  string
+		trace     bool
+		parts     []string
 	)
 
 	for i := 0; i < len(args); i++ {
@@ -39,6 +42,8 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 			i = len(args)
 		case arg == "--raw":
 			raw = true
+		case arg == "--trace", arg == "-v":
+			trace = true
 		case arg == "-s", arg == "--script":
 			fromStdin = true
 		case arg == "-f", arg == "--file":
@@ -82,28 +87,28 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		return remoteRunSpec{}, fmt.Errorf("--raw cannot be combined with -s/--script or -f/--file")
 	}
 
+	var cmd string
 	switch {
 	case fromStdin:
 		data, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return remoteRunSpec{}, fmt.Errorf("read stdin script: %w", err)
 		}
-		cmd := strings.TrimRight(string(data), "\r\n")
+		cmd = strings.TrimRight(string(data), "\r\n")
 		if strings.TrimSpace(cmd) == "" {
 			return remoteRunSpec{}, fmt.Errorf("stdin script is empty")
 		}
-		return remoteRunSpec{Command: cmd}, nil
 	case filePath != "":
 		data, err := os.ReadFile(filePath)
 		if err != nil {
 			return remoteRunSpec{}, fmt.Errorf("read script file: %w", err)
 		}
-		cmd := strings.TrimRight(string(data), "\r\n")
+		cmd = strings.TrimRight(string(data), "\r\n")
 		if strings.TrimSpace(cmd) == "" {
 			return remoteRunSpec{}, fmt.Errorf("script file is empty")
 		}
-		return remoteRunSpec{Command: cmd}, nil
 	default:
-		return remoteRunSpec{Command: ssh.JoinRemoteCommand(parts, raw)}, nil
+		cmd = ssh.JoinRemoteCommand(parts, raw)
 	}
+	return remoteRunSpec{Command: cmd, Trace: trace}, nil
 }

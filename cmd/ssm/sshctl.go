@@ -48,11 +48,23 @@ func runSSHCTL(args []string) {
 		}
 		runPush()
 	case "list":
-		if len(args) != 1 {
+		jsonFlag := false
+		switch len(args) {
+		case 1:
+		case 2:
+			if args[1] != "--json" {
+				sshctlUsageExit()
+			}
+			jsonFlag = true
+		default:
 			sshctlUsageExit()
 		}
 		unlock()
-		runSSHCTLList()
+		if jsonFlag {
+			runList(true)
+		} else {
+			runSSHCTLList()
+		}
 	case "run", "exec":
 		if len(args) < 2 {
 			sshctlUsageExit()
@@ -65,6 +77,12 @@ func runSSHCTL(args []string) {
 		}
 		unlock()
 		runPut(args[1], args[2], args[3])
+	case "get":
+		if len(args) != 4 {
+			sshctlUsageExit()
+		}
+		unlock()
+		runGet(args[1], args[2], args[3])
 	case "shell":
 		if len(args) != 2 {
 			sshctlUsageExit()
@@ -101,6 +119,9 @@ func runSSHCTLRun(alias string, cmdArgs []string) {
 		}
 		fmt.Fprintf(os.Stderr, "sshctl: %s\n", err)
 		sshctlUsageExit()
+	}
+	if spec.Trace {
+		_ = os.Setenv("SSM_TRACE", "1")
 	}
 	runExec(alias, spec.Command)
 }
@@ -141,19 +162,21 @@ func sshctlUsage() {
   sshctl sync
   sshctl pull
   sshctl push
-  sshctl list
+  sshctl list [--json]
   sshctl status
 
   # Run a remote command (SSH-like; preferred for agents)
   sshctl run <alias> <command...>
   sshctl run <alias> -- <command...>
   sshctl run <alias> --raw <command...>   # OpenSSH-style: join with spaces, no quoting
+  sshctl run <alias> --trace <command...> # print exact remote command to stderr
   sshctl run <alias> -s                   # remote script from stdin (use with <<'EOF')
   sshctl run <alias> -f <local-script>    # remote script from a local file
   sshctl <alias> <command...>             # shorthand for: run <alias> <command...>
   sshctl <alias>                          # shorthand for: shell <alias>
 
-  sshctl put <alias> <local> <remote>
+  sshctl put <alias> <local> <remote>     # upload (creates remote parent dirs)
+  sshctl get <alias> <remote> <local>     # download (creates local parent dirs)
   sshctl shell <alias>
   sshctl exec <alias> <command...>        # alias of run
 
@@ -161,10 +184,13 @@ Quoting notes:
   - One command argument is sent as a remote shell script (like classic SSH).
   - Two or more arguments are each shell-quoted before join, so
     sshctl run host bash -c 'echo hi' works without nested-quote pain.
+  - Leading NAME=value args become remote env assignments:
+    sshctl run host FOO=bar printenv FOO
   - For multi-line or quote-heavy scripts, prefer -s with a quoted heredoc:
       sshctl run host -s <<'EOF'
       echo "any quotes fine"
       EOF
+  - SSM_TRACE=1 or --trace prints the exact remote command (debug quotes).
 `)
 }
 

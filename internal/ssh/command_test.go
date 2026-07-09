@@ -34,6 +34,9 @@ func TestJoinRemoteCommand(t *testing.T) {
 		{"multi raw join", []string{"bash", "-c", "echo hi"}, true, "bash -c echo hi"},
 		{"single raw same", []string{"echo hi"}, true, "echo hi"},
 		{"empty arg preserved", []string{"printf", "%s", ""}, false, "'printf' '%s' ''"},
+		{"env assign prefix", []string{"FOO=bar", "printenv", "FOO"}, false, "FOO='bar' 'printenv' 'FOO'"},
+		{"env assign value spaces", []string{"FOO=hello world", "printenv", "FOO"}, false, "FOO='hello world' 'printenv' 'FOO'"},
+		{"multi env", []string{"A=1", "B=2", "true"}, false, "A='1' B='2' 'true'"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

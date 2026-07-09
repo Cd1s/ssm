@@ -25,7 +25,9 @@ echo "any quotes fine"
 EOF
 sshctl <alias> uname -sr                    # SSH-like shorthand for run
 sshctl shell <alias>
-sshctl put <alias> ./local-file /remote/file
+sshctl put <alias> ./local-file /remote/dir/file   # mkdir -p remote parents
+sshctl get <alias> /remote/file ./local-file       # download
+sshctl list --json
 sshctl push
 ```
 

@@ -18,7 +18,7 @@ import (
 var (
 	masterPass     string
 	masterPassFile string
-	version        = "1.0.8"
+	version        = "1.0.9"
 )
 
 func main() {
@@ -74,7 +74,8 @@ Usage:
   ssm exec <name> -s        run a remote script from stdin (heredoc-friendly)
   ssm exec <name> -f <file> run a local script file on the remote host
   ssm run  <name> ...       alias of exec
-  ssm put <name> <local> <remote> upload a local file to a remote server
+  ssm put <name> <local> <remote>  upload a local file (mkdir -p remote parent)
+  ssm get <name> <remote> <local>  download a remote file (mkdir -p local parent)
   ssm keys             list saved SSH keys
   ssm keys add         add a new SSH key
   ssm keys remove <n>  remove a SSH key
@@ -161,16 +162,21 @@ Shortcuts (in TUI):
   ssm exec <name> <command...>
   ssm exec <name> -- <command...>
   ssm exec <name> --raw <command...>
+  ssm exec <name> --trace <command...>
   ssm exec <name> -s                 # script from stdin
   ssm exec <name> -f <local-script>  # script from file
 
 With 2+ command args, each arg is shell-quoted before remote join (agent-safe).
+Leading NAME=value args become remote env assignments.
 With 1 command arg, it is passed through as a remote shell script.
 `)
 				return
 			}
 			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 			os.Exit(1)
+		}
+		if spec.Trace {
+			_ = os.Setenv("SSM_TRACE", "1")
 		}
 		runExec(args[1], spec.Command)
 	case "put":
@@ -180,6 +186,13 @@ With 1 command arg, it is passed through as a remote shell script.
 		}
 		unlock()
 		runPut(args[1], args[2], args[3])
+	case "get":
+		if len(args) != 4 {
+			fmt.Println("Usage: ssm get <name> <remote> <local>")
+			os.Exit(1)
+		}
+		unlock()
+		runGet(args[1], args[2], args[3])
 	case "shell":
 		if len(args) < 2 {
 			fmt.Println("Usage: ssm shell <name>")

@@ -205,13 +205,11 @@ func runExec(name, cmd string) {
 		os.Exit(1)
 	}
 
-	for _, c := range v.Connections {
-		if c.Name == name {
-			os.Exit(ssh.Exec(c, v, cmd))
-		}
+	c, ok := findConnection(v, name)
+	if !ok {
+		connectionNotFound(name, v)
 	}
-	fmt.Printf("Connection \"%s\" not found.\n", name)
-	os.Exit(1)
+	os.Exit(ssh.Exec(c, v, cmd))
 }
 
 func runShell(name string) {
@@ -222,17 +220,14 @@ func runShell(name string) {
 		os.Exit(1)
 	}
 
-	for _, c := range v.Connections {
-		if c.Name == name {
-			if err := ssh.ConnectInteractive(c, v); err != nil {
-				printError(err)
-				os.Exit(1)
-			}
-			return
-		}
+	c, ok := findConnection(v, name)
+	if !ok {
+		connectionNotFound(name, v)
 	}
-	fmt.Printf("Connection \"%s\" not found.\n", name)
-	os.Exit(1)
+	if err := ssh.ConnectInteractive(c, v); err != nil {
+		printError(err)
+		os.Exit(1)
+	}
 }
 
 func runPut(name, localPath, remotePath string) {
@@ -243,16 +238,54 @@ func runPut(name, localPath, remotePath string) {
 		os.Exit(1)
 	}
 
+	c, ok := findConnection(v, name)
+	if !ok {
+		connectionNotFound(name, v)
+	}
+	if err := ssh.UploadFile(c, v, localPath, remotePath); err != nil {
+		printError(err)
+		os.Exit(1)
+	}
+}
+
+func runGet(name, remotePath, localPath string) {
+	pullIfChanged()
+	v, err := config.Load(masterPass)
+	if err != nil {
+		printError(err)
+		os.Exit(1)
+	}
+
+	c, ok := findConnection(v, name)
+	if !ok {
+		connectionNotFound(name, v)
+	}
+	if err := ssh.DownloadFile(c, v, remotePath, localPath); err != nil {
+		printError(err)
+		os.Exit(1)
+	}
+}
+
+func findConnection(v *config.Vault, name string) (config.Connection, bool) {
 	for _, c := range v.Connections {
 		if c.Name == name {
-			if err := ssh.UploadFile(c, v, localPath, remotePath); err != nil {
-				printError(err)
-				os.Exit(1)
-			}
-			return
+			return c, true
 		}
 	}
-	fmt.Printf("Connection \"%s\" not found.\n", name)
+	return config.Connection{}, false
+}
+
+func connectionNotFound(name string, v *config.Vault) {
+	fmt.Fprintf(os.Stderr, "Connection %q not found.\n", name)
+	if v != nil {
+		names := make([]string, len(v.Connections))
+		for i, c := range v.Connections {
+			names[i] = c.Name
+		}
+		if sug := ssh.SuggestNames(name, names, 5); len(sug) > 0 {
+			fmt.Fprintf(os.Stderr, "Did you mean: %s\n", strings.Join(sug, ", "))
+		}
+	}
 	os.Exit(1)
 }
 

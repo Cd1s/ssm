@@ -185,6 +185,34 @@ printf 'payload' > "$TMP/payload.txt"
 run_sshctl put local "$TMP/payload.txt" "$TMP/uploaded.txt"
 expect_output put_upload "payload" "cat '$TMP/uploaded.txt'"
 
+# put creates nested remote parents
+printf 'nested' > "$TMP/nested.txt"
+run_sshctl put local "$TMP/nested.txt" "$TMP/nested/dir/file.txt"
+expect_output put_mkdir "nested" "cat '$TMP/nested/dir/file.txt'"
+
+# get downloads to local path (creates local parents)
+mkdir -p "$TMP/get-out"
+run_sshctl get local "$TMP/uploaded.txt" "$TMP/get-out/deep/down.txt"
+if [ "$(cat "$TMP/get-out/deep/down.txt")" != "payload" ]; then
+  echo "get: unexpected content" >&2
+  exit 1
+fi
+echo "ok get_download"
+
+# env assign multi-arg
+expect_output env_assign "bar" FOO=bar printenv FOO
+
+# did-you-mean for typos
+set +e
+suggest_out=$(run_sshctl run locall true 2>&1)
+suggest_rc=$?
+set -e
+if [ "$suggest_rc" = "0" ] || ! printf '%s' "$suggest_out" | grep -qi 'Did you mean'; then
+  echo "suggest: rc=$suggest_rc out=[$suggest_out]" >&2
+  exit 1
+fi
+echo "ok did_you_mean"
+
 cat > "$TMP/run_shell.sh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail

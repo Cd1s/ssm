@@ -14,6 +14,10 @@ import (
 )
 
 func Exec(c config.Connection, v *config.Vault, cmd string) int {
+	if traceEnabled() {
+		fmt.Fprintf(os.Stderr, "ssm: remote command: %s\n", cmd)
+	}
+
 	auth, err := buildAuth(c, v)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

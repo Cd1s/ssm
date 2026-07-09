@@ -25,7 +25,9 @@ echo "any quotes fine"
 EOF
 sshctl <alias> uname -sr                    # 类 SSH 简写：等价于 run
 sshctl shell <alias>
-sshctl put <alias> ./local-file /remote/file
+sshctl put <alias> ./local-file /remote/dir/file   # 自动 mkdir -p 远端目录
+sshctl get <alias> /remote/file ./local-file       # 下载
+sshctl list --json
 sshctl push
 ```
 
