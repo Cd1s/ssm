@@ -38,7 +38,11 @@ jobs:
             exit 1
           fi
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
-            remote_sha="$(git ls-remote --tags origin "refs/tags/$tag" | awk '{print $1}')"
+            # Annotated tags publish the tag object SHA; peel to the commit when present.
+            remote_sha="$(git ls-remote --tags origin "refs/tags/$tag^{}" | awk '{print $1}')"
+            if [ -z "$remote_sha" ]; then
+              remote_sha="$(git ls-remote --tags origin "refs/tags/$tag" | awk '{print $1}')"
+            fi
             current_sha="$(git rev-parse HEAD)"
             if [ "$remote_sha" != "$current_sha" ]; then
               echo "tag $tag already exists at $remote_sha, current commit is $current_sha" >&2
