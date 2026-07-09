@@ -28,8 +28,12 @@ sshctl shell <alias>
 sshctl put <alias> ./local-file /remote/dir/file   # mkdir -p remote parents
 sshctl get <alias> /remote/file ./local-file       # download
 sshctl list --json
+sshctl check <alias>                    # agent triage: dial + hostname/uname
+sshctl run <alias> --timeout 10s true   # avoid hung dials
 sshctl push
 ```
+
+On connection failure, stderr includes `ssm: error=dial_timeout|host_key_mismatch|alias_not_found|...` and exits **255** (distinct from remote exit codes). Prefer multi-arg or `-s` for scripts; do not re-quote when the error code is `dial_*`.
 
 ### Remote command quoting (for agents / scripts)
 

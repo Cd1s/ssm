@@ -1,5 +1,23 @@
 # Release Notes Draft
 
+## v1.0.10
+
+### Agent triage (from Hermes field report)
+
+- Structured connection errors on stderr: `ssm: error=<code> alias=... address=...` plus `ssm: hint=...`.
+  Codes: `alias_not_found`, `dial_timeout`, `dial_refused`, `dial_network`, `host_key_mismatch`, `auth_failed`, `no_auth_configured`, `session_failed`, …
+- Connection-layer failures exit **255** (OpenSSH-like), distinct from remote process exit status.
+- `sshctl check <alias> [--json]` / `ssm check`: dial + `hostname; uname -sr` probe for first-step triage.
+- `--timeout 10s` / `SSM_TIMEOUT` / `SSM_DIAL_TIMEOUT` for dial timeout (avoid hanging agents).
+- Alias-not-found always emits `did_you_mean` + migration hint.
+- Host-key / dial errors include recovery hints and explicitly state when the failure is **not** a quote bug.
+- Skill documents four-bucket triage: quote vs alias vs network/host-key vs remote OS.
+
+### Validation
+
+- `go test ./...`
+- Live `sshctl check` / structured errors against a real host.
+
 ## v1.0.9
 
 ### Agent UX (from real-host testing)

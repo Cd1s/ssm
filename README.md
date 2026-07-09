@@ -28,8 +28,12 @@ sshctl shell <alias>
 sshctl put <alias> ./local-file /remote/dir/file   # 自动 mkdir -p 远端目录
 sshctl get <alias> /remote/file ./local-file       # 下载
 sshctl list --json
+sshctl check <alias>                    # agent 分诊：连通 + hostname/uname
+sshctl run <alias> --timeout 10s true   # 避免 dial 挂死
 sshctl push
 ```
+
+连接失败时 stderr 会带 `ssm: error=dial_timeout|host_key_mismatch|alias_not_found|...`，退出码 **255**（区别于远端命令的 exit code）。复杂脚本用 `-s` heredoc；不要在 `dial_*` 错误上反复改引号。
 
 ### 远程命令与引号（给 agent / 脚本）
 

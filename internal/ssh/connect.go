@@ -77,7 +77,7 @@ func nativeConnect(c config.Connection, v *config.Vault) error {
 		User:            c.User,
 		Auth:            auth,
 		HostKeyCallback: hostKeyCallback,
-		Timeout:         dialTimeout,
+		Timeout:         DialTimeout(),
 	}
 
 	client, err := ssh.Dial("tcp", addr, cfg)

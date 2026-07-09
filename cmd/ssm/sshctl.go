@@ -71,6 +71,20 @@ func runSSHCTL(args []string) {
 		}
 		unlock()
 		runSSHCTLRun(args[1], args[2:])
+	case "check":
+		jsonFlag := false
+		switch len(args) {
+		case 2:
+		case 3:
+			if args[2] != "--json" {
+				sshctlUsageExit()
+			}
+			jsonFlag = true
+		default:
+			sshctlUsageExit()
+		}
+		unlock()
+		runCheck(args[1], jsonFlag)
 	case "put":
 		if len(args) != 4 {
 			sshctlUsageExit()
@@ -120,9 +134,7 @@ func runSSHCTLRun(alias string, cmdArgs []string) {
 		fmt.Fprintf(os.Stderr, "sshctl: %s\n", err)
 		sshctlUsageExit()
 	}
-	if spec.Trace {
-		_ = os.Setenv("SSM_TRACE", "1")
-	}
+	applyRunSpecEnv(spec)
 	runExec(alias, spec.Command)
 }
 
@@ -164,12 +176,14 @@ func sshctlUsage() {
   sshctl push
   sshctl list [--json]
   sshctl status
+  sshctl check <alias> [--json]           # agent triage: dial + hostname/uname
 
   # Run a remote command (SSH-like; preferred for agents)
   sshctl run <alias> <command...>
   sshctl run <alias> -- <command...>
   sshctl run <alias> --raw <command...>   # OpenSSH-style: join with spaces, no quoting
   sshctl run <alias> --trace <command...> # print exact remote command to stderr
+  sshctl run <alias> --timeout 10s ...    # dial timeout (or SSM_TIMEOUT=10s)
   sshctl run <alias> -s                   # remote script from stdin (use with <<'EOF')
   sshctl run <alias> -f <local-script>    # remote script from a local file
   sshctl <alias> <command...>             # shorthand for: run <alias> <command...>
@@ -191,6 +205,7 @@ Quoting notes:
       echo "any quotes fine"
       EOF
   - SSM_TRACE=1 or --trace prints the exact remote command (debug quotes).
+  - Connection failures print ssm: error=<code> and exit 255 (not remote exit).
 `)
 }
 

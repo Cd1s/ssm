@@ -3,9 +3,7 @@ package ssh
 import (
 	"fmt"
 	"io"
-	"net"
 	"os"
-	"strconv"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
@@ -18,35 +16,17 @@ func Exec(c config.Connection, v *config.Vault, cmd string) int {
 		fmt.Fprintf(os.Stderr, "ssm: remote command: %s\n", cmd)
 	}
 
-	auth, err := buildAuth(c, v)
+	client, err := dialSSH(c, v)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		return 1
-	}
-
-	port := c.Port
-	if port == 0 {
-		port = 22
-	}
-
-	hostKeyCallback := buildHostKeyCallback()
-
-	client, err := ssh.Dial("tcp", net.JoinHostPort(c.Host, strconv.Itoa(port)), &ssh.ClientConfig{
-		User:            c.User,
-		Auth:            auth,
-		HostKeyCallback: hostKeyCallback,
-		Timeout:         dialTimeout,
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		return 1
+		PrintAgentError(err, c)
+		return ExitCodeFor(err)
 	}
 	defer client.Close()
 
 	session, err := client.NewSession()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		return 1
+		PrintAgentError(err, c)
+		return ExitConnectionFailed
 	}
 	defer session.Close()
 
@@ -57,7 +37,7 @@ func Exec(c config.Connection, v *config.Vault, cmd string) int {
 	if os.Getenv("SSM_FORWARD_STDIN") == "1" || (!stdinIsTTY && stdinHasReadableData()) {
 		stdin, err := session.StdinPipe()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			PrintAgentError(err, c)
 			return 1
 		}
 		go func() {
@@ -72,8 +52,8 @@ func Exec(c config.Connection, v *config.Vault, cmd string) int {
 		if exitErr, ok := err.(*ssh.ExitError); ok {
 			return exitErr.ExitStatus()
 		}
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		return 1
+		PrintAgentError(err, c)
+		return ExitCodeFor(err)
 	}
 	return 0
 }

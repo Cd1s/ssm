@@ -36,7 +36,7 @@ func UploadFile(c config.Connection, v *config.Vault, localPath, remotePath stri
 
 	session, err := client.NewSession()
 	if err != nil {
-		return err
+		return ClassifyError(err, c)
 	}
 	defer session.Close()
 
@@ -60,7 +60,10 @@ func UploadFile(c config.Connection, v *config.Vault, localPath, remotePath stri
 		_ = session.Close()
 		return err
 	}
-	return session.Wait()
+	if err := session.Wait(); err != nil {
+		return err
+	}
+	return nil
 }
 
 // DownloadFile copies remotePath from the server to localPath.
@@ -94,7 +97,7 @@ func DownloadFile(c config.Connection, v *config.Vault, remotePath, localPath st
 
 	session, err := client.NewSession()
 	if err != nil {
-		return err
+		return ClassifyError(err, c)
 	}
 	defer session.Close()
 
@@ -121,7 +124,7 @@ func DownloadFile(c config.Connection, v *config.Vault, remotePath, localPath st
 func dialSSH(c config.Connection, v *config.Vault) (*ssh.Client, error) {
 	auth, err := buildAuth(c, v)
 	if err != nil {
-		return nil, err
+		return nil, ClassifyError(err, c)
 	}
 
 	port := c.Port
@@ -129,12 +132,16 @@ func dialSSH(c config.Connection, v *config.Vault) (*ssh.Client, error) {
 		port = 22
 	}
 
-	return ssh.Dial("tcp", net.JoinHostPort(c.Host, strconv.Itoa(port)), &ssh.ClientConfig{
+	client, err := ssh.Dial("tcp", net.JoinHostPort(c.Host, strconv.Itoa(port)), &ssh.ClientConfig{
 		User:            c.User,
 		Auth:            auth,
 		HostKeyCallback: buildHostKeyCallback(),
-		Timeout:         dialTimeout,
+		Timeout:         DialTimeout(),
 	})
+	if err != nil {
+		return nil, ClassifyError(err, c)
+	}
+	return client, nil
 }
 
 func uploadCommand(remotePath string, mode os.FileMode) string {

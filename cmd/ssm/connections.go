@@ -243,8 +243,8 @@ func runPut(name, localPath, remotePath string) {
 		connectionNotFound(name, v)
 	}
 	if err := ssh.UploadFile(c, v, localPath, remotePath); err != nil {
-		printError(err)
-		os.Exit(1)
+		ssh.PrintAgentError(err, c)
+		os.Exit(ssh.ExitCodeFor(err))
 	}
 }
 
@@ -261,8 +261,27 @@ func runGet(name, remotePath, localPath string) {
 		connectionNotFound(name, v)
 	}
 	if err := ssh.DownloadFile(c, v, remotePath, localPath); err != nil {
+		ssh.PrintAgentError(err, c)
+		os.Exit(ssh.ExitCodeFor(err))
+	}
+}
+
+func runCheck(name string, asJSON bool) {
+	pullIfChanged()
+	v, err := config.Load(masterPass)
+	if err != nil {
 		printError(err)
 		os.Exit(1)
+	}
+
+	c, ok := findConnection(v, name)
+	if !ok {
+		connectionNotFound(name, v)
+	}
+	res := ssh.Check(c, v)
+	ssh.WriteCheckResult(res, asJSON)
+	if !res.OK {
+		os.Exit(ssh.ExitConnectionFailed)
 	}
 }
 
@@ -276,6 +295,7 @@ func findConnection(v *config.Vault, name string) (config.Connection, bool) {
 }
 
 func connectionNotFound(name string, v *config.Vault) {
+	fmt.Fprintf(os.Stderr, "ssm: error=%s alias=%s\n", ssh.ErrCodeAliasNotFound, name)
 	fmt.Fprintf(os.Stderr, "Connection %q not found.\n", name)
 	if v != nil {
 		names := make([]string, len(v.Connections))
@@ -283,10 +303,12 @@ func connectionNotFound(name string, v *config.Vault) {
 			names[i] = c.Name
 		}
 		if sug := ssh.SuggestNames(name, names, 5); len(sug) > 0 {
+			fmt.Fprintf(os.Stderr, "ssm: did_you_mean=%s\n", strings.Join(sug, ","))
 			fmt.Fprintf(os.Stderr, "Did you mean: %s\n", strings.Join(sug, ", "))
 		}
 	}
-	os.Exit(1)
+	fmt.Fprintf(os.Stderr, "ssm: hint=use sshctl list --json; alias may have been renamed after migration\n")
+	os.Exit(ssh.ExitConnectionFailed)
 }
 
 func runImportJSON(args []string) {

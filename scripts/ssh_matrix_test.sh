@@ -211,7 +211,21 @@ if [ "$suggest_rc" = "0" ] || ! printf '%s' "$suggest_out" | grep -qi 'Did you m
   echo "suggest: rc=$suggest_rc out=[$suggest_out]" >&2
   exit 1
 fi
+if ! printf '%s' "$suggest_out" | grep -q 'error=alias_not_found'; then
+  echo "suggest: missing structured error: [$suggest_out]" >&2
+  exit 1
+fi
 echo "ok did_you_mean"
+
+# check probe
+check_out=$(run_sshctl check local)
+printf '%s\n' "$check_out" | grep -q 'ok=1' || { echo "check: $check_out" >&2; exit 1; }
+printf '%s\n' "$check_out" | grep -q 'hostname=' || { echo "check missing hostname: $check_out" >&2; exit 1; }
+echo "ok check"
+
+check_json=$(run_sshctl check local --json)
+printf '%s' "$check_json" | grep -q '"ok": true' || { echo "check json: $check_json" >&2; exit 1; }
+echo "ok check_json"
 
 cat > "$TMP/run_shell.sh" <<EOF
 #!/usr/bin/env bash

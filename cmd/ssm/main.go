@@ -18,7 +18,7 @@ import (
 var (
 	masterPass     string
 	masterPassFile string
-	version        = "1.0.9"
+	version        = "1.0.10"
 )
 
 func main() {
@@ -76,6 +76,7 @@ Usage:
   ssm run  <name> ...       alias of exec
   ssm put <name> <local> <remote>  upload a local file (mkdir -p remote parent)
   ssm get <name> <remote> <local>  download a remote file (mkdir -p local parent)
+  ssm check <name> [--json] agent triage: dial + hostname/uname
   ssm keys             list saved SSH keys
   ssm keys add         add a new SSH key
   ssm keys remove <n>  remove a SSH key
@@ -175,10 +176,23 @@ With 1 command arg, it is passed through as a remote shell script.
 			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 			os.Exit(1)
 		}
-		if spec.Trace {
-			_ = os.Setenv("SSM_TRACE", "1")
-		}
+		applyRunSpecEnv(spec)
 		runExec(args[1], spec.Command)
+	case "check":
+		jsonFlag := false
+		if len(args) < 2 {
+			fmt.Println("Usage: ssm check <name> [--json]")
+			os.Exit(1)
+		}
+		if len(args) >= 3 {
+			if args[2] != "--json" || len(args) > 3 {
+				fmt.Println("Usage: ssm check <name> [--json]")
+				os.Exit(1)
+			}
+			jsonFlag = true
+		}
+		unlock()
+		runCheck(args[1], jsonFlag)
 	case "put":
 		if len(args) != 4 {
 			fmt.Println("Usage: ssm put <name> <local> <remote>")

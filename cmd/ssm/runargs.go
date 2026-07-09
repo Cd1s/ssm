@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"ssm/internal/ssh"
 )
@@ -13,6 +14,7 @@ import (
 type remoteRunSpec struct {
 	Command string
 	Trace   bool
+	Timeout time.Duration // 0 = use DialTimeout()/env default
 }
 
 // parseRemoteRunArgs parses options and command parts after the host alias.
@@ -25,12 +27,14 @@ type remoteRunSpec struct {
 //	-s | --script                # read remote script from stdin (heredoc-friendly)
 //	-f <path> | --file <path>    # read remote script from a local file
 //	--trace | -v                 # print exact remote command line to stderr
+//	--timeout <dur>              # dial timeout (10s, 30, 1m); also SSM_TIMEOUT
 func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 	var (
 		raw       bool
 		fromStdin bool
 		filePath  string
 		trace     bool
+		timeout   time.Duration
 		parts     []string
 	)
 
@@ -44,6 +48,22 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 			raw = true
 		case arg == "--trace", arg == "-v":
 			trace = true
+		case arg == "--timeout":
+			if i+1 >= len(args) {
+				return remoteRunSpec{}, fmt.Errorf("--timeout requires a duration (e.g. 10s or 30)")
+			}
+			i++
+			d, err := parseCLITimeout(args[i])
+			if err != nil {
+				return remoteRunSpec{}, err
+			}
+			timeout = d
+		case strings.HasPrefix(arg, "--timeout="):
+			d, err := parseCLITimeout(strings.TrimPrefix(arg, "--timeout="))
+			if err != nil {
+				return remoteRunSpec{}, err
+			}
+			timeout = d
 		case arg == "-s", arg == "--script":
 			fromStdin = true
 		case arg == "-f", arg == "--file":
@@ -110,5 +130,34 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 	default:
 		cmd = ssh.JoinRemoteCommand(parts, raw)
 	}
-	return remoteRunSpec{Command: cmd, Trace: trace}, nil
+	return remoteRunSpec{Command: cmd, Trace: trace, Timeout: timeout}, nil
+}
+
+func parseCLITimeout(v string) (time.Duration, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0, fmt.Errorf("--timeout requires a duration (e.g. 10s or 30)")
+	}
+	if d, err := time.ParseDuration(v); err == nil {
+		if d <= 0 {
+			return 0, fmt.Errorf("--timeout must be positive")
+		}
+		return d, nil
+	}
+	var sec int
+	if _, err := fmt.Sscanf(v, "%d", &sec); err == nil && sec > 0 {
+		return time.Duration(sec) * time.Second, nil
+	}
+	return 0, fmt.Errorf("invalid --timeout %q (use 10s, 1m, or integer seconds)", v)
+}
+
+// applyRunSpecEnv applies per-invocation dial timeout / trace flags via env
+// so internal dialSSH/Exec can see them without threading context everywhere.
+func applyRunSpecEnv(spec remoteRunSpec) {
+	if spec.Trace {
+		_ = os.Setenv("SSM_TRACE", "1")
+	}
+	if spec.Timeout > 0 {
+		_ = os.Setenv("SSM_TIMEOUT", spec.Timeout.String())
+	}
 }

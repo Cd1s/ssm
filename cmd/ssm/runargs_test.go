@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseRemoteRunArgsSinglePassthrough(t *testing.T) {
@@ -55,6 +56,23 @@ func TestParseRemoteRunArgsTrace(t *testing.T) {
 	}
 	if !spec.Trace || spec.Command != "true" {
 		t.Fatalf("spec = %+v", spec)
+	}
+}
+
+func TestParseRemoteRunArgsTimeout(t *testing.T) {
+	spec, err := parseRemoteRunArgs([]string{"--timeout", "10s", "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Timeout != 10*time.Second || spec.Command != "true" {
+		t.Fatalf("spec = %+v", spec)
+	}
+	spec, err = parseRemoteRunArgs([]string{"--timeout=30", "hostname"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Timeout != 30*time.Second {
+		t.Fatalf("timeout = %v", spec.Timeout)
 	}
 }
 
