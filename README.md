@@ -18,11 +18,27 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 sshctl status
 sshctl list
 sshctl sync
-sshctl run <alias> 'hostname; uname -s'
+sshctl run <alias> hostname
+sshctl run <alias> bash -c 'echo "hello"'   # 多参数会自动 shell 转义，少踩引号坑
+sshctl run <alias> -s <<'EOF'               # 复杂脚本：heredoc，零引号问题
+echo "any quotes fine"
+EOF
+sshctl <alias> uname -sr                    # 类 SSH 简写：等价于 run
 sshctl shell <alias>
 sshctl put <alias> ./local-file /remote/file
 sshctl push
 ```
+
+### 远程命令与引号（给 agent / 脚本）
+
+| 写法 | 行为 | 适用 |
+|------|------|------|
+| `sshctl run host cmd arg1 arg2` | 每个参数单独 shell 转义后拼接 | 短命令、`bash -c '...'` |
+| `sshctl run host 'cmd; cmd2'` | 单个参数原样作为远程 shell 脚本 | 管道、`&&`、经典写法 |
+| `sshctl run host -s <<'EOF' ... EOF` | 从 stdin 读脚本 | 多行、任意引号 |
+| `sshctl run host -f script.sh` | 本地脚本文件内容在远端执行 | 可复用脚本 |
+| `sshctl run host --raw a b` | 仅空格拼接（OpenSSH 风格） | 需要 `ENV=1 cmd` 等兼容场景 |
+| `sshctl host cmd...` / `sshctl host` | 等价 `run` / `shell` | 更像 `ssh host` |
 
 ## 可选同步
 
@@ -75,7 +91,8 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 
 如果已有同步配置，把 master.pass 和 cloud.json 放到 /root/.config/ssm，并执行 chmod 600。
 然后执行 sshctl sync，用 sshctl status 和 sshctl list 验证。
-连接服务器使用 sshctl run <alias> '<command>'、sshctl shell <alias>、sshctl put <alias> <local> <remote>。
+连接服务器优先用 sshctl run <alias> <command...> 或多行 sshctl run <alias> -s <<'EOF' ... EOF（少踩引号坑）。
+也可用 sshctl shell <alias>、sshctl put <alias> <local> <remote>。
 ```
 
 项目内 agent skill 在 `skills/agent-ssm/SKILL.md`。

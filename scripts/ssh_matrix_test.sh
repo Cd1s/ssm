@@ -114,6 +114,46 @@ expect_output double_quote "double quoted" 'printf "%s" "double quoted"'
 expect_output nested_shell "nested:value" "SSM_MATRIX_VALUE=value sh -lc 'printf nested:\$SSM_MATRIX_VALUE'"
 expect_output pipe_redirect "6" "printf abcdef | wc -c | tr -d ' '"
 
+# Multi-arg mode shell-quotes each argv (agent-friendly bash -c).
+expect_output multi_arg_bash_c "hi there" bash -c 'printf %s "hi there"'
+expect_output multi_arg_spaces "hello world" printf %s "hello world"
+
+# SSH-like shorthand: sshctl <alias> <command...> (no "run" keyword).
+shorthand_got=$(run_sshctl local printf %s shorthand)
+if [ "$shorthand_got" != "shorthand" ]; then
+  echo "shorthand_run: got [$shorthand_got]" >&2
+  exit 1
+fi
+echo "ok shorthand_run"
+
+# --raw keeps classic OpenSSH space-join (breaks spaces in args on purpose).
+raw_got=$(run_sshctl run local --raw printf %s "raw-ok")
+if [ "$raw_got" != "raw-ok" ]; then
+  echo "raw: got [$raw_got]" >&2
+  exit 1
+fi
+echo "ok raw"
+
+# -s reads remote script from stdin (heredoc / agent-safe, no quote hell).
+script_got=$(run_sshctl run local -s <<'EOF'
+printf %s "script-ok"
+EOF
+)
+if [ "$script_got" != "script-ok" ]; then
+  echo "script_stdin: got [$script_got]" >&2
+  exit 1
+fi
+echo "ok script_stdin"
+
+# -f runs a local script file on the remote host.
+printf 'printf %%s "file-ok"\n' > "$TMP/remote_script.sh"
+file_got=$(run_sshctl run local -f "$TMP/remote_script.sh")
+if [ "$file_got" != "file-ok" ]; then
+  echo "script_file: got [$file_got]" >&2
+  exit 1
+fi
+echo "ok script_file"
+
 stdin_got=$(printf 'stdin-data' | run_sshctl run local "cat")
 if [ "$stdin_got" != "stdin-data" ]; then
   echo "stdin: got [$stdin_got]" >&2

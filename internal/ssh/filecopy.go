@@ -6,7 +6,6 @@ import (
 	"net"
 	"os"
 	"strconv"
-	"strings"
 
 	"golang.org/x/crypto/ssh"
 
@@ -79,13 +78,6 @@ func UploadFile(c config.Connection, v *config.Vault, localPath, remotePath stri
 }
 
 func uploadCommand(remotePath string, mode os.FileMode) string {
-	quotedPath := shellQuote(remotePath)
+	quotedPath := ShellQuote(remotePath)
 	return fmt.Sprintf("umask 077; cat > %s && chmod %04o %s", quotedPath, uint32(mode.Perm()), quotedPath)
-}
-
-func shellQuote(s string) string {
-	if s == "" {
-		return "''"
-	}
-	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }

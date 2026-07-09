@@ -1,5 +1,25 @@
 # Release Notes Draft
 
+## v1.0.8
+
+### Agent / quoting UX
+
+- Multi-argument `sshctl run` / `ssm exec` now shell-quotes each argv before remote join, so agent-style calls like `sshctl run host bash -c 'echo hi'` and args with spaces work without nested-quote gymnastics.
+- Single-argument commands still pass through as a remote shell script (existing behavior, OpenSSH-like).
+- Add `-s` / `--script` (stdin script, heredoc-friendly) and `-f` / `--file` (local script file) for complex remote work without quote hell.
+- Add `--raw` for classic space-join with no quoting (OpenSSH compatibility).
+- Add `--` end-of-options support.
+- SSH-like shorthand: `sshctl <alias> <command...>` runs a command; `sshctl <alias>` opens a shell. Known subcommands still take precedence.
+- `sshctl exec` and `ssm run` are aliases of `run` / `exec`.
+- Update agent skill and READMEs to recommend multi-arg and `-s` first.
+
+### Validation
+
+- `go test ./...`
+- `go test -race ./...`
+- `go build ./cmd/ssm`
+- `scripts/ssh_matrix_test.sh` (multi-arg, shorthand, `--raw`, `-s`, `-f`)
+
 ## v1.0.7
 
 ### Cleanup

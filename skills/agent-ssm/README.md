@@ -64,7 +64,12 @@ For pi-agent local installs, the skill directory is commonly:
 sshctl status
 sshctl sync
 sshctl list | grep -Ei '<alias-or-host-fragment>'
-sshctl run <exact-alias> 'hostname; uname -sr'
+sshctl run <exact-alias> hostname
+sshctl run <exact-alias> uname -sr
+# multi-line / any quotes — prefer heredoc over nested quotes:
+sshctl run <exact-alias> -s <<'EOF'
+hostname; uname -sr
+EOF
 ```
 
 For add/edit operations, use the guarded import workflow documented in `references/import-json.md`.

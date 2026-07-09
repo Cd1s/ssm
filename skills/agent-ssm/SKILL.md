@@ -1,7 +1,7 @@
 ---
 name: agent-ssm
-description: "Use when an agent manages SSH hosts with Cd1s/ssm: find exact aliases, add/edit/remove hosts safely, sync encrypted vaults, run sshctl commands, and never leak secrets."
-version: 1.4.0
+description: "Use when an agent manages SSH hosts with Cd1s/ssm: find exact aliases, add/edit/remove hosts safely, sync encrypted vaults, run sshctl commands without quote hell, and never leak secrets."
+version: 1.5.0
 metadata:
   hermes:
     tags: [ssh, ssm, servers, vault]
@@ -17,14 +17,66 @@ Facts: project `https://github.com/Cd1s/ssm`; vault `/root/.config/ssm/connectio
 
 Extra docs: `README.md`, `references/import-json.md`, `test-prompts.json`.
 
+## Prefer quote-safe remote commands
+
+Agents waste tokens on nested-quote failures. Use these patterns **in order**:
+
+### 1. Multi-arg (best for short commands)
+
+Each argv after the alias is shell-quoted before remote join (unlike raw OpenSSH join):
+
+```bash
+sshctl run <exact-alias> hostname
+sshctl run <exact-alias> uname -sr
+sshctl run <exact-alias> bash -c 'echo "hello world"'
+sshctl run <exact-alias> printf %s 'value with spaces'
+# SSH-like shorthand (same as run):
+sshctl <exact-alias> bash -c 'echo hi'
+```
+
+Do **not** wrap the whole remote line in extra outer quotes unless it is a **single** shell-script argument.
+
+### 2. Heredoc script (best for multi-line / any quotes)
+
+```bash
+sshctl run <exact-alias> -s <<'EOF'
+set -e
+cd /tmp
+echo "any quotes 'fine'"
+grep -R "pattern" .
+EOF
+```
+
+### 3. Local script file
+
+```bash
+sshctl run <exact-alias> -f ./remote-job.sh
+```
+
+### 4. Single shell-script string (classic)
+
+```bash
+sshctl run <exact-alias> 'hostname; uname -sr'
+```
+
+Avoid nesting `"` inside `"` or mixing layers. Prefer (1) or (2).
+
+OpenSSH-style unquoted join (only if you need it):
+
+```bash
+sshctl run <exact-alias> --raw ENV=1 true
+```
+
 ## Workflow
 
 ```bash
 sshctl status
 sshctl sync
 sshctl list | grep -Ei '<alias-or-host-fragment>'
-sshctl run <exact-alias> 'hostname; uname -sr'
+sshctl run <exact-alias> hostname
+sshctl run <exact-alias> uname -sr
 sshctl shell <exact-alias>
+# or: sshctl <exact-alias>   # opens shell
 sshctl put <exact-alias> ./local-file /remote/file
 ```
 
@@ -53,7 +105,7 @@ JSON
 ssm --master-pass-file ~/.config/ssm/master.pass import-json "$json" --merge --expect-count 1
 rm -f "$json"
 sshctl list | grep -Ei 'example-alias|203\.0\.113\.10'
-sshctl run example-alias 'hostname; uname -sr'
+sshctl run example-alias hostname
 sshctl push
 ```
 
@@ -83,7 +135,8 @@ Test aliases must be disposable: `zz-ssm-skill-test-*`.
 - print `master.pass`, `cloud.json`, private keys, passwords, tokens, or decrypted vault contents;
 - read/recreate old `servers.json`; the vault is source of truth;
 - use bare `ssh`, `sshpass`, `expect`, or prompt-guessing wrappers unless explicitly debugging outside SSM;
-- store inline private keys in chat, logs, or examples; prefer `private_key_path`.
+- store inline private keys in chat, logs, or examples; prefer `private_key_path`;
+- invent nested shell quotes when `-s` or multi-arg would work.
 
 ## Edge Rules
 
@@ -93,13 +146,13 @@ Test aliases must be disposable: `zz-ssm-skill-test-*`.
 
 ```bash
 ssh-keyscan -p <port> -t ed25519,rsa,ecdsa <host> >> ~/.ssh/known_hosts
-sshctl run <alias> 'hostname; uname -sr'
+sshctl run <alias> hostname
 ```
 
 ## Verify
 
 - `sshctl list` shows exact alias/host.
-- `sshctl run <alias> 'hostname; uname -sr'` succeeds.
+- `sshctl run <alias> hostname` succeeds.
 - `sshctl push` succeeds after changes.
 - cleanup removes test alias and same-name key.
 - `sshctl status` shows `vault=present`; sync is configured when used.

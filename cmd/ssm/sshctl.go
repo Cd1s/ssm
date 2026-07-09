@@ -53,12 +53,12 @@ func runSSHCTL(args []string) {
 		}
 		unlock()
 		runSSHCTLList()
-	case "run":
-		if len(args) < 3 {
+	case "run", "exec":
+		if len(args) < 2 {
 			sshctlUsageExit()
 		}
 		unlock()
-		runExec(args[1], strings.Join(args[2:], " "))
+		runSSHCTLRun(args[1], args[2:])
 	case "put":
 		if len(args) != 4 {
 			sshctlUsageExit()
@@ -80,9 +80,29 @@ func runSSHCTL(args []string) {
 	case "-h", "--help", "help":
 		sshctlUsage()
 	default:
-		fmt.Fprintf(os.Stderr, "sshctl: unknown command: %s\n", args[0])
+		// SSH-like shorthand: sshctl <alias> [command...]
+		// Known subcommands take precedence; host aliases that collide with
+		// subcommand names must use `sshctl run <alias> ...`.
+		unlock()
+		if len(args) == 1 {
+			runShell(args[0])
+			return
+		}
+		runSSHCTLRun(args[0], args[1:])
+	}
+}
+
+func runSSHCTLRun(alias string, cmdArgs []string) {
+	spec, err := parseRemoteRunArgs(cmdArgs)
+	if err != nil {
+		if err.Error() == "help" {
+			sshctlUsage()
+			os.Exit(0)
+		}
+		fmt.Fprintf(os.Stderr, "sshctl: %s\n", err)
 		sshctlUsageExit()
 	}
+	runExec(alias, spec.Command)
 }
 
 func runSSHCTLList() {
@@ -122,10 +142,29 @@ func sshctlUsage() {
   sshctl pull
   sshctl push
   sshctl list
+  sshctl status
+
+  # Run a remote command (SSH-like; preferred for agents)
   sshctl run <alias> <command...>
+  sshctl run <alias> -- <command...>
+  sshctl run <alias> --raw <command...>   # OpenSSH-style: join with spaces, no quoting
+  sshctl run <alias> -s                   # remote script from stdin (use with <<'EOF')
+  sshctl run <alias> -f <local-script>    # remote script from a local file
+  sshctl <alias> <command...>             # shorthand for: run <alias> <command...>
+  sshctl <alias>                          # shorthand for: shell <alias>
+
   sshctl put <alias> <local> <remote>
   sshctl shell <alias>
-  sshctl status
+  sshctl exec <alias> <command...>        # alias of run
+
+Quoting notes:
+  - One command argument is sent as a remote shell script (like classic SSH).
+  - Two or more arguments are each shell-quoted before join, so
+    sshctl run host bash -c 'echo hi' works without nested-quote pain.
+  - For multi-line or quote-heavy scripts, prefer -s with a quoted heredoc:
+      sshctl run host -s <<'EOF'
+      echo "any quotes fine"
+      EOF
 `)
 }
 

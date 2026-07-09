@@ -18,7 +18,7 @@ import (
 var (
 	masterPass     string
 	masterPassFile string
-	version        = "1.0.7"
+	version        = "1.0.8"
 )
 
 func main() {
@@ -70,7 +70,10 @@ Usage:
   ssm edit <name>      edit a connection
   ssm remove <name>    remove a connection
   ssm list [--json]    list all connections
-  ssm exec <name> <cmd> run a command on a remote server
+  ssm exec <name> <cmd...>  run a command on a remote server (agent-safe quoting)
+  ssm exec <name> -s        run a remote script from stdin (heredoc-friendly)
+  ssm exec <name> -f <file> run a local script file on the remote host
+  ssm run  <name> ...       alias of exec
   ssm put <name> <local> <remote> upload a local file to a remote server
   ssm keys             list saved SSH keys
   ssm keys add         add a new SSH key
@@ -145,13 +148,31 @@ Shortcuts (in TUI):
 		jsonFlag := len(args) > 1 && args[1] == "--json"
 		unlock()
 		runList(jsonFlag)
-	case "exec":
-		if len(args) < 3 {
-			fmt.Println("Usage: ssm exec <name> <command>")
+	case "exec", "run":
+		if len(args) < 2 {
+			fmt.Println("Usage: ssm exec <name> <command...>  |  ssm exec <name> -s  |  ssm exec <name> -f <file>")
 			os.Exit(1)
 		}
 		unlock()
-		runExec(args[1], strings.Join(args[2:], " "))
+		spec, err := parseRemoteRunArgs(args[2:])
+		if err != nil {
+			if err.Error() == "help" {
+				fmt.Print(`Usage:
+  ssm exec <name> <command...>
+  ssm exec <name> -- <command...>
+  ssm exec <name> --raw <command...>
+  ssm exec <name> -s                 # script from stdin
+  ssm exec <name> -f <local-script>  # script from file
+
+With 2+ command args, each arg is shell-quoted before remote join (agent-safe).
+With 1 command arg, it is passed through as a remote shell script.
+`)
+				return
+			}
+			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+			os.Exit(1)
+		}
+		runExec(args[1], spec.Command)
 	case "put":
 		if len(args) != 4 {
 			fmt.Println("Usage: ssm put <name> <local> <remote>")
