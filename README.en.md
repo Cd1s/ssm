@@ -16,35 +16,60 @@ The installer downloads the matching program from `Cd1s/ssm`, installs `/usr/loc
 
 ```bash
 sshctl status
-sshctl list
+sshctl list --json
 sshctl sync
+sshctl doctor <alias> --deep --json
+sshctl check <alias>
+
+# Single host (auto quote; connection reuse on by default)
 sshctl run <alias> hostname
-sshctl run <alias> bash -c 'echo "hello"'   # multi-arg is shell-quoted (fewer quote bugs)
-sshctl run <alias> -s <<'EOF'               # complex scripts: heredoc, zero quote pain
+sshctl run <alias> --json hostname
+sshctl plan <alias> bash -c 'echo hi'    # dry-run: remote_command + risk
+sshctl run <alias> --secret API_KEY=@./key.txt -- printenv API_KEY
+sshctl run <alias> -s <<'EOF'
 echo "any quotes fine"
 EOF
-sshctl <alias> uname -sr                    # SSH-like shorthand for run
-sshctl shell <alias>
-sshctl put <alias> ./local-file /remote/dir/file   # mkdir -p remote parents
-sshctl get <alias> /remote/file ./local-file       # download
-sshctl list --json
-sshctl check <alias>                    # agent triage: dial + hostname/uname
-sshctl run <alias> --timeout 10s true   # avoid hung dials
+
+# Parallel multi-host / multi-script fleet
+sshctl map limee-hk,aws-sg -j 8 hostname
+sshctl map 'limee-*' --json uname -s
+sshctl map host1,host2 --scripts a.sh,b.sh   # host×script jobs
+sshctl run host --scripts a.sh,b.sh          # parallel scripts on one host
+
+# File or directory trees
+sshctl put <alias> ./dir /remote/dir
+sshctl get <alias> /remote/dir ./dir
+
+# Migration soft-links
+sshctl redirect set old-alias limee-hk
+sshctl run old-alias hostname
+
 sshctl push
 ```
 
-On connection failure, stderr includes `ssm: error=dial_timeout|host_key_mismatch|alias_not_found|...` and exits **255** (distinct from remote exit codes). Prefer multi-arg or `-s` for scripts; do not re-quote when the error code is `dial_*`.
+Connection failures print `ssm: error=...` and exit **255**. Connection **reuse** is on by default (`SSM_REUSE=0` / `--no-reuse` to disable).
 
-### Remote command quoting (for agents / scripts)
+### Agent fleet: map (parallel)
+
+| Command | Meaning |
+|---------|---------|
+| `sshctl map a,b,c -j 8 cmd` | Up to 8 concurrent hosts |
+| `sshctl map 'web-*' hostname` | Shell-style alias globs |
+| `sshctl map h --scripts s1.sh,s2.sh` | Parallel scripts on one host |
+| `sshctl map a,b --scripts s1,s2` | host×script cartesian product |
+| `sshctl map ... --plan` / `--json` | Dry-run expand / structured results |
+
+One target failing does **not** drop other targets’ results.
+
+### Remote command quoting
 
 | Form | Behavior | Best for |
 |------|----------|----------|
-| `sshctl run host cmd arg1 arg2` | Each arg shell-quoted, then joined | Short commands, `bash -c '...'` |
-| `sshctl run host 'cmd; cmd2'` | Single arg passed as remote shell script | Pipes, `&&`, classic style |
-| `sshctl run host -s <<'EOF' ... EOF` | Script from stdin | Multi-line, any quotes |
-| `sshctl run host -f script.sh` | Local file content run remotely | Reusable scripts |
-| `sshctl run host --raw a b` | Space-join only (OpenSSH-style) | Compat cases like `ENV=1 cmd` |
-| `sshctl host cmd...` / `sshctl host` | Same as `run` / `shell` | Feels like `ssh host` |
+| `sshctl run host cmd arg1 arg2` | Per-arg shell quote | Short cmds, `bash -c` |
+| `sshctl run host -s <<'EOF'` | Stdin script | Multi-line / any quotes |
+| `sshctl run host --json cmd` | Structured result | Agents |
+| `sshctl plan host cmd` | Dry-run + risk | Confirm before exec |
+| `sshctl run host --secret K=v cmd` | Secret as remote env; redacted in plan/trace | Secrets |
 
 ## Optional Sync
 

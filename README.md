@@ -16,35 +16,61 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 
 ```bash
 sshctl status
-sshctl list
+sshctl list --json
 sshctl sync
+sshctl doctor <alias> --deep --json     # vault + 连通 + 远端健康
+sshctl check <alias>
+
+# 单机（多参数自动 quote；连接默认复用）
 sshctl run <alias> hostname
-sshctl run <alias> bash -c 'echo "hello"'   # 多参数会自动 shell 转义，少踩引号坑
-sshctl run <alias> -s <<'EOF'               # 复杂脚本：heredoc，零引号问题
+sshctl run <alias> --json hostname
+sshctl plan <alias> bash -c 'echo hi'   # 干跑：remote_command + risk，不连机
+sshctl run <alias> --secret API_KEY=@./key.txt -- printenv API_KEY
+sshctl run <alias> -s <<'EOF'
 echo "any quotes fine"
 EOF
-sshctl <alias> uname -sr                    # 类 SSH 简写：等价于 run
-sshctl shell <alias>
-sshctl put <alias> ./local-file /remote/dir/file   # 自动 mkdir -p 远端目录
-sshctl get <alias> /remote/file ./local-file       # 下载
-sshctl list --json
-sshctl check <alias>                    # agent 分诊：连通 + hostname/uname
-sshctl run <alias> --timeout 10s true   # 避免 dial 挂死
+
+# 并行：多机 / 多脚本（舰队）
+sshctl map limee-hk,aws-sg -j 8 hostname
+sshctl map 'limee-*' --json uname -s
+sshctl map host1,host2 --scripts a.sh,b.sh   # 每台×每个脚本并行
+sshctl run host --scripts a.sh,b.sh          # 单机多脚本并行
+
+# 文件与目录树
+sshctl put <alias> ./dir /remote/dir
+sshctl get <alias> /remote/dir ./dir
+
+# 迁移后旧名软链
+sshctl redirect set old-alias limee-hk
+sshctl run old-alias hostname
+
 sshctl push
 ```
 
-连接失败时 stderr 会带 `ssm: error=dial_timeout|host_key_mismatch|alias_not_found|...`，退出码 **255**（区别于远端命令的 exit code）。复杂脚本用 `-s` heredoc；不要在 `dial_*` 错误上反复改引号。
+连接失败 stderr：`ssm: error=dial_timeout|host_key_mismatch|alias_not_found|...`，退出码 **255**。默认 **连接复用**（`SSM_REUSE=0` / `--no-reuse` 关闭）。
 
-### 远程命令与引号（给 agent / 脚本）
+### Agent 舰队：map 并行
+
+| 命令 | 含义 |
+|------|------|
+| `sshctl map a,b,c -j 8 cmd` | 最多 8 路并行在 a/b/c 上跑同一命令 |
+| `sshctl map 'web-*' hostname` | shell 风格 glob 选 alias |
+| `sshctl map h --scripts s1.sh,s2.sh` | 单机多脚本并行 |
+| `sshctl map a,b --scripts s1,s2` | host×script 笛卡尔积并行 |
+| `sshctl map ... --plan` | 只展开目标与命令，不执行 |
+| `sshctl map ... --json` | 结果数组：`ok/exit/stdout/error/latency_ms` |
+
+某一台失败**不会**丢掉其它机器的结果；最终 exit 在有失败时非 0。
+
+### 远程命令与引号
 
 | 写法 | 行为 | 适用 |
 |------|------|------|
-| `sshctl run host cmd arg1 arg2` | 每个参数单独 shell 转义后拼接 | 短命令、`bash -c '...'` |
-| `sshctl run host 'cmd; cmd2'` | 单个参数原样作为远程 shell 脚本 | 管道、`&&`、经典写法 |
-| `sshctl run host -s <<'EOF' ... EOF` | 从 stdin 读脚本 | 多行、任意引号 |
-| `sshctl run host -f script.sh` | 本地脚本文件内容在远端执行 | 可复用脚本 |
-| `sshctl run host --raw a b` | 仅空格拼接（OpenSSH 风格） | 需要 `ENV=1 cmd` 等兼容场景 |
-| `sshctl host cmd...` / `sshctl host` | 等价 `run` / `shell` | 更像 `ssh host` |
+| `sshctl run host cmd arg1 arg2` | 每个参数 shell 转义后拼接 | 短命令、`bash -c` |
+| `sshctl run host -s <<'EOF'` | stdin 脚本 | 多行任意引号 |
+| `sshctl run host --json cmd` | 结构化结果 | agent 解析 |
+| `sshctl plan host cmd` | 干跑 + risk | 确认再执行 |
+| `sshctl run host --secret K=v cmd` | 密钥作远端 env，trace 脱敏 | 密钥不进 argv 展示 |
 
 ## 可选同步
 

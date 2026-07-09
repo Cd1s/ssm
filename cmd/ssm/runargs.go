@@ -4,37 +4,41 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"ssm/internal/ssh"
 )
 
-// remoteRunSpec is the resolved remote command for sshctl run / ssm exec.
+// remoteRunSpec is the resolved remote command for sshctl run / ssm exec / map / plan.
 type remoteRunSpec struct {
-	Command string
-	Trace   bool
-	Timeout time.Duration // 0 = use DialTimeout()/env default
+	Command  string
+	Trace    bool
+	Timeout  time.Duration
+	JSON     bool
+	Plan     bool
+	NoReuse  bool
+	Secrets  map[string]string
+	Workers  int
+	Scripts  []ssh.ScriptSpec // multi-script parallel (-f repeated or --scripts)
+	FromArgs bool             // command came from argv (not only scripts)
 }
 
-// parseRemoteRunArgs parses options and command parts after the host alias.
-//
-// Supported forms:
-//
-//	<command...>                 # multi-arg: argv-safe quoting; 1 arg: shell script
-//	-- <command...>              # same, after end-of-options
-//	--raw <command...>           # OpenSSH-style space join, no quoting
-//	-s | --script                # read remote script from stdin (heredoc-friendly)
-//	-f <path> | --file <path>    # read remote script from a local file
-//	--trace | -v                 # print exact remote command line to stderr
-//	--timeout <dur>              # dial timeout (10s, 30, 1m); also SSM_TIMEOUT
+// parseRemoteRunArgs parses options and command parts after the host alias
+// (or after map target list).
 func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 	var (
 		raw       bool
 		fromStdin bool
-		filePath  string
+		filePaths []string
 		trace     bool
 		timeout   time.Duration
+		jsonOut   bool
+		plan      bool
+		noReuse   bool
+		workers   int
+		secrets   = map[string]string{}
 		parts     []string
 	)
 
@@ -48,6 +52,28 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 			raw = true
 		case arg == "--trace", arg == "-v":
 			trace = true
+		case arg == "--json":
+			jsonOut = true
+		case arg == "--plan", arg == "--dry-run":
+			plan = true
+		case arg == "--no-reuse":
+			noReuse = true
+		case arg == "--jobs", arg == "-j", arg == "--parallel":
+			if i+1 >= len(args) {
+				return remoteRunSpec{}, fmt.Errorf("%s requires a number", arg)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 {
+				return remoteRunSpec{}, fmt.Errorf("invalid jobs value %q", args[i])
+			}
+			workers = n
+		case strings.HasPrefix(arg, "--jobs="):
+			n, err := strconv.Atoi(strings.TrimPrefix(arg, "--jobs="))
+			if err != nil || n < 1 {
+				return remoteRunSpec{}, fmt.Errorf("invalid --jobs value")
+			}
+			workers = n
 		case arg == "--timeout":
 			if i+1 >= len(args) {
 				return remoteRunSpec{}, fmt.Errorf("--timeout requires a duration (e.g. 10s or 30)")
@@ -64,6 +90,18 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 				return remoteRunSpec{}, err
 			}
 			timeout = d
+		case arg == "--secret", arg == "-e":
+			if i+1 >= len(args) {
+				return remoteRunSpec{}, fmt.Errorf("%s requires NAME=value or NAME=@path", arg)
+			}
+			i++
+			if err := parseSecretKV(args[i], secrets); err != nil {
+				return remoteRunSpec{}, err
+			}
+		case strings.HasPrefix(arg, "--secret="):
+			if err := parseSecretKV(strings.TrimPrefix(arg, "--secret="), secrets); err != nil {
+				return remoteRunSpec{}, err
+			}
 		case arg == "-s", arg == "--script":
 			fromStdin = true
 		case arg == "-f", arg == "--file":
@@ -71,11 +109,23 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 				return remoteRunSpec{}, fmt.Errorf("%s requires a path", arg)
 			}
 			i++
-			filePath = args[i]
+			filePaths = append(filePaths, args[i])
 		case strings.HasPrefix(arg, "--file="):
-			filePath = strings.TrimPrefix(arg, "--file=")
-			if filePath == "" {
+			p := strings.TrimPrefix(arg, "--file=")
+			if p == "" {
 				return remoteRunSpec{}, fmt.Errorf("--file requires a path")
+			}
+			filePaths = append(filePaths, p)
+		case arg == "--scripts":
+			if i+1 >= len(args) {
+				return remoteRunSpec{}, fmt.Errorf("--scripts requires comma-separated paths")
+			}
+			i++
+			for _, p := range strings.Split(args[i], ",") {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					filePaths = append(filePaths, p)
+				}
 			}
 		case arg == "-h", arg == "--help":
 			return remoteRunSpec{}, fmt.Errorf("help")
@@ -87,29 +137,26 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		}
 	}
 
-	sources := 0
-	if fromStdin {
-		sources++
-	}
-	if filePath != "" {
-		sources++
-	}
-	if len(parts) > 0 {
-		sources++
-	}
-	if sources == 0 {
-		return remoteRunSpec{}, fmt.Errorf("missing remote command (use args, -s/--script, or -f/--file)")
-	}
-	if sources > 1 {
-		return remoteRunSpec{}, fmt.Errorf("use only one of: command args, -s/--script, or -f/--file")
-	}
-	if raw && (fromStdin || filePath != "") {
-		return remoteRunSpec{}, fmt.Errorf("--raw cannot be combined with -s/--script or -f/--file")
+	var scripts []ssh.ScriptSpec
+	for _, p := range filePaths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return remoteRunSpec{}, fmt.Errorf("read script file %s: %w", p, err)
+		}
+		body := strings.TrimRight(string(data), "\r\n")
+		if strings.TrimSpace(body) == "" {
+			return remoteRunSpec{}, fmt.Errorf("script file is empty: %s", p)
+		}
+		scripts = append(scripts, ssh.ScriptSpec{Label: p, Body: body})
 	}
 
 	var cmd string
+	fromArgs := false
 	switch {
 	case fromStdin:
+		if len(scripts) > 0 || len(parts) > 0 {
+			return remoteRunSpec{}, fmt.Errorf("use only one of: command args, -s/--script, or -f/--file")
+		}
 		data, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return remoteRunSpec{}, fmt.Errorf("read stdin script: %w", err)
@@ -118,19 +165,60 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		if strings.TrimSpace(cmd) == "" {
 			return remoteRunSpec{}, fmt.Errorf("stdin script is empty")
 		}
-	case filePath != "":
-		data, err := os.ReadFile(filePath)
-		if err != nil {
-			return remoteRunSpec{}, fmt.Errorf("read script file: %w", err)
+	case len(parts) > 0:
+		if len(scripts) > 0 {
+			return remoteRunSpec{}, fmt.Errorf("use either command args or -f/--scripts, not both")
 		}
-		cmd = strings.TrimRight(string(data), "\r\n")
-		if strings.TrimSpace(cmd) == "" {
-			return remoteRunSpec{}, fmt.Errorf("script file is empty")
+		cmd = ssh.JoinRemoteCommand(parts, raw)
+		fromArgs = true
+	case len(scripts) == 1:
+		// classic single -f: body is the remote command
+		cmd = scripts[0].Body
+		scripts = nil
+	case len(scripts) > 1:
+		// multi-script parallel mode: bodies stay in Scripts
+		if raw {
+			return remoteRunSpec{}, fmt.Errorf("--raw cannot be combined with -f/--file")
 		}
 	default:
-		cmd = ssh.JoinRemoteCommand(parts, raw)
+		return remoteRunSpec{}, fmt.Errorf("missing remote command (use args, -s/--script, or -f/--file/--scripts)")
 	}
-	return remoteRunSpec{Command: cmd, Trace: trace, Timeout: timeout}, nil
+
+	if raw && fromStdin {
+		return remoteRunSpec{}, fmt.Errorf("--raw cannot be combined with -s/--script")
+	}
+
+	return remoteRunSpec{
+		Command:  cmd,
+		Trace:    trace,
+		Timeout:  timeout,
+		JSON:     jsonOut,
+		Plan:     plan,
+		NoReuse:  noReuse,
+		Secrets:  secrets,
+		Workers:  workers,
+		Scripts:  scripts,
+		FromArgs: fromArgs,
+	}, nil
+}
+
+func parseSecretKV(spec string, into map[string]string) error {
+	eq := strings.IndexByte(spec, '=')
+	if eq <= 0 {
+		return fmt.Errorf("secret must be NAME=value or NAME=@path")
+	}
+	name := spec[:eq]
+	val := spec[eq+1:]
+	if strings.HasPrefix(val, "@") {
+		path := val[1:]
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("secret file %s: %w", path, err)
+		}
+		val = strings.TrimRight(string(data), "\r\n")
+	}
+	into[name] = val
+	return nil
 }
 
 func parseCLITimeout(v string) (time.Duration, error) {
@@ -151,13 +239,14 @@ func parseCLITimeout(v string) (time.Duration, error) {
 	return 0, fmt.Errorf("invalid --timeout %q (use 10s, 1m, or integer seconds)", v)
 }
 
-// applyRunSpecEnv applies per-invocation dial timeout / trace flags via env
-// so internal dialSSH/Exec can see them without threading context everywhere.
 func applyRunSpecEnv(spec remoteRunSpec) {
 	if spec.Trace {
 		_ = os.Setenv("SSM_TRACE", "1")
 	}
 	if spec.Timeout > 0 {
 		_ = os.Setenv("SSM_TIMEOUT", spec.Timeout.String())
+	}
+	if spec.NoReuse {
+		_ = os.Setenv("SSM_REUSE", "0")
 	}
 }

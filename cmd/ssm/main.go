@@ -18,7 +18,7 @@ import (
 var (
 	masterPass     string
 	masterPassFile string
-	version        = "1.0.10"
+	version        = "1.1.0"
 )
 
 func main() {
@@ -70,13 +70,12 @@ Usage:
   ssm edit <name>      edit a connection
   ssm remove <name>    remove a connection
   ssm list [--json]    list all connections
-  ssm exec <name> <cmd...>  run a command on a remote server (agent-safe quoting)
-  ssm exec <name> -s        run a remote script from stdin (heredoc-friendly)
-  ssm exec <name> -f <file> run a local script file on the remote host
-  ssm run  <name> ...       alias of exec
-  ssm put <name> <local> <remote>  upload a local file (mkdir -p remote parent)
-  ssm get <name> <remote> <local>  download a remote file (mkdir -p local parent)
-  ssm check <name> [--json] agent triage: dial + hostname/uname
+  ssm exec/run <name> ...   remote command (--json/--plan/--secret/-s/-f)
+  ssm plan <name> ...       dry-run: show remote_command + risk (no dial)
+  ssm map <targets> ...     parallel multi-host/script fleet
+  ssm put/get               file or directory tree
+  ssm check/doctor          triage / deep health
+  ssm redirect list|set|rm  alias soft-links after migration
   ssm keys             list saved SSH keys
   ssm keys add         add a new SSH key
   ssm keys remove <n>  remove a SSH key
@@ -152,32 +151,44 @@ Shortcuts (in TUI):
 		runList(jsonFlag)
 	case "exec", "run":
 		if len(args) < 2 {
-			fmt.Println("Usage: ssm exec <name> <command...>  |  ssm exec <name> -s  |  ssm exec <name> -f <file>")
+			fmt.Println("Usage: ssm exec <name> <command...>")
 			os.Exit(1)
 		}
 		unlock()
 		spec, err := parseRemoteRunArgs(args[2:])
 		if err != nil {
-			if err.Error() == "help" {
-				fmt.Print(`Usage:
-  ssm exec <name> <command...>
-  ssm exec <name> -- <command...>
-  ssm exec <name> --raw <command...>
-  ssm exec <name> --trace <command...>
-  ssm exec <name> -s                 # script from stdin
-  ssm exec <name> -f <local-script>  # script from file
-
-With 2+ command args, each arg is shell-quoted before remote join (agent-safe).
-Leading NAME=value args become remote env assignments.
-With 1 command arg, it is passed through as a remote shell script.
-`)
-				return
-			}
 			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 			os.Exit(1)
 		}
-		applyRunSpecEnv(spec)
-		runExec(args[1], spec.Command)
+		if len(spec.Scripts) > 1 {
+			runMap([]string{args[1]}, spec)
+			return
+		}
+		if len(spec.Scripts) == 1 && spec.Command == "" {
+			spec.Command = spec.Scripts[0].Body
+			spec.Scripts = nil
+		}
+		runExecSpec(args[1], spec)
+	case "plan":
+		if len(args) < 2 {
+			fmt.Println("Usage: ssm plan <name> <command...>")
+			os.Exit(1)
+		}
+		unlock()
+		spec, err := parseRemoteRunArgs(args[2:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+			os.Exit(1)
+		}
+		spec.Plan = true
+		runExecSpec(args[1], spec)
+	case "map":
+		if len(args) < 2 {
+			fmt.Println("Usage: ssm map <targets> [options] <command...>")
+			os.Exit(1)
+		}
+		unlock()
+		runSSHCTLMap(args[1:])
 	case "check":
 		jsonFlag := false
 		if len(args) < 2 {
@@ -193,6 +204,13 @@ With 1 command arg, it is passed through as a remote shell script.
 		}
 		unlock()
 		runCheck(args[1], jsonFlag)
+	case "doctor":
+		unlock()
+		runSSHCTLDoctor(args[1:])
+	case "redirect", "alias-link":
+		// redirects are plaintext config; still unlock so path is consistent
+		unlock()
+		runRedirect(args[1:])
 	case "put":
 		if len(args) != 4 {
 			fmt.Println("Usage: ssm put <name> <local> <remote>")

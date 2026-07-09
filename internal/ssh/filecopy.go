@@ -3,12 +3,8 @@ package ssh
 import (
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
-	"strconv"
-
-	"golang.org/x/crypto/ssh"
 
 	"ssm/internal/config"
 )
@@ -32,7 +28,7 @@ func UploadFile(c config.Connection, v *config.Vault, localPath, remotePath stri
 	if err != nil {
 		return err
 	}
-	defer client.Close()
+	defer releaseClient(client, false)
 
 	session, err := client.NewSession()
 	if err != nil {
@@ -93,7 +89,7 @@ func DownloadFile(c config.Connection, v *config.Vault, remotePath, localPath st
 	if err != nil {
 		return err
 	}
-	defer client.Close()
+	defer releaseClient(client, false)
 
 	session, err := client.NewSession()
 	if err != nil {
@@ -119,29 +115,6 @@ func DownloadFile(c config.Connection, v *config.Vault, remotePath, localPath st
 	}
 	keepTemp = true // renamed into place; do not remove
 	return nil
-}
-
-func dialSSH(c config.Connection, v *config.Vault) (*ssh.Client, error) {
-	auth, err := buildAuth(c, v)
-	if err != nil {
-		return nil, ClassifyError(err, c)
-	}
-
-	port := c.Port
-	if port == 0 {
-		port = 22
-	}
-
-	client, err := ssh.Dial("tcp", net.JoinHostPort(c.Host, strconv.Itoa(port)), &ssh.ClientConfig{
-		User:            c.User,
-		Auth:            auth,
-		HostKeyCallback: buildHostKeyCallback(),
-		Timeout:         DialTimeout(),
-	})
-	if err != nil {
-		return nil, ClassifyError(err, c)
-	}
-	return client, nil
 }
 
 func uploadCommand(remotePath string, mode os.FileMode) string {

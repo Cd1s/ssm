@@ -198,6 +198,10 @@ func runRemove(name string) {
 }
 
 func runExec(name, cmd string) {
+	runExecSpec(name, remoteRunSpec{Command: cmd})
+}
+
+func runExecSpec(name string, spec remoteRunSpec) {
 	pullIfChanged()
 	v, err := config.Load(masterPass)
 	if err != nil {
@@ -205,11 +209,90 @@ func runExec(name, cmd string) {
 		os.Exit(1)
 	}
 
-	c, ok := findConnection(v, name)
+	c, resolved, ok := resolveConnection(v, name)
 	if !ok {
 		connectionNotFound(name, v)
 	}
-	os.Exit(ssh.Exec(c, v, cmd))
+	applyRunSpecEnv(spec)
+	res := ssh.Run(c, v, ssh.RunOptions{
+		Command:        spec.Command,
+		Secrets:        spec.Secrets,
+		Capture:        spec.JSON || spec.Plan,
+		PlanOnly:       spec.Plan,
+		NoReuse:        spec.NoReuse,
+		RequestedAlias: name,
+		ResolvedAlias:  resolved,
+	})
+	if spec.JSON || spec.Plan {
+		ssh.WriteRunResult(res, spec.JSON)
+		if spec.Plan {
+			os.Exit(0)
+		}
+		if !res.OK {
+			os.Exit(res.Exit)
+		}
+		os.Exit(0)
+	}
+	os.Exit(res.Exit)
+}
+
+func runMap(targetPatterns []string, spec remoteRunSpec) {
+	pullIfChanged()
+	v, err := config.Load(masterPass)
+	if err != nil {
+		printError(err)
+		os.Exit(1)
+	}
+	aliases, err := config.MatchAliases(v, targetPatterns)
+	if err != nil {
+		printError(err)
+		os.Exit(1)
+	}
+	if len(aliases) == 0 {
+		fmt.Fprintln(os.Stderr, "sshctl map: no targets matched")
+		os.Exit(2)
+	}
+	applyRunSpecEnv(spec)
+	workers := spec.Workers
+	if workers <= 0 {
+		workers = ssh.DefaultMapWorkers()
+	}
+	jobs := ssh.ExpandMapJobs(aliases, spec.Command, spec.Scripts, spec.Secrets)
+	if len(jobs) == 0 {
+		fmt.Fprintln(os.Stderr, "sshctl map: nothing to run")
+		os.Exit(2)
+	}
+	if spec.Plan {
+		// Plan: expand jobs and print without dialing.
+		var planned []ssh.RunResult
+		for _, j := range jobs {
+			c, resolved, ok := resolveConnection(v, j.RequestedAlias)
+			r := ssh.RunResult{
+				OK:            true,
+				Plan:          true,
+				Alias:         j.RequestedAlias,
+				ResolvedAlias: resolved,
+				RemoteCommand: ssh.RedactSecrets(ssh.BuildRemoteCommand(j.Command, j.Secrets), j.Secrets),
+				Risk:          ssh.AssessRisk(j.Command),
+				ScriptLabel:   j.ScriptLabel,
+			}
+			if ok {
+				r.User, r.Host, r.Port = c.User, c.Host, c.Port
+				if r.Port == 0 {
+					r.Port = 22
+				}
+			} else {
+				r.OK = false
+				r.Error = ssh.ErrCodeAliasNotFound
+			}
+			planned = append(planned, r)
+		}
+		ssh.WriteMapResults(planned, spec.JSON)
+		os.Exit(0)
+	}
+	results := ssh.Map(v, jobs, workers, spec.NoReuse)
+	ssh.WriteMapResults(results, spec.JSON)
+	os.Exit(ssh.MapExitCode(results))
 }
 
 func runShell(name string) {
@@ -220,7 +303,7 @@ func runShell(name string) {
 		os.Exit(1)
 	}
 
-	c, ok := findConnection(v, name)
+	c, _, ok := resolveConnection(v, name)
 	if !ok {
 		connectionNotFound(name, v)
 	}
@@ -238,11 +321,11 @@ func runPut(name, localPath, remotePath string) {
 		os.Exit(1)
 	}
 
-	c, ok := findConnection(v, name)
+	c, _, ok := resolveConnection(v, name)
 	if !ok {
 		connectionNotFound(name, v)
 	}
-	if err := ssh.UploadFile(c, v, localPath, remotePath); err != nil {
+	if err := ssh.UploadPath(c, v, localPath, remotePath); err != nil {
 		ssh.PrintAgentError(err, c)
 		os.Exit(ssh.ExitCodeFor(err))
 	}
@@ -256,11 +339,11 @@ func runGet(name, remotePath, localPath string) {
 		os.Exit(1)
 	}
 
-	c, ok := findConnection(v, name)
+	c, _, ok := resolveConnection(v, name)
 	if !ok {
 		connectionNotFound(name, v)
 	}
-	if err := ssh.DownloadFile(c, v, remotePath, localPath); err != nil {
+	if err := ssh.DownloadPath(c, v, remotePath, localPath); err != nil {
 		ssh.PrintAgentError(err, c)
 		os.Exit(ssh.ExitCodeFor(err))
 	}
@@ -274,24 +357,100 @@ func runCheck(name string, asJSON bool) {
 		os.Exit(1)
 	}
 
-	c, ok := findConnection(v, name)
+	c, resolved, ok := resolveConnection(v, name)
 	if !ok {
 		connectionNotFound(name, v)
 	}
 	res := ssh.Check(c, v)
+	res.Alias = name
+	if resolved != name {
+		// keep host fields from connection; alias shows request name
+	}
 	ssh.WriteCheckResult(res, asJSON)
 	if !res.OK {
 		os.Exit(ssh.ExitConnectionFailed)
 	}
 }
 
-func findConnection(v *config.Vault, name string) (config.Connection, bool) {
-	for _, c := range v.Connections {
-		if c.Name == name {
-			return c, true
-		}
+func runDoctor(alias string, deep, asJSON bool) {
+	pullIfChanged()
+	v, err := config.Load(masterPass)
+	if err != nil {
+		printError(err)
+		os.Exit(1)
 	}
-	return config.Connection{}, false
+	rep := ssh.Doctor(v, alias, deep)
+	ssh.WriteDoctorReport(rep, asJSON)
+	if !rep.OK {
+		os.Exit(ssh.ExitConnectionFailed)
+	}
+}
+
+func runRedirect(args []string) {
+	if len(args) == 0 {
+		fmt.Println("Usage: ssm redirect list|set <old> <new>|rm <old>")
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "list":
+		r := config.LoadRedirects()
+		if len(r) == 0 {
+			fmt.Println("(no redirects)")
+			return
+		}
+		// stable order
+		var keys []string
+		for k := range r {
+			keys = append(keys, k)
+		}
+		// simple sort
+		for i := 0; i < len(keys); i++ {
+			for j := i + 1; j < len(keys); j++ {
+				if keys[j] < keys[i] {
+					keys[i], keys[j] = keys[j], keys[i]
+				}
+			}
+		}
+		for _, k := range keys {
+			fmt.Printf("%s\t->\t%s\n", k, r[k])
+		}
+	case "set":
+		if len(args) != 3 {
+			fmt.Println("Usage: ssm redirect set <old-alias> <target-alias>")
+			os.Exit(2)
+		}
+		r := config.LoadRedirects()
+		r[args[1]] = args[2]
+		if err := config.SaveRedirects(r); err != nil {
+			printError(err)
+			os.Exit(1)
+		}
+		fmt.Printf("redirect %s -> %s\n", args[1], args[2])
+	case "rm", "remove":
+		if len(args) != 2 {
+			fmt.Println("Usage: ssm redirect rm <old-alias>")
+			os.Exit(2)
+		}
+		r := config.LoadRedirects()
+		delete(r, args[1])
+		if err := config.SaveRedirects(r); err != nil {
+			printError(err)
+			os.Exit(1)
+		}
+		fmt.Printf("removed redirect %s\n", args[1])
+	default:
+		fmt.Println("Usage: ssm redirect list|set <old> <new>|rm <old>")
+		os.Exit(2)
+	}
+}
+
+func resolveConnection(v *config.Vault, name string) (config.Connection, string, bool) {
+	return config.ResolveAlias(v, name)
+}
+
+func findConnection(v *config.Vault, name string) (config.Connection, bool) {
+	c, _, ok := resolveConnection(v, name)
+	return c, ok
 }
 
 func connectionNotFound(name string, v *config.Vault) {
@@ -307,7 +466,7 @@ func connectionNotFound(name string, v *config.Vault) {
 			fmt.Fprintf(os.Stderr, "Did you mean: %s\n", strings.Join(sug, ", "))
 		}
 	}
-	fmt.Fprintf(os.Stderr, "ssm: hint=use sshctl list --json; alias may have been renamed after migration\n")
+	fmt.Fprintf(os.Stderr, "ssm: hint=use sshctl list --json; or ssm redirect set <old> <new> after migration\n")
 	os.Exit(ssh.ExitConnectionFailed)
 }
 

@@ -1,7 +1,6 @@
 package ssh
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -43,56 +42,21 @@ func Check(c config.Connection, v *config.Vault) CheckResult {
 	}
 
 	start := time.Now()
-	client, err := dialSSH(c, v)
-	if err != nil {
-		ce := ClassifyError(err, c)
+	run := Run(c, v, RunOptions{Command: "hostname; uname -sr", Capture: true})
+	res.LatencyMS = time.Since(start).Milliseconds()
+	if !run.OK {
 		res.OK = false
-		res.Error = ce.Code
-		res.Hint = ce.Hint
-		res.LatencyMS = time.Since(start).Milliseconds()
+		res.Error = run.Error
+		if res.Error == "" {
+			res.Error = ErrCodeRemote
+		}
+		res.Hint = run.Hint
+		if run.Stderr != "" {
+			res.Hint = strings.TrimSpace(run.Stderr) + "; " + res.Hint
+		}
 		return res
 	}
-	defer client.Close()
-
-	session, err := client.NewSession()
-	if err != nil {
-		ce := ClassifyError(err, c)
-		res.OK = false
-		res.Error = ce.Code
-		if res.Error == ErrCodeInternal {
-			res.Error = ErrCodeSession
-		}
-		res.Hint = ce.Hint
-		if res.Hint == "" {
-			res.Hint = "SSH dial ok but session failed; remote sshd may be unhealthy"
-		}
-		res.LatencyMS = time.Since(start).Milliseconds()
-		return res
-	}
-	defer session.Close()
-
-	var stdout, stderr bytes.Buffer
-	session.Stdout = &stdout
-	session.Stderr = &stderr
-	// Single remote script: hostname + uname (classic one-arg form).
-	if err := session.Run("hostname; uname -sr"); err != nil {
-		ce := ClassifyError(err, c)
-		res.OK = false
-		res.Error = ErrCodeRemote
-		if ce != nil && ce.Code != ErrCodeInternal {
-			res.Error = ce.Code
-			res.Hint = ce.Hint
-		} else {
-			res.Hint = "connected but probe command failed; remote shell/OS may be broken"
-		}
-		if stderr.Len() > 0 {
-			res.Hint = strings.TrimSpace(stderr.String()) + "; " + res.Hint
-		}
-		res.LatencyMS = time.Since(start).Milliseconds()
-		return res
-	}
-
-	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	lines := strings.Split(strings.TrimSpace(run.Stdout), "\n")
 	if len(lines) >= 1 {
 		res.Hostname = strings.TrimSpace(lines[0])
 	}
@@ -100,7 +64,6 @@ func Check(c config.Connection, v *config.Vault) CheckResult {
 		res.Uname = strings.TrimSpace(lines[1])
 	}
 	res.OK = true
-	res.LatencyMS = time.Since(start).Milliseconds()
 	return res
 }
 

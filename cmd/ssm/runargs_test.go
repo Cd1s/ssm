@@ -117,6 +117,31 @@ func TestParseRemoteRunArgsFileEquals(t *testing.T) {
 	}
 }
 
+func TestParseRemoteRunArgsSecretAndPlan(t *testing.T) {
+	spec, err := parseRemoteRunArgs([]string{"--plan", "--secret", "TOKEN=abc", "printenv", "TOKEN"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !spec.Plan || spec.Secrets["TOKEN"] != "abc" {
+		t.Fatalf("%+v", spec)
+	}
+}
+
+func TestParseRemoteRunArgsMultiScripts(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.sh")
+	b := filepath.Join(dir, "b.sh")
+	_ = os.WriteFile(a, []byte("echo a\n"), 0600)
+	_ = os.WriteFile(b, []byte("echo b\n"), 0600)
+	spec, err := parseRemoteRunArgs([]string{"--scripts", a + "," + b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.Scripts) != 2 {
+		t.Fatalf("scripts=%d", len(spec.Scripts))
+	}
+}
+
 func TestParseRemoteRunArgsStdin(t *testing.T) {
 	r, w, err := os.Pipe()
 	if err != nil {

@@ -71,6 +71,21 @@ func runSSHCTL(args []string) {
 		}
 		unlock()
 		runSSHCTLRun(args[1], args[2:])
+	case "plan":
+		// sshctl plan <alias> <command...>
+		if len(args) < 2 {
+			sshctlUsageExit()
+		}
+		unlock()
+		runSSHCTLPlan(args[1], args[2:])
+	case "map":
+		// sshctl map <targets> [options] [--] <command...>
+		// targets: comma-separated aliases and/or globs
+		if len(args) < 2 {
+			sshctlUsageExit()
+		}
+		unlock()
+		runSSHCTLMap(args[1:])
 	case "check":
 		jsonFlag := false
 		switch len(args) {
@@ -85,6 +100,9 @@ func runSSHCTL(args []string) {
 		}
 		unlock()
 		runCheck(args[1], jsonFlag)
+	case "doctor":
+		unlock()
+		runSSHCTLDoctor(args[1:])
 	case "put":
 		if len(args) != 4 {
 			sshctlUsageExit()
@@ -97,6 +115,9 @@ func runSSHCTL(args []string) {
 		}
 		unlock()
 		runGet(args[1], args[2], args[3])
+	case "redirect", "alias-link":
+		unlock()
+		runRedirect(args[1:])
 	case "shell":
 		if len(args) != 2 {
 			sshctlUsageExit()
@@ -112,9 +133,6 @@ func runSSHCTL(args []string) {
 	case "-h", "--help", "help":
 		sshctlUsage()
 	default:
-		// SSH-like shorthand: sshctl <alias> [command...]
-		// Known subcommands take precedence; host aliases that collide with
-		// subcommand names must use `sshctl run <alias> ...`.
 		unlock()
 		if len(args) == 1 {
 			runShell(args[0])
@@ -134,8 +152,95 @@ func runSSHCTLRun(alias string, cmdArgs []string) {
 		fmt.Fprintf(os.Stderr, "sshctl: %s\n", err)
 		sshctlUsageExit()
 	}
-	applyRunSpecEnv(spec)
-	runExec(alias, spec.Command)
+	if len(spec.Scripts) > 1 {
+		// Multi-script on one host: use map
+		runMap([]string{alias}, spec)
+		return
+	}
+	if len(spec.Scripts) == 1 && spec.Command == "" {
+		spec.Command = spec.Scripts[0].Body
+		spec.Scripts = nil
+	}
+	runExecSpec(alias, spec)
+}
+
+func runSSHCTLPlan(alias string, cmdArgs []string) {
+	spec, err := parseRemoteRunArgs(cmdArgs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sshctl: %s\n", err)
+		sshctlUsageExit()
+	}
+	spec.Plan = true
+	if !spec.JSON {
+		// plan defaults to structured text; --json still works
+	}
+	runExecSpec(alias, spec)
+}
+
+func runSSHCTLMap(args []string) {
+	// First non-flag token(s) until options: allow
+	//   map host1,host2 -- cmd
+	//   map 'web-*' -j 4 hostname
+	//   map a,b --scripts s1.sh,s2.sh
+	if len(args) == 0 {
+		sshctlUsageExit()
+	}
+	// Collect targets until we hit a flag or --
+	var targets []string
+	i := 0
+	for ; i < len(args); i++ {
+		a := args[i]
+		if a == "--" || strings.HasPrefix(a, "-") {
+			break
+		}
+		targets = append(targets, a)
+	}
+	if len(targets) == 0 {
+		fmt.Fprintln(os.Stderr, "sshctl map: missing target alias/pattern")
+		sshctlUsageExit()
+	}
+	spec, err := parseRemoteRunArgs(args[i:])
+	if err != nil {
+		if err.Error() == "help" {
+			sshctlUsage()
+			os.Exit(0)
+		}
+		fmt.Fprintf(os.Stderr, "sshctl: %s\n", err)
+		sshctlUsageExit()
+	}
+	// Single -f becomes scripts for multi or command for one - already handled in parse
+	if len(spec.Scripts) == 0 && strings.TrimSpace(spec.Command) == "" {
+		fmt.Fprintln(os.Stderr, "sshctl map: missing command or --scripts")
+		sshctlUsageExit()
+	}
+	runMap(targets, spec)
+}
+
+func runSSHCTLDoctor(args []string) {
+	alias := ""
+	deep := false
+	asJSON := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			asJSON = true
+		case "--deep":
+			deep = true
+		case "-h", "--help":
+			sshctlUsage()
+			os.Exit(0)
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				fmt.Fprintf(os.Stderr, "sshctl doctor: unknown option %s\n", args[i])
+				sshctlUsageExit()
+			}
+			if alias != "" {
+				sshctlUsageExit()
+			}
+			alias = args[i]
+		}
+	}
+	runDoctor(alias, deep, asJSON)
 }
 
 func runSSHCTLList() {
@@ -147,6 +252,10 @@ func runSSHCTLList() {
 	}
 	for _, c := range v.Connections {
 		fmt.Printf("%s\t%s@%s:%d\n", c.Name, c.User, c.Host, c.Port)
+	}
+	r := config.LoadRedirects()
+	for old, neu := range r {
+		fmt.Printf("%s\t->\t%s\n", old, neu)
 	}
 }
 
@@ -166,46 +275,42 @@ func runSSHCTLStatus() {
 		cloudStatus = "configured"
 	}
 
-	fmt.Printf("hosts=%d\nvault=%s\nsync=%s\n", count, vaultStatus, cloudStatus)
+	fmt.Printf("hosts=%d\nvault=%s\nsync=%s\nredirects=%d\nreuse=%s\n",
+		count, vaultStatus, cloudStatus, len(config.LoadRedirects()), map[bool]string{true: "on", false: "off"}[os.Getenv("SSM_REUSE") != "0" && os.Getenv("SSM_REUSE") != "off"])
 }
 
 func sshctlUsage() {
 	fmt.Print(`Usage:
-  sshctl sync
-  sshctl pull
-  sshctl push
+  sshctl sync | pull | push
   sshctl list [--json]
   sshctl status
-  sshctl check <alias> [--json]           # agent triage: dial + hostname/uname
+  sshctl check <alias> [--json]
+  sshctl doctor [alias] [--deep] [--json]
 
-  # Run a remote command (SSH-like; preferred for agents)
+  # Single host (agent-safe quoting)
   sshctl run <alias> <command...>
-  sshctl run <alias> -- <command...>
-  sshctl run <alias> --raw <command...>   # OpenSSH-style: join with spaces, no quoting
-  sshctl run <alias> --trace <command...> # print exact remote command to stderr
-  sshctl run <alias> --timeout 10s ...    # dial timeout (or SSM_TIMEOUT=10s)
-  sshctl run <alias> -s                   # remote script from stdin (use with <<'EOF')
-  sshctl run <alias> -f <local-script>    # remote script from a local file
-  sshctl <alias> <command...>             # shorthand for: run <alias> <command...>
-  sshctl <alias>                          # shorthand for: shell <alias>
+  sshctl run <alias> --json <command...>
+  sshctl run <alias> --plan <command...>     # dry-run: show remote_command + risk
+  sshctl plan <alias> <command...>          # same as run --plan
+  sshctl run <alias> --secret NAME=val ...
+  sshctl run <alias> --secret NAME=@file ...
+  sshctl run <alias> --timeout 10s ...
+  sshctl run <alias> --no-reuse ...
+  sshctl run <alias> -s | -f script.sh
+  sshctl run <alias> --scripts a.sh,b.sh    # parallel scripts on one host
 
-  sshctl put <alias> <local> <remote>     # upload (creates remote parent dirs)
-  sshctl get <alias> <remote> <local>     # download (creates local parent dirs)
+  # Multi-host / multi-script parallel fleet
+  sshctl map <alias|pattern>[,more...] [options] <command...>
+  sshctl map 'web-*','api-*' -j 8 hostname
+  sshctl map host1,host2 --scripts s1.sh,s2.sh   # host×script jobs in parallel
+  sshctl map host --plan -j 4 'uname -s'
+
+  sshctl put <alias> <local> <remote>       # file or directory tree
+  sshctl get <alias> <remote> <local>
+  sshctl redirect list|set <old> <new>|rm <old>
   sshctl shell <alias>
-  sshctl exec <alias> <command...>        # alias of run
 
-Quoting notes:
-  - One command argument is sent as a remote shell script (like classic SSH).
-  - Two or more arguments are each shell-quoted before join, so
-    sshctl run host bash -c 'echo hi' works without nested-quote pain.
-  - Leading NAME=value args become remote env assignments:
-    sshctl run host FOO=bar printenv FOO
-  - For multi-line or quote-heavy scripts, prefer -s with a quoted heredoc:
-      sshctl run host -s <<'EOF'
-      echo "any quotes fine"
-      EOF
-  - SSM_TRACE=1 or --trace prints the exact remote command (debug quotes).
-  - Connection failures print ssm: error=<code> and exit 255 (not remote exit).
+Env: SSM_TRACE=1  SSM_TIMEOUT=10s  SSM_REUSE=0  SSM_FORWARD_STDIN=1
 `)
 }
 
