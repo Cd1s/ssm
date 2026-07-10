@@ -88,10 +88,10 @@ func Doctor(v *config.Vault, alias string, deep bool) DoctorReport {
 func deepProbe(c config.Connection, v *config.Vault) map[string]string {
 	// One remote script: collect a few health signals without being a monitoring suite.
 	script := strings.Join([]string{
-		`echo "uptime=$(uptime 2>/dev/null | tr -s ' ' | sed 's/^ //')"` ,
-		`echo "df_root=$(df -P / 2>/dev/null | awk 'NR==2{print $5" used of "$2}')"` ,
-		`echo "mem=$( (free -m 2>/dev/null || true) | awk '/Mem:/{print $3"/"$2"MB"}')"` ,
-		`echo "load=$(cat /proc/loadavg 2>/dev/null | awk '{print $1" "$2" "$3}')"` ,
+		`echo "uptime=$(uptime 2>/dev/null | tr -s ' ' | sed 's/^ //')"`,
+		`echo "df_root=$(df -P / 2>/dev/null | awk 'NR==2{print $5" used of "$2}')"`,
+		`echo "mem=$( (free -m 2>/dev/null || true) | awk '/Mem:/{print $3"/"$2"MB"}')"`,
+		`echo "load=$(cat /proc/loadavg 2>/dev/null | awk '{print $1" "$2" "$3}')"`,
 		`echo "shell=$(command -v bash || command -v sh || echo none)"`,
 	}, "; ")
 	res := Run(c, v, RunOptions{Command: script, Capture: true})
