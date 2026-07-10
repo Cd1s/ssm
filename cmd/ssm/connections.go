@@ -202,6 +202,10 @@ func runExec(name, cmd string) {
 }
 
 func runExecSpec(name string, spec remoteRunSpec) {
+	if len(spec.Scripts) > 1 {
+		runMap([]string{name}, spec)
+		return
+	}
 	pullIfChanged()
 	v, err := config.Load(masterPass)
 	if err != nil {
@@ -214,7 +218,7 @@ func runExecSpec(name string, spec remoteRunSpec) {
 		connectionNotFound(name, v)
 	}
 	applyRunSpecEnv(spec)
-	res := ssh.Run(c, v, ssh.RunOptions{
+	runOpts := ssh.RunOptions{
 		Command:        spec.Command,
 		Secrets:        spec.Secrets,
 		Capture:        spec.JSON || spec.Plan,
@@ -222,7 +226,16 @@ func runExecSpec(name string, spec remoteRunSpec) {
 		NoReuse:        spec.NoReuse,
 		RequestedAlias: name,
 		ResolvedAlias:  resolved,
-	})
+	}
+	if len(spec.Scripts) == 1 {
+		script := spec.Scripts[0]
+		runOpts.Command = ssh.BuildScriptRunner(script)
+		runOpts.Input = script.Body
+		runOpts.RiskCommand = script.Body
+		runOpts.Interpreter = script.Interpreter
+		runOpts.ScriptLabel = script.Label
+	}
+	res := ssh.Run(c, v, runOpts)
 	if spec.JSON || spec.Plan {
 		ssh.WriteRunResult(res, spec.JSON)
 		if spec.Plan {
@@ -267,14 +280,23 @@ func runMap(targetPatterns []string, spec remoteRunSpec) {
 		var planned []ssh.RunResult
 		for _, j := range jobs {
 			c, resolved, ok := resolveConnection(v, j.RequestedAlias)
+			remoteCommand := ssh.BuildRemoteCommand(j.Command, j.Secrets)
+			if j.Input != "" {
+				remoteCommand = ssh.BuildScriptRemoteCommand(j.Command, j.Secrets)
+			}
 			r := ssh.RunResult{
 				OK:            true,
 				Plan:          true,
 				Alias:         j.RequestedAlias,
 				ResolvedAlias: resolved,
-				RemoteCommand: ssh.RedactSecrets(ssh.BuildRemoteCommand(j.Command, j.Secrets), j.Secrets),
-				Risk:          ssh.AssessRisk(j.Command),
+				RemoteCommand: ssh.RedactSecrets(remoteCommand, j.Secrets),
+				Risk:          ssh.AssessRisk(firstNonEmpty(j.RiskCommand, j.Command)),
 				ScriptLabel:   j.ScriptLabel,
+				Interpreter:   j.Interpreter,
+				InputBytes:    len(j.Input),
+			}
+			if j.Input != "" {
+				r.ScriptSHA256 = ssh.ScriptDigest(j.Input)
 			}
 			if ok {
 				r.User, r.Host, r.Port = c.User, c.Host, c.Port

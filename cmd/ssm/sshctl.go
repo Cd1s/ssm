@@ -65,6 +65,9 @@ func runSSHCTL(args []string) {
 		} else {
 			runSSHCTLList()
 		}
+	case "host", "hosts":
+		unlock()
+		runHostCommand(args[1:])
 	case "run", "exec":
 		if len(args) < 2 {
 			sshctlUsageExit()
@@ -149,17 +152,12 @@ func runSSHCTLRun(alias string, cmdArgs []string) {
 			sshctlUsage()
 			os.Exit(0)
 		}
-		fmt.Fprintf(os.Stderr, "sshctl: %s\n", err)
-		sshctlUsageExit()
+		exitRemoteRunArgError("sshctl", alias, cmdArgs, err)
 	}
 	if len(spec.Scripts) > 1 {
 		// Multi-script on one host: use map
 		runMap([]string{alias}, spec)
 		return
-	}
-	if len(spec.Scripts) == 1 && spec.Command == "" {
-		spec.Command = spec.Scripts[0].Body
-		spec.Scripts = nil
 	}
 	runExecSpec(alias, spec)
 }
@@ -167,8 +165,11 @@ func runSSHCTLRun(alias string, cmdArgs []string) {
 func runSSHCTLPlan(alias string, cmdArgs []string) {
 	spec, err := parseRemoteRunArgs(cmdArgs)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "sshctl: %s\n", err)
-		sshctlUsageExit()
+		if err.Error() == "help" {
+			sshctlUsage()
+			os.Exit(0)
+		}
+		exitRemoteRunArgError("sshctl", alias, cmdArgs, err)
 	}
 	spec.Plan = true
 	if !spec.JSON {
@@ -196,8 +197,7 @@ func runSSHCTLMap(args []string) {
 		targets = append(targets, a)
 	}
 	if len(targets) == 0 {
-		fmt.Fprintln(os.Stderr, "sshctl map: missing target alias/pattern")
-		sshctlUsageExit()
+		exitRemoteRunArgError("sshctl map", "", args, fmt.Errorf("missing target alias/pattern"))
 	}
 	spec, err := parseRemoteRunArgs(args[i:])
 	if err != nil {
@@ -205,13 +205,11 @@ func runSSHCTLMap(args []string) {
 			sshctlUsage()
 			os.Exit(0)
 		}
-		fmt.Fprintf(os.Stderr, "sshctl: %s\n", err)
-		sshctlUsageExit()
+		exitRemoteRunArgError("sshctl map", strings.Join(targets, ","), args[i:], err)
 	}
 	// Single -f becomes scripts for multi or command for one - already handled in parse
 	if len(spec.Scripts) == 0 && strings.TrimSpace(spec.Command) == "" {
-		fmt.Fprintln(os.Stderr, "sshctl map: missing command or --scripts")
-		sshctlUsageExit()
+		exitRemoteRunArgError("sshctl map", strings.Join(targets, ","), args[i:], fmt.Errorf("missing command or --scripts"))
 	}
 	runMap(targets, spec)
 }
@@ -283,6 +281,7 @@ func sshctlUsage() {
 	fmt.Print(`Usage:
   sshctl sync | pull | push
   sshctl list [--json]
+  sshctl host list|show|add|update|upsert|remove ...
   sshctl status
   sshctl check <alias> [--json]
   sshctl doctor [alias] [--deep] [--json]
@@ -296,7 +295,9 @@ func sshctlUsage() {
   sshctl run <alias> --secret NAME=@file ...
   sshctl run <alias> --timeout 10s ...
   sshctl run <alias> --no-reuse ...
-  sshctl run <alias> -s | -f script.sh
+  sshctl run <alias> --argv <command> [args...]  # force literal argv mode
+  sshctl run <alias> -s [--shell sh|bash] [-- args...]
+  sshctl run <alias> -f script.sh [-- args...]   # script body goes over stdin
   sshctl run <alias> --scripts a.sh,b.sh    # parallel scripts on one host
 
   # Multi-host / multi-script parallel fleet

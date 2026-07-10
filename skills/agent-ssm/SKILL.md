@@ -1,62 +1,130 @@
 ---
 name: agent-ssm
-description: "Cd1s/ssm agent SSH: quote-safe run, parallel map fleet, plan/json/secrets, redirects, dir sync, doctor triage. Never leak secrets."
-version: 2.0.0
+description: "Manage SSH hosts through Cd1s/ssm: idempotent host CRUD, stdin script runner, literal argv, map/plan/json, sync verification, and structured triage without leaking secrets."
+version: 2.1.0
 metadata:
   hermes:
-    tags: [ssh, ssm, servers, vault, fleet, parallel]
+    tags: [ssh, ssm, servers, vault, fleet, scripts, automation]
 ---
 
-# Agent SSM (v1.1+)
+# Agent SSM (v1.2+)
 
-Requires **ssm ≥ 1.1.0**.
+Requires **ssm >= 1.2.0**.
 
-Rule: **exact alias → plan if unsure → map for multi-host → triage codes before re-quoting → never print secrets.**
+Rule: **exact alias -> local mutation -> verify -> explicit push; use argv for literals and stdin runner for shell syntax; never print secrets.**
 
-## Parallel fleet (preferred for multi-host / multi-script)
+## Inventory first
 
 ```bash
-sshctl map host1,host2,host3 -j 8 hostname
-sshctl map 'limee-*','aws-*' --json 'uname -s'
-sshctl map app --scripts deploy.sh,smoke.sh -j 4
-sshctl map a,b --scripts s1.sh,s2.sh --json   # 2 hosts × 2 scripts = 4 parallel jobs
-sshctl map targets --plan 'rm -rf /tmp/x'     # dry-run only
+sshctl status
+sshctl sync
+sshctl host list --json
+sshctl host show <exact-alias> --json
 ```
 
-One failure does not hide other hosts’ stdout. Exit non-zero if any job fails.
+Never guess an alias. If multiple entries match the user's description, ask which one.
 
-## Single host
+## Add or update a host
+
+Prefer retry-safe `upsert` for a complete host declaration:
 
 ```bash
-sshctl run <alias> --json hostname
-sshctl plan <alias> bash -c 'echo hi'          # remote_command + risk, no dial
-sshctl run <alias> --secret TOKEN=@./t -- printenv TOKEN
-sshctl run <alias> -s <<'EOF'
-set -e
-echo "quotes safe"
+sshctl host upsert <alias> \
+  --host <hostname-or-unbracketed-ip> --port 22 --user <user> \
+  --key-file </secure/private-key> --json
+```
+
+For a partial edit, use `update`; omitted fields and auth stay unchanged:
+
+```bash
+sshctl host update <alias> --port 2222 --group prod --json
+```
+
+Auth is exactly one of `--key <saved-name>`, `--key-file <path> [--key-name <name>]`, or `--password-file <path>`. Never use inline passwords or private keys. Do not use `import-json` for a single host on v1.2+.
+
+Mutations return `sync_pending:true` and remain local. Always verify before pushing:
+
+```bash
+sshctl host show <alias> --json
+sshctl check <alias> --json
+sshctl run <alias> --json --argv hostname
+sshctl push
+```
+
+If verification fails, do not push. Report the structured error and keep the local state available for correction.
+
+If remote refresh returns `sync_pull_failed`, stop. Use `--offline` only after the user accepts the risk of editing stale local inventory.
+
+## Run without quote failures
+
+Use explicit argv mode for literal commands and arguments, even for one word:
+
+```bash
+sshctl run <alias> --json --argv hostname
+sshctl run <alias> --json --argv printf '%s\n' "value with spaces and ' quotes"
+```
+
+Use the stdin runner for any generated script, shell operator, expansion, redirect, or multi-line operation:
+
+```bash
+sshctl run <alias> --json --shell bash -s -- first-arg <<'EOF'
+set -euo pipefail
+printf 'host=<%s> arg=<%s>\n' "$(hostname)" "$1"
 EOF
-sshctl run <alias> --scripts a.sh,b.sh         # parallel scripts on one host
 ```
 
-## Files / dirs / redirects / doctor
+For a local script file, executable permission is not required:
 
 ```bash
-sshctl put <alias> ./tree /remote/tree
-sshctl get <alias> /remote/tree ./tree
-sshctl redirect set old-name current-alias
-sshctl doctor <alias> --deep --json
-sshctl check <alias>
+sshctl plan <alias> --json --shell auto -f ./deploy.sh -- release-42
+sshctl run  <alias> --json --shell auto -f ./deploy.sh -- release-42
 ```
+
+The body travels over SSH stdin, not inside the remote command. SSM normalizes BOM/CRLF, validates the shell shebang, quotes script args, and reports `interpreter`, `stdin_bytes`, and `script_sha256` without returning the body. Never re-encode a generated script into `bash -c`.
+
+Pass secrets from files; they are exported only for the runner and redacted from plan/trace:
+
+```bash
+sshctl run <alias> --json --secret TOKEN=@/secure/token -f ./script.sh
+```
+
+## Parallel fleet
+
+```bash
+sshctl map host1,host2,host3 --json --argv hostname
+sshctl map 'web-*','api-*' -j 8 --json --argv uname -s
+sshctl map app --scripts deploy.sh,smoke.sh --json
+sshctl map a,b --scripts s1.sh,s2.sh --plan --json
+```
+
+One failure does not hide other results. Treat each result object's `ok`, `exit`, `error`, and `stderr` independently.
+
+## Remove a host
+
+Deletion requires user authorization unless the request already clearly authorizes that exact alias:
+
+```bash
+sshctl host remove <exact-alias> --yes --prune-key --json
+sshctl host list --json
+sshctl push
+```
+
+`--prune-key` removes the key only when no other host references it.
 
 ## Failure triage
 
-1. `sshctl doctor <alias>` or `check`
-2. `ssm: error=alias_not_found` → `list --json` or `redirect set`
-3. `dial_*` / `host_key_*` → environment (exit **255**), not quotes
-4. Only if check ok and output wrong → `--trace` / fix argv or use `-s`
+1. `alias_not_found` or `host_not_found`: refresh `host list --json`; do not guess.
+2. `dial_*`, `host_key_*`, or exit 255: network/identity/auth layer, not quoting.
+3. `interpreter_not_found`: retry a POSIX script with `--shell sh`, or report the missing requested shell.
+4. `remote_script_failed`: inspect captured `stderr`; the script reached the interpreter.
+5. Wrong argv/output after a successful check: use `--argv`, or move shell syntax into `-s/-f`.
+
+Use `sshctl doctor <alias> --deep --json` when the category is unclear.
 
 ## Never
 
-- print master.pass, cloud.json, private keys, passwords, `--secret` values
-- bare `ssh`/`sshpass` unless debugging outside SSM
-- re-quote after `dial_*` or `alias_not_found`
+- print or read aloud `master.pass`, `cloud.json`, private keys, passwords, tokens, or decrypted vault data;
+- place passwords/private keys inline or generate temporary import JSON for one host;
+- use bare `ssh`/`sshpass` for normal SSM work;
+- push a changed vault after host verification failed;
+- retry network, alias, or host-key errors by changing quotes.

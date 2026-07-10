@@ -97,8 +97,11 @@ func TestParseRemoteRunArgsFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.Command != body {
-		t.Fatalf("command = %q, want %q", spec.Command, body)
+	if spec.Command != "" || len(spec.Scripts) != 1 {
+		t.Fatalf("spec = %+v", spec)
+	}
+	if spec.Scripts[0].Body != body+"\n" || spec.Scripts[0].Interpreter != "sh" {
+		t.Fatalf("script = %+v", spec.Scripts[0])
 	}
 }
 
@@ -112,8 +115,8 @@ func TestParseRemoteRunArgsFileEquals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.Command != "true" {
-		t.Fatalf("command = %q", spec.Command)
+	if spec.Command != "" || len(spec.Scripts) != 1 || spec.Scripts[0].Body != "true\n" {
+		t.Fatalf("spec = %+v", spec)
 	}
 }
 
@@ -124,6 +127,24 @@ func TestParseRemoteRunArgsSecretAndPlan(t *testing.T) {
 	}
 	if !spec.Plan || spec.Secrets["TOKEN"] != "abc" {
 		t.Fatalf("%+v", spec)
+	}
+}
+
+func TestParseRemoteRunArgsRejectsInvalidSecretName(t *testing.T) {
+	for _, value := range []string{"1TOKEN=value", "BAD-NAME=value", "TOKEN"} {
+		if _, err := parseRemoteRunArgs([]string{"--secret", value, "true"}); err == nil {
+			t.Fatalf("accepted invalid secret %q", value)
+		}
+	}
+}
+
+func TestParseRemoteRunArgsRejectsNULSecretFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(path, []byte("before\x00after"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseRemoteRunArgs([]string{"--secret", "TOKEN=@" + path, "true"}); err == nil {
+		t.Fatal("accepted a NUL secret")
 	}
 }
 
@@ -160,7 +181,39 @@ func TestParseRemoteRunArgsStdin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.Command != "echo stdin-script" {
+	if spec.Command != "" || len(spec.Scripts) != 1 || spec.Scripts[0].Body != "echo stdin-script\n" {
+		t.Fatalf("spec = %+v", spec)
+	}
+}
+
+func TestParseRemoteRunArgsScriptShellAndArgs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "script.sh")
+	if err := os.WriteFile(path, []byte("#!/usr/bin/env bash\r\nprintf '%s\\n' \"$1\"\r\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := parseRemoteRunArgs([]string{"--shell", "auto", "-f", path, "--", "hello ' world"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.Scripts) != 1 {
+		t.Fatalf("scripts = %d", len(spec.Scripts))
+	}
+	script := spec.Scripts[0]
+	if script.Interpreter != "bash" || len(script.Args) != 1 || script.Args[0] != "hello ' world" {
+		t.Fatalf("script = %+v", script)
+	}
+	if strings.Contains(script.Body, "\r") {
+		t.Fatalf("CRLF was not normalized: %q", script.Body)
+	}
+}
+
+func TestParseRemoteRunArgsArgvQuotesSingleArgument(t *testing.T) {
+	spec, err := parseRemoteRunArgs([]string{"--argv", "name with spaces"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Command != "'name with spaces'" {
 		t.Fatalf("command = %q", spec.Command)
 	}
 }

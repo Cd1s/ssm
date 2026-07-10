@@ -1,189 +1,145 @@
-# SSM import-json and server modification details
+# SSM host management and guarded bulk import
 
-This reference records the verified headless workflow for adding, editing, testing, and removing SSM servers.
+Use the first-class `sshctl host` commands for single-host changes on SSM 1.2 and later. `import-json` remains a migration/bulk-replacement interface, not the normal agent CRUD path.
 
-## Non-interactive add/edit command
+## Unlock behavior
 
-Use this shape for one-host add/edit operations:
+`sshctl` reads the vault passphrase from `SSM_MASTER_PASS_FILE` or, by default, `~/.config/ssm/master.pass`. For `ssm`, pass the file globally:
 
 ```bash
-ssm --master-pass-file ~/.config/ssm/master.pass import-json "$json" --merge --expect-count 1
+ssm --master-pass-file ~/.config/ssm/master.pass host list --json
 ```
 
-Why:
+Never put the master passphrase in argv or output.
 
-- `--master-pass-file` avoids `/dev/tty` unlock failures in agent/non-TTY sessions.
-- `--merge` prevents replacing the entire vault.
-- `--expect-count 1` fails early if the JSON did not decode exactly one connection.
-
-## Private key add example
+## Inventory
 
 ```bash
-alias='new-server'
-host='203.0.113.10'
-key='/root/new-server.key'
-chmod 600 "$key"
+sshctl host list --json
+sshctl host show <exact-alias> --json
+```
 
-json=$(mktemp)
-cat > "$json" <<JSON
-{
-  "servers": [
-    {
-      "alias": "$alias",
-      "host": "$host",
-      "port": 22,
-      "user": "root",
-      "private_key_path": "$key"
-    }
-  ]
-}
-JSON
+Host JSON includes address, port, user, group, auth type, and saved key name. It never includes password or private-key material.
 
-ssm --master-pass-file ~/.config/ssm/master.pass import-json "$json" --merge --expect-count 1
-rm -f "$json"
-sshctl list | grep -Ei "$alias|$host"
-sshctl run "$alias" 'hostname; uname -sr'
+## Retry-safe add/upsert
+
+Private key:
+
+```bash
+stat -c 'key_file=%n mode=%a size=%s' /secure/new-server.key
+sshctl host upsert new-server \
+  --host 203.0.113.10 --port 22 --user root --group prod \
+  --key-file /secure/new-server.key --json
+```
+
+Password:
+
+```bash
+sshctl host upsert new-server \
+  --host 203.0.113.10 --port 22 --user root \
+  --password-file /secure/new-server.password --json
+```
+
+Existing saved key:
+
+```bash
+sshctl host upsert new-server \
+  --host 203.0.113.10 --port 22 --user root \
+  --key deploy-key --json
+```
+
+Rules:
+
+- New aliases match `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`.
+- Host is a hostname or unbracketed IP, without `user@`, URL scheme, path, or whitespace.
+- Port is 1-65535; default is 22.
+- New hosts require exactly one auth source.
+- `--key-file` validates an unencrypted SSH private key before saving it in the encrypted vault.
+- No password or private-key value is accepted inline.
+- Repeating the same upsert returns `action:"unchanged"` and does not duplicate entries or keys.
+
+When a default key name already contains different material, SSM fails with `key_conflict` instead of overwriting it. Choose a distinct encrypted-vault name:
+
+```bash
+sshctl host upsert new-server \
+  --host 203.0.113.10 --user root \
+  --key-file /secure/new-server.key --key-name new-server-2026 --json
+```
+
+## Partial update
+
+Only provided fields change:
+
+```bash
+sshctl host update existing-server --host 203.0.113.20 --port 2222 --json
+sshctl host update existing-server --group= --json
+```
+
+Omitting auth preserves it. Supplying a new auth source switches auth atomically:
+
+```bash
+sshctl host update existing-server --key-file /secure/replacement.key --json
+sshctl host update existing-server --password-file /secure/replacement.password --json
+```
+
+SSM refuses to overwrite a key shared by another host. Use `--key-name` to create a separate saved key.
+
+## Verify, then push
+
+Host mutations require a successful remote refresh, save locally, and return `sync_pending:true`. They intentionally do not use silent auto-push. A refresh failure returns `sync_pull_failed` before writing; use `--offline` only when stale local state is explicitly acceptable.
+
+```bash
+sshctl host show <alias> --json
+sshctl check <alias> --json
+sshctl run <alias> --json --argv hostname
+sshctl run <alias> --json --argv uname -sr
 sshctl push
 ```
 
-Do not print the private key. If the chat/platform redacts a pasted private key, ask the user to save it to a local file and give the path. Verify with:
+Do not push when verification fails. Correct the local host entry or report the structured failure first.
+
+## Remove
+
+After authorization for the exact alias:
 
 ```bash
-stat -c 'key_file=%n mode=%a size=%s' /path/to/private.key
-```
-
-## Password auth example
-
-```json
-{
-  "servers": [
-    {
-      "alias": "new-server",
-      "host": "203.0.113.10",
-      "port": 22,
-      "user": "root",
-      "auth_type": "password",
-      "password": "..."
-    }
-  ]
-}
-```
-
-## Modify an existing server
-
-Import the same `alias` with updated fields and `--merge`:
-
-```bash
-alias='existing-server'
-json=$(mktemp)
-cat > "$json" <<'JSON'
-{
-  "servers": [
-    {
-      "alias": "existing-server",
-      "host": "203.0.113.20",
-      "port": 2222,
-      "user": "root",
-      "private_key_path": "/root/existing-server.key"
-    }
-  ]
-}
-JSON
-ssm --master-pass-file ~/.config/ssm/master.pass import-json "$json" --merge --expect-count 1
-rm -f "$json"
-sshctl list | grep -Ei 'existing-server|203\.0\.113\.20'
-sshctl run "$alias" 'hostname; uname -sr'
+sshctl host remove <alias> --yes --prune-key --json
+sshctl host list --json
 sshctl push
 ```
 
-Merge behavior from source: connections are keyed by `Connection.Name`; keys are keyed by `SSHKey.Name`. Imported same-name entries replace existing ones; other entries are preserved.
+`--prune-key` removes only a key with zero remaining host references. Without it, keys are retained.
 
-## Remove a server
-
-```bash
-alias='server-to-remove'
-ssm --master-pass-file ~/.config/ssm/master.pass remove "$alias"
-```
-
-If the server was added by one-host import-json with a private key, the generated key name is normally the alias; remove it too if present:
+## Temporary test lifecycle
 
 ```bash
-if ssm --master-pass-file ~/.config/ssm/master.pass keys | grep -F "  $alias " >/dev/null; then
-  ssm --master-pass-file ~/.config/ssm/master.pass keys remove "$alias"
-fi
-sshctl list | grep -F "$alias" && echo 'ERROR still present' || echo 'removed'
-sshctl push
+alias='zz-ssm-skill-test-demo'
+
+sshctl host upsert "$alias" \
+  --host 203.0.113.50 --user root \
+  --key-file /secure/test.key --json
+sshctl check "$alias" --json
+
+sshctl host remove "$alias" --yes --prune-key --json
+sshctl host list --json
 ```
 
-## Temporary test-add-cleanup pattern
+Push only if the user wants the temporary lifecycle reflected remotely. If add and remove occur before any push, the final vault may already match remote state.
 
-Use a clearly disposable alias:
+## Guarded legacy bulk import
+
+Use `import-json` only for a reviewed migration or for SSM versions older than 1.2. For a one-entry compatibility import, `--merge` and `--expect-count 1` are mandatory:
 
 ```bash
-alias='zz-ssm-skill-test-greencloud'
-host='203.0.113.50'
-key='/root/greencloud'
-
-chmod 600 "$key"
-backup="/tmp/ssm-vault-before-test-$(date +%s).enc"
-cp /root/.config/ssm/connections.enc "$backup"
-chmod 600 "$backup"
-
-json=$(mktemp)
-cat > "$json" <<JSON
-{
-  "servers": [
-    {
-      "alias": "$alias",
-      "host": "$host",
-      "port": 22,
-      "user": "root",
-      "private_key_path": "$key"
-    }
-  ]
-}
-JSON
-ssm --master-pass-file ~/.config/ssm/master.pass import-json "$json" --merge --expect-count 1
-rm -f "$json"
-sshctl list | grep -Ei "$alias|$host"
-sshctl run "$alias" 'hostname; uname -sr'
-sshctl push
-
-ssm --master-pass-file ~/.config/ssm/master.pass remove "$alias"
-if ssm --master-pass-file ~/.config/ssm/master.pass keys | grep -F "  $alias " >/dev/null; then
-  ssm --master-pass-file ~/.config/ssm/master.pass keys remove "$alias"
-fi
-sshctl list | grep -F "$alias" && echo 'ERROR still present' || echo 'removed'
-sshctl push
-sshctl status
+ssm --master-pass-file ~/.config/ssm/master.pass \
+  import-json /secure/host.json --merge --expect-count 1
 ```
 
-The backup is only for emergency local restore; normal cleanup should use `ssm remove` + `ssm keys remove` and push.
+Accepted shapes are an array, `{ "servers": [...] }`, `{ "servers": { "alias": {...} } }`, or a raw alias map. Supported auth fields include `password`, `private_key`, `private_key_path`, and `key_path`.
 
-## Accepted import JSON shapes
+Important boundaries:
 
-`import-json` accepts:
-
-1. Array of server objects.
-2. Object with `servers` array.
-3. Object with `servers` map; map key becomes alias if item lacks alias.
-4. Raw map; map key becomes alias if item lacks alias.
-
-## Supported import fields
-
-- `alias`, `host_alias`, `name`: connection name priority is alias → host_alias → name.
-- `host`: required.
-- `port`: integer or numeric string; default 22.
-- `user`: required.
-- `auth_type`: use `password` for password auth.
-- `password`: password material.
-- `private_key`: inline key material; avoid in chat/logs.
-- `private_key_path` / `key_path`: local private key file path; preferred.
-- `notes`: parsed but current vault schema does not store it.
-
-## Pitfalls
-
-- Bare `ssm import-json file.json` defaults to replace. Fucking dangerous for one-host changes.
-- `SSM_MASTER_PASS=...` is fine for older `sshctl` compatibility but not the right way for `ssm import-json`; use `--master-pass-file`.
-- `sshctl sync` is pull. After local changes use `sshctl push`.
-- Removing a connection does not necessarily remove its saved SSH key; remove same-name key when it was created only for the deleted connection.
+- Bare `ssm import-json file.json` defaults to full replacement and must not be used for a single-host edit.
+- Inline secrets in JSON can leak through temp files or logs; path-based material is safer.
+- Import merge resolves conflicts by connection/key name, with imported values winning.
+- Import does not provide the field-preserving update and key-sharing guards of `sshctl host`.

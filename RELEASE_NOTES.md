@@ -1,5 +1,30 @@
 # Release Notes Draft
 
+## v1.2.0
+
+### Agent-safe host management
+
+- Add `sshctl host list/show/add/update/upsert/remove` (also `ssm host`) with stable JSON, strict validation, exact-alias semantics, and retry-safe `upsert` (`changed:false` on a no-op retry).
+- Read SSH passwords and new private keys only from `--password-file` / `--key-file`; validate private keys before vault writes and never return credential material in JSON.
+- Prevent accidental overwrite of unrelated/shared saved keys. `remove --prune-key` deletes a key only after its last host reference is gone.
+- Stage host changes locally with `sync_pending:true`; verification happens before an explicit `sshctl push`, whose failures are observable.
+- Stop before mutation when a configured remote refresh fails (`sync_pull_failed`); `--offline` is an explicit stale-state override.
+
+### Script and quote reliability
+
+- `-s`, `-f`, and `--scripts` now send bodies through SSH stdin to a fixed shell runner instead of embedding generated text in the SSH exec command.
+- Normalize UTF-8 BOM and CRLF, reject NUL and scripts over 16 MiB, select `sh/bash/dash/ash/ksh/zsh` from shebang or `--shell`, and pass arguments after `--` with exact POSIX quoting.
+- Script plan/JSON output reports `interpreter`, `stdin_bytes`, and `script_sha256` without exposing the body. Failures distinguish `interpreter_not_found` from `remote_script_failed`.
+- Add explicit `--argv` mode so even a single argument is treated literally; legacy single-string shell behavior remains compatible.
+- Validate `--secret` environment names and export script secrets into the interpreter environment while keeping plan/trace redacted.
+- Return structured `invalid_arguments` JSON with exit 2 when `--json` parsing fails, instead of mixing machine output with a usage page.
+
+### Validation
+
+- `go test ./...`, `go test -race ./...`, `go vet ./...`, and cross-platform builds.
+- Real local-shell runner test covers BOM/CRLF, nested single/double quotes, exact args, and secret export.
+- Isolated encrypted-vault CLI smoke covers host create, unchanged upsert, partial update, show, remove, and JSON errors.
+
 ## v1.1.0
 
 ### Agent fleet features (items 1–8)

@@ -1,6 +1,9 @@
 package ssh
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestBuildRemoteCommandSecrets(t *testing.T) {
 	cmd := BuildRemoteCommand("printenv TOKEN", map[string]string{"TOKEN": "s3cret"})
@@ -20,6 +23,17 @@ func TestRedactSecrets(t *testing.T) {
 	}
 }
 
+func TestRedactShortSecretDoesNotCorruptCommand(t *testing.T) {
+	full := BuildScriptRemoteCommand("exec 'bash' '-s' '--'", map[string]string{"TOKEN": "a"})
+	got := RedactSecrets(full, map[string]string{"TOKEN": "a"})
+	if strings.Contains(got, "TOKEN='a'") {
+		t.Fatalf("secret leaked: %q", got)
+	}
+	if !strings.Contains(got, "bash") {
+		t.Fatalf("short secret corrupted command: %q", got)
+	}
+}
+
 func TestAssessRisk(t *testing.T) {
 	if AssessRisk("hostname") != "low" {
 		t.Fatal("hostname should be low")
@@ -31,11 +45,14 @@ func TestAssessRisk(t *testing.T) {
 
 func TestExpandMapJobsMultiScript(t *testing.T) {
 	jobs := ExpandMapJobs([]string{"h1", "h2"}, "", []ScriptSpec{
-		{Label: "a.sh", Body: "echo a"},
-		{Label: "b.sh", Body: "echo b"},
+		{Label: "a.sh", Body: "echo a\n", Interpreter: "sh"},
+		{Label: "b.sh", Body: "echo b\n", Interpreter: "sh"},
 	}, nil)
 	if len(jobs) != 4 {
 		t.Fatalf("want 4 jobs, got %d", len(jobs))
+	}
+	if jobs[0].Input != "echo a\n" || !strings.Contains(jobs[0].Command, "exec 'sh' '-s' '--'") {
+		t.Fatalf("job did not use stdin runner: %+v", jobs[0])
 	}
 }
 

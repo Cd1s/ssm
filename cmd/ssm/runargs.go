@@ -11,6 +11,8 @@ import (
 	"ssm/internal/ssh"
 )
 
+const maxSecretBytes = 1 << 20
+
 // remoteRunSpec is the resolved remote command for sshctl run / ssm exec / map / plan.
 type remoteRunSpec struct {
 	Command  string
@@ -40,6 +42,9 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		workers   int
 		secrets   = map[string]string{}
 		parts     []string
+		shell     string
+		argvMode  bool
+		afterDash bool
 	)
 
 	for i := 0; i < len(args); i++ {
@@ -47,9 +52,12 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		switch {
 		case arg == "--":
 			parts = args[i+1:]
+			afterDash = true
 			i = len(args)
 		case arg == "--raw":
 			raw = true
+		case arg == "--argv":
+			argvMode = true
 		case arg == "--trace", arg == "-v":
 			trace = true
 		case arg == "--json":
@@ -102,6 +110,16 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 			if err := parseSecretKV(strings.TrimPrefix(arg, "--secret="), secrets); err != nil {
 				return remoteRunSpec{}, err
 			}
+		case arg == "--shell", arg == "--interpreter":
+			if i+1 >= len(args) {
+				return remoteRunSpec{}, fmt.Errorf("%s requires a shell name", arg)
+			}
+			i++
+			shell = args[i]
+		case strings.HasPrefix(arg, "--shell="):
+			shell = strings.TrimPrefix(arg, "--shell=")
+		case strings.HasPrefix(arg, "--interpreter="):
+			shell = strings.TrimPrefix(arg, "--interpreter=")
 		case arg == "-s", arg == "--script":
 			fromStdin = true
 		case arg == "-f", arg == "--file":
@@ -137,55 +155,74 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		}
 	}
 
-	var scripts []ssh.ScriptSpec
-	for _, p := range filePaths {
-		data, err := os.ReadFile(p)
-		if err != nil {
-			return remoteRunSpec{}, fmt.Errorf("read script file %s: %w", p, err)
-		}
-		body := strings.TrimRight(string(data), "\r\n")
-		if strings.TrimSpace(body) == "" {
-			return remoteRunSpec{}, fmt.Errorf("script file is empty: %s", p)
-		}
-		scripts = append(scripts, ssh.ScriptSpec{Label: p, Body: body})
+	if (fromStdin || len(filePaths) > 0) && (raw || argvMode) {
+		return remoteRunSpec{}, fmt.Errorf("--raw/--argv cannot be combined with a script source")
 	}
 
 	var cmd string
+	var scripts []ssh.ScriptSpec
 	fromArgs := false
 	switch {
 	case fromStdin:
-		if len(scripts) > 0 || len(parts) > 0 {
-			return remoteRunSpec{}, fmt.Errorf("use only one of: command args, -s/--script, or -f/--file")
+		if len(filePaths) > 0 {
+			return remoteRunSpec{}, fmt.Errorf("use only one of -s/--script or -f/--file/--scripts")
 		}
-		data, err := io.ReadAll(os.Stdin)
+		if len(parts) > 0 && !afterDash {
+			return remoteRunSpec{}, fmt.Errorf("put script arguments after --")
+		}
+		data, err := io.ReadAll(io.LimitReader(os.Stdin, ssh.MaxScriptBytes+1))
 		if err != nil {
 			return remoteRunSpec{}, fmt.Errorf("read stdin script: %w", err)
 		}
-		cmd = strings.TrimRight(string(data), "\r\n")
-		if strings.TrimSpace(cmd) == "" {
-			return remoteRunSpec{}, fmt.Errorf("stdin script is empty")
+		script, err := ssh.PrepareScript("<stdin>", data, shell, parts)
+		if err != nil {
+			return remoteRunSpec{}, fmt.Errorf("stdin script: %w", err)
 		}
+		scripts = append(scripts, script)
 	case len(parts) > 0:
-		if len(scripts) > 0 {
-			return remoteRunSpec{}, fmt.Errorf("use either command args or -f/--scripts, not both")
+		if len(filePaths) > 0 {
+			if !afterDash {
+				return remoteRunSpec{}, fmt.Errorf("put script arguments after --")
+			}
+			for _, p := range filePaths {
+				data, err := readScriptFile(p)
+				if err != nil {
+					return remoteRunSpec{}, fmt.Errorf("read script file %s: %w", p, err)
+				}
+				script, err := ssh.PrepareScript(p, data, shell, parts)
+				if err != nil {
+					return remoteRunSpec{}, fmt.Errorf("script file %s: %w", p, err)
+				}
+				scripts = append(scripts, script)
+			}
+			break
 		}
-		cmd = ssh.JoinRemoteCommand(parts, raw)
+		if shell != "" {
+			return remoteRunSpec{}, fmt.Errorf("--shell/--interpreter requires -s, -f, or --scripts")
+		}
+		if raw && argvMode {
+			return remoteRunSpec{}, fmt.Errorf("use only one of --raw or --argv")
+		}
+		if argvMode {
+			cmd = ssh.JoinRemoteArgv(parts)
+		} else {
+			cmd = ssh.JoinRemoteCommand(parts, raw)
+		}
 		fromArgs = true
-	case len(scripts) == 1:
-		// classic single -f: body is the remote command
-		cmd = scripts[0].Body
-		scripts = nil
-	case len(scripts) > 1:
-		// multi-script parallel mode: bodies stay in Scripts
-		if raw {
-			return remoteRunSpec{}, fmt.Errorf("--raw cannot be combined with -f/--file")
+	case len(filePaths) > 0:
+		for _, p := range filePaths {
+			data, err := readScriptFile(p)
+			if err != nil {
+				return remoteRunSpec{}, fmt.Errorf("read script file %s: %w", p, err)
+			}
+			script, err := ssh.PrepareScript(p, data, shell, nil)
+			if err != nil {
+				return remoteRunSpec{}, fmt.Errorf("script file %s: %w", p, err)
+			}
+			scripts = append(scripts, script)
 		}
 	default:
 		return remoteRunSpec{}, fmt.Errorf("missing remote command (use args, -s/--script, or -f/--file/--scripts)")
-	}
-
-	if raw && fromStdin {
-		return remoteRunSpec{}, fmt.Errorf("--raw cannot be combined with -s/--script")
 	}
 
 	return remoteRunSpec{
@@ -208,17 +245,46 @@ func parseSecretKV(spec string, into map[string]string) error {
 		return fmt.Errorf("secret must be NAME=value or NAME=@path")
 	}
 	name := spec[:eq]
+	if !ssh.ValidEnvName(name) {
+		return fmt.Errorf("invalid secret environment name %q", name)
+	}
 	val := spec[eq+1:]
 	if strings.HasPrefix(val, "@") {
 		path := val[1:]
-		data, err := os.ReadFile(path)
+		data, err := readLimitedFile(path, maxSecretBytes)
 		if err != nil {
 			return fmt.Errorf("secret file %s: %w", path, err)
 		}
 		val = strings.TrimRight(string(data), "\r\n")
 	}
+	if len(val) > maxSecretBytes {
+		return fmt.Errorf("secret value exceeds %d bytes", maxSecretBytes)
+	}
+	if strings.IndexByte(val, 0) >= 0 {
+		return fmt.Errorf("secret value contains a NUL byte")
+	}
 	into[name] = val
 	return nil
+}
+
+func readScriptFile(path string) ([]byte, error) {
+	return readLimitedFile(path, ssh.MaxScriptBytes)
+}
+
+func readLimitedFile(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("file exceeds %d bytes", limit)
+	}
+	return data, nil
 }
 
 func parseCLITimeout(v string) (time.Duration, error) {
@@ -249,4 +315,24 @@ func applyRunSpecEnv(spec remoteRunSpec) {
 	if spec.NoReuse {
 		_ = os.Setenv("SSM_REUSE", "0")
 	}
+}
+
+func exitRemoteRunArgError(tool, alias string, args []string, err error) {
+	if hasJSONFlag(args) {
+		ssh.WriteRunResult(ssh.RunResult{
+			OK:    false,
+			Alias: alias,
+			Exit:  2,
+			Error: "invalid_arguments",
+			Hint:  redactError(err),
+		}, true)
+		os.Exit(2)
+	}
+	if alias != "" {
+		fmt.Fprintf(os.Stderr, "%s: error=invalid_arguments alias=%s\n", tool, alias)
+	} else {
+		fmt.Fprintf(os.Stderr, "%s: error=invalid_arguments\n", tool)
+	}
+	fmt.Fprintf(os.Stderr, "%s: %s\n", tool, redactError(err))
+	os.Exit(2)
 }

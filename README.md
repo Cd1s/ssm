@@ -21,12 +21,20 @@ sshctl sync
 sshctl doctor <alias> --deep --json     # vault + 连通 + 远端健康
 sshctl check <alias>
 
-# 单机（多参数自动 quote；连接默认复用）
-sshctl run <alias> hostname
+# 无头主机管理（变更先保存在本地，验证后显式 push）
+sshctl host list --json
+sshctl host upsert prod-api --host 203.0.113.10 --user root --port 22 --key-file /secure/prod-api.key --json
+sshctl host update prod-api --port 2222 --json
+sshctl host show prod-api --json
+sshctl check prod-api
+sshctl push
+
+# 单机（字面 argv 或 stdin 脚本；连接默认复用）
+sshctl run <alias> --argv hostname
 sshctl run <alias> --json hostname
 sshctl plan <alias> bash -c 'echo hi'   # 干跑：remote_command + risk，不连机
 sshctl run <alias> --secret API_KEY=@./key.txt -- printenv API_KEY
-sshctl run <alias> -s <<'EOF'
+sshctl run <alias> --shell bash -s <<'EOF'
 echo "any quotes fine"
 EOF
 
@@ -49,6 +57,20 @@ sshctl push
 
 连接失败 stderr：`ssm: error=dial_timeout|host_key_mismatch|alias_not_found|...`，退出码 **255**。默认 **连接复用**（`SSM_REUSE=0` / `--no-reuse` 关闭）。
 
+### Agent 主机管理
+
+| 命令 | 行为 |
+|------|------|
+| `sshctl host list/show ... --json` | 返回不含密码/私钥的结构化 inventory |
+| `sshctl host add ...` | 仅新增；别名已存在时失败 |
+| `sshctl host update ...` | 仅修改显式给出的字段；主机不存在时失败 |
+| `sshctl host upsert ...` | 幂等声明；重复执行返回 `changed:false`，适合 agent 重试 |
+| `sshctl host remove ... --yes` | 显式确认后删除；`--prune-key` 只清理已无引用的 key |
+
+新增主机必须提供 `--host`、`--user` 和一种认证方式：`--key <已保存名称>`、`--key-file <路径>` 或 `--password-file <路径>`。密码和私钥不接受 inline 参数，JSON 结果只显示 `auth`/`key_name`。`upsert` 修改已有主机时，未提供认证参数会保留原认证。
+
+结构化 host 变更会先确认远端 vault 已刷新，再原子保存到本机，并返回 `sync_pending:true`；远端检查失败会在写入前以 `sync_pull_failed` 停止。只有明确接受本地数据可能过期时才使用 `--offline`。变更不会静默 auto-push：先执行 `sshctl check` 或只读 `run` 验证，再显式执行 `sshctl push`，同步错误会有可靠的非零退出码。
+
 ### Agent 舰队：map 并行
 
 | 命令 | 含义 |
@@ -66,11 +88,15 @@ sshctl push
 
 | 写法 | 行为 | 适用 |
 |------|------|------|
-| `sshctl run host cmd arg1 arg2` | 每个参数 shell 转义后拼接 | 短命令、`bash -c` |
-| `sshctl run host -s <<'EOF'` | stdin 脚本 | 多行任意引号 |
+| `sshctl run host --argv cmd arg1` | 始终逐参数 shell 转义，单参数也不例外 | agent 生成的字面 argv |
+| `sshctl run host cmd arg1 arg2` | 多参数自动逐项转义；单字符串保留旧 shell 行为 | 兼容旧调用 |
+| `sshctl run host -s <<'EOF'` | 正文从 SSH stdin 送入固定 `sh -s` runner | 多行、管道、重定向、任意引号 |
+| `sshctl run host --shell bash -f x.sh -- arg` | shebang/显式 shell + 精确脚本参数 | Bash 脚本、生成脚本 |
 | `sshctl run host --json cmd` | 结构化结果 | agent 解析 |
 | `sshctl plan host cmd` | 干跑 + risk | 确认再执行 |
-| `sshctl run host --secret K=v cmd` | 密钥作远端 env，trace 脱敏 | 密钥不进 argv 展示 |
+| `sshctl run host --secret K=@file cmd` | 密钥作远端 env，trace 脱敏 | 密钥不进 argv 展示 |
+
+`-s`、`-f` 和 `--scripts` 不要求本地文件有执行权限，也不会把脚本文本嵌进 SSH command。SSM 会移除 UTF-8 BOM、统一 CRLF、拒绝 NUL/超大脚本，并根据 shell shebang 自动选择 `sh/bash/dash/ash/ksh/zsh`；无 shebang 默认 `sh`。`--plan/--json` 返回 `interpreter`、`stdin_bytes`、`script_sha256`，不回显脚本正文。
 
 ## 可选同步
 
@@ -82,7 +108,7 @@ ssm login --server <sync-server-url> --email <email> --password-file <sync-passw
 sshctl sync
 ```
 
-中心服务器只保存加密 vault blob，不解密 SSH 密码或私钥。`sshctl list/run/shell/status` 和 `ssm list/exec/shell` 会在读取 vault 前检测远端 ETag；远端有新版本时会自动拉取。本地新增、编辑、删除连接后默认自动推送；也可以手动执行 `sshctl push`。
+中心服务器只保存加密 vault blob，不解密 SSH 密码或私钥。`sshctl list/run/shell/status` 和 `ssm list/exec/shell` 会在读取 vault 前检测远端 ETag；远端有新版本时会自动拉取。TUI 变更遵循 auto-sync 设置；面向 agent 的 `sshctl host` 变更故意留在本地，验证后用 `sshctl push` 明确同步。
 
 ## 中心服务器
 
@@ -123,8 +149,9 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 
 如果已有同步配置，把 master.pass 和 cloud.json 放到 /root/.config/ssm，并执行 chmod 600。
 然后执行 sshctl sync，用 sshctl status 和 sshctl list 验证。
-连接服务器优先用 sshctl run <alias> <command...> 或多行 sshctl run <alias> -s <<'EOF' ... EOF（少踩引号坑）。
-也可用 sshctl shell <alias>、sshctl put <alias> <local> <remote>。
+新增/修改服务器用 sshctl host upsert/update ... --json；认证只从 --key-file/--password-file 读取。先 check，再 push。
+字面参数用 sshctl run <alias> --argv <command> [args...]；含 shell 语法或多行内容用 sshctl run <alias> -s <<'EOF' ... EOF。
+不要把生成脚本塞进 bash -c，也不要自行嵌套引号。也可用 sshctl shell、put、get。
 ```
 
 项目内 agent skill 在 `skills/agent-ssm/SKILL.md`。

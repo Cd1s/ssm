@@ -83,17 +83,23 @@ mkdir -p "$TMP/home/.config/ssm"
 printf 'test-master\n' > "$TMP/home/.config/ssm/master.pass"
 chmod 600 "$TMP/home/.config/ssm/master.pass"
 
-key_json=$(awk 'BEGIN{printf ""}{gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); printf "%s\\n", $0}' "$TMP/client_key")
-cat > "$TMP/import.json" <<EOF
-[{"alias":"local","host":"127.0.0.1","port":$PORT,"user":"root","auth_type":"key","private_key":"$key_json"}]
-EOF
-
-HOME="$TMP/home" SSM_UPDATE_REPO=off "$BIN" --master-pass-file "$TMP/home/.config/ssm/master.pass" import-json "$TMP/import.json" >/dev/null
+host_created=$(HOME="$TMP/home" SSM_UPDATE_REPO=off "$BIN" --master-pass-file "$TMP/home/.config/ssm/master.pass" \
+  host upsert local --host 127.0.0.1 --port "$PORT" --user root --key-file "$TMP/client_key" --json)
+printf '%s' "$host_created" | grep -q '"action": "created"' || { echo "host create: $host_created" >&2; exit 1; }
 ln -s "$BIN" "$TMP/sshctl"
 
 run_sshctl() {
   HOME="$TMP/home" SSM_UPDATE_REPO=off "$TMP/sshctl" "$@"
 }
+
+host_unchanged=$(run_sshctl host upsert local --host 127.0.0.1 --port "$PORT" --user root --key-file "$TMP/client_key" --json)
+printf '%s' "$host_unchanged" | grep -q '"action": "unchanged"' || { echo "host upsert retry: $host_unchanged" >&2; exit 1; }
+printf '%s' "$host_unchanged" | grep -q '"sync_pending": true' || { echo "host sync state: $host_unchanged" >&2; exit 1; }
+host_updated=$(run_sshctl host update local --group matrix --json)
+printf '%s' "$host_updated" | grep -q '"action": "updated"' || { echo "host update: $host_updated" >&2; exit 1; }
+host_show=$(run_sshctl host show local --json)
+printf '%s' "$host_show" | grep -q '"auth": "key"' || { echo "host show: $host_show" >&2; exit 1; }
+echo "ok host_crud"
 
 expect_output() {
   local name=$1
@@ -117,6 +123,11 @@ expect_output pipe_redirect "6" "printf abcdef | wc -c | tr -d ' '"
 # Multi-arg mode shell-quotes each argv (agent-friendly bash -c).
 expect_output multi_arg_bash_c "hi there" bash -c 'printf %s "hi there"'
 expect_output multi_arg_spaces "hello world" printf %s "hello world"
+expect_output explicit_argv "hello world" --argv printf %s "hello world"
+
+argv_plan=$(run_sshctl plan local --json --argv hostname)
+printf '%s' "$argv_plan" | grep -q "'hostname'" || { echo "argv plan: $argv_plan" >&2; exit 1; }
+echo "ok argv_plan"
 
 # SSH-like shorthand: sshctl <alias> <command...> (no "run" keyword).
 shorthand_got=$(run_sshctl local printf %s shorthand)
@@ -145,14 +156,35 @@ if [ "$script_got" != "script-ok" ]; then
 fi
 echo "ok script_stdin"
 
-# -f runs a local script file on the remote host.
-printf 'printf %%s "file-ok"\n' > "$TMP/remote_script.sh"
-file_got=$(run_sshctl run local -f "$TMP/remote_script.sh")
-if [ "$file_got" != "file-ok" ]; then
+# -f normalizes BOM/CRLF, detects bash, exports secrets, and preserves args.
+printf '\357\273\277#!/usr/bin/env bash\r\nprintf "%%s|%%s" "$1" "$TOKEN"\r\n' > "$TMP/remote_script.sh"
+printf %s "token with 'single' and spaces" > "$TMP/token"
+file_got=$(run_sshctl run local --secret TOKEN=@"$TMP/token" --shell auto -f "$TMP/remote_script.sh" -- "file arg")
+if [ "$file_got" != "file arg|token with 'single' and spaces" ]; then
   echo "script_file: got [$file_got]" >&2
   exit 1
 fi
 echo "ok script_file"
+
+script_plan=$(run_sshctl plan local --json --shell auto -f "$TMP/remote_script.sh" -- "file arg")
+printf '%s' "$script_plan" | grep -q '"interpreter": "bash"' || { echo "script plan: $script_plan" >&2; exit 1; }
+printf '%s' "$script_plan" | grep -q '"script_sha256"' || { echo "script plan digest: $script_plan" >&2; exit 1; }
+if printf '%s' "$script_plan" | grep -Fq 'printf "%s|%s"'; then
+  echo "script plan leaked body: $script_plan" >&2
+  exit 1
+fi
+echo "ok script_plan"
+
+printf '#!/bin/sh\nexit 9\n' > "$TMP/fail_script.sh"
+set +e
+script_fail=$(run_sshctl run local --json -f "$TMP/fail_script.sh")
+script_fail_rc=$?
+set -e
+if [ "$script_fail_rc" != "9" ] || ! printf '%s' "$script_fail" | grep -q '"error": "remote_script_failed"'; then
+  echo "script failure: rc=$script_fail_rc out=[$script_fail]" >&2
+  exit 1
+fi
+echo "ok script_failure_code"
 
 stdin_got=$(printf 'stdin-data' | run_sshctl run local "cat")
 if [ "$stdin_got" != "stdin-data" ]; then

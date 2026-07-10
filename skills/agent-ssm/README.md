@@ -20,7 +20,7 @@ Use this skill when an agent needs to:
 - SSH credentials stay in the local encrypted vault.
 - Sync servers only store opaque encrypted vault blobs.
 - Agents must use exact aliases instead of guessing hostnames.
-- One-host imports must use `--merge` and `--expect-count` to avoid replacing the vault.
+- Single-host changes use idempotent `sshctl host upsert/update`; bulk legacy imports remain guarded.
 - Secrets such as `master.pass`, private keys, passwords, tokens, and decrypted vault contents must never be printed.
 
 ## Quick start
@@ -63,16 +63,15 @@ For pi-agent local installs, the skill directory is commonly:
 ```bash
 sshctl status
 sshctl sync
-sshctl list | grep -Ei '<alias-or-host-fragment>'
-sshctl run <exact-alias> hostname
-sshctl run <exact-alias> uname -sr
-# multi-line / any quotes — prefer heredoc over nested quotes:
+sshctl host list --json
+sshctl run <exact-alias> --json --argv hostname
+# multi-line / generated scripts use the stdin runner:
 sshctl run <exact-alias> -s <<'EOF'
 hostname; uname -sr
 EOF
 ```
 
-For add/edit operations, use the guarded import workflow documented in `references/import-json.md`.
+For add/edit operations, use `sshctl host upsert/update`, verify locally, then push. Detailed and legacy bulk-import guidance is in `references/import-json.md`.
 
 ## Safety boundaries
 
@@ -81,7 +80,7 @@ The agent must stop and ask before:
 - deleting or replacing real host entries;
 - running destructive commands on a remote host;
 - pushing a changed vault when verification failed;
-- importing JSON without `--merge`;
+- replacing the vault with an unreviewed bulk import;
 - exposing or reading secret material.
 
 ## Files
@@ -91,7 +90,7 @@ skills/agent-ssm/
 ├── SKILL.md                      # Agent-facing workflow and rules
 ├── README.md                     # Public install and showcase page
 ├── references/
-│   └── import-json.md            # Verified headless add/edit/remove patterns
+│   └── import-json.md            # Host CRUD plus guarded legacy bulk import
 └── test-prompts.json             # Dry-run prompts for skill validation
 ```
 

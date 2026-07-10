@@ -22,7 +22,7 @@ func traceEnabled() bool {
 }
 
 // ShellQuote returns a single-quoted POSIX shell word that expands to s.
-// Empty strings become '' so they remain a distinct argument.
+// Empty strings become ” so they remain a distinct argument.
 func ShellQuote(s string) string {
 	if s == "" {
 		return "''"
@@ -94,6 +94,16 @@ func JoinRemoteCommand(parts []string, raw bool) string {
 			continue
 		}
 		out = append(out, ShellQuote(p))
+	}
+	return strings.Join(out, " ")
+}
+
+// JoinRemoteArgv always preserves argv boundaries, including a single word.
+// It is used by fixed runners and by the explicit --argv CLI mode.
+func JoinRemoteArgv(parts []string) string {
+	out := make([]string, len(parts))
+	for i, part := range parts {
+		out[i] = ShellQuote(part)
 	}
 	return strings.Join(out, " ")
 }

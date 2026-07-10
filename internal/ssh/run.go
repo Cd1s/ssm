@@ -18,11 +18,15 @@ import (
 
 // RunOptions controls a single remote command invocation.
 type RunOptions struct {
-	Command  string
-	Secrets  map[string]string // NAME -> value; injected as remote env assigns
-	Capture  bool              // capture stdout/stderr into RunResult
-	PlanOnly bool              // do not dial/run
-	NoReuse  bool
+	Command     string
+	Input       string            // script body transported over SSH stdin
+	RiskCommand string            // script body used only for local risk assessment
+	Secrets     map[string]string // NAME -> value; injected as remote env assigns
+	Capture     bool              // capture stdout/stderr into RunResult
+	PlanOnly    bool              // do not dial/run
+	NoReuse     bool
+	Interpreter string
+	ScriptLabel string
 	// RequestedAlias is the name the user typed (before redirects).
 	RequestedAlias string
 	ResolvedAlias  string
@@ -30,22 +34,25 @@ type RunOptions struct {
 
 // RunResult is the structured result of a remote run (agent JSON schema).
 type RunResult struct {
-	OK             bool   `json:"ok"`
-	Alias          string `json:"alias"`
-	ResolvedAlias  string `json:"resolved_alias,omitempty"`
-	User           string `json:"user,omitempty"`
-	Host           string `json:"host,omitempty"`
-	Port           int    `json:"port,omitempty"`
-	Exit           int    `json:"exit"`
-	Stdout         string `json:"stdout,omitempty"`
-	Stderr         string `json:"stderr,omitempty"`
-	LatencyMS      int64  `json:"latency_ms,omitempty"`
-	RemoteCommand  string `json:"remote_command,omitempty"` // secrets redacted
-	Error          string `json:"error,omitempty"`
-	Hint           string `json:"hint,omitempty"`
-	Plan           bool   `json:"plan,omitempty"`
-	Risk           string `json:"risk,omitempty"`
-	ScriptLabel    string `json:"script,omitempty"` // multi-script map label
+	OK            bool   `json:"ok"`
+	Alias         string `json:"alias"`
+	ResolvedAlias string `json:"resolved_alias,omitempty"`
+	User          string `json:"user,omitempty"`
+	Host          string `json:"host,omitempty"`
+	Port          int    `json:"port,omitempty"`
+	Exit          int    `json:"exit"`
+	Stdout        string `json:"stdout,omitempty"`
+	Stderr        string `json:"stderr,omitempty"`
+	LatencyMS     int64  `json:"latency_ms,omitempty"`
+	RemoteCommand string `json:"remote_command,omitempty"` // secrets redacted
+	Error         string `json:"error,omitempty"`
+	Hint          string `json:"hint,omitempty"`
+	Plan          bool   `json:"plan,omitempty"`
+	Risk          string `json:"risk,omitempty"`
+	ScriptLabel   string `json:"script,omitempty"` // multi-script map label
+	Interpreter   string `json:"interpreter,omitempty"`
+	InputBytes    int    `json:"stdin_bytes,omitempty"`
+	ScriptSHA256  string `json:"script_sha256,omitempty"`
 }
 
 // BuildRemoteCommand injects secret env assigns before the user command.
@@ -72,6 +79,33 @@ func BuildRemoteCommand(cmd string, secrets map[string]string) string {
 	return b.String()
 }
 
+// BuildScriptRemoteCommand exports secrets before the fixed stdin runner. A
+// plain NAME=value prefix would apply only to the runner's first simple command
+// and could be lost before exec starts the script interpreter.
+func BuildScriptRemoteCommand(cmd string, secrets map[string]string) string {
+	if len(secrets) == 0 {
+		return cmd
+	}
+	keys := make([]string, 0, len(secrets))
+	for key := range secrets {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, key := range keys {
+		if !isEnvName(key) {
+			continue
+		}
+		b.WriteString("export ")
+		b.WriteString(key)
+		b.WriteByte('=')
+		b.WriteString(ShellQuote(secrets[key]))
+		b.WriteString("; ")
+	}
+	b.WriteString(cmd)
+	return b.String()
+}
+
 func isEnvName(s string) bool {
 	if s == "" {
 		return false
@@ -87,6 +121,9 @@ func isEnvName(s string) bool {
 	}
 	return true
 }
+
+// ValidEnvName reports whether a name is safe as a POSIX environment variable.
+func ValidEnvName(s string) bool { return isEnvName(s) }
 
 // RedactSecrets replaces secret values in a display string with *** .
 func RedactSecrets(s string, secrets map[string]string) string {
@@ -104,8 +141,10 @@ func RedactSecrets(s string, secrets map[string]string) string {
 	}
 	sort.Slice(list, func(i, j int) bool { return len(list[i].v) > len(list[j].v) })
 	for _, e := range list {
-		out = strings.ReplaceAll(out, e.v, "***")
 		out = strings.ReplaceAll(out, ShellQuote(e.v), "'***'")
+		if len(e.v) >= 4 {
+			out = strings.ReplaceAll(out, e.v, "***")
+		}
 	}
 	return out
 }
@@ -136,7 +175,14 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 		port = 22
 	}
 	full := BuildRemoteCommand(opts.Command, opts.Secrets)
+	if opts.Input != "" {
+		full = BuildScriptRemoteCommand(opts.Command, opts.Secrets)
+	}
 	display := RedactSecrets(full, opts.Secrets)
+	riskCommand := opts.Command
+	if opts.RiskCommand != "" {
+		riskCommand = opts.RiskCommand
+	}
 	res := RunResult{
 		Alias:         opts.RequestedAlias,
 		ResolvedAlias: opts.ResolvedAlias,
@@ -144,7 +190,13 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 		Host:          c.Host,
 		Port:          port,
 		RemoteCommand: display,
-		Risk:          AssessRisk(opts.Command),
+		Risk:          AssessRisk(riskCommand),
+		ScriptLabel:   opts.ScriptLabel,
+		Interpreter:   opts.Interpreter,
+	}
+	if opts.Input != "" {
+		res.InputBytes = len(opts.Input)
+		res.ScriptSHA256 = ScriptDigest(opts.Input)
 	}
 	if res.Alias == "" {
 		res.Alias = c.Name
@@ -155,6 +207,9 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 
 	if traceEnabled() {
 		fmt.Fprintf(os.Stderr, "ssm: remote command: %s\n", display)
+		if res.ScriptSHA256 != "" {
+			fmt.Fprintf(os.Stderr, "ssm: script stdin: bytes=%d sha256=%s interpreter=%s\n", res.InputBytes, res.ScriptSHA256, res.Interpreter)
+		}
 	}
 
 	if opts.PlanOnly {
@@ -205,6 +260,10 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 	} else {
 		session.Stdout = os.Stdout
 		session.Stderr = os.Stderr
+	}
+	if opts.Input != "" {
+		session.Stdin = strings.NewReader(opts.Input)
+	} else if !opts.Capture {
 		stdinIsTTY := term.IsTerminal(int(os.Stdin.Fd()))
 		if os.Getenv("SSM_FORWARD_STDIN") == "1" || (!stdinIsTTY && stdinHasReadableData()) {
 			stdin, err := session.StdinPipe()
@@ -234,6 +293,19 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 		if exitErr, ok := err.(*gossh.ExitError); ok {
 			res.Exit = exitErr.ExitStatus()
 			res.OK = false
+			if opts.Input != "" {
+				if res.Exit == 127 && (!opts.Capture || strings.Contains(res.Stderr, "ssm: error=interpreter_not_found")) {
+					res.Error = "interpreter_not_found"
+					res.Hint = fmt.Sprintf("remote shell %q is unavailable; retry with --shell sh or install it", opts.Interpreter)
+				} else {
+					res.Error = "remote_script_failed"
+					res.Hint = "the script reached the remote interpreter but exited non-zero; inspect stderr"
+				}
+				if !opts.Capture {
+					fmt.Fprintf(os.Stderr, "ssm: error=%s script=%s exit=%d\n", res.Error, opts.ScriptLabel, res.Exit)
+					fmt.Fprintf(os.Stderr, "ssm: hint=%s\n", res.Hint)
+				}
+			}
 			return res
 		}
 		ce := ClassifyError(err, c)
@@ -276,6 +348,18 @@ func WriteRunResult(res RunResult, asJSON bool) {
 	fmt.Printf("exit=%d\n", res.Exit)
 	if res.RemoteCommand != "" {
 		fmt.Printf("remote_command=%s\n", res.RemoteCommand)
+	}
+	if res.ScriptLabel != "" {
+		fmt.Printf("script=%s\n", res.ScriptLabel)
+	}
+	if res.Interpreter != "" {
+		fmt.Printf("interpreter=%s\n", res.Interpreter)
+	}
+	if res.InputBytes > 0 {
+		fmt.Printf("stdin_bytes=%d\n", res.InputBytes)
+	}
+	if res.ScriptSHA256 != "" {
+		fmt.Printf("script_sha256=%s\n", res.ScriptSHA256)
 	}
 	if res.Risk != "" {
 		fmt.Printf("risk=%s\n", res.Risk)

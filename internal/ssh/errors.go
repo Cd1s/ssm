@@ -107,7 +107,7 @@ func ClassifyError(err error, c config.Connection) *ClassifiedError {
 	if strings.Contains(low, "no authentication configured") {
 		out.Code = ErrCodeNoAuth
 		out.Message = "connection has no password or private key configured"
-		out.Hint = "fix-import the host with auth_type password|key via ssm import-json --merge"
+		out.Hint = "update host auth with sshctl host update <alias> --key-file <path> or --password-file <path>"
 		return out
 	}
 

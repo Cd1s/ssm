@@ -18,7 +18,7 @@ import (
 var (
 	masterPass     string
 	masterPassFile string
-	version        = "1.1.0"
+	version        = "1.2.0"
 )
 
 func main() {
@@ -69,6 +69,7 @@ Usage:
   ssm add              add a new connection
   ssm edit <name>      edit a connection
   ssm remove <name>    remove a connection
+  ssm host ...         headless host list/show/add/update/upsert/remove
   ssm list [--json]    list all connections
   ssm exec/run <name> ...   remote command (--json/--plan/--secret/-s/-f)
   ssm plan <name> ...       dry-run: show remote_command + risk (no dial)
@@ -112,6 +113,9 @@ Shortcuts (in TUI):
 	case "add":
 		unlock()
 		runAdd()
+	case "host", "hosts":
+		unlock()
+		runHostCommand(args[1:])
 	case "remove":
 		if len(args) < 2 {
 			fmt.Println("Usage: ssm remove <name>")
@@ -157,16 +161,11 @@ Shortcuts (in TUI):
 		unlock()
 		spec, err := parseRemoteRunArgs(args[2:])
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
-			os.Exit(1)
+			exitRemoteRunArgError("ssm", args[1], args[2:], err)
 		}
 		if len(spec.Scripts) > 1 {
 			runMap([]string{args[1]}, spec)
 			return
-		}
-		if len(spec.Scripts) == 1 && spec.Command == "" {
-			spec.Command = spec.Scripts[0].Body
-			spec.Scripts = nil
 		}
 		runExecSpec(args[1], spec)
 	case "plan":
@@ -177,8 +176,7 @@ Shortcuts (in TUI):
 		unlock()
 		spec, err := parseRemoteRunArgs(args[2:])
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
-			os.Exit(1)
+			exitRemoteRunArgError("ssm", args[1], args[2:], err)
 		}
 		spec.Plan = true
 		runExecSpec(args[1], spec)
@@ -253,7 +251,7 @@ Shortcuts (in TUI):
 		runRemoteHash()
 	default:
 		fmt.Printf("Unknown command: %s\n", args[0])
-		fmt.Println("Usage: ssm [add|remove|edit|list|keys|exec|put|shell|import-json|server|update|login|register|push|pull|pull-if-changed|remote-hash|logout]")
+		fmt.Println("Usage: ssm [host|add|remove|edit|list|keys|exec|put|shell|import-json|server|update|login|register|push|pull|pull-if-changed|remote-hash|logout]")
 		os.Exit(1)
 	}
 }

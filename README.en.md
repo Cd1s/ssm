@@ -21,12 +21,20 @@ sshctl sync
 sshctl doctor <alias> --deep --json
 sshctl check <alias>
 
-# Single host (auto quote; connection reuse on by default)
-sshctl run <alias> hostname
+# Headless host management (local stage, verify, then explicit push)
+sshctl host list --json
+sshctl host upsert prod-api --host 203.0.113.10 --user root --port 22 --key-file /secure/prod-api.key --json
+sshctl host update prod-api --port 2222 --json
+sshctl host show prod-api --json
+sshctl check prod-api
+sshctl push
+
+# Single host (literal argv or stdin script; connection reuse by default)
+sshctl run <alias> --argv hostname
 sshctl run <alias> --json hostname
 sshctl plan <alias> bash -c 'echo hi'    # dry-run: remote_command + risk
 sshctl run <alias> --secret API_KEY=@./key.txt -- printenv API_KEY
-sshctl run <alias> -s <<'EOF'
+sshctl run <alias> --shell bash -s <<'EOF'
 echo "any quotes fine"
 EOF
 
@@ -49,6 +57,20 @@ sshctl push
 
 Connection failures print `ssm: error=...` and exit **255**. Connection **reuse** is on by default (`SSM_REUSE=0` / `--no-reuse` to disable).
 
+### Agent host management
+
+| Command | Behavior |
+|---------|----------|
+| `sshctl host list/show ... --json` | Structured inventory without passwords or private keys |
+| `sshctl host add ...` | Create only; fails if the alias exists |
+| `sshctl host update ...` | Change only specified fields; fails if the host is missing |
+| `sshctl host upsert ...` | Idempotent declaration; retries return `changed:false` |
+| `sshctl host remove ... --yes` | Explicit delete; `--prune-key` removes only an unreferenced key |
+
+A new host requires `--host`, `--user`, and one auth source: `--key <saved-name>`, `--key-file <path>`, or `--password-file <path>`. Passwords and keys are never accepted inline, and JSON exposes only `auth`/`key_name`. Upserting an existing host preserves auth when no auth option is given.
+
+Structured host mutations require a successful remote refresh before an atomic local save and return `sync_pending:true`; refresh failure stops before writing with `sync_pull_failed`. Use `--offline` only when stale local state is explicitly acceptable. Mutations do not silently auto-push: verify with `sshctl check` or a read-only `run`, then call `sshctl push` so sync failure has a reliable non-zero exit.
+
 ### Agent fleet: map (parallel)
 
 | Command | Meaning |
@@ -65,11 +87,15 @@ One target failing does **not** drop other targets’ results.
 
 | Form | Behavior | Best for |
 |------|----------|----------|
-| `sshctl run host cmd arg1 arg2` | Per-arg shell quote | Short cmds, `bash -c` |
-| `sshctl run host -s <<'EOF'` | Stdin script | Multi-line / any quotes |
+| `sshctl run host --argv cmd arg1` | Always quote each argv, including one argument | Agent-generated literal argv |
+| `sshctl run host cmd arg1 arg2` | Multi-arg quoting; one string keeps legacy shell behavior | Compatible calls |
+| `sshctl run host -s <<'EOF'` | Body over SSH stdin to a fixed `sh -s` runner | Multi-line, pipes, redirects, quotes |
+| `sshctl run host --shell bash -f x.sh -- arg` | Shebang/explicit shell plus exact script args | Bash and generated scripts |
 | `sshctl run host --json cmd` | Structured result | Agents |
 | `sshctl plan host cmd` | Dry-run + risk | Confirm before exec |
-| `sshctl run host --secret K=v cmd` | Secret as remote env; redacted in plan/trace | Secrets |
+| `sshctl run host --secret K=@file cmd` | Secret as remote env; redacted in plan/trace | Secrets |
+
+`-s`, `-f`, and `--scripts` do not require an executable local file and never embed the script body in the SSH command. SSM strips a UTF-8 BOM, normalizes CRLF, rejects NUL/oversized input, and auto-selects `sh/bash/dash/ash/ksh/zsh` from the shebang; no shebang defaults to `sh`. Plan/JSON output includes `interpreter`, `stdin_bytes`, and `script_sha256`, never the body.
 
 ## Optional Sync
 
@@ -81,7 +107,7 @@ ssm login --server <sync-server-url> --email <email> --password-file <sync-passw
 sshctl sync
 ```
 
-The center server stores only encrypted vault blobs. It never decrypts SSH passwords or private keys. `sshctl list/run/shell/status` and `ssm list/exec/shell` check the remote ETag before reading the vault and auto-pull when it changed. Local add, edit, and delete operations auto-push by default; `sshctl push` is available for manual upload.
+The center server stores only encrypted vault blobs. It never decrypts SSH passwords or private keys. `sshctl list/run/shell/status` and `ssm list/exec/shell` check the remote ETag before reading the vault and auto-pull when it changed. TUI mutations follow auto-sync settings; agent-facing `sshctl host` mutations deliberately remain local until verification and an explicit `sshctl push`.
 
 ## Center Server
 
@@ -122,8 +148,9 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 
 If sync is already configured, put master.pass and cloud.json in /root/.config/ssm with chmod 600.
 Then run sshctl sync and verify with sshctl status and sshctl list.
-Use sshctl run <alias> <command...>, or sshctl run <alias> -s <<'EOF' for multi-line scripts.
-Also: sshctl shell <alias>, sshctl put <alias> <local> <remote>. Prefer multi-arg or -s to avoid quote bugs.
+Use sshctl host upsert/update ... --json for host changes; read auth only from --key-file/--password-file. Check first, then push.
+Use sshctl run <alias> --argv <command> [args...] for literal argv, and sshctl run <alias> -s <<'EOF' for shell syntax or generated scripts.
+Do not wrap generated scripts in bash -c or rebuild nested quoting. Also: shell, put, and get.
 ```
 
 Project agent skill: `skills/agent-ssm/SKILL.md`.

@@ -15,6 +15,9 @@ type MapJob struct {
 	RequestedAlias string
 	ScriptLabel    string
 	Command        string
+	Input          string
+	RiskCommand    string
+	Interpreter    string
 	Secrets        map[string]string
 }
 
@@ -52,6 +55,10 @@ func Map(v *config.Vault, jobs []MapJob, workers int, noReuse bool) []RunResult 
 func runMapJob(v *config.Vault, job MapJob, noReuse bool) RunResult {
 	c, resolved, ok := config.ResolveAlias(v, job.RequestedAlias)
 	if !ok {
+		remoteCommand := BuildRemoteCommand(job.Command, job.Secrets)
+		if job.Input != "" {
+			remoteCommand = BuildScriptRemoteCommand(job.Command, job.Secrets)
+		}
 		return RunResult{
 			OK:            false,
 			Alias:         job.RequestedAlias,
@@ -59,18 +66,25 @@ func runMapJob(v *config.Vault, job MapJob, noReuse bool) RunResult {
 			Exit:          ExitConnectionFailed,
 			Error:         ErrCodeAliasNotFound,
 			Hint:          "use sshctl list --json; alias may have been renamed after migration",
-			RemoteCommand: RedactSecrets(job.Command, job.Secrets),
+			RemoteCommand: RedactSecrets(remoteCommand, job.Secrets),
 			ScriptLabel:   job.ScriptLabel,
-			Risk:          AssessRisk(job.Command),
+			Risk:          AssessRisk(firstNonEmptyString(job.RiskCommand, job.Command)),
+			Interpreter:   job.Interpreter,
+			InputBytes:    len(job.Input),
+			ScriptSHA256:  digestIfNotEmpty(job.Input),
 		}
 	}
 	res := Run(c, v, RunOptions{
 		Command:        job.Command,
+		Input:          job.Input,
+		RiskCommand:    job.RiskCommand,
 		Secrets:        job.Secrets,
 		Capture:        true,
 		NoReuse:        noReuse,
 		RequestedAlias: job.RequestedAlias,
 		ResolvedAlias:  resolved,
+		Interpreter:    job.Interpreter,
+		ScriptLabel:    job.ScriptLabel,
 	})
 	res.ScriptLabel = job.ScriptLabel
 	return res
@@ -95,7 +109,10 @@ func ExpandMapJobs(aliases []string, command string, scripts []ScriptSpec, secre
 			jobs = append(jobs, MapJob{
 				RequestedAlias: a,
 				ScriptLabel:    s.Label,
-				Command:        s.Body,
+				Command:        BuildScriptRunner(s),
+				Input:          s.Body,
+				RiskCommand:    s.Body,
+				Interpreter:    s.Interpreter,
 				Secrets:        secrets,
 			})
 		}
@@ -103,10 +120,20 @@ func ExpandMapJobs(aliases []string, command string, scripts []ScriptSpec, secre
 	return jobs
 }
 
-// ScriptSpec is a named script body for multi-script parallel runs.
-type ScriptSpec struct {
-	Label string
-	Body  string
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func digestIfNotEmpty(value string) string {
+	if value == "" {
+		return ""
+	}
+	return ScriptDigest(value)
 }
 
 // WriteMapResults prints map results as text table or JSON array.

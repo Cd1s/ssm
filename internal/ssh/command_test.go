@@ -47,3 +47,9 @@ func TestJoinRemoteCommand(t *testing.T) {
 		})
 	}
 }
+
+func TestJoinRemoteArgvAlwaysQuotesSingleArgument(t *testing.T) {
+	if got := JoinRemoteArgv([]string{"hello world"}); got != "'hello world'" {
+		t.Fatalf("JoinRemoteArgv = %q", got)
+	}
+}
