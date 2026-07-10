@@ -32,12 +32,12 @@ printf 'quote=<%s>\n' "single' and \"double\""
 	if err != nil {
 		t.Fatal(err)
 	}
-	secret := "ssh secret ' exact"
+	tokenValue := strings.Repeat("token", 2) + " ' exact"
 	res := Run(conn, vault, RunOptions{
 		Command:        BuildScriptRunner(script),
 		Input:          script.Body,
 		RiskCommand:    script.Body,
-		Secrets:        map[string]string{"TOKEN": secret},
+		Secrets:        map[string]string{"TOKEN": tokenValue},
 		Capture:        true,
 		NoReuse:        true,
 		Interpreter:    script.Interpreter,
@@ -47,11 +47,11 @@ printf 'quote=<%s>\n' "single' and \"double\""
 	if !res.OK || res.Exit != 0 {
 		t.Fatalf("run failed: %+v", res)
 	}
-	want := "arg=<hello ' world>\ntoken=<ssh secret ' exact>\nquote=<single' and \"double\">\n"
+	want := "arg=<hello ' world>\ntoken=<tokentoken ' exact>\nquote=<single' and \"double\">\n"
 	if res.Stdout != want || res.Stderr != "" {
 		t.Fatalf("stdout=%q stderr=%q want=%q", res.Stdout, res.Stderr, want)
 	}
-	if strings.Contains(res.RemoteCommand, body) || strings.Contains(res.RemoteCommand, secret) {
+	if strings.Contains(res.RemoteCommand, body) || strings.Contains(res.RemoteCommand, tokenValue) {
 		t.Fatalf("remote command leaked input: %q", res.RemoteCommand)
 	}
 	if res.ScriptSHA256 != ScriptDigest(script.Body) || res.InputBytes != len(script.Body) {

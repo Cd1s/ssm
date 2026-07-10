@@ -12,6 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -21,10 +23,18 @@ jobs:
         run: test -z "$(gofmt -l .)"
 
       - name: Lint
+        if: github.event_name != 'workflow_dispatch'
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.11.4
           only-new-issues: true
+
+      - name: Lint (manual, changes since v1.1.0)
+        if: github.event_name == 'workflow_dispatch'
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.11.4
+          args: --new-from-rev=c31aa5e9b2882e703fbebb0bcf6f2ada31398dca
 
       - name: Build
         run: go build ./cmd/ssm
