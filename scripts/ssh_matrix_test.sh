@@ -50,6 +50,7 @@ find_free_port() {
 }
 
 PORT=${SSM_TEST_SSH_PORT:-$(find_free_port)}
+TEST_USER=${SSM_TEST_SSH_USER:-$(id -un)}
 if [ -z "$PORT" ]; then
   echo "no free localhost SSH test port found" >&2
   exit 2
@@ -72,19 +73,26 @@ Subsystem sftp /usr/lib/openssh/sftp-server
 EOF
 
 "$SSHD" -f "$TMP/sshd_config" -E "$TMP/sshd.log"
+ready=0
 for _ in $(seq 1 50); do
-  if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile="$TMP/smoke_known_hosts" -i "$TMP/client_key" -p "$PORT" root@127.0.0.1 true 2>/dev/null; then
+  if ssh -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile="$TMP/smoke_known_hosts" -i "$TMP/client_key" -p "$PORT" "$TEST_USER"@127.0.0.1 true 2>/dev/null; then
+    ready=1
     break
   fi
   sleep 0.1
 done
+if [ "$ready" != 1 ]; then
+  echo "temporary sshd did not accept test user $TEST_USER" >&2
+  cat "$TMP/sshd.log" >&2
+  exit 1
+fi
 
 mkdir -p "$TMP/home/.config/ssm"
 printf 'test-master\n' > "$TMP/home/.config/ssm/master.pass"
 chmod 600 "$TMP/home/.config/ssm/master.pass"
 
 host_created=$(HOME="$TMP/home" SSM_UPDATE_REPO=off "$BIN" --master-pass-file "$TMP/home/.config/ssm/master.pass" \
-  host upsert local --host 127.0.0.1 --port "$PORT" --user root --key-file "$TMP/client_key" --json)
+  host upsert local --host 127.0.0.1 --port "$PORT" --user "$TEST_USER" --key-file "$TMP/client_key" --json)
 printf '%s' "$host_created" | grep -q '"action": "created"' || { echo "host create: $host_created" >&2; exit 1; }
 ln -s "$BIN" "$TMP/sshctl"
 
@@ -92,7 +100,7 @@ run_sshctl() {
   HOME="$TMP/home" SSM_UPDATE_REPO=off "$TMP/sshctl" "$@"
 }
 
-host_unchanged=$(run_sshctl host upsert local --host 127.0.0.1 --port "$PORT" --user root --key-file "$TMP/client_key" --json)
+host_unchanged=$(run_sshctl host upsert local --host 127.0.0.1 --port "$PORT" --user "$TEST_USER" --key-file "$TMP/client_key" --json)
 printf '%s' "$host_unchanged" | grep -q '"action": "unchanged"' || { echo "host upsert retry: $host_unchanged" >&2; exit 1; }
 printf '%s' "$host_unchanged" | grep -q '"sync_pending": true' || { echo "host sync state: $host_unchanged" >&2; exit 1; }
 host_updated=$(run_sshctl host update local --group matrix --json)
