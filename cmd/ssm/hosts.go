@@ -14,6 +14,7 @@ import (
 
 	"ssm/internal/cloud"
 	"ssm/internal/config"
+	agentssh "ssm/internal/ssh"
 )
 
 const maxHostCredentialBytes = 1 << 20
@@ -45,6 +46,8 @@ type hostCommandOptions struct {
 	confirm      bool
 	pruneKey     bool
 	offline      bool
+	verify       bool
+	push         bool
 }
 
 type hostView struct {
@@ -58,13 +61,16 @@ type hostView struct {
 }
 
 type hostMutationResult struct {
-	OK          bool     `json:"ok"`
-	Action      string   `json:"action"`
-	Changed     bool     `json:"changed"`
-	Host        hostView `json:"host"`
-	KeyAdded    string   `json:"key_added,omitempty"`
-	KeyPruned   string   `json:"key_pruned,omitempty"`
-	SyncPending bool     `json:"sync_pending"`
+	OK           bool                  `json:"ok"`
+	Action       string                `json:"action"`
+	Changed      bool                  `json:"changed"`
+	Host         hostView              `json:"host"`
+	KeyAdded     string                `json:"key_added,omitempty"`
+	KeyPruned    string                `json:"key_pruned,omitempty"`
+	SyncPending  bool                  `json:"sync_pending"`
+	Applied      bool                  `json:"applied"`
+	Pushed       bool                  `json:"pushed"`
+	Verification *agentssh.CheckResult `json:"verification,omitempty"`
 }
 
 type hostCLIError struct {
@@ -79,7 +85,7 @@ func newHostError(code, format string, args ...any) error {
 }
 
 func parseHostCommandArgs(args []string) (hostCommandOptions, error) {
-	var opts hostCommandOptions
+	opts := hostCommandOptions{asJSON: machineJSON}
 	if len(args) == 0 {
 		return opts, newHostError("invalid_args", "missing host action")
 	}
@@ -99,6 +105,10 @@ func parseHostCommandArgs(args []string) (hostCommandOptions, error) {
 			opts.pruneKey = true
 		case arg == "--offline":
 			opts.offline = true
+		case arg == "--verify":
+			opts.verify = true
+		case arg == "--push":
+			opts.push = true
 		case matchesValueFlag(arg, "--host"):
 			value, err := readFlagValue(args, &i, "--host")
 			if err != nil {
@@ -188,7 +198,7 @@ func readFlagValue(args []string, i *int, name string) (string, error) {
 func validateHostCommandOptions(opts hostCommandOptions) error {
 	switch opts.action {
 	case "list":
-		if opts.alias != "" || opts.hasMutationOptions() || opts.confirm || opts.pruneKey {
+		if opts.alias != "" || opts.hasMutationOptions() || opts.confirm || opts.pruneKey || opts.verify || opts.push {
 			return newHostError("invalid_args", "host list only accepts --json and --offline")
 		}
 		return nil
@@ -196,7 +206,7 @@ func validateHostCommandOptions(opts hostCommandOptions) error {
 		if opts.alias == "" {
 			return newHostError("invalid_args", "host show requires an alias")
 		}
-		if opts.hasMutationOptions() || opts.confirm || opts.pruneKey {
+		if opts.hasMutationOptions() || opts.confirm || opts.pruneKey || opts.verify || opts.push {
 			return newHostError("invalid_args", "host show only accepts an alias, --json, and --offline")
 		}
 		return nil
@@ -206,6 +216,9 @@ func validateHostCommandOptions(opts hostCommandOptions) error {
 		}
 		if opts.confirm || opts.pruneKey {
 			return newHostError("invalid_args", "--yes and --prune-key are only valid for host remove")
+		}
+		if opts.push && !opts.verify {
+			return newHostError("invalid_args", "--push requires --verify so an unverified host change cannot be published")
 		}
 		authFlags := 0
 		for _, set := range []bool{opts.passwordFile.set, opts.keyName.set, opts.keyFile.set} {
@@ -238,7 +251,7 @@ func validateHostCommandOptions(opts hostCommandOptions) error {
 		if opts.alias == "" {
 			return newHostError("invalid_args", "host remove requires an alias")
 		}
-		if opts.hasMutationOptions() {
+		if opts.hasMutationOptions() || opts.verify || opts.push {
 			return newHostError("invalid_args", "host remove only accepts --yes, --prune-key, and --json")
 		}
 		if !opts.confirm {
@@ -299,11 +312,34 @@ func runHostCommand(args []string) {
 		writeHostCommandError(opts.asJSON, err)
 		os.Exit(1)
 	}
+	if opts.verify {
+		idx := exactConnectionIndex(updated, opts.alias)
+		if idx < 0 {
+			writeHostCommandError(opts.asJSON, newHostError("internal", "candidate host disappeared before verification"))
+			os.Exit(1)
+		}
+		verification := agentssh.Check(updated.Connections[idx], updated)
+		verification.Alias = opts.alias
+		result.Verification = &verification
+		if !verification.OK {
+			writeHostVerificationFailure(result, opts.asJSON)
+			os.Exit(agentssh.ExitConnectionFailed)
+		}
+	}
 	if result.Changed {
 		if err := config.Save(updated, masterPass); err != nil {
 			writeHostCommandError(opts.asJSON, newHostError("vault_error", "%s", redactError(err)))
 			os.Exit(1)
 		}
+	}
+	result.Applied = true
+	if opts.push {
+		if err := pushVault(); err != nil {
+			writeHostPushFailure(result, opts.asJSON, err)
+			os.Exit(1)
+		}
+		result.Pushed = true
+		result.SyncPending = false
 	}
 	writeHostMutationResult(result, opts.asJSON)
 }
@@ -658,6 +694,54 @@ func writeHostMutationResult(result hostMutationResult, asJSON bool) {
 	fmt.Printf("host %s: %s (changed=%t, sync_pending=%t)\n", result.Host.Name, result.Action, result.Changed, result.SyncPending)
 }
 
+func writeHostVerificationFailure(result hostMutationResult, asJSON bool) {
+	if asJSON {
+		writeHostJSON(struct {
+			OK           bool                  `json:"ok"`
+			Error        string                `json:"error"`
+			Message      string                `json:"message"`
+			Action       string                `json:"action"`
+			Changed      bool                  `json:"changed"`
+			Applied      bool                  `json:"applied"`
+			Host         hostView              `json:"host"`
+			Verification *agentssh.CheckResult `json:"verification"`
+			SyncPending  bool                  `json:"sync_pending"`
+		}{
+			OK: false, Error: "verification_failed", Message: "candidate host failed SSH verification; vault was not changed",
+			Action: "not_applied", Changed: result.Changed, Applied: false, Host: result.Host,
+			Verification: result.Verification, SyncPending: false,
+		})
+		return
+	}
+	fmt.Fprintf(os.Stderr, "ssm: error=verification_failed alias=%s\nError: candidate host failed SSH verification; vault was not changed\n", result.Host.Name)
+	if result.Verification != nil {
+		fmt.Fprintf(os.Stderr, "ssm: verification_error=%s\n", result.Verification.Error)
+	}
+}
+
+func writeHostPushFailure(result hostMutationResult, asJSON bool, err error) {
+	if asJSON {
+		writeHostJSON(struct {
+			OK           bool                  `json:"ok"`
+			Error        string                `json:"error"`
+			Message      string                `json:"message"`
+			Action       string                `json:"action"`
+			Changed      bool                  `json:"changed"`
+			Applied      bool                  `json:"applied"`
+			Pushed       bool                  `json:"pushed"`
+			Host         hostView              `json:"host"`
+			Verification *agentssh.CheckResult `json:"verification,omitempty"`
+			SyncPending  bool                  `json:"sync_pending"`
+		}{
+			OK: false, Error: "sync_push_failed", Message: redactError(err), Action: result.Action,
+			Changed: result.Changed, Applied: true, Pushed: false, Host: result.Host,
+			Verification: result.Verification, SyncPending: true,
+		})
+		return
+	}
+	fmt.Fprintf(os.Stderr, "ssm: error=sync_push_failed alias=%s\nError: %s\nssm: hint=local change remains pending; fix sync and retry sshctl push\n", result.Host.Name, redactError(err))
+}
+
 func writeHostCommandError(asJSON bool, err error) {
 	ce, ok := err.(*hostCLIError)
 	if !ok {
@@ -692,9 +776,9 @@ func hostCommandUsage() {
 	fmt.Print(`Usage:
   sshctl host list [--json] [--offline]
   sshctl host show <alias> [--json] [--offline]
-  sshctl host add <alias> --host <address> --user <user> [--port 22] [--group <name>] <auth> [--json] [--offline]
-  sshctl host update <alias> [--host ...] [--user ...] [--port ...] [--group ...] [<auth>] [--json] [--offline]
-  sshctl host upsert <alias> --host <address> --user <user> [--port 22] [--group <name>] [<auth>] [--json] [--offline]
+	  sshctl host add <alias> --host <address> --user <user> [--port 22] [--group <name>] <auth> [--verify] [--push] [--json] [--offline]
+	  sshctl host update <alias> [--host ...] [--user ...] [--port ...] [--group ...] [<auth>] [--verify] [--push] [--json] [--offline]
+	  sshctl host upsert <alias> --host <address> --user <user> [--port 22] [--group <name>] [<auth>] [--verify] [--push] [--json] [--offline]
   sshctl host remove <alias> --yes [--prune-key] [--json] [--offline]
 
 Auth (choose one when required):

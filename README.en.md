@@ -21,12 +21,11 @@ sshctl sync
 sshctl doctor <alias> --deep --json
 sshctl check <alias>
 
-# Headless host management (local stage, verify, then explicit push)
+# Headless host management (verify the candidate before saving)
 sshctl host list --json
-sshctl host upsert prod-api --host 203.0.113.10 --user root --port 22 --key-file /secure/prod-api.key --json
-sshctl host update prod-api --port 2222 --json
+sshctl host upsert prod-api --host 203.0.113.10 --user root --port 22 --key-file /secure/prod-api.key --verify --json
+sshctl host update prod-api --port 2222 --verify --json
 sshctl host show prod-api --json
-sshctl check prod-api
 sshctl push
 
 # Single host (literal argv or stdin script; connection reuse by default)
@@ -37,6 +36,13 @@ sshctl run <alias> --secret API_KEY=@./key.txt -- printenv API_KEY
 sshctl run <alias> --shell bash -s <<'EOF'
 echo "any quotes fine"
 EOF
+
+# Preferred for agents: typed JSON request; local shell never reparses argv
+sshctl request --file ./request.json
+
+# Observe/accept host keys; accept is bound to the full observed fingerprint
+sshctl host-key inspect <alias> --json
+sshctl host-key accept <alias> --fingerprint SHA256:... --yes --json
 
 # Parallel multi-host / multi-script fleet
 sshctl map limee-hk,aws-sg -j 8 hostname
@@ -55,7 +61,41 @@ sshctl run old-alias hostname
 sshctl push
 ```
 
-Connection failures print `ssm: error=...` and exit **255**. Connection **reuse** is on by default (`SSM_REUSE=0` / `--no-reuse` to disable).
+Connection-layer JSON failures use `error=dial_*|host_key_mismatch|alias_not_found|...` and normally exit **255**. Do not classify from 255 alone because a remote process can also return 255. Connection reuse is process-scoped and on by default (`SSM_REUSE=0` / `--no-reuse`). Global `sshctl --json ...` also makes argument, unlock, alias, and sync failures emit exactly one JSON value.
+
+### Typed agent request (v1.3)
+
+`sshctl request` reads schema version 1 from stdin or `--file`. A run request must select exactly one of `argv`, `shell_command`, or `script_file`; `secret_files` accepts paths only. Agents should create the JSON with a file-writing tool instead of assembling it with shell `echo`.
+
+```json
+{
+  "version": 1,
+  "op": "run",
+  "alias": "prod-api",
+  "argv": ["printf", "%s\n", "value with spaces and ' quotes"],
+  "timeout": "15s"
+}
+```
+
+Script requests use `script_file`, `script_args`, `shell`, and `secret_files`. They default to a remote syntax preflight using the same interpreter with `-n`; failure returns `script_syntax_error` before the body executes. Results identify `mode`, `transport`, and `preflight`.
+
+Host requests use `op: host.upsert|host.update|...` plus a nested `host` object. Add/update defaults to `verify:true`:
+
+```json
+{
+  "version": 1,
+  "op": "host.upsert",
+  "alias": "prod-api",
+  "host": {
+    "address": "203.0.113.10",
+    "port": 22,
+    "user": "root",
+    "key_file": "/secure/prod-api.key",
+    "verify": true,
+    "push": false
+  }
+}
+```
 
 ### Agent host management
 
@@ -64,12 +104,12 @@ Connection failures print `ssm: error=...` and exit **255**. Connection **reuse*
 | `sshctl host list/show ... --json` | Structured inventory without passwords or private keys |
 | `sshctl host add ...` | Create only; fails if the alias exists |
 | `sshctl host update ...` | Change only specified fields; fails if the host is missing |
-| `sshctl host upsert ...` | Idempotent declaration; retries return `changed:false` |
+| `sshctl host upsert ... --verify` | Idempotent declaration; a failed candidate check leaves the vault unchanged |
 | `sshctl host remove ... --yes` | Explicit delete; `--prune-key` removes only an unreferenced key |
 
 A new host requires `--host`, `--user`, and one auth source: `--key <saved-name>`, `--key-file <path>`, or `--password-file <path>`. Passwords and keys are never accepted inline, and JSON exposes only `auth`/`key_name`. Upserting an existing host preserves auth when no auth option is given.
 
-Structured host mutations require a successful remote refresh before an atomic local save and return `sync_pending:true`; refresh failure stops before writing with `sync_pull_failed`. Use `--offline` only when stale local state is explicitly acceptable. Mutations do not silently auto-push: verify with `sshctl check` or a read-only `run`, then call `sshctl push` so sync failure has a reliable non-zero exit.
+Structured host mutations require a successful remote refresh. `--verify` checks the in-memory candidate with `hostname; uname -sr`; failure returns `verification_failed`, `applied:false`, and leaves the encrypted vault unchanged. Success is saved atomically and returns `sync_pending:true`. `--push` requires `--verify`; a sync failure leaves the local change pending and returns `sync_push_failed`. Use `--offline` only when stale local state is explicitly acceptable.
 
 ### Agent fleet: map (parallel)
 
@@ -91,11 +131,15 @@ One target failing does **not** drop other targets’ results.
 | `sshctl run host cmd arg1 arg2` | Multi-arg quoting; one string keeps legacy shell behavior | Compatible calls |
 | `sshctl run host -s <<'EOF'` | Body over SSH stdin to a fixed `sh -s` runner | Multi-line, pipes, redirects, quotes |
 | `sshctl run host --shell bash -f x.sh -- arg` | Shebang/explicit shell plus exact script args | Bash and generated scripts |
+| `sshctl run host --preflight -f x.sh` | Same remote interpreter parses with `-n` first | Prevent syntax-error side effects |
+| `sshctl request --file request.json` | argv/script args come from JSON arrays | Preferred agent interface |
 | `sshctl run host --json cmd` | Structured result | Agents |
 | `sshctl plan host cmd` | Dry-run + risk | Confirm before exec |
 | `sshctl run host --secret K=@file cmd` | Secret as remote env; redacted in plan/trace | Secrets |
 
-`-s`, `-f`, and `--scripts` do not require an executable local file and never embed the script body in the SSH command. SSM strips a UTF-8 BOM, normalizes CRLF, rejects NUL/oversized input, and auto-selects `sh/bash/dash/ash/ksh/zsh` from the shebang; no shebang defaults to `sh`. Plan/JSON output includes `interpreter`, `stdin_bytes`, and `script_sha256`, never the body.
+`-s`, `-f`, and `--scripts` do not require an executable local file and never embed the script body in the SSH command. SSM strips a UTF-8 BOM, normalizes CRLF, rejects NUL/oversized input, and auto-selects `sh/bash/dash/ash/ksh/zsh` from the shebang; no shebang defaults to `sh`. Plan/JSON output includes `interpreter`, `stdin_bytes`, and `script_sha256`, never the body. Syntax preflight proves only that the shell can parse the body; runtime dependencies, permissions, and business logic can still fail.
+
+Legacy bulk import no longer has a destructive default: `ssm import-json` must explicitly use `--merge`, or `--replace --yes` for full-vault replacement. Use host CRUD/request for one host.
 
 ## Optional Sync
 
@@ -148,9 +192,9 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 
 If sync is already configured, put master.pass and cloud.json in /root/.config/ssm with chmod 600.
 Then run sshctl sync and verify with sshctl status and sshctl list.
-Use sshctl host upsert/update ... --json for host changes; read auth only from --key-file/--password-file. Check first, then push.
-Use sshctl run <alias> --argv <command> [args...] for literal argv, and sshctl run <alias> -s <<'EOF' for shell syntax or generated scripts.
-Do not wrap generated scripts in bash -c or rebuild nested quoting. Also: shell, put, and get.
+Prefer sshctl request --file <json>: put literal arguments in argv, scripts in script_file/script_args, and only paths in secret_files.
+Use host.upsert/host.update requests with verify:true; push only after successful verification.
+For compatible CLI calls use --argv for literals and --preflight -f for generated scripts; never wrap generated bodies in bash -c.
 ```
 
 Project agent skill: `skills/agent-ssm/SKILL.md`.

@@ -1,5 +1,35 @@
 # Release Notes Draft
 
+## v1.3.0
+
+### Typed agent interface
+
+- Add `sshctl request [--file <json>|-]` with strict schema version 1 and unknown-field rejection. A run request must select exactly one of `argv`, `shell_command`, or `script_file`.
+- Preserve literal arguments and script arguments as JSON arrays so the local shell cannot reinterpret agent-generated values. Request secrets are file paths only and remain redacted.
+- Identify every execution with `mode`, `transport`, and optional `preflight` metadata. Global `sshctl --json ...` now keeps argument, unlock, alias, and sync failures to one JSON value.
+- Fix `sshctl run --json` without an alias: it now returns structured `missing_alias` instead of treating `--json` as a host name.
+
+### Verified mutations and safer legacy boundaries
+
+- Add `--verify` for host add/update/upsert. SSM checks the in-memory candidate with `hostname; uname -sr` and saves only after success; failure returns `verification_failed`, `applied:false`, and leaves the encrypted vault unchanged.
+- Require `--verify` when a host mutation uses `--push`. A push failure reports `sync_push_failed` while preserving the verified local change as pending.
+- Default typed host add/update/upsert requests to candidate verification.
+- Remove the destructive `import-json` default. Callers must choose `--merge`, or explicitly authorize full replacement with `--replace --yes`.
+- Fail every TUI-only path immediately when no terminal is available, including vault creation/unlock, add/edit, key entry, and interactive login/register.
+
+### Script and host-key hardening
+
+- Add remote script syntax preflight using the same selected interpreter with `-n`; classify parse failures as `script_syntax_error` before executing the body. Typed script requests enable it by default.
+- Add `sshctl host-key inspect` to observe the current algorithm/fingerprint without sending credentials and report `trusted`, `new`, or `mismatch` against `known_hosts`.
+- Add fingerprint-bound `sshctl host-key accept ... --fingerprint SHA256:... --yes`. A mismatched or changed fingerprint does not install the new key.
+- Report connection reuse scope explicitly as `process`, and document that exit 255 alone is not a failure category because a remote process can return it.
+
+### Validation
+
+- Strict request parsing, exact argv/secret-file handling, import mode guards, verify/push option guards, and global JSON parsing tests.
+- In-process SSH coverage for script syntax preflight and host-key inspect/accept with wrong-fingerprint immutability.
+- Real OpenSSH matrix covers candidate-vault rollback, typed argv/script requests, syntax-error no-side-effect behavior, host-key fingerprint guards, guarded import, and non-TTY TUI rejection.
+
 ## v1.2.0
 
 ### Agent-safe host management

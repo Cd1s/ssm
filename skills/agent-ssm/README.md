@@ -1,6 +1,6 @@
 # Agent SSM
 
-> A safety rail for agents that manage SSH hosts through the encrypted `ssm` vault: find the exact alias, operate non-interactively, verify the result, and never expose secrets.
+> A typed, non-interactive safety rail for agents managing SSH hosts through the encrypted `ssm` vault: exact aliases, verified candidate changes, JSON argv, stdin scripts, and fingerprint-bound host-key updates.
 
 [![Agent Skills](https://img.shields.io/badge/Agent%20Skills-agent--ssm-blueviolet)](SKILL.md)
 [![skills.sh](https://skills.sh/b/Cd1s/ssm)](https://skills.sh/Cd1s/ssm)
@@ -20,7 +20,9 @@ Use this skill when an agent needs to:
 - SSH credentials stay in the local encrypted vault.
 - Sync servers only store opaque encrypted vault blobs.
 - Agents must use exact aliases instead of guessing hostnames.
-- Single-host changes use idempotent `sshctl host upsert/update`; bulk legacy imports remain guarded.
+- Single-host changes use typed `sshctl request` operations and verify candidates before saving.
+- Generated argv is carried as a JSON array; scripts use file paths, stdin transport, and syntax preflight.
+- Bulk import has no destructive default and full replacement requires `--replace --yes`.
 - Secrets such as `master.pass`, private keys, passwords, tokens, and decrypted vault contents must never be printed.
 
 ## Quick start
@@ -64,14 +66,10 @@ For pi-agent local installs, the skill directory is commonly:
 sshctl status
 sshctl sync
 sshctl host list --json
-sshctl run <exact-alias> --json --argv hostname
-# multi-line / generated scripts use the stdin runner:
-sshctl run <exact-alias> -s <<'EOF'
-hostname; uname -sr
-EOF
+sshctl request --file ./ssm-request.json
 ```
 
-For add/edit operations, use `sshctl host upsert/update`, verify locally, then push. Detailed and legacy bulk-import guidance is in `references/import-json.md`.
+Use request schema version 1 for run and host operations. Add/update requests default to candidate verification; push only after success. Detailed request and legacy bulk-import guidance is in `SKILL.md` and `references/import-json.md`.
 
 ## Safety boundaries
 
@@ -90,7 +88,8 @@ skills/agent-ssm/
 ├── SKILL.md                      # Agent-facing workflow and rules
 ├── README.md                     # Public install and showcase page
 ├── references/
-│   └── import-json.md            # Host CRUD plus guarded legacy bulk import
+│   ├── import-json.md            # Guarded legacy bulk import
+│   └── request-v1.schema.json    # Typed request schema
 └── test-prompts.json             # Dry-run prompts for skill validation
 ```
 

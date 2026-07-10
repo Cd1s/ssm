@@ -119,6 +119,17 @@ func BuildScriptRunner(spec ScriptSpec) string {
 	return "command -v " + name + " >/dev/null 2>&1 || { printf '%s\\n' " + marker + " >&2; exit 127; }; exec " + quoted
 }
 
+// BuildScriptSyntaxRunner parses the same normalized stdin body with the same
+// remote interpreter without executing it. The body remains on stdin and is
+// sent again only when the caller proceeds with the real runner.
+func BuildScriptSyntaxRunner(spec ScriptSpec) string {
+	words := []string{spec.Interpreter, "-n", "-s", "--"}
+	quoted := JoinRemoteArgv(words)
+	name := ShellQuote(spec.Interpreter)
+	marker := ShellQuote("ssm: error=interpreter_not_found interpreter=" + spec.Interpreter)
+	return "command -v " + name + " >/dev/null 2>&1 || { printf '%s\\n' " + marker + " >&2; exit 127; }; exec " + quoted
+}
+
 // ScriptDigest identifies normalized script input without exposing its body.
 func ScriptDigest(body string) string {
 	sum := sha256.Sum256([]byte(body))

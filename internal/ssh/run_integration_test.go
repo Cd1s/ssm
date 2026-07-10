@@ -7,7 +7,9 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -81,6 +83,30 @@ func TestRunClassifiesRemoteScriptExit(t *testing.T) {
 	})
 	if res.OK || res.Exit != 9 || res.Error != "remote_script_failed" || res.Stderr != "failure" {
 		t.Fatalf("result = %+v", res)
+	}
+}
+
+func TestRunScriptPreflightRejectsSyntaxWithoutExecuting(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is required for the in-process SSH integration test")
+	}
+	conn, vault := startRunTestSSHServer(t)
+	t.Setenv("HOME", t.TempDir())
+	marker := filepath.Join(t.TempDir(), "must-not-exist")
+	body := "printf touched > " + ShellQuote(marker) + "\nif then\n"
+	script, err := PrepareScript("invalid.sh", []byte(body), "sh", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := RunScriptPreflight(conn, vault, script, true, conn.Name, conn.Name)
+	if res.OK || res.Error != "script_syntax_error" || res.Preflight != "failed" {
+		t.Fatalf("preflight = %+v", res)
+	}
+	if res.Stderr != "" || strings.Contains(res.Hint, "if then") {
+		t.Fatalf("preflight leaked parser source: %+v", res)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("invalid script executed before rejection: %v", err)
 	}
 }
 

@@ -11,11 +11,11 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
 
@@ -24,23 +24,35 @@ jobs:
 
       - name: Lint
         if: github.event_name != 'workflow_dispatch'
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.11.4
           only-new-issues: true
 
-      - name: Lint (manual, changes since v1.1.0)
+      - name: Lint (manual, changes since v1.2.0)
         if: github.event_name == 'workflow_dispatch'
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.11.4
-          args: --new-from-rev=c31aa5e9b2882e703fbebb0bcf6f2ada31398dca
+          args: --new-from-rev=v1.2.0
+
+      - name: Vet
+        run: go vet ./...
 
       - name: Build
         run: go build ./cmd/ssm
 
       - name: Test
         run: go test ./...
+
+      - name: Race test
+        run: go test -race ./...
+
+      - name: Validate agent artifacts
+        run: |
+          jq empty skills/agent-ssm/test-prompts.json
+          jq empty skills/agent-ssm/references/request-v1.schema.json
+          bash -n scripts/ssh_matrix_test.sh
 
       - name: Prepare SSH server
         run: |

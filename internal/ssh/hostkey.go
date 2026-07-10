@@ -1,0 +1,280 @@
+package ssh
+
+import (
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	gossh "golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
+
+	"ssm/internal/config"
+)
+
+type HostKeyInspection struct {
+	OK                bool     `json:"ok"`
+	Alias             string   `json:"alias"`
+	ResolvedAlias     string   `json:"resolved_alias,omitempty"`
+	Host              string   `json:"host"`
+	Port              int      `json:"port"`
+	Address           string   `json:"address"`
+	Status            string   `json:"status"` // trusted|new|mismatch
+	Algorithm         string   `json:"algorithm"`
+	Fingerprint       string   `json:"fingerprint"`
+	KnownFingerprints []string `json:"known_fingerprints,omitempty"`
+	KnownHostsPath    string   `json:"known_hosts_path"`
+	Accepted          bool     `json:"accepted,omitempty"`
+}
+
+type HostKeyOperationError struct {
+	Code    string
+	Message string
+	Hint    string
+	Cause   error
+}
+
+func (e *HostKeyOperationError) Error() string { return e.Message }
+func (e *HostKeyOperationError) Unwrap() error { return e.Cause }
+
+// InspectHostKey observes the key from a fresh unauthenticated SSH handshake.
+// The callback aborts immediately after key exchange, so no credential is sent.
+func InspectHostKey(c config.Connection) (HostKeyInspection, error) {
+	port := c.Port
+	if port == 0 {
+		port = 22
+	}
+	address := net.JoinHostPort(c.Host, strconv.Itoa(port))
+	report := HostKeyInspection{
+		Alias:          c.Name,
+		ResolvedAlias:  c.Name,
+		Host:           c.Host,
+		Port:           port,
+		Address:        address,
+		KnownHostsPath: KnownHostsPath(),
+	}
+
+	conn, err := net.DialTimeout("tcp", address, DialTimeout())
+	if err != nil {
+		return report, ClassifyError(err, c)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(DialTimeout()))
+	remote := conn.RemoteAddr()
+
+	var observed gossh.PublicKey
+	stop := errors.New("ssm host key captured")
+	cfg := &gossh.ClientConfig{
+		User: c.User,
+		HostKeyCallback: func(_ string, _ net.Addr, key gossh.PublicKey) error {
+			observed = key
+			return stop
+		},
+		Timeout: DialTimeout(),
+	}
+	_, _, _, handshakeErr := gossh.NewClientConn(conn, address, cfg)
+	if observed == nil {
+		if handshakeErr == nil {
+			handshakeErr = errors.New("SSH handshake ended before a host key was received")
+		}
+		return report, &HostKeyOperationError{
+			Code: "host_key_scan_failed", Message: handshakeErr.Error(),
+			Hint: "verify the endpoint is a direct SSH service rather than an HTTP proxy", Cause: handshakeErr,
+		}
+	}
+
+	report.Algorithm = observed.Type()
+	report.Fingerprint = gossh.FingerprintSHA256(observed)
+	status, known, err := inspectKnownHost(report.KnownHostsPath, address, remote, observed)
+	if err != nil {
+		return report, err
+	}
+	report.Status = status
+	report.KnownFingerprints = known
+	report.OK = true
+	return report, nil
+}
+
+func inspectKnownHost(path, address string, remote net.Addr, observed gossh.PublicKey) (string, []string, error) {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return "new", nil, nil
+		}
+		return "", nil, &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "fix known_hosts permissions and retry", Cause: err}
+	}
+	callback, err := knownhosts.New(path)
+	if err != nil {
+		return "", nil, &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "repair malformed known_hosts before accepting a key", Cause: err}
+	}
+	err = callback(address, remote, observed)
+	if err == nil {
+		return "trusted", []string{gossh.FingerprintSHA256(observed)}, nil
+	}
+	var keyErr *knownhosts.KeyError
+	if !errors.As(err, &keyErr) {
+		return "", nil, &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "inspect known_hosts and retry", Cause: err}
+	}
+	if len(keyErr.Want) == 0 {
+		return "new", nil, nil
+	}
+	fingerprints := make([]string, 0, len(keyErr.Want))
+	seen := map[string]bool{}
+	for _, known := range keyErr.Want {
+		fingerprint := gossh.FingerprintSHA256(known.Key)
+		if !seen[fingerprint] {
+			seen[fingerprint] = true
+			fingerprints = append(fingerprints, fingerprint)
+		}
+	}
+	sort.Strings(fingerprints)
+	return "mismatch", fingerprints, nil
+}
+
+// AcceptHostKey re-observes the endpoint and changes known_hosts only when the
+// caller-provided full SHA-256 fingerprint matches exactly.
+func AcceptHostKey(c config.Connection, expectedFingerprint string) (HostKeyInspection, error) {
+	report, err := InspectHostKey(c)
+	if err != nil {
+		return report, err
+	}
+	if expectedFingerprint == "" || expectedFingerprint != report.Fingerprint {
+		return report, &HostKeyOperationError{
+			Code:    "fingerprint_mismatch",
+			Message: fmt.Sprintf("observed fingerprint %q does not match the explicitly accepted fingerprint", report.Fingerprint),
+			Hint:    "compare the fingerprint through a trusted channel; do not accept an unexpected key",
+		}
+	}
+	if report.Status == "trusted" {
+		report.Accepted = true
+		return report, nil
+	}
+	key, err := scanObservedKey(c)
+	if err != nil {
+		return report, err
+	}
+	if gossh.FingerprintSHA256(key) != expectedFingerprint {
+		return report, &HostKeyOperationError{
+			Code:    "fingerprint_changed",
+			Message: "host key changed between inspection and known_hosts update",
+			Hint:    "known_hosts was not changed; investigate endpoint instability or a possible interception",
+		}
+	}
+
+	path := report.KnownHostsPath
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return report, &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "fix ~/.ssh permissions and retry", Cause: err}
+	}
+	if report.Status == "mismatch" {
+		if err := replaceKnownHost(path, knownHostToken(c), key); err != nil {
+			return report, err
+		}
+	} else if err := saveHostKey(path, knownHostToken(c), key); err != nil {
+		return report, &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "fix known_hosts permissions and retry", Cause: err}
+	}
+	report.Status = "trusted"
+	report.KnownFingerprints = []string{expectedFingerprint}
+	report.Accepted = true
+	return report, nil
+}
+
+func scanObservedKey(c config.Connection) (gossh.PublicKey, error) {
+	port := c.Port
+	if port == 0 {
+		port = 22
+	}
+	address := net.JoinHostPort(c.Host, strconv.Itoa(port))
+	conn, err := net.DialTimeout("tcp", address, DialTimeout())
+	if err != nil {
+		return nil, ClassifyError(err, c)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(DialTimeout()))
+	var observed gossh.PublicKey
+	stop := errors.New("ssm host key captured")
+	_, _, _, err = gossh.NewClientConn(conn, address, &gossh.ClientConfig{
+		User: c.User,
+		HostKeyCallback: func(_ string, _ net.Addr, key gossh.PublicKey) error {
+			observed = key
+			return stop
+		},
+		Timeout: DialTimeout(),
+	})
+	if observed == nil {
+		message := "SSH handshake ended before a host key was received"
+		if err != nil {
+			message = err.Error()
+		}
+		return nil, &HostKeyOperationError{Code: "host_key_scan_failed", Message: message, Hint: "verify the SSH endpoint and retry", Cause: err}
+	}
+	return observed, nil
+}
+
+func replaceKnownHost(path, token string, key gossh.PublicKey) error {
+	original, err := os.ReadFile(path) //nolint:gosec // fixed ~/.ssh/known_hosts path
+	if err != nil {
+		return &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "fix known_hosts permissions and retry", Cause: err}
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".known_hosts.ssm.*")
+	if err != nil {
+		return &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "fix ~/.ssh permissions and retry", Cause: err}
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		_ = os.Remove(tmpPath)
+		_ = os.Remove(tmpPath + ".old")
+	}()
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "fix ~/.ssh permissions and retry", Cause: err}
+	}
+	if _, err := tmp.Write(original); err != nil {
+		_ = tmp.Close()
+		return &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "known_hosts was not changed", Cause: err}
+	}
+	if err := tmp.Close(); err != nil {
+		return &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "known_hosts was not changed", Cause: err}
+	}
+
+	cmd := exec.Command("ssh-keygen", "-R", token, "-f", tmpPath) //nolint:gosec // fixed executable and argument vector
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		return &HostKeyOperationError{
+			Code: "known_hosts_update_failed", Message: message,
+			Hint: "install OpenSSH ssh-keygen or remove the exact host:port entry manually", Cause: err,
+		}
+	}
+	if err := saveHostKey(tmpPath, token, key); err != nil {
+		return &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "known_hosts was not changed", Cause: err}
+	}
+	updated, err := os.ReadFile(tmpPath) //nolint:gosec // private temporary known_hosts path
+	if err != nil {
+		return &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "known_hosts was not changed", Cause: err}
+	}
+	if err := config.WritePrivateFile(path, updated); err != nil {
+		return &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "known_hosts was not changed", Cause: err}
+	}
+	return nil
+}
+
+func knownHostToken(c config.Connection) string {
+	port := c.Port
+	if port == 0 {
+		port = 22
+	}
+	return knownhosts.Normalize(net.JoinHostPort(c.Host, strconv.Itoa(port)))
+}
+
+func KnownHostsPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".ssh", "known_hosts")
+}

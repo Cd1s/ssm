@@ -37,6 +37,7 @@ func runRegister(args []string) {
 		fmt.Println("Account registered.")
 		return
 	}
+	requireInteractive("ssm register")
 
 	fields := []tui.Field{
 		{Label: "Server", Value: defaultServer},
@@ -123,6 +124,7 @@ func runLogin(args []string) {
 		fmt.Println("Logged in.")
 		return
 	}
+	requireInteractive("ssm login")
 
 	fields := []tui.Field{
 		{Label: "Server", Value: defaultServer},
@@ -218,17 +220,26 @@ func runLogout() {
 }
 
 func runPush() {
-	cfg, err := cloud.LoadCloud()
-	if err != nil {
-		printError(err)
+	if err := pushVault(); err != nil {
+		writeCLIError("sync_push_failed", err.Error(), "local vault remains pending; fix sync and retry push", 1)
 		os.Exit(1)
 	}
-
-	if err := cloud.Push(cfg); err != nil {
-		printError(err)
-		os.Exit(1)
+	if machineJSON {
+		writeMachineValue(struct {
+			OK     bool   `json:"ok"`
+			Action string `json:"action"`
+		}{OK: true, Action: "pushed"})
+		return
 	}
 	fmt.Println("Vault pushed to cloud.")
+}
+
+func pushVault() error {
+	cfg, err := cloud.LoadCloud()
+	if err != nil {
+		return err
+	}
+	return cloud.Push(cfg)
 }
 
 func runRemoteHash() {
@@ -259,8 +270,24 @@ func runPullIfChanged() {
 		os.Exit(1)
 	}
 	if changed {
+		if machineJSON {
+			writeMachineValue(struct {
+				OK      bool   `json:"ok"`
+				Action  string `json:"action"`
+				Changed bool   `json:"changed"`
+			}{OK: true, Action: "pulled", Changed: true})
+			return
+		}
 		fmt.Println("Vault pulled from cloud.")
 	} else {
+		if machineJSON {
+			writeMachineValue(struct {
+				OK      bool   `json:"ok"`
+				Action  string `json:"action"`
+				Changed bool   `json:"changed"`
+			}{OK: true, Action: "pulled", Changed: false})
+			return
+		}
 		fmt.Println("Vault unchanged.")
 	}
 }
@@ -278,13 +305,20 @@ func pullIfChanged() {
 func runPull() {
 	cfg, err := cloud.LoadCloud()
 	if err != nil {
-		printError(err)
+		writeCLIError("sync_config_error", err.Error(), "configure sync or use local inventory", 1)
 		os.Exit(1)
 	}
 
 	if err := cloud.Pull(cfg); err != nil {
-		printError(err)
+		writeCLIError("sync_pull_failed", err.Error(), "local inventory was not replaced", 1)
 		os.Exit(1)
+	}
+	if machineJSON {
+		writeMachineValue(struct {
+			OK     bool   `json:"ok"`
+			Action string `json:"action"`
+		}{OK: true, Action: "pulled"})
+		return
 	}
 	fmt.Println("Vault pulled from cloud.")
 }

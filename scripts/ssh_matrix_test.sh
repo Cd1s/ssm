@@ -92,8 +92,10 @@ printf 'test-master\n' > "$TMP/home/.config/ssm/master.pass"
 chmod 600 "$TMP/home/.config/ssm/master.pass"
 
 host_created=$(HOME="$TMP/home" SSM_UPDATE_REPO=off "$BIN" --master-pass-file "$TMP/home/.config/ssm/master.pass" \
-  host upsert local --host 127.0.0.1 --port "$PORT" --user "$TEST_USER" --key-file "$TMP/client_key" --json)
+  host upsert local --host 127.0.0.1 --port "$PORT" --user "$TEST_USER" --key-file "$TMP/client_key" --verify --json)
 printf '%s' "$host_created" | grep -q '"action": "created"' || { echo "host create: $host_created" >&2; exit 1; }
+printf '%s' "$host_created" | grep -q '"applied": true' || { echo "host candidate apply: $host_created" >&2; exit 1; }
+printf '%s' "$host_created" | grep -q '"verification"' || { echo "host candidate verification: $host_created" >&2; exit 1; }
 ln -s "$BIN" "$TMP/sshctl"
 
 run_sshctl() {
@@ -103,11 +105,36 @@ run_sshctl() {
 host_unchanged=$(run_sshctl host upsert local --host 127.0.0.1 --port "$PORT" --user "$TEST_USER" --key-file "$TMP/client_key" --json)
 printf '%s' "$host_unchanged" | grep -q '"action": "unchanged"' || { echo "host upsert retry: $host_unchanged" >&2; exit 1; }
 printf '%s' "$host_unchanged" | grep -q '"sync_pending": true' || { echo "host sync state: $host_unchanged" >&2; exit 1; }
-host_updated=$(run_sshctl host update local --group matrix --json)
+host_updated=$(run_sshctl host update local --group matrix --verify --json)
 printf '%s' "$host_updated" | grep -q '"action": "updated"' || { echo "host update: $host_updated" >&2; exit 1; }
 host_show=$(run_sshctl host show local --json)
 printf '%s' "$host_show" | grep -q '"auth": "key"' || { echo "host show: $host_show" >&2; exit 1; }
 echo "ok host_crud"
+
+vault_before=$(sha256sum "$TMP/home/.config/ssm/connections.enc" | awk '{print $1}')
+BAD_PORT=$(find_free_port)
+set +e
+host_rejected=$(run_sshctl host update local --port "$BAD_PORT" --verify --json)
+host_rejected_rc=$?
+set -e
+vault_after=$(sha256sum "$TMP/home/.config/ssm/connections.enc" | awk '{print $1}')
+if [ "$host_rejected_rc" = "0" ] || [ "$vault_before" != "$vault_after" ]; then
+  echo "host candidate rollback: rc=$host_rejected_rc before=$vault_before after=$vault_after out=[$host_rejected]" >&2
+  exit 1
+fi
+printf '%s' "$host_rejected" | grep -q '"error": "verification_failed"' || { echo "host candidate error: $host_rejected" >&2; exit 1; }
+printf '%s' "$host_rejected" | grep -q '"applied": false' || { echo "host candidate applied unexpectedly: $host_rejected" >&2; exit 1; }
+echo "ok host_candidate_transaction"
+
+set +e
+missing_alias=$(run_sshctl run --json)
+missing_alias_rc=$?
+set -e
+if [ "$missing_alias_rc" != "2" ] || ! printf '%s' "$missing_alias" | grep -q '"error": "missing_alias"'; then
+  echo "missing alias json: rc=$missing_alias_rc out=[$missing_alias]" >&2
+  exit 1
+fi
+echo "ok missing_alias_json"
 
 expect_output() {
   local name=$1
@@ -173,6 +200,47 @@ if [ "$file_got" != "file arg|token with 'single' and spaces" ]; then
   exit 1
 fi
 echo "ok script_file"
+
+cat > "$TMP/request.json" <<EOF
+{
+  "version": 1,
+  "op": "run",
+  "alias": "local",
+  "argv": ["printf", "%s", "request ' exact with spaces"]
+}
+EOF
+request_out=$(run_sshctl request --file "$TMP/request.json")
+printf '%s' "$request_out" | grep -q '"mode": "argv"' || { echo "request mode: $request_out" >&2; exit 1; }
+printf '%s' "$request_out" | grep -q "request ' exact with spaces" || { echo "request argv: $request_out" >&2; exit 1; }
+echo "ok typed_request_argv"
+
+cat > "$TMP/script_request.json" <<EOF
+{
+  "version": 1,
+  "op": "run",
+  "alias": "local",
+  "script_file": "$TMP/remote_script.sh",
+  "script_args": ["request file arg"],
+  "shell": "auto",
+  "secret_files": {"TOKEN": "$TMP/token"}
+}
+EOF
+script_request_out=$(run_sshctl request --file "$TMP/script_request.json")
+printf '%s' "$script_request_out" | grep -q '"preflight": "passed"' || { echo "request preflight: $script_request_out" >&2; exit 1; }
+printf '%s' "$script_request_out" | grep -q "request file arg|token with 'single' and spaces" || { echo "request script: $script_request_out" >&2; exit 1; }
+echo "ok typed_request_script"
+
+printf 'printf touched > %q\nif then\n' "$TMP/preflight-touched" > "$TMP/invalid_script.sh"
+set +e
+syntax_fail=$(run_sshctl run local --json --preflight -f "$TMP/invalid_script.sh")
+syntax_fail_rc=$?
+set -e
+if [ "$syntax_fail_rc" = "0" ] || [ -e "$TMP/preflight-touched" ]; then
+  echo "script preflight side effect: rc=$syntax_fail_rc out=[$syntax_fail]" >&2
+  exit 1
+fi
+printf '%s' "$syntax_fail" | grep -q '"error": "script_syntax_error"' || { echo "script preflight class: $syntax_fail" >&2; exit 1; }
+echo "ok script_syntax_preflight"
 
 script_plan=$(run_sshctl plan local --json --shell auto -f "$TMP/remote_script.sh" -- "file arg")
 printf '%s' "$script_plan" | grep -q '"interpreter": "bash"' || { echo "script plan: $script_plan" >&2; exit 1; }
@@ -266,6 +334,46 @@ echo "ok check"
 check_json=$(run_sshctl check local --json)
 printf '%s' "$check_json" | grep -q '"ok": true' || { echo "check json: $check_json" >&2; exit 1; }
 echo "ok check_json"
+
+host_key=$(run_sshctl host-key inspect local --json)
+printf '%s' "$host_key" | grep -q '"status": "trusted"' || { echo "host key inspect: $host_key" >&2; exit 1; }
+known_before=$(sha256sum "$TMP/home/.ssh/known_hosts" | awk '{print $1}')
+set +e
+wrong_key=$(run_sshctl host-key accept local --fingerprint SHA256:not-the-observed-key --yes --json)
+wrong_key_rc=$?
+set -e
+known_after=$(sha256sum "$TMP/home/.ssh/known_hosts" | awk '{print $1}')
+if [ "$wrong_key_rc" = "0" ] || [ "$known_before" != "$known_after" ]; then
+  echo "host key fingerprint guard: rc=$wrong_key_rc before=$known_before after=$known_after out=[$wrong_key]" >&2
+  exit 1
+fi
+printf '%s' "$wrong_key" | grep -q '"error": "fingerprint_mismatch"' || { echo "host key mismatch class: $wrong_key" >&2; exit 1; }
+echo "ok host_key_fingerprint_guard"
+
+cat > "$TMP/import.json" <<EOF
+[{"alias":"danger","host":"127.0.0.1","port":$PORT,"user":"$TEST_USER","private_key_path":"$TMP/client_key"}]
+EOF
+vault_before=$(sha256sum "$TMP/home/.config/ssm/connections.enc" | awk '{print $1}')
+set +e
+import_out=$(HOME="$TMP/home" SSM_UPDATE_REPO=off "$BIN" --master-pass-file "$TMP/home/.config/ssm/master.pass" import-json "$TMP/import.json" 2>&1)
+import_rc=$?
+set -e
+vault_after=$(sha256sum "$TMP/home/.config/ssm/connections.enc" | awk '{print $1}')
+if [ "$import_rc" = "0" ] || [ "$vault_before" != "$vault_after" ]; then
+  echo "guarded import: rc=$import_rc before=$vault_before after=$vault_after out=[$import_out]" >&2
+  exit 1
+fi
+echo "ok guarded_import"
+
+set +e
+edit_out=$(HOME="$TMP/home" SSM_UPDATE_REPO=off "$BIN" --master-pass-file "$TMP/home/.config/ssm/master.pass" edit local 2>&1)
+edit_rc=$?
+set -e
+if [ "$edit_rc" != "2" ] || ! printf '%s' "$edit_out" | grep -q 'interactive_required'; then
+  echo "non-tty edit: rc=$edit_rc out=[$edit_out]" >&2
+  exit 1
+fi
+echo "ok non_tty_tui_guard"
 
 cat > "$TMP/run_shell.sh" <<EOF
 #!/usr/bin/env bash

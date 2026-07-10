@@ -21,12 +21,11 @@ sshctl sync
 sshctl doctor <alias> --deep --json     # vault + 连通 + 远端健康
 sshctl check <alias>
 
-# 无头主机管理（变更先保存在本地，验证后显式 push）
+# 无头主机管理（候选配置先验证，成功后才保存）
 sshctl host list --json
-sshctl host upsert prod-api --host 203.0.113.10 --user root --port 22 --key-file /secure/prod-api.key --json
-sshctl host update prod-api --port 2222 --json
+sshctl host upsert prod-api --host 203.0.113.10 --user root --port 22 --key-file /secure/prod-api.key --verify --json
+sshctl host update prod-api --port 2222 --verify --json
 sshctl host show prod-api --json
-sshctl check prod-api
 sshctl push
 
 # 单机（字面 argv 或 stdin 脚本；连接默认复用）
@@ -37,6 +36,13 @@ sshctl run <alias> --secret API_KEY=@./key.txt -- printenv API_KEY
 sshctl run <alias> --shell bash -s <<'EOF'
 echo "any quotes fine"
 EOF
+
+# Agent 首选：类型化 JSON request，不让本地 shell 重解析 argv
+sshctl request --file ./request.json
+
+# 观察/接受 host key；accept 必须绑定刚观察到的完整指纹
+sshctl host-key inspect <alias> --json
+sshctl host-key accept <alias> --fingerprint SHA256:... --yes --json
 
 # 并行：多机 / 多脚本（舰队）
 sshctl map limee-hk,aws-sg -j 8 hostname
@@ -55,7 +61,41 @@ sshctl run old-alias hostname
 sshctl push
 ```
 
-连接失败 stderr：`ssm: error=dial_timeout|host_key_mismatch|alias_not_found|...`，退出码 **255**。默认 **连接复用**（`SSM_REUSE=0` / `--no-reuse` 关闭）。
+连接层失败的 JSON `error` 为 `dial_timeout|host_key_mismatch|alias_not_found|...`，通常退出码是 **255**。不要只凭 255 分类，因为远端程序本身也可能返回 255。默认 **连接复用**，作用域是当前 `sshctl` 进程（`SSM_REUSE=0` / `--no-reuse` 关闭）。全局 `sshctl --json ...` 会让参数、解锁、alias 和同步错误也只输出一个 JSON 值。
+
+### Agent 类型化 request（v1.3）
+
+`sshctl request` 从 stdin 或 `--file` 读取 schema version 1。运行请求必须在 `argv`、`shell_command`、`script_file` 中三选一；`secret_files` 只接受文件路径。推荐 agent 通过文件写入工具创建 JSON，而不是在 shell 中拼接或 `echo` JSON。
+
+```json
+{
+  "version": 1,
+  "op": "run",
+  "alias": "prod-api",
+  "argv": ["printf", "%s\n", "value with spaces and ' quotes"],
+  "timeout": "15s"
+}
+```
+
+脚本请求用 `script_file`、`script_args`、`shell` 和 `secret_files`。脚本默认先在远端使用同一个解释器执行 `-n` 语法预检；失败返回 `script_syntax_error`，正文不会执行。请求结果包含 `mode: argv|shell_command|script`、`transport: ssh_exec|ssh_stdin` 和 `preflight`。
+
+Host request 使用 `op: host.upsert|host.update|...` 与嵌套 `host` 字段，新增/修改默认 `verify:true`：
+
+```json
+{
+  "version": 1,
+  "op": "host.upsert",
+  "alias": "prod-api",
+  "host": {
+    "address": "203.0.113.10",
+    "port": 22,
+    "user": "root",
+    "key_file": "/secure/prod-api.key",
+    "verify": true,
+    "push": false
+  }
+}
+```
 
 ### Agent 主机管理
 
@@ -64,12 +104,12 @@ sshctl push
 | `sshctl host list/show ... --json` | 返回不含密码/私钥的结构化 inventory |
 | `sshctl host add ...` | 仅新增；别名已存在时失败 |
 | `sshctl host update ...` | 仅修改显式给出的字段；主机不存在时失败 |
-| `sshctl host upsert ...` | 幂等声明；重复执行返回 `changed:false`，适合 agent 重试 |
+| `sshctl host upsert ... --verify` | 幂等声明；候选连接验证失败时 vault 不变 |
 | `sshctl host remove ... --yes` | 显式确认后删除；`--prune-key` 只清理已无引用的 key |
 
 新增主机必须提供 `--host`、`--user` 和一种认证方式：`--key <已保存名称>`、`--key-file <路径>` 或 `--password-file <路径>`。密码和私钥不接受 inline 参数，JSON 结果只显示 `auth`/`key_name`。`upsert` 修改已有主机时，未提供认证参数会保留原认证。
 
-结构化 host 变更会先确认远端 vault 已刷新，再原子保存到本机，并返回 `sync_pending:true`；远端检查失败会在写入前以 `sync_pull_failed` 停止。只有明确接受本地数据可能过期时才使用 `--offline`。变更不会静默 auto-push：先执行 `sshctl check` 或只读 `run` 验证，再显式执行 `sshctl push`，同步错误会有可靠的非零退出码。
+结构化 host 变更会先确认远端 vault 已刷新；`--verify` 使用内存中的候选 vault 建连并运行 `hostname; uname -sr`，失败返回 `verification_failed`、`applied:false`，加密 vault 不发生变化。成功后才原子保存并返回 `sync_pending:true`。`--push` 必须和 `--verify` 一起使用；同步失败时本地变更保留并返回 `sync_push_failed`。只有明确接受本地数据可能过期时才使用 `--offline`。
 
 ### Agent 舰队：map 并行
 
@@ -92,11 +132,15 @@ sshctl push
 | `sshctl run host cmd arg1 arg2` | 多参数自动逐项转义；单字符串保留旧 shell 行为 | 兼容旧调用 |
 | `sshctl run host -s <<'EOF'` | 正文从 SSH stdin 送入固定 `sh -s` runner | 多行、管道、重定向、任意引号 |
 | `sshctl run host --shell bash -f x.sh -- arg` | shebang/显式 shell + 精确脚本参数 | Bash 脚本、生成脚本 |
+| `sshctl run host --preflight -f x.sh` | 远端同解释器 `-n` 后再执行 | 阻止语法错误产生副作用 |
+| `sshctl request --file request.json` | argv/脚本参数来自 JSON 数组 | agent 首选，无本地 shell 引号歧义 |
 | `sshctl run host --json cmd` | 结构化结果 | agent 解析 |
 | `sshctl plan host cmd` | 干跑 + risk | 确认再执行 |
 | `sshctl run host --secret K=@file cmd` | 密钥作远端 env，trace 脱敏 | 密钥不进 argv 展示 |
 
-`-s`、`-f` 和 `--scripts` 不要求本地文件有执行权限，也不会把脚本文本嵌进 SSH command。SSM 会移除 UTF-8 BOM、统一 CRLF、拒绝 NUL/超大脚本，并根据 shell shebang 自动选择 `sh/bash/dash/ash/ksh/zsh`；无 shebang 默认 `sh`。`--plan/--json` 返回 `interpreter`、`stdin_bytes`、`script_sha256`，不回显脚本正文。
+`-s`、`-f` 和 `--scripts` 不要求本地文件有执行权限，也不会把脚本文本嵌进 SSH command。SSM 会移除 UTF-8 BOM、统一 CRLF、拒绝 NUL/超大脚本，并根据 shell shebang 自动选择 `sh/bash/dash/ash/ksh/zsh`；无 shebang 默认 `sh`。`--plan/--json` 返回 `interpreter`、`stdin_bytes`、`script_sha256`，不回显脚本正文。语法预检只能保证 shell 能解析脚本，运行期依赖、权限和业务逻辑仍可能失败。
+
+旧的批量迁移命令不再有危险默认值：`ssm import-json` 必须明确选择 `--merge`，或使用 `--replace --yes` 执行整库替换。单机变更始终使用 `sshctl host` 或 request。
 
 ## 可选同步
 
@@ -149,9 +193,9 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 
 如果已有同步配置，把 master.pass 和 cloud.json 放到 /root/.config/ssm，并执行 chmod 600。
 然后执行 sshctl sync，用 sshctl status 和 sshctl list 验证。
-新增/修改服务器用 sshctl host upsert/update ... --json；认证只从 --key-file/--password-file 读取。先 check，再 push。
-字面参数用 sshctl run <alias> --argv <command> [args...]；含 shell 语法或多行内容用 sshctl run <alias> -s <<'EOF' ... EOF。
-不要把生成脚本塞进 bash -c，也不要自行嵌套引号。也可用 sshctl shell、put、get。
+优先使用 sshctl request --file <json>：字面参数放 argv 数组，脚本使用 script_file/script_args，secret_files 只放路径。
+新增/修改服务器用 host.upsert/host.update request，保持 verify:true；验证成功后才显式 push。
+兼容 CLI 中字面参数用 --argv，复杂脚本用 --preflight -f；不要把生成脚本塞进 bash -c。
 ```
 
 项目内 agent skill 在 `skills/agent-ssm/SKILL.md`。

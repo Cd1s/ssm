@@ -17,10 +17,13 @@ var (
 )
 
 func runSSHCTL(args []string) {
+	if hasJSONFlagBeforeDash(args) && len(args) > 0 && args[0] == "--json" {
+		machineJSON = true
+	}
 	parsed, err := parseGlobalArgs(args)
 	if err != nil {
-		printError(err)
-		os.Exit(1)
+		writeCLIError("invalid_arguments", err.Error(), "run sshctl --help for supported global options", 2)
+		os.Exit(2)
 	}
 	args = parsed
 
@@ -32,11 +35,17 @@ func runSSHCTL(args []string) {
 	}
 
 	if len(args) == 0 {
+		if machineJSON {
+			writeCLIError("invalid_arguments", "sshctl command is required", "run sshctl --help for available commands", 2)
+			os.Exit(2)
+		}
 		sshctlUsage()
 		return
 	}
 
 	switch args[0] {
+	case "request":
+		runAgentRequest(args[1:])
 	case "sync", "pull":
 		if len(args) != 1 {
 			sshctlUsageExit()
@@ -48,7 +57,7 @@ func runSSHCTL(args []string) {
 		}
 		runPush()
 	case "list":
-		jsonFlag := false
+		jsonFlag := machineJSON
 		switch len(args) {
 		case 1:
 		case 2:
@@ -59,6 +68,7 @@ func runSSHCTL(args []string) {
 		default:
 			sshctlUsageExit()
 		}
+		machineJSON = machineJSON || jsonFlag
 		unlock()
 		if jsonFlag {
 			runList(true)
@@ -66,31 +76,47 @@ func runSSHCTL(args []string) {
 			runSSHCTLList()
 		}
 	case "host", "hosts":
+		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
 		unlock()
 		runHostCommand(args[1:])
+	case "host-key", "known-hosts":
+		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
+		unlock()
+		runHostKeyCommand(args[1:])
 	case "run", "exec":
-		if len(args) < 2 {
-			sshctlUsageExit()
+		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
+		alias, runArgs, err := splitRunAlias(args[1:])
+		if err != nil {
+			writeCLIError("missing_alias", err.Error(), "use sshctl --json run <exact-alias> --argv <command> [args...]", 2)
+			os.Exit(2)
 		}
 		unlock()
-		runSSHCTLRun(args[1], args[2:])
+		runSSHCTLRun(alias, runArgs)
 	case "plan":
-		// sshctl plan <alias> <command...>
-		if len(args) < 2 {
-			sshctlUsageExit()
+		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
+		alias, runArgs, err := splitRunAlias(args[1:])
+		if err != nil {
+			writeCLIError("missing_alias", err.Error(), "use sshctl --json plan <exact-alias> --argv <command> [args...]", 2)
+			os.Exit(2)
 		}
 		unlock()
-		runSSHCTLPlan(args[1], args[2:])
+		runSSHCTLPlan(alias, runArgs)
 	case "map":
 		// sshctl map <targets> [options] [--] <command...>
 		// targets: comma-separated aliases and/or globs
+		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
 		if len(args) < 2 {
 			sshctlUsageExit()
 		}
 		unlock()
 		runSSHCTLMap(args[1:])
 	case "check":
-		jsonFlag := false
+		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
+		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+			writeCLIError("missing_alias", "check requires an exact host alias", "use sshctl --json check <exact-alias>", 2)
+			os.Exit(2)
+		}
+		jsonFlag := machineJSON
 		switch len(args) {
 		case 2:
 		case 3:
@@ -101,9 +127,11 @@ func runSSHCTL(args []string) {
 		default:
 			sshctlUsageExit()
 		}
+		machineJSON = machineJSON || jsonFlag
 		unlock()
 		runCheck(args[1], jsonFlag)
 	case "doctor":
+		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
 		unlock()
 		runSSHCTLDoctor(args[1:])
 	case "put":
@@ -119,12 +147,18 @@ func runSSHCTL(args []string) {
 		unlock()
 		runGet(args[1], args[2], args[3])
 	case "redirect", "alias-link":
+		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
 		unlock()
 		runRedirect(args[1:])
 	case "shell":
 		if len(args) != 2 {
 			sshctlUsageExit()
 		}
+		if machineJSON {
+			writeCLIError("interactive_required", "sshctl shell cannot run in JSON mode", "use sshctl run with --argv or a script source", 2)
+			os.Exit(2)
+		}
+		requireInteractive("sshctl shell")
 		unlock()
 		runShell(args[1])
 	case "status":
@@ -133,9 +167,25 @@ func runSSHCTL(args []string) {
 		}
 		unlock()
 		runSSHCTLStatus()
+	case "--version", "-v":
+		if len(args) != 1 {
+			sshctlUsageExit()
+		}
+		if machineJSON {
+			writeMachineValue(struct {
+				OK      bool   `json:"ok"`
+				Version string `json:"version"`
+			}{OK: true, Version: version})
+			return
+		}
+		fmt.Printf("sshctl %s\n", version)
 	case "-h", "--help", "help":
 		sshctlUsage()
 	default:
+		if machineJSON && len(args) == 1 {
+			writeCLIError("interactive_required", "implicit shell cannot run in JSON mode", "use sshctl --json run <alias> --argv <command>", 2)
+			os.Exit(2)
+		}
 		unlock()
 		if len(args) == 1 {
 			runShell(args[0])
@@ -154,6 +204,7 @@ func runSSHCTLRun(alias string, cmdArgs []string) {
 		}
 		exitRemoteRunArgError("sshctl", alias, cmdArgs, err)
 	}
+	machineJSON = machineJSON || spec.JSON
 	if len(spec.Scripts) > 1 {
 		// Multi-script on one host: use map
 		runMap([]string{alias}, spec)
@@ -171,6 +222,7 @@ func runSSHCTLPlan(alias string, cmdArgs []string) {
 		}
 		exitRemoteRunArgError("sshctl", alias, cmdArgs, err)
 	}
+	machineJSON = machineJSON || spec.JSON
 	spec.Plan = true
 	if !spec.JSON {
 		// plan defaults to structured text; --json still works
@@ -217,7 +269,7 @@ func runSSHCTLMap(args []string) {
 func runSSHCTLDoctor(args []string) {
 	alias := ""
 	deep := false
-	asJSON := false
+	asJSON := machineJSON
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--json":
@@ -273,18 +325,39 @@ func runSSHCTLStatus() {
 		cloudStatus = "configured"
 	}
 
-	fmt.Printf("hosts=%d\nvault=%s\nsync=%s\nredirects=%d\nreuse=%s\n",
-		count, vaultStatus, cloudStatus, len(config.LoadRedirects()), map[bool]string{true: "on", false: "off"}[os.Getenv("SSM_REUSE") != "0" && os.Getenv("SSM_REUSE") != "off"])
+	reuse := map[bool]string{true: "on", false: "off"}[os.Getenv("SSM_REUSE") != "0" && os.Getenv("SSM_REUSE") != "off"]
+	if machineJSON {
+		writeMachineValue(struct {
+			OK         bool   `json:"ok"`
+			Version    string `json:"version"`
+			Hosts      int    `json:"hosts"`
+			Vault      string `json:"vault"`
+			Sync       string `json:"sync"`
+			Redirects  int    `json:"redirects"`
+			Reuse      string `json:"reuse"`
+			ReuseScope string `json:"reuse_scope"`
+		}{OK: err == nil, Version: version, Hosts: count, Vault: vaultStatus, Sync: cloudStatus, Redirects: len(config.LoadRedirects()), Reuse: reuse, ReuseScope: "process"})
+		if err != nil {
+			os.Exit(1)
+		}
+		return
+	}
+	fmt.Printf("version=%s\nhosts=%d\nvault=%s\nsync=%s\nredirects=%d\nreuse=%s\nreuse_scope=process\n",
+		version, count, vaultStatus, cloudStatus, len(config.LoadRedirects()), reuse)
 }
 
 func sshctlUsage() {
 	fmt.Print(`Usage:
-  sshctl sync | pull | push
+	  sshctl [--json] <command> ...
+	  sshctl sync | pull | push
   sshctl list [--json]
-  sshctl host list|show|add|update|upsert|remove ...
+	  sshctl host list|show|add|update|upsert|remove ...
+	  sshctl host-key inspect <alias> [--json]
+	  sshctl host-key accept <alias> --fingerprint SHA256:... --yes [--json]
   sshctl status
   sshctl check <alias> [--json]
-  sshctl doctor [alias] [--deep] [--json]
+	  sshctl doctor [alias] [--deep] [--json]
+	  sshctl request [--file <request.json>|-]  # versioned agent JSON request
 
   # Single host (agent-safe quoting)
   sshctl run <alias> <command...>
@@ -294,7 +367,8 @@ func sshctlUsage() {
   sshctl run <alias> --secret NAME=val ...
   sshctl run <alias> --secret NAME=@file ...
   sshctl run <alias> --timeout 10s ...
-  sshctl run <alias> --no-reuse ...
+	  sshctl run <alias> --no-reuse ...
+	  sshctl run <alias> --preflight -f script.sh
   sshctl run <alias> --argv <command> [args...]  # force literal argv mode
   sshctl run <alias> -s [--shell sh|bash] [-- args...]
   sshctl run <alias> -f script.sh [-- args...]   # script body goes over stdin
@@ -316,6 +390,10 @@ Env: SSM_TRACE=1  SSM_TIMEOUT=10s  SSM_REUSE=0  SSM_FORWARD_STDIN=1
 }
 
 func sshctlUsageExit() {
+	if machineJSON {
+		writeMachineError("invalid_arguments", "invalid sshctl arguments", "run sshctl --help for usage", "", 2, nil)
+		os.Exit(2)
+	}
 	sshctlUsage()
 	os.Exit(2)
 }
@@ -336,5 +414,31 @@ func redactString(value string) string {
 }
 
 func printError(err error) {
+	if machineJSON {
+		writeMachineError("internal", redactError(err), "", "", 1, nil)
+		return
+	}
 	fmt.Fprintf(os.Stderr, "Error: %s\n", redactError(err))
+}
+
+// splitRunAlias accepts the canonical global form (`sshctl --json run host`)
+// and the common command-local form (`sshctl run --json host`). Other run
+// options remain after the exact alias so option values cannot be mistaken for
+// inventory names.
+func splitRunAlias(args []string) (string, []string, error) {
+	if len(args) == 0 {
+		return "", nil, fmt.Errorf("run requires an exact host alias")
+	}
+	prefix := make([]string, 0, 1)
+	if args[0] == "--json" {
+		prefix = append(prefix, "--json")
+		args = args[1:]
+	}
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return "", nil, fmt.Errorf("run requires an exact host alias before run-mode options")
+	}
+	rest := make([]string, 0, len(prefix)+len(args)-1)
+	rest = append(rest, prefix...)
+	rest = append(rest, args[1:]...)
+	return args[0], rest, nil
 }

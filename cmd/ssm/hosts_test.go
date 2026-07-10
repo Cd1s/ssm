@@ -44,6 +44,23 @@ func TestParseHostOfflineFlag(t *testing.T) {
 	}
 }
 
+func TestParseHostVerifyAndPushRequireSafeOrder(t *testing.T) {
+	opts, err := parseHostCommandArgs([]string{
+		"upsert", "prod", "--host", "203.0.113.10", "--user", "root", "--key", "deploy", "--verify", "--push",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.verify || !opts.push {
+		t.Fatalf("opts = %+v", opts)
+	}
+	if _, err := parseHostCommandArgs([]string{
+		"upsert", "prod", "--host", "203.0.113.10", "--user", "root", "--key", "deploy", "--push",
+	}); err == nil {
+		t.Fatal("accepted --push without --verify")
+	}
+}
+
 func TestParseHostArgsRejectsInlineAndAmbiguousAuth(t *testing.T) {
 	for _, args := range [][]string{
 		{"add", "host", "--host", "example.com", "--user", "root", "--password", "secret"},

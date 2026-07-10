@@ -226,9 +226,17 @@ func runExecSpec(name string, spec remoteRunSpec) {
 		NoReuse:        spec.NoReuse,
 		RequestedAlias: name,
 		ResolvedAlias:  resolved,
+		Mode:           spec.Mode,
 	}
 	if len(spec.Scripts) == 1 {
 		script := spec.Scripts[0]
+		if spec.Preflight && !spec.Plan {
+			preflight := ssh.RunScriptPreflight(c, v, script, spec.NoReuse, name, resolved)
+			if !preflight.OK {
+				ssh.WriteRunResult(preflight, spec.JSON)
+				os.Exit(preflight.Exit)
+			}
+		}
 		runOpts.Command = ssh.BuildScriptRunner(script)
 		runOpts.Input = script.Body
 		runOpts.RiskCommand = script.Body
@@ -236,6 +244,13 @@ func runExecSpec(name string, spec remoteRunSpec) {
 		runOpts.ScriptLabel = script.Label
 	}
 	res := ssh.Run(c, v, runOpts)
+	if len(spec.Scripts) == 1 && spec.Preflight {
+		if spec.Plan {
+			res.Preflight = "pending"
+		} else {
+			res.Preflight = "passed"
+		}
+	}
 	if spec.JSON || spec.Plan {
 		ssh.WriteRunResult(res, spec.JSON)
 		if spec.Plan {
@@ -262,6 +277,10 @@ func runMap(targetPatterns []string, spec remoteRunSpec) {
 		os.Exit(1)
 	}
 	if len(aliases) == 0 {
+		if machineJSON {
+			writeMachineError("no_targets", "no aliases matched the requested map targets", "refresh sshctl host list and use exact aliases or reviewed patterns", strings.Join(targetPatterns, ","), 2, nil)
+			os.Exit(2)
+		}
 		fmt.Fprintln(os.Stderr, "sshctl map: no targets matched")
 		os.Exit(2)
 	}
@@ -270,7 +289,7 @@ func runMap(targetPatterns []string, spec remoteRunSpec) {
 	if workers <= 0 {
 		workers = ssh.DefaultMapWorkers()
 	}
-	jobs := ssh.ExpandMapJobs(aliases, spec.Command, spec.Scripts, spec.Secrets)
+	jobs := ssh.ExpandMapJobs(aliases, spec.Command, spec.Scripts, spec.Secrets, spec.Mode, spec.Preflight)
 	if len(jobs) == 0 {
 		fmt.Fprintln(os.Stderr, "sshctl map: nothing to run")
 		os.Exit(2)
@@ -293,10 +312,15 @@ func runMap(targetPatterns []string, spec remoteRunSpec) {
 				Risk:          ssh.AssessRisk(firstNonEmpty(j.RiskCommand, j.Command)),
 				ScriptLabel:   j.ScriptLabel,
 				Interpreter:   j.Interpreter,
+				Mode:          j.Mode,
+				Transport:     map[bool]string{true: "ssh_stdin", false: "ssh_exec"}[j.Input != ""],
 				InputBytes:    len(j.Input),
 			}
 			if j.Input != "" {
 				r.ScriptSHA256 = ssh.ScriptDigest(j.Input)
+				if j.Preflight {
+					r.Preflight = "pending"
+				}
 			}
 			if ok {
 				r.User, r.Host, r.Port = c.User, c.Host, c.Port
@@ -348,8 +372,22 @@ func runPut(name, localPath, remotePath string) {
 		connectionNotFound(name, v)
 	}
 	if err := ssh.UploadPath(c, v, localPath, remotePath); err != nil {
+		if machineJSON {
+			ce := ssh.ClassifyError(err, c)
+			writeMachineError(ce.Code, ce.Error(), ce.Hint, name, ssh.ExitCodeFor(err), nil)
+			os.Exit(ssh.ExitCodeFor(err))
+		}
 		ssh.PrintAgentError(err, c)
 		os.Exit(ssh.ExitCodeFor(err))
+	}
+	if machineJSON {
+		writeMachineValue(struct {
+			OK     bool   `json:"ok"`
+			Action string `json:"action"`
+			Alias  string `json:"alias"`
+			Local  string `json:"local"`
+			Remote string `json:"remote"`
+		}{OK: true, Action: "put", Alias: name, Local: localPath, Remote: remotePath})
 	}
 }
 
@@ -366,8 +404,22 @@ func runGet(name, remotePath, localPath string) {
 		connectionNotFound(name, v)
 	}
 	if err := ssh.DownloadPath(c, v, remotePath, localPath); err != nil {
+		if machineJSON {
+			ce := ssh.ClassifyError(err, c)
+			writeMachineError(ce.Code, ce.Error(), ce.Hint, name, ssh.ExitCodeFor(err), nil)
+			os.Exit(ssh.ExitCodeFor(err))
+		}
 		ssh.PrintAgentError(err, c)
 		os.Exit(ssh.ExitCodeFor(err))
+	}
+	if machineJSON {
+		writeMachineValue(struct {
+			OK     bool   `json:"ok"`
+			Action string `json:"action"`
+			Alias  string `json:"alias"`
+			Remote string `json:"remote"`
+			Local  string `json:"local"`
+		}{OK: true, Action: "get", Alias: name, Remote: remotePath, Local: localPath})
 	}
 }
 
@@ -410,13 +462,20 @@ func runDoctor(alias string, deep, asJSON bool) {
 
 func runRedirect(args []string) {
 	if len(args) == 0 {
-		fmt.Println("Usage: ssm redirect list|set <old> <new>|rm <old>")
+		writeCLIError("invalid_arguments", "redirect action required", "use redirect list, set <old> <new>, or rm <old>", 2)
 		os.Exit(2)
 	}
 	switch args[0] {
 	case "list":
 		r := config.LoadRedirects()
 		if len(r) == 0 {
+			if machineJSON {
+				writeMachineValue(struct {
+					OK        bool              `json:"ok"`
+					Redirects map[string]string `json:"redirects"`
+				}{OK: true, Redirects: map[string]string{}})
+				return
+			}
 			fmt.Println("(no redirects)")
 			return
 		}
@@ -433,12 +492,19 @@ func runRedirect(args []string) {
 				}
 			}
 		}
+		if machineJSON {
+			writeMachineValue(struct {
+				OK        bool              `json:"ok"`
+				Redirects map[string]string `json:"redirects"`
+			}{OK: true, Redirects: r})
+			return
+		}
 		for _, k := range keys {
 			fmt.Printf("%s\t->\t%s\n", k, r[k])
 		}
 	case "set":
 		if len(args) != 3 {
-			fmt.Println("Usage: ssm redirect set <old-alias> <target-alias>")
+			writeCLIError("invalid_arguments", "redirect set requires old and target aliases", "use redirect set <old-alias> <target-alias>", 2)
 			os.Exit(2)
 		}
 		r := config.LoadRedirects()
@@ -447,10 +513,19 @@ func runRedirect(args []string) {
 			printError(err)
 			os.Exit(1)
 		}
+		if machineJSON {
+			writeMachineValue(struct {
+				OK     bool   `json:"ok"`
+				Action string `json:"action"`
+				From   string `json:"from"`
+				To     string `json:"to"`
+			}{OK: true, Action: "redirect_set", From: args[1], To: args[2]})
+			return
+		}
 		fmt.Printf("redirect %s -> %s\n", args[1], args[2])
 	case "rm", "remove":
 		if len(args) != 2 {
-			fmt.Println("Usage: ssm redirect rm <old-alias>")
+			writeCLIError("invalid_arguments", "redirect remove requires an old alias", "use redirect rm <old-alias>", 2)
 			os.Exit(2)
 		}
 		r := config.LoadRedirects()
@@ -459,9 +534,17 @@ func runRedirect(args []string) {
 			printError(err)
 			os.Exit(1)
 		}
+		if machineJSON {
+			writeMachineValue(struct {
+				OK     bool   `json:"ok"`
+				Action string `json:"action"`
+				Alias  string `json:"alias"`
+			}{OK: true, Action: "redirect_removed", Alias: args[1]})
+			return
+		}
 		fmt.Printf("removed redirect %s\n", args[1])
 	default:
-		fmt.Println("Usage: ssm redirect list|set <old> <new>|rm <old>")
+		writeCLIError("invalid_arguments", fmt.Sprintf("unknown redirect action %q", args[0]), "use redirect list, set, or rm", 2)
 		os.Exit(2)
 	}
 }
@@ -476,29 +559,39 @@ func findConnection(v *config.Vault, name string) (config.Connection, bool) {
 }
 
 func connectionNotFound(name string, v *config.Vault) {
-	fmt.Fprintf(os.Stderr, "ssm: error=%s alias=%s\n", ssh.ErrCodeAliasNotFound, name)
-	fmt.Fprintf(os.Stderr, "Connection %q not found.\n", name)
+	var suggestions []string
 	if v != nil {
 		names := make([]string, len(v.Connections))
 		for i, c := range v.Connections {
 			names[i] = c.Name
 		}
-		if sug := ssh.SuggestNames(name, names, 5); len(sug) > 0 {
-			fmt.Fprintf(os.Stderr, "ssm: did_you_mean=%s\n", strings.Join(sug, ","))
-			fmt.Fprintf(os.Stderr, "Did you mean: %s\n", strings.Join(sug, ", "))
-		}
+		suggestions = ssh.SuggestNames(name, names, 5)
 	}
-	fmt.Fprintf(os.Stderr, "ssm: hint=use sshctl list --json; or ssm redirect set <old> <new> after migration\n")
+	if machineJSON {
+		writeMachineError(ssh.ErrCodeAliasNotFound, fmt.Sprintf("connection %q not found", name), "use sshctl host list --json and retry with an exact alias", name, ssh.ExitConnectionFailed, suggestions)
+		os.Exit(ssh.ExitConnectionFailed)
+	}
+	fmt.Fprintf(os.Stderr, "ssm: error=%s alias=%s\n", ssh.ErrCodeAliasNotFound, name)
+	fmt.Fprintf(os.Stderr, "Connection %q not found.\n", name)
+	if len(suggestions) > 0 {
+		fmt.Fprintf(os.Stderr, "ssm: did_you_mean=%s\n", strings.Join(suggestions, ","))
+		fmt.Fprintf(os.Stderr, "Did you mean: %s\n", strings.Join(suggestions, ", "))
+	}
+	fmt.Fprintf(os.Stderr, "ssm: hint=use sshctl host list --json; or ssm redirect set <old> <new> after migration\n")
 	os.Exit(ssh.ExitConnectionFailed)
 }
 
 func runImportJSON(args []string) {
 	opts, err := parseImportJSONArgs(args)
 	if err != nil {
-		printError(err)
-		fmt.Println("Usage: ssm import-json <path> [--manifest <path>] [--expect-count <n>]")
-		os.Exit(1)
+		machineJSON = machineJSON || opts.asJSON || hasJSONFlagBeforeDash(args)
+		writeCLIError("invalid_arguments", err.Error(), "use exactly one of --merge or --replace --yes", 2)
+		if !machineJSON {
+			fmt.Fprintln(os.Stderr, "Usage: ssm import-json <path> (--merge | --replace --yes) [--manifest <path>] [--expect-count <n>] [--json]")
+		}
+		os.Exit(2)
 	}
+	machineJSON = machineJSON || opts.asJSON
 
 	imported, err := loadServerImport(opts.path, opts.manifestPath)
 	if err != nil {
@@ -506,7 +599,7 @@ func runImportJSON(args []string) {
 		os.Exit(1)
 	}
 	if opts.expectCount > 0 && len(imported.Connections) != opts.expectCount {
-		fmt.Fprintf(os.Stderr, "Error: imported host count %d does not match expected %d\n", len(imported.Connections), opts.expectCount)
+		writeCLIError("import_count_mismatch", fmt.Sprintf("imported host count %d does not match expected %d", len(imported.Connections), opts.expectCount), "review the import source and expected count before retrying", 1)
 		os.Exit(1)
 	}
 
@@ -527,6 +620,15 @@ func runImportJSON(args []string) {
 		os.Exit(1)
 	}
 
+	if machineJSON {
+		writeMachineValue(struct {
+			OK          bool   `json:"ok"`
+			Action      string `json:"action"`
+			Connections int    `json:"connections"`
+			Keys        int    `json:"keys"`
+		}{OK: true, Action: map[bool]string{true: "replaced", false: "merged"}[opts.replace], Connections: len(imported.Connections), Keys: len(imported.Keys)})
+		return
+	}
 	fmt.Printf("Imported %d connections and %d keys.\n", len(imported.Connections), len(imported.Keys))
 }
 
@@ -535,10 +637,13 @@ type importJSONOptions struct {
 	manifestPath string
 	expectCount  int
 	replace      bool
+	modeSet      bool
+	confirm      bool
+	asJSON       bool
 }
 
 func parseImportJSONArgs(args []string) (importJSONOptions, error) {
-	opts := importJSONOptions{replace: true}
+	var opts importJSONOptions
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
@@ -573,11 +678,21 @@ func parseImportJSONArgs(args []string) (importJSONOptions, error) {
 			}
 			opts.expectCount = n
 		case arg == "--replace":
+			if opts.modeSet && !opts.replace {
+				return opts, fmt.Errorf("use only one of --merge or --replace")
+			}
 			opts.replace = true
-		case arg == "--replace=false":
-			opts.replace = false
+			opts.modeSet = true
 		case arg == "--merge":
+			if opts.modeSet && opts.replace {
+				return opts, fmt.Errorf("use only one of --merge or --replace")
+			}
 			opts.replace = false
+			opts.modeSet = true
+		case arg == "--yes":
+			opts.confirm = true
+		case arg == "--json":
+			opts.asJSON = true
 		case strings.HasPrefix(arg, "-"):
 			return opts, fmt.Errorf("unknown flag %s", arg)
 		default:
@@ -589,6 +704,15 @@ func parseImportJSONArgs(args []string) (importJSONOptions, error) {
 	}
 	if opts.path == "" {
 		return opts, fmt.Errorf("import path required")
+	}
+	if !opts.modeSet {
+		return opts, fmt.Errorf("import mode required: use --merge or --replace --yes")
+	}
+	if opts.replace && !opts.confirm {
+		return opts, fmt.Errorf("full vault replacement requires --replace --yes")
+	}
+	if !opts.replace && opts.confirm {
+		return opts, fmt.Errorf("--yes is only valid with --replace")
 	}
 	return opts, nil
 }

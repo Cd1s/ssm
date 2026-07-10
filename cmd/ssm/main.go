@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"golang.org/x/term"
 
 	"ssm/internal/config"
 	"ssm/internal/tui"
@@ -18,12 +19,16 @@ import (
 var (
 	masterPass     string
 	masterPassFile string
-	version        = "1.2.0"
+	version        = "1.3.0"
 )
 
 func main() {
 	defer func() {
 		if r := recover(); r != nil {
+			if machineJSON {
+				writeMachineError("internal", "ssm crashed", "retry with SSM_TRACE=1 outside machine mode and report the failure", "", 1, nil)
+				os.Exit(1)
+			}
 			buf := make([]byte, 4096)
 			n := runtime.Stack(buf, false)
 			fmt.Fprintf(os.Stderr, "\n\033[1;31mssm crashed!\033[0m\n\n")
@@ -32,6 +37,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error:   %s\n\n", redactString(fmt.Sprint(r)))
 			fmt.Fprintf(os.Stderr, "Stack trace:\n%s\n\n", buf[:n])
 			fmt.Fprintf(os.Stderr, "Please include the info above when reporting this issue.\n")
+			os.Exit(1)
 		}
 	}()
 
@@ -52,6 +58,7 @@ func main() {
 	}
 
 	if len(args) < 1 {
+		requireInteractive("ssm")
 		unlock()
 		runTUI()
 		return
@@ -82,7 +89,7 @@ Usage:
   ssm keys remove <n>  remove a SSH key
   ssm update           update ssm to the latest version
   ssm shell <name>     open an interactive shell
-  ssm import-json <path> import headless JSON connections
+	  ssm import-json <path> (--merge | --replace --yes) import reviewed JSON connections
   ssm server           run the headless encrypted sync server
 
 Cloud (optional):
@@ -111,9 +118,11 @@ Shortcuts (in TUI):
 		}
 		return
 	case "add":
+		requireInteractive("ssm add")
 		unlock()
 		runAdd()
 	case "host", "hosts":
+		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
 		unlock()
 		runHostCommand(args[1:])
 	case "remove":
@@ -128,9 +137,13 @@ Shortcuts (in TUI):
 			fmt.Println("Usage: ssm edit <name>")
 			os.Exit(1)
 		}
+		requireInteractive("ssm edit")
 		unlock()
 		runEdit(args[1])
 	case "keys":
+		if len(args) >= 2 && args[1] == "add" {
+			requireInteractive("ssm keys add")
+		}
 		unlock()
 		if len(args) >= 2 {
 			switch args[1] {
@@ -231,6 +244,7 @@ Shortcuts (in TUI):
 		unlock()
 		runShell(args[1])
 	case "import-json":
+		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
 		unlock()
 		runImportJSON(args[1:])
 	case "server":
@@ -262,25 +276,42 @@ func parseGlobalArgs(args []string) ([]string, error) {
 	}
 
 	out := make([]string, 0, len(args))
+	seenCommand := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
-		case arg == "--master-pass-file":
+		case !seenCommand && arg == "--json":
+			machineJSON = true
+		case !seenCommand && arg == "--master-pass-file":
 			if i+1 >= len(args) {
 				return nil, fmt.Errorf("--master-pass-file requires a path")
 			}
 			masterPassFile = args[i+1]
 			i++
-		case strings.HasPrefix(arg, "--master-pass-file="):
+		case !seenCommand && strings.HasPrefix(arg, "--master-pass-file="):
 			masterPassFile = strings.TrimPrefix(arg, "--master-pass-file=")
 			if masterPassFile == "" {
 				return nil, fmt.Errorf("--master-pass-file requires a path")
 			}
 		default:
 			out = append(out, arg)
+			if !seenCommand && (arg == "--version" || arg == "-v" || arg == "--help" || arg == "-h" || arg == "help" || !strings.HasPrefix(arg, "-")) {
+				seenCommand = true
+			}
 		}
 	}
 	return out, nil
+}
+
+func requireInteractive(command string) {
+	stdinFD := int(os.Stdin.Fd())   //nolint:gosec // terminal APIs require int file descriptors
+	stdoutFD := int(os.Stdout.Fd()) //nolint:gosec // terminal APIs require int file descriptors
+	if term.IsTerminal(stdinFD) && term.IsTerminal(stdoutFD) {
+		return
+	}
+	hint := "use sshctl host add/update/upsert for host changes; interactive TUI commands require a terminal"
+	writeCLIError("interactive_required", command+" requires a TTY", hint, 2)
+	os.Exit(2)
 }
 
 func checkUpdate() {
@@ -294,26 +325,26 @@ func unlock() {
 	if masterPassFile != "" {
 		data, err := os.ReadFile(masterPassFile)
 		if err != nil {
-			printError(fmt.Errorf("master pass file: %w", err))
+			writeCLIError("master_pass_file_error", fmt.Sprintf("master pass file: %v", err), "use --master-pass-file or SSM_MASTER_PASS_FILE with a readable private file", 1)
 			os.Exit(1)
 		}
 		pass := strings.TrimRight(string(data), "\r\n")
 		if pass == "" {
-			fmt.Fprintln(os.Stderr, "Error: master pass file is empty")
+			writeCLIError("master_pass_file_error", "master pass file is empty", "write the vault passphrase to the configured file", 1)
 			os.Exit(1)
 		}
 
 		if !config.Exists() {
 			masterPass = pass
 			if err := config.Save(&config.Vault{}, masterPass); err != nil {
-				printError(err)
+				writeCLIError("vault_error", err.Error(), "verify configuration directory permissions", 1)
 				os.Exit(1)
 			}
 			return
 		}
 
 		if _, err := config.Load(pass); err != nil {
-			printError(err)
+			writeCLIError("vault_unlock_failed", err.Error(), "verify the master pass file belongs to this encrypted vault", 1)
 			os.Exit(1)
 		}
 		masterPass = pass
@@ -321,6 +352,7 @@ func unlock() {
 	}
 
 	if !config.Exists() {
+		requireInteractive("vault creation")
 		p := tea.NewProgram(tui.NewUnlockModel(tui.UnlockCreate), tea.WithAltScreen())
 		result, err := p.Run()
 		if err != nil {
@@ -352,6 +384,7 @@ func unlock() {
 	}
 
 	for attempts := 0; attempts < 3; attempts++ {
+		requireInteractive("vault unlock")
 		m := tui.NewUnlockModel(tui.UnlockLogin)
 		p := tea.NewProgram(m, tea.WithAltScreen())
 		result, err := p.Run()

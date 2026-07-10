@@ -1,6 +1,6 @@
 # SSM host management and guarded bulk import
 
-Use the first-class `sshctl host` commands for single-host changes on SSM 1.2 and later. `import-json` remains a migration/bulk-replacement interface, not the normal agent CRUD path.
+Use typed `sshctl request` host operations or first-class `sshctl host` commands for single-host changes on SSM 1.3 and later. `import-json` remains a migration/bulk-replacement interface, not the normal agent CRUD path.
 
 ## Unlock behavior
 
@@ -29,7 +29,7 @@ Private key:
 stat -c 'key_file=%n mode=%a size=%s' /secure/new-server.key
 sshctl host upsert new-server \
   --host 203.0.113.10 --port 22 --user root --group prod \
-  --key-file /secure/new-server.key --json
+  --key-file /secure/new-server.key --verify --json
 ```
 
 Password:
@@ -37,7 +37,7 @@ Password:
 ```bash
 sshctl host upsert new-server \
   --host 203.0.113.10 --port 22 --user root \
-  --password-file /secure/new-server.password --json
+  --password-file /secure/new-server.password --verify --json
 ```
 
 Existing saved key:
@@ -45,7 +45,7 @@ Existing saved key:
 ```bash
 sshctl host upsert new-server \
   --host 203.0.113.10 --port 22 --user root \
-  --key deploy-key --json
+  --key deploy-key --verify --json
 ```
 
 Rules:
@@ -63,7 +63,7 @@ When a default key name already contains different material, SSM fails with `key
 ```bash
 sshctl host upsert new-server \
   --host 203.0.113.10 --user root \
-  --key-file /secure/new-server.key --key-name new-server-2026 --json
+  --key-file /secure/new-server.key --key-name new-server-2026 --verify --json
 ```
 
 ## Partial update
@@ -71,22 +71,22 @@ sshctl host upsert new-server \
 Only provided fields change:
 
 ```bash
-sshctl host update existing-server --host 203.0.113.20 --port 2222 --json
-sshctl host update existing-server --group= --json
+sshctl host update existing-server --host 203.0.113.20 --port 2222 --verify --json
+sshctl host update existing-server --group= --verify --json
 ```
 
 Omitting auth preserves it. Supplying a new auth source switches auth atomically:
 
 ```bash
-sshctl host update existing-server --key-file /secure/replacement.key --json
-sshctl host update existing-server --password-file /secure/replacement.password --json
+sshctl host update existing-server --key-file /secure/replacement.key --verify --json
+sshctl host update existing-server --password-file /secure/replacement.password --verify --json
 ```
 
 SSM refuses to overwrite a key shared by another host. Use `--key-name` to create a separate saved key.
 
 ## Verify, then push
 
-Host mutations require a successful remote refresh, save locally, and return `sync_pending:true`. They intentionally do not use silent auto-push. A refresh failure returns `sync_pull_failed` before writing; use `--offline` only when stale local state is explicitly acceptable.
+Host mutations require a successful remote refresh. With `--verify` (the request default), the candidate is checked before saving; failure returns `applied:false` and leaves the encrypted vault unchanged. They intentionally do not use silent auto-push. A refresh failure returns `sync_pull_failed`; use `--offline` only when stale local state is explicitly acceptable.
 
 ```bash
 sshctl host show <alias> --json
@@ -128,7 +128,7 @@ Push only if the user wants the temporary lifecycle reflected remotely. If add a
 
 ## Guarded legacy bulk import
 
-Use `import-json` only for a reviewed migration or for SSM versions older than 1.2. For a one-entry compatibility import, `--merge` and `--expect-count 1` are mandatory:
+Use `import-json` only for a reviewed migration. For a one-entry compatibility import, `--merge` and `--expect-count 1` are mandatory:
 
 ```bash
 ssm --master-pass-file ~/.config/ssm/master.pass \
@@ -139,7 +139,7 @@ Accepted shapes are an array, `{ "servers": [...] }`, `{ "servers": { "alias": {
 
 Important boundaries:
 
-- Bare `ssm import-json file.json` defaults to full replacement and must not be used for a single-host edit.
+- Bare `ssm import-json file.json` is rejected. The caller must choose `--merge` or explicitly authorize full replacement with `--replace --yes`.
 - Inline secrets in JSON can leak through temp files or logs; path-based material is safer.
 - Import merge resolves conflicts by connection/key name, with imported values winning.
 - Import does not provide the field-preserving update and key-sharing guards of `sshctl host`.

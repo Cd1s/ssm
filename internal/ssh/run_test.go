@@ -3,12 +3,29 @@ package ssh
 import (
 	"strings"
 	"testing"
+
+	"ssm/internal/config"
 )
 
 func TestBuildRemoteCommandSecrets(t *testing.T) {
 	cmd := BuildRemoteCommand("printenv TOKEN", map[string]string{"TOKEN": "s3cret"})
 	if cmd != "TOKEN='s3cret' printenv TOKEN" {
 		t.Fatalf("cmd=%q", cmd)
+	}
+}
+
+func TestShellCommandSecretsAreExportedForWholeCommand(t *testing.T) {
+	res := Run(config.Connection{Name: "plan", Host: "192.0.2.1", User: "root"}, &config.Vault{}, RunOptions{
+		Command:  "printf '%s' \"$TOKEN\"; printenv TOKEN",
+		Secrets:  map[string]string{"TOKEN": "whole-shell-secret"},
+		Mode:     "shell_command",
+		PlanOnly: true,
+	})
+	if !strings.Contains(res.RemoteCommand, "export TOKEN='***';") {
+		t.Fatalf("shell secret was not exported: %q", res.RemoteCommand)
+	}
+	if strings.Contains(res.RemoteCommand, "whole-shell-secret") {
+		t.Fatalf("shell secret leaked: %q", res.RemoteCommand)
 	}
 }
 
@@ -47,7 +64,7 @@ func TestExpandMapJobsMultiScript(t *testing.T) {
 	jobs := ExpandMapJobs([]string{"h1", "h2"}, "", []ScriptSpec{
 		{Label: "a.sh", Body: "echo a\n", Interpreter: "sh"},
 		{Label: "b.sh", Body: "echo b\n", Interpreter: "sh"},
-	}, nil)
+	}, nil, "script", false)
 	if len(jobs) != 4 {
 		t.Fatalf("want 4 jobs, got %d", len(jobs))
 	}

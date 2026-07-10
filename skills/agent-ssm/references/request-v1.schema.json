@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Cd1s/ssm/blob/agent-headless-sync/skills/agent-ssm/references/request-v1.schema.json",
+  "title": "SSM agent request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "op"],
+  "properties": {
+    "version": {"const": 1},
+    "op": {
+      "enum": [
+        "run",
+        "plan",
+        "check",
+        "doctor",
+        "host.list",
+        "host.show",
+        "host.add",
+        "host.update",
+        "host.upsert",
+        "host.remove"
+      ]
+    },
+    "alias": {"type": "string", "minLength": 1},
+    "argv": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string"}
+    },
+    "shell_command": {"type": "string", "minLength": 1},
+    "script_file": {"type": "string", "minLength": 1},
+    "script_args": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "shell": {"enum": ["auto", "sh", "bash", "dash", "ash", "ksh", "zsh"]},
+    "secret_files": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+      "additionalProperties": {"type": "string", "minLength": 1}
+    },
+    "timeout": {"type": "string", "minLength": 1},
+    "no_reuse": {"type": "boolean"},
+    "preflight": {"type": "boolean"},
+    "deep": {"type": "boolean"},
+    "host": {"$ref": "#/$defs/host"}
+  },
+  "$defs": {
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "address": {"type": "string"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "user": {"type": "string"},
+        "group": {"type": "string"},
+        "saved_key": {"type": "string"},
+        "key_file": {"type": "string"},
+        "key_name": {"type": "string"},
+        "password_file": {"type": "string"},
+        "offline": {"type": "boolean"},
+        "verify": {"type": "boolean"},
+        "push": {"type": "boolean"},
+        "confirm": {"type": "boolean"},
+        "prune_key": {"type": "boolean"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"op": {"enum": ["run", "plan"]}}},
+      "then": {
+        "required": ["alias"],
+        "oneOf": [
+          {"required": ["argv"], "not": {"anyOf": [{"required": ["shell_command"]}, {"required": ["script_file"]}]}},
+          {"required": ["shell_command"], "not": {"anyOf": [{"required": ["argv"]}, {"required": ["script_file"]}]}},
+          {"required": ["script_file"], "not": {"anyOf": [{"required": ["argv"]}, {"required": ["shell_command"]}]}}
+        ]
+      }
+    },
+    {
+      "if": {"properties": {"op": {"enum": ["check", "host.show", "host.add", "host.update", "host.upsert", "host.remove"]}}},
+      "then": {"required": ["alias"]}
+    }
+  ]
+}

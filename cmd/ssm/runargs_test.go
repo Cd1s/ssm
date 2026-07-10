@@ -223,6 +223,7 @@ func TestParseRemoteRunArgsRejectsMixedSources(t *testing.T) {
 		{"-s", "echo hi"},
 		{"-f", "/tmp/x", "echo hi"},
 		{"--raw", "-s"},
+		{"--preflight", "--argv", "true"},
 	} {
 		if _, err := parseRemoteRunArgs(args); err == nil {
 			t.Fatalf("expected error for %v", args)

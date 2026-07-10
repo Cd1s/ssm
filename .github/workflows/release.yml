@@ -21,7 +21,7 @@ jobs:
       tag: ${{ steps.release.outputs.tag }}
       version: ${{ steps.release.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: release
@@ -54,6 +54,12 @@ jobs:
             echo "version=${tag#v}"
           } >> "$GITHUB_OUTPUT"
 
+          source_version="$(sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"\([0-9.]*\)"/\1/p' cmd/ssm/main.go)"
+          if [ "$source_version" != "${tag#v}" ]; then
+            echo "source version $source_version does not match release $tag" >&2
+            exit 1
+          fi
+
   build:
     needs: prepare
     runs-on: ubuntu-latest
@@ -75,15 +81,15 @@ jobs:
             goarch: arm64
             ext: .exe
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.25'
       - name: Build
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -ldflags="-s -w -X main.version=$VERSION" -o ssm-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} ./cmd/ssm
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ssm-${{ matrix.goos }}-${{ matrix.goarch }}
           path: ssm-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
@@ -92,16 +98,31 @@ jobs:
     needs: [prepare, build]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
       - name: Checksums
-        run: sha256sum ssm-linux-* ssm-darwin-* ssm-windows-* > checksums.txt
-      - uses: softprops/action-gh-release@v2
+        run: sha256sum ssm-linux-* ssm-darwin-* ssm-windows-* install.sh > checksums.txt
+      - name: Release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          header="## ${{ needs.prepare.outputs.tag }}"
+          awk -v header="$header" '
+            $0 == header { found=1; next }
+            found && /^## v[0-9]/ { exit }
+            found { print }
+            END { if (!found) exit 1 }
+          ' RELEASE_NOTES.md > release-body.md
+          test -s release-body.md
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           target_commitish: ${{ github.sha }}
+          name: ${{ needs.prepare.outputs.tag }}
+          body_path: release-body.md
+          make_latest: true
           files: |
             ssm-linux-*
             ssm-darwin-*

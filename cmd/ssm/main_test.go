@@ -24,6 +24,37 @@ func TestParseGlobalArgsExtractsMasterPassFile(t *testing.T) {
 	}
 }
 
+func TestParseGlobalArgsExtractsLeadingJSONOnly(t *testing.T) {
+	oldJSON := machineJSON
+	t.Cleanup(func() { machineJSON = oldJSON })
+	machineJSON = false
+
+	got, err := parseGlobalArgs([]string{"--json", "run", "prod", "--argv", "printf", "--json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !machineJSON {
+		t.Fatal("leading --json did not enable machine output")
+	}
+	want := []string{"run", "prod", "--argv", "printf", "--json"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+}
+
+func TestSplitRunAliasHandlesCommandLocalJSON(t *testing.T) {
+	alias, args, err := splitRunAlias([]string{"--json", "prod", "--argv", "hostname"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alias != "prod" || !reflect.DeepEqual(args, []string{"--json", "--argv", "hostname"}) {
+		t.Fatalf("alias=%q args=%v", alias, args)
+	}
+	if _, _, err := splitRunAlias([]string{"--json"}); err == nil {
+		t.Fatal("accepted missing alias")
+	}
+}
+
 func TestParseGlobalArgsRejectsEmptyMasterPassFile(t *testing.T) {
 	old := masterPassFile
 	t.Cleanup(func() { masterPassFile = old })

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +15,11 @@ import (
 	"golang.org/x/term"
 
 	"ssm/internal/config"
+)
+
+var (
+	syntaxLinePattern      = regexp.MustCompile(`(?i)\bline[ :]+([0-9]+)\b`)
+	syntaxColonLinePattern = regexp.MustCompile(`(?m)^[^:\n]+:\s*([0-9]+):`)
 )
 
 // RunOptions controls a single remote command invocation.
@@ -27,6 +33,7 @@ type RunOptions struct {
 	NoReuse     bool
 	Interpreter string
 	ScriptLabel string
+	Mode        string
 	// RequestedAlias is the name the user typed (before redirects).
 	RequestedAlias string
 	ResolvedAlias  string
@@ -53,6 +60,9 @@ type RunResult struct {
 	Interpreter   string `json:"interpreter,omitempty"`
 	InputBytes    int    `json:"stdin_bytes,omitempty"`
 	ScriptSHA256  string `json:"script_sha256,omitempty"`
+	Mode          string `json:"mode,omitempty"`
+	Transport     string `json:"transport,omitempty"`
+	Preflight     string `json:"preflight,omitempty"`
 }
 
 // BuildRemoteCommand injects secret env assigns before the user command.
@@ -175,7 +185,7 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 		port = 22
 	}
 	full := BuildRemoteCommand(opts.Command, opts.Secrets)
-	if opts.Input != "" {
+	if opts.Input != "" || opts.Mode == "shell_command" {
 		full = BuildScriptRemoteCommand(opts.Command, opts.Secrets)
 	}
 	display := RedactSecrets(full, opts.Secrets)
@@ -193,10 +203,17 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 		Risk:          AssessRisk(riskCommand),
 		ScriptLabel:   opts.ScriptLabel,
 		Interpreter:   opts.Interpreter,
+		Mode:          opts.Mode,
+		Transport:     "ssh_exec",
+	}
+	if res.Mode == "" {
+		res.Mode = "shell_command"
 	}
 	if opts.Input != "" {
 		res.InputBytes = len(opts.Input)
 		res.ScriptSHA256 = ScriptDigest(opts.Input)
+		res.Mode = "script"
+		res.Transport = "ssh_stdin"
 	}
 	if res.Alias == "" {
 		res.Alias = c.Name
@@ -323,6 +340,50 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 	return res
 }
 
+// RunScriptPreflight validates shell syntax remotely without executing the
+// script. Interpreter lookup remains distinguishable from a syntax error.
+func RunScriptPreflight(c config.Connection, v *config.Vault, spec ScriptSpec, noReuse bool, requestedAlias, resolvedAlias string) RunResult {
+	res := Run(c, v, RunOptions{
+		Command:        BuildScriptSyntaxRunner(spec),
+		Input:          spec.Body,
+		RiskCommand:    spec.Body,
+		Capture:        true,
+		NoReuse:        noReuse,
+		Interpreter:    spec.Interpreter,
+		ScriptLabel:    spec.Label,
+		Mode:           "script",
+		RequestedAlias: requestedAlias,
+		ResolvedAlias:  resolvedAlias,
+	})
+	if res.OK {
+		res.Preflight = "passed"
+		res.Stdout = ""
+		res.Stderr = ""
+		return res
+	}
+	res.Preflight = "failed"
+	if res.Error == "remote_script_failed" {
+		res.Error = "script_syntax_error"
+		line := syntaxErrorLine(res.Stderr)
+		res.Stderr = ""
+		res.Hint = "the remote interpreter rejected the script syntax; no script body was executed and raw parser output was suppressed"
+		if line != "" {
+			res.Hint += "; line=" + line
+		}
+	}
+	return res
+}
+
+func syntaxErrorLine(stderr string) string {
+	for _, pattern := range []*regexp.Regexp{syntaxLinePattern, syntaxColonLinePattern} {
+		match := pattern.FindStringSubmatch(stderr)
+		if len(match) == 2 {
+			return match[1]
+		}
+	}
+	return ""
+}
+
 // Exec is the classic streaming entry point (exit code only).
 func Exec(c config.Connection, v *config.Vault, cmd string) int {
 	res := Run(c, v, RunOptions{Command: cmd, Capture: false})
@@ -360,6 +421,15 @@ func WriteRunResult(res RunResult, asJSON bool) {
 	}
 	if res.ScriptSHA256 != "" {
 		fmt.Printf("script_sha256=%s\n", res.ScriptSHA256)
+	}
+	if res.Mode != "" {
+		fmt.Printf("mode=%s\n", res.Mode)
+	}
+	if res.Transport != "" {
+		fmt.Printf("transport=%s\n", res.Transport)
+	}
+	if res.Preflight != "" {
+		fmt.Printf("preflight=%s\n", res.Preflight)
 	}
 	if res.Risk != "" {
 		fmt.Printf("risk=%s\n", res.Risk)

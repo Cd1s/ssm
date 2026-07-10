@@ -19,6 +19,8 @@ type MapJob struct {
 	RiskCommand    string
 	Interpreter    string
 	Secrets        map[string]string
+	Mode           string
+	Preflight      bool
 }
 
 // Map runs jobs with bounded parallelism. Each job resolves alias redirects
@@ -74,6 +76,13 @@ func runMapJob(v *config.Vault, job MapJob, noReuse bool) RunResult {
 			ScriptSHA256:  digestIfNotEmpty(job.Input),
 		}
 	}
+	if job.Input != "" && job.Preflight {
+		script := ScriptSpec{Label: job.ScriptLabel, Body: job.Input, Interpreter: job.Interpreter}
+		preflight := RunScriptPreflight(c, v, script, noReuse, job.RequestedAlias, resolved)
+		if !preflight.OK {
+			return preflight
+		}
+	}
 	res := Run(c, v, RunOptions{
 		Command:        job.Command,
 		Input:          job.Input,
@@ -85,14 +94,18 @@ func runMapJob(v *config.Vault, job MapJob, noReuse bool) RunResult {
 		ResolvedAlias:  resolved,
 		Interpreter:    job.Interpreter,
 		ScriptLabel:    job.ScriptLabel,
+		Mode:           job.Mode,
 	})
+	if job.Input != "" && job.Preflight {
+		res.Preflight = "passed"
+	}
 	res.ScriptLabel = job.ScriptLabel
 	return res
 }
 
 // ExpandMapJobs builds host×script jobs. If scripts is empty, one job per alias
 // with command. If scripts is non-empty, each script body is a job (label=path).
-func ExpandMapJobs(aliases []string, command string, scripts []ScriptSpec, secrets map[string]string) []MapJob {
+func ExpandMapJobs(aliases []string, command string, scripts []ScriptSpec, secrets map[string]string, mode string, preflight bool) []MapJob {
 	var jobs []MapJob
 	if len(scripts) == 0 {
 		for _, a := range aliases {
@@ -100,6 +113,7 @@ func ExpandMapJobs(aliases []string, command string, scripts []ScriptSpec, secre
 				RequestedAlias: a,
 				Command:        command,
 				Secrets:        secrets,
+				Mode:           mode,
 			})
 		}
 		return jobs
@@ -114,6 +128,8 @@ func ExpandMapJobs(aliases []string, command string, scripts []ScriptSpec, secre
 				RiskCommand:    s.Body,
 				Interpreter:    s.Interpreter,
 				Secrets:        secrets,
+				Mode:           "script",
+				Preflight:      preflight,
 			})
 		}
 	}

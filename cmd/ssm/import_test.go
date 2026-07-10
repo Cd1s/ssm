@@ -107,3 +107,20 @@ func TestParseImportJSONArgsRejectsNegativeExpectCount(t *testing.T) {
 		}
 	}
 }
+
+func TestParseImportJSONArgsRequiresExplicitSafeMode(t *testing.T) {
+	if _, err := parseImportJSONArgs([]string{"hosts.json"}); err == nil {
+		t.Fatal("bare import unexpectedly retained destructive default")
+	}
+	merge, err := parseImportJSONArgs([]string{"hosts.json", "--merge"})
+	if err != nil || merge.replace {
+		t.Fatalf("merge=%+v err=%v", merge, err)
+	}
+	if _, err := parseImportJSONArgs([]string{"hosts.json", "--replace"}); err == nil {
+		t.Fatal("replace without --yes succeeded")
+	}
+	replace, err := parseImportJSONArgs([]string{"hosts.json", "--replace", "--yes", "--json"})
+	if err != nil || !replace.replace || !replace.confirm || !replace.asJSON {
+		t.Fatalf("replace=%+v err=%v", replace, err)
+	}
+}

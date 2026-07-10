@@ -15,16 +15,18 @@ const maxSecretBytes = 1 << 20
 
 // remoteRunSpec is the resolved remote command for sshctl run / ssm exec / map / plan.
 type remoteRunSpec struct {
-	Command  string
-	Trace    bool
-	Timeout  time.Duration
-	JSON     bool
-	Plan     bool
-	NoReuse  bool
-	Secrets  map[string]string
-	Workers  int
-	Scripts  []ssh.ScriptSpec // multi-script parallel (-f repeated or --scripts)
-	FromArgs bool             // command came from argv (not only scripts)
+	Command   string
+	Trace     bool
+	Timeout   time.Duration
+	JSON      bool
+	Plan      bool
+	NoReuse   bool
+	Secrets   map[string]string
+	Workers   int
+	Scripts   []ssh.ScriptSpec // multi-script parallel (-f repeated or --scripts)
+	FromArgs  bool             // command came from argv (not only scripts)
+	Mode      string
+	Preflight bool
 }
 
 // parseRemoteRunArgs parses options and command parts after the host alias
@@ -36,7 +38,7 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		filePaths []string
 		trace     bool
 		timeout   time.Duration
-		jsonOut   bool
+		jsonOut   = machineJSON
 		plan      bool
 		noReuse   bool
 		workers   int
@@ -44,6 +46,7 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		parts     []string
 		shell     string
 		argvMode  bool
+		preflight bool
 		afterDash bool
 	)
 
@@ -66,6 +69,10 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 			plan = true
 		case arg == "--no-reuse":
 			noReuse = true
+		case arg == "--preflight":
+			preflight = true
+		case arg == "--no-preflight":
+			preflight = false
 		case arg == "--jobs", arg == "-j", arg == "--parallel":
 			if i+1 >= len(args) {
 				return remoteRunSpec{}, fmt.Errorf("%s requires a number", arg)
@@ -163,8 +170,10 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 	var cmd string
 	var scripts []ssh.ScriptSpec
 	fromArgs := false
+	mode := ""
 	switch {
 	case fromStdin:
+		mode = "script"
 		if len(filePaths) > 0 {
 			return remoteRunSpec{}, fmt.Errorf("use only one of -s/--script or -f/--file/--scripts")
 		}
@@ -206,11 +215,18 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		}
 		if argvMode {
 			cmd = ssh.JoinRemoteArgv(parts)
+			mode = "argv"
 		} else {
 			cmd = ssh.JoinRemoteCommand(parts, raw)
+			if raw || len(parts) == 1 {
+				mode = "shell_command"
+			} else {
+				mode = "argv"
+			}
 		}
 		fromArgs = true
 	case len(filePaths) > 0:
+		mode = "script"
 		for _, p := range filePaths {
 			data, err := readScriptFile(p)
 			if err != nil {
@@ -225,18 +241,23 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 	default:
 		return remoteRunSpec{}, fmt.Errorf("missing remote command (use args, -s/--script, or -f/--file/--scripts)")
 	}
+	if preflight && len(scripts) == 0 {
+		return remoteRunSpec{}, fmt.Errorf("--preflight requires -s, -f, or --scripts")
+	}
 
 	return remoteRunSpec{
-		Command:  cmd,
-		Trace:    trace,
-		Timeout:  timeout,
-		JSON:     jsonOut,
-		Plan:     plan,
-		NoReuse:  noReuse,
-		Secrets:  secrets,
-		Workers:  workers,
-		Scripts:  scripts,
-		FromArgs: fromArgs,
+		Command:   cmd,
+		Trace:     trace,
+		Timeout:   timeout,
+		JSON:      jsonOut,
+		Plan:      plan,
+		NoReuse:   noReuse,
+		Secrets:   secrets,
+		Workers:   workers,
+		Scripts:   scripts,
+		FromArgs:  fromArgs,
+		Mode:      mode,
+		Preflight: preflight,
 	}, nil
 }
 
