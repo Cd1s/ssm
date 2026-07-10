@@ -111,11 +111,12 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 				return remoteRunSpec{}, err
 			}
 		case arg == "--shell", arg == "--interpreter":
-			if i+1 >= len(args) {
+			remaining := args[i+1:]
+			if len(remaining) == 0 {
 				return remoteRunSpec{}, fmt.Errorf("%s requires a shell name", arg)
 			}
+			shell = remaining[0]
 			i++
-			shell = args[i]
 		case strings.HasPrefix(arg, "--shell="):
 			shell = strings.TrimPrefix(arg, "--shell=")
 		case strings.HasPrefix(arg, "--interpreter="):
@@ -272,7 +273,7 @@ func readScriptFile(path string) ([]byte, error) {
 }
 
 func readLimitedFile(path string, limit int64) ([]byte, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // scripts and secret files are explicit CLI inputs
 	if err != nil {
 		return nil, err
 	}

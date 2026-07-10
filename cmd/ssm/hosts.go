@@ -569,7 +569,7 @@ func installHostKey(v *config.Vault, current config.Connection, opts hostCommand
 }
 
 func readHostCredentialFile(path string) ([]byte, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // credential files are explicit CLI inputs
 	if err != nil {
 		return nil, err
 	}
