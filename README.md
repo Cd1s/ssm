@@ -23,6 +23,7 @@ sshctl check <alias>
 
 # 无头主机管理（候选配置先验证，成功后才保存）
 sshctl host list --json
+sshctl host search prod-web --json       # 只返回候选，不自动选择或连接
 sshctl host upsert prod-api --host 203.0.113.10 --user root --port 22 --key-file /secure/prod-api.key --verify --json
 sshctl host update prod-api --port 2222 --verify --json
 sshctl host show prod-api --json
@@ -114,6 +115,7 @@ Host request 使用 `op: host.upsert|host.update|...` 与嵌套 `host` 字段，
 | 命令 | 行为 |
 |------|------|
 | `sshctl host list/show ... --json` | 返回不含密码/私钥的结构化 inventory |
+| `sshctl host search <query> --json` | 按 alias/address/user/group 过滤；`ambiguous:true` 时必须由调用方选择 |
 | `sshctl host add ...` | 仅新增；别名已存在时失败 |
 | `sshctl host update ...` | 仅修改显式给出的字段；主机不存在时失败 |
 | `sshctl host upsert ... --verify` | 幂等声明；候选连接验证失败时 vault 不变 |
@@ -122,6 +124,8 @@ Host request 使用 `op: host.upsert|host.update|...` 与嵌套 `host` 字段，
 新增主机必须提供 `--host`、`--user` 和一种认证方式：`--key <已保存名称>`、`--key-file <路径>` 或 `--password-file <路径>`。密码和私钥不接受 inline 参数，JSON 结果只显示 `auth`/`key_name`。`upsert` 修改已有主机时，未提供认证参数会保留原认证。
 
 结构化 host 变更会先确认远端 vault 已刷新；`--verify` 使用内存中的候选 vault 建连并运行 `hostname; uname -sr`，失败返回 `verification_failed`、`applied:false`，加密 vault 不发生变化。成功后才原子保存并返回 `sync_pending:true`。`--push` 必须和 `--verify` 一起使用；同步失败时本地变更保留并返回 `sync_push_failed`。只有明确接受本地数据可能过期时才使用 `--offline`。
+
+`doctor <alias> --json` 在 exact miss 时返回 `resolved_alias` 和安全的 `candidates`，但绝不选择候选或发起连接；同时报告 local/remote vault 状态、最近 pull/push、pending 状态，以及最近一次 reviewed merge 的非敏感 alias/key-name conflict 元数据。若本地与远端从同一 cached ETag 后同时变化，自动刷新返回 `sync_conflict` 并保留两端，`sshctl --offline --json doctor` 会显示 `sync_conflict` 的非敏感 blob 标识。检查 `merge_report.conflicts`/`sync_conflict` 后，明确选择 pull 或修复本地并 push。
 
 ### Agent 舰队：map 并行
 

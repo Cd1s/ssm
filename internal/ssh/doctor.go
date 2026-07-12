@@ -8,46 +8,73 @@ import (
 	"strings"
 	"time"
 
+	"ssm/internal/cloud"
 	"ssm/internal/config"
 )
 
 // DoctorReport is agent-oriented local + remote diagnostics.
 type DoctorReport struct {
-	OK            bool              `json:"ok"`
-	VersionHint   string            `json:"version_hint,omitempty"`
-	Vault         string            `json:"vault"` // present|missing
-	Sync          string            `json:"sync"`  // configured|missing
-	Hosts         int               `json:"hosts"`
-	Redirects     int               `json:"redirects"`
-	Reuse         string            `json:"reuse"` // on|off
-	Alias         string            `json:"alias,omitempty"`
-	ResolvedAlias string            `json:"resolved_alias,omitempty"`
-	Check         *CheckResult      `json:"check,omitempty"`
-	Deep          map[string]string `json:"deep,omitempty"`
-	Error         string            `json:"error,omitempty"`
-	Message       string            `json:"message,omitempty"`
-	Hint          string            `json:"hint,omitempty"`
-	Exit          int               `json:"exit"`
-	Stage         string            `json:"stage,omitempty"`
-	LatencyMS     int64             `json:"latency_ms,omitempty"`
+	OK            bool                `json:"ok"`
+	VersionHint   string              `json:"version_hint,omitempty"`
+	Vault         string              `json:"vault"` // present|missing
+	Sync          string              `json:"sync"`  // configured|missing
+	LocalVault    string              `json:"local_vault_state"`
+	RemoteVault   string              `json:"remote_vault_state"`
+	LastPull      string              `json:"last_pull,omitempty"`
+	LastPush      string              `json:"last_push,omitempty"`
+	Pending       bool                `json:"pending_changes"`
+	Hosts         int                 `json:"hosts"`
+	Redirects     int                 `json:"redirects"`
+	Reuse         string              `json:"reuse"` // on|off
+	Alias         string              `json:"alias,omitempty"`
+	ResolvedAlias string              `json:"resolved_alias,omitempty"`
+	Check         *CheckResult        `json:"check,omitempty"`
+	Deep          map[string]string   `json:"deep,omitempty"`
+	Error         string              `json:"error,omitempty"`
+	Message       string              `json:"message,omitempty"`
+	Hint          string              `json:"hint,omitempty"`
+	Exit          int                 `json:"exit"`
+	Stage         string              `json:"stage,omitempty"`
+	Candidates    []string            `json:"candidates,omitempty"`
+	MergeReport   config.MergeReport  `json:"merge_report"`
+	SyncConflict  *cloud.SyncConflict `json:"sync_conflict,omitempty"`
+	LatencyMS     int64               `json:"latency_ms,omitempty"`
 }
 
 // Doctor gathers vault/sync status and optional remote check/deep probes.
 func Doctor(v *config.Vault, alias string, deep bool) DoctorReport {
 	start := time.Now()
 	rep := DoctorReport{
-		Vault: "missing",
-		Sync:  "missing",
-		Reuse: "on",
+		Vault:        "missing",
+		Sync:         "missing",
+		LocalVault:   "missing",
+		RemoteVault:  "unknown",
+		Reuse:        "on",
+		MergeReport:  config.LoadMergeReport(),
+		SyncConflict: cloud.LoadSyncConflict(),
 	}
+	settings := config.LoadSettings()
+	rep.LastPull, rep.LastPush = settings.LastPull, settings.LastPush
 	if !reuseEnabled() {
 		rep.Reuse = "off"
 	}
 	if config.Exists() {
 		rep.Vault = "present"
+		rep.LocalVault = "present"
 	}
 	if _, err := os.Stat(filepath.Join(config.Dir(), "cloud.json")); err == nil {
 		rep.Sync = "configured"
+		rep.RemoteVault = "cached_unknown"
+	}
+	if local, err := cloud.LocalVaultETag(); err == nil && cloud.CachedRemoteETag() != "" {
+		if local == cloud.CachedRemoteETag() {
+			rep.LocalVault = "matches_remote"
+			rep.RemoteVault = "cached_match"
+		} else {
+			rep.LocalVault = "local_ahead"
+			rep.RemoteVault = "cached_behind"
+			rep.Pending = true
+		}
 	}
 	if v != nil {
 		rep.Hosts = len(v.Connections)
@@ -69,6 +96,11 @@ func Doctor(v *config.Vault, alias string, deep bool) DoctorReport {
 		rep.Hint = "use sshctl --json host list and retry with an exact alias"
 		rep.Exit = ExitConnectionFailed
 		rep.Stage = "lookup"
+		names := make([]string, 0, len(v.Connections))
+		for _, connection := range v.Connections {
+			names = append(names, connection.Name)
+		}
+		rep.Candidates = SuggestNames(alias, names, 5)
 		rep.ResolvedAlias = resolved
 		rep.LatencyMS = time.Since(start).Milliseconds()
 		return rep
@@ -141,6 +173,9 @@ func WriteDoctorReport(rep DoctorReport, asJSON bool) {
 	fmt.Printf("ok=%d\n", boolInt(rep.OK))
 	fmt.Printf("vault=%s\n", rep.Vault)
 	fmt.Printf("sync=%s\n", rep.Sync)
+	fmt.Printf("local_vault_state=%s\n", rep.LocalVault)
+	fmt.Printf("remote_vault_state=%s\n", rep.RemoteVault)
+	fmt.Printf("pending_changes=%d\n", boolInt(rep.Pending))
 	fmt.Printf("hosts=%d\n", rep.Hosts)
 	fmt.Printf("redirects=%d\n", rep.Redirects)
 	fmt.Printf("reuse=%s\n", rep.Reuse)
@@ -149,6 +184,12 @@ func WriteDoctorReport(rep DoctorReport, asJSON bool) {
 	}
 	if rep.ResolvedAlias != "" {
 		fmt.Printf("resolved_alias=%s\n", rep.ResolvedAlias)
+	}
+	for _, candidate := range rep.Candidates {
+		fmt.Printf("candidate=%s\n", candidate)
+	}
+	for _, conflict := range rep.MergeReport.Conflicts {
+		fmt.Printf("merge_conflict=%s:%s:%s\n", conflict.Kind, conflict.Name, conflict.Winner)
 	}
 	if rep.Check != nil {
 		fmt.Printf("check_ok=%d\n", boolInt(rep.Check.OK))

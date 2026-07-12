@@ -14,6 +14,7 @@
         "check",
         "doctor",
         "host.list",
+        "host.search",
         "host.show",
         "host.add",
         "host.update",
@@ -79,7 +80,7 @@
       }
     },
     {
-      "if": {"properties": {"op": {"enum": ["check", "host.show", "host.add", "host.update", "host.upsert", "host.remove"]}}},
+      "if": {"properties": {"op": {"enum": ["check", "host.search", "host.show", "host.add", "host.update", "host.upsert", "host.remove"]}}},
       "then": {"required": ["alias"]}
     }
   ]

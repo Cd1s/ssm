@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"ssm/internal/vault"
 )
@@ -28,6 +29,17 @@ type Connection struct {
 type Vault struct {
 	Connections []Connection `json:"connections"`
 	Keys        []SSHKey     `json:"keys"`
+}
+
+type MergeConflict struct {
+	Name   string `json:"name"`
+	Kind   string `json:"kind"`
+	Winner string `json:"winner"`
+}
+
+type MergeReport struct {
+	RecordedAt string          `json:"recorded_at,omitempty"`
+	Conflicts  []MergeConflict `json:"conflicts"`
 }
 
 func (v *Vault) GetKey(name string) *SSHKey {
@@ -134,7 +146,13 @@ func Save(v *Vault, masterPass string) error {
 }
 
 func MergeVaults(local, remote *Vault) *Vault {
+	merged, _ := MergeVaultsWithReport(local, remote)
+	return merged
+}
+
+func MergeVaultsWithReport(local, remote *Vault) (*Vault, MergeReport) {
 	merged := &Vault{}
+	report := MergeReport{RecordedAt: time.Now().UTC().Format(time.RFC3339), Conflicts: []MergeConflict{}}
 
 	connMap := make(map[string]Connection)
 	var connOrder []string
@@ -145,8 +163,10 @@ func MergeVaults(local, remote *Vault) *Vault {
 		connMap[c.Name] = c
 	}
 	for _, c := range remote.Connections {
-		if _, exists := connMap[c.Name]; !exists {
+		if previous, exists := connMap[c.Name]; !exists {
 			connOrder = append(connOrder, c.Name)
+		} else if previous != c {
+			report.Conflicts = append(report.Conflicts, MergeConflict{Name: c.Name, Kind: "alias", Winner: "remote"})
 		}
 		connMap[c.Name] = c
 	}
@@ -163,8 +183,10 @@ func MergeVaults(local, remote *Vault) *Vault {
 		keyMap[k.Name] = k
 	}
 	for _, k := range remote.Keys {
-		if _, exists := keyMap[k.Name]; !exists {
+		if previous, exists := keyMap[k.Name]; !exists {
 			keyOrder = append(keyOrder, k.Name)
+		} else if previous != k {
+			report.Conflicts = append(report.Conflicts, MergeConflict{Name: k.Name, Kind: "key_name", Winner: "remote"})
 		}
 		keyMap[k.Name] = k
 	}
@@ -172,5 +194,30 @@ func MergeVaults(local, remote *Vault) *Vault {
 		merged.Keys = append(merged.Keys, keyMap[name])
 	}
 
-	return merged
+	return merged, report
+}
+
+func mergeReportPath() string { return filepath.Join(Dir(), "merge-conflicts.json") }
+
+func SaveMergeReport(report MergeReport) error {
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	return WritePrivateFile(mergeReportPath(), append(data, '\n'))
+}
+
+func LoadMergeReport() MergeReport {
+	data, err := os.ReadFile(mergeReportPath())
+	if err != nil {
+		return MergeReport{Conflicts: []MergeConflict{}}
+	}
+	var report MergeReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		return MergeReport{Conflicts: []MergeConflict{}}
+	}
+	if report.Conflicts == nil {
+		report.Conflicts = []MergeConflict{}
+	}
+	return report
 }

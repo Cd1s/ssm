@@ -23,6 +23,7 @@ sshctl check <alias>
 
 # Headless host management (verify the candidate before saving)
 sshctl host list --json
+sshctl host search prod-web --json       # candidates only; never auto-selects or connects
 sshctl host upsert prod-api --host 203.0.113.10 --user root --port 22 --key-file /secure/prod-api.key --verify --json
 sshctl host update prod-api --port 2222 --verify --json
 sshctl host show prod-api --json
@@ -114,6 +115,7 @@ Host requests use `op: host.upsert|host.update|...` plus a nested `host` object.
 | Command | Behavior |
 |---------|----------|
 | `sshctl host list/show ... --json` | Structured inventory without passwords or private keys |
+| `sshctl host search <query> --json` | Filter alias/address/user/group; callers must choose when `ambiguous:true` |
 | `sshctl host add ...` | Create only; fails if the alias exists |
 | `sshctl host update ...` | Change only specified fields; fails if the host is missing |
 | `sshctl host upsert ... --verify` | Idempotent declaration; a failed candidate check leaves the vault unchanged |
@@ -122,6 +124,8 @@ Host requests use `op: host.upsert|host.update|...` plus a nested `host` object.
 A new host requires `--host`, `--user`, and one auth source: `--key <saved-name>`, `--key-file <path>`, or `--password-file <path>`. Passwords and keys are never accepted inline, and JSON exposes only `auth`/`key_name`. Upserting an existing host preserves auth when no auth option is given.
 
 Structured host mutations require a successful remote refresh. `--verify` checks the in-memory candidate with `hostname; uname -sr`; failure returns `verification_failed`, `applied:false`, and leaves the encrypted vault unchanged. Success is saved atomically and returns `sync_pending:true`. `--push` requires `--verify`; a sync failure leaves the local change pending and returns `sync_push_failed`. Use `--offline` only when stale local state is explicitly acceptable.
+
+`doctor <alias> --json` returns `resolved_alias` and safe `candidates` on an exact miss, but never selects a candidate or connects. It also reports local/remote vault state, last pull/push, pending state, and non-secret alias/key-name conflict metadata from the latest reviewed merge. When local and remote both diverge from one cached ETag, auto-refresh returns `sync_conflict` and preserves both sides; `sshctl --offline --json doctor` exposes only non-secret blob identifiers in `sync_conflict`. Review `merge_report.conflicts`/`sync_conflict`, then explicitly choose pull or repair local state and push.
 
 ### Agent fleet: map (parallel)
 

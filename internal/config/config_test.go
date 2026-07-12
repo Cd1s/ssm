@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -142,6 +143,22 @@ func TestMergeVaultsKeepsStableOrderAndRemoteWinsConflicts(t *testing.T) {
 	}
 	if merged.Keys[1].PrivateKey != "remote-shared" {
 		t.Fatalf("shared key = %q, want remote value", merged.Keys[1].PrivateKey)
+	}
+}
+
+func TestMergeVaultsReportsNonSecretAliasConflicts(t *testing.T) {
+	local := &Vault{Connections: []Connection{{Name: "prod", Host: "old.example", User: "root", Password: "local-secret"}}}
+	remote := &Vault{Connections: []Connection{{Name: "prod", Host: "new.example", User: "root", Password: "remote-secret"}}}
+	merged, report := MergeVaultsWithReport(local, remote)
+	if merged.Connections[0].Host != "new.example" || len(report.Conflicts) != 1 {
+		t.Fatalf("merged=%+v report=%+v", merged, report)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "secret") || report.Conflicts[0].Name != "prod" || report.Conflicts[0].Winner != "remote" {
+		t.Fatalf("unsafe or incorrect report: %s", encoded)
 	}
 }
 

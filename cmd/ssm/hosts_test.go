@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -57,6 +58,32 @@ func TestHostErrorsUseCanonicalMachineContract(t *testing.T) {
 	invalid := newHostError("invalid_args", "bad option").(*hostCLIError)
 	if invalid.Code != "invalid_arguments" || invalid.Exit != 2 || invalid.Stage != "validate" {
 		t.Fatalf("invalid contract = %+v", invalid)
+	}
+}
+
+func TestSearchHostViewsIsDeterministicAndCanBeAmbiguous(t *testing.T) {
+	vault := &config.Vault{Connections: []config.Connection{
+		{Name: "web-prod-b", Host: "b.example", User: "deploy", Group: "prod"},
+		{Name: "db-stage", Host: "db.example", User: "postgres", Group: "stage"},
+		{Name: "web-prod-a", Host: "a.example", User: "deploy", Group: "prod"},
+	}}
+	matches := searchHostViews(vault, "WEB-PROD")
+	if len(matches) != 2 || matches[0].Name != "web-prod-a" || matches[1].Name != "web-prod-b" {
+		t.Fatalf("matches = %+v", matches)
+	}
+	if got := searchHostViews(vault, "missing"); len(got) != 0 || got == nil {
+		t.Fatalf("missing matches = %#v", got)
+	}
+}
+
+func TestTypedHostSearchRequestUsesAliasAsQuery(t *testing.T) {
+	args, err := requestHostArgs(agentRequest{Version: 1, Op: "host.search", Alias: "prod"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"search", "prod", "--json"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("args=%v want=%v", args, want)
 	}
 }
 

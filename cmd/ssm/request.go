@@ -91,7 +91,7 @@ func runAgentRequest(args []string) {
 		}
 		unlock()
 		runDoctor(req.Alias, req.Deep, true)
-	case "host.list", "host.show", "host.add", "host.update", "host.upsert", "host.remove":
+	case "host.list", "host.search", "host.show", "host.add", "host.update", "host.upsert", "host.remove":
 		hostArgs, err := requestHostArgs(req)
 		if err != nil {
 			writeMachineError("invalid_request", err.Error(), "host operations accept structured host fields and file-based credentials only", req.Alias, 2, nil)
@@ -100,7 +100,7 @@ func runAgentRequest(args []string) {
 		unlock()
 		runHostCommand(hostArgs)
 	default:
-		writeMachineError("invalid_request", fmt.Sprintf("unsupported request op %q", req.Op), "use run, plan, check, doctor, or host.list/show/add/update/upsert/remove", req.Alias, 2, nil)
+		writeMachineError("invalid_request", fmt.Sprintf("unsupported request op %q", req.Op), "use run, plan, check, doctor, or host.list/search/show/add/update/upsert/remove", req.Alias, 2, nil)
 		os.Exit(2)
 	}
 }

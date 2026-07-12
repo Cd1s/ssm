@@ -482,11 +482,18 @@ func runImportJSON(args []string) {
 		printError(err)
 		os.Exit(1)
 	}
+	conflicts := []config.MergeConflict{}
 	if opts.replace {
 		current.Connections = imported.Connections
 		current.Keys = imported.Keys
 	} else {
-		current = config.MergeVaults(current, imported)
+		var report config.MergeReport
+		current, report = config.MergeVaultsWithReport(current, imported)
+		conflicts = report.Conflicts
+		if err := config.SaveMergeReport(report); err != nil {
+			writeCLIError("merge_report_error", redactError(err), "vault was not changed; verify config directory permissions", 1)
+			os.Exit(1)
+		}
 	}
 
 	if err := config.Save(current, masterPass); err != nil {
@@ -496,11 +503,12 @@ func runImportJSON(args []string) {
 
 	if machineJSON {
 		writeMachineValue(struct {
-			OK          bool   `json:"ok"`
-			Action      string `json:"action"`
-			Connections int    `json:"connections"`
-			Keys        int    `json:"keys"`
-		}{OK: true, Action: map[bool]string{true: "replaced", false: "merged"}[opts.replace], Connections: len(imported.Connections), Keys: len(imported.Keys)})
+			OK          bool                   `json:"ok"`
+			Action      string                 `json:"action"`
+			Connections int                    `json:"connections"`
+			Keys        int                    `json:"keys"`
+			Conflicts   []config.MergeConflict `json:"conflicts,omitempty"`
+		}{OK: true, Action: map[bool]string{true: "replaced", false: "merged"}[opts.replace], Connections: len(imported.Connections), Keys: len(imported.Keys), Conflicts: conflicts})
 		return
 	}
 	fmt.Printf("Imported %d connections and %d keys.\n", len(imported.Connections), len(imported.Keys))

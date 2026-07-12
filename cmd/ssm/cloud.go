@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -192,6 +193,11 @@ func runPullIfChanged() {
 
 func pullIfChanged() {
 	if err := refreshVaultIfChanged(); err != nil {
+		var conflict *cloud.SyncConflictError
+		if errors.As(err, &conflict) {
+			writeCLIErrorStage("sync_conflict", err.Error(), "local and remote blobs were preserved; inspect sshctl --offline --json doctor, then explicitly pull or push after review", "sync_compare", 1)
+			os.Exit(1)
+		}
 		writeCLIErrorStage("sync_pull_failed", err.Error(), "fix sync connectivity or retry explicitly with --offline", "sync_pull", 1)
 		os.Exit(1)
 	}

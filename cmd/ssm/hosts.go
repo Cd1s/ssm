@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -34,6 +35,7 @@ type optionalInt struct {
 type hostCommandOptions struct {
 	action       string
 	alias        string
+	filter       optionalString
 	asJSON       bool
 	host         optionalString
 	port         optionalInt
@@ -140,6 +142,12 @@ func parseHostCommandArgs(args []string) (hostCommandOptions, error) {
 				return opts, err
 			}
 			opts.host = optionalString{value: value, set: true}
+		case matchesValueFlag(arg, "--filter"):
+			value, err := readFlagValue(args, &i, "--filter")
+			if err != nil {
+				return opts, err
+			}
+			opts.filter = optionalString{value: value, set: true}
 		case matchesValueFlag(arg, "--port"):
 			value, err := readFlagValue(args, &i, "--port")
 			if err != nil {
@@ -223,8 +231,19 @@ func readFlagValue(args []string, i *int, name string) (string, error) {
 func validateHostCommandOptions(opts hostCommandOptions) error {
 	switch opts.action {
 	case "list":
-		if opts.alias != "" || opts.hasMutationOptions() || opts.confirm || opts.pruneKey || opts.verify || opts.push {
+		if opts.alias != "" || opts.filter.set || opts.hasMutationOptions() || opts.confirm || opts.pruneKey || opts.verify || opts.push {
 			return newHostError("invalid_args", "host list only accepts --json and --offline")
+		}
+		return nil
+	case "search":
+		if opts.alias == "" && !opts.filter.set {
+			return newHostError("invalid_args", "host search requires a query or --filter")
+		}
+		if opts.alias != "" && opts.filter.set {
+			return newHostError("invalid_args", "host search accepts either a query or --filter, not both")
+		}
+		if opts.hasMutationOptions() || opts.confirm || opts.pruneKey || opts.verify || opts.push {
+			return newHostError("invalid_args", "host search accepts only a query, --json, and --offline")
 		}
 		return nil
 	case "show":
@@ -321,6 +340,14 @@ func runHostCommand(args []string) {
 			views[i] = newHostView(c)
 		}
 		writeHostList(views, opts.asJSON)
+		return
+	case "search":
+		query := opts.alias
+		if opts.filter.set {
+			query = opts.filter.value
+		}
+		views := searchHostViews(v, query)
+		writeHostSearch(query, views, opts.asJSON)
 		return
 	case "show":
 		idx := exactConnectionIndex(v, opts.alias)
@@ -522,6 +549,45 @@ func exactConnectionIndex(v *config.Vault, alias string) int {
 		}
 	}
 	return -1
+}
+
+func searchHostViews(v *config.Vault, query string) []hostView {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" || v == nil {
+		return []hostView{}
+	}
+	views := make([]hostView, 0)
+	for _, connection := range v.Connections {
+		fields := []string{connection.Name, connection.Host, connection.User, connection.Group}
+		matched := false
+		for _, field := range fields {
+			if strings.Contains(strings.ToLower(field), query) {
+				matched = true
+				break
+			}
+		}
+		if matched {
+			views = append(views, newHostView(connection))
+		}
+	}
+	sort.Slice(views, func(i, j int) bool { return views[i].Name < views[j].Name })
+	return views
+}
+
+func writeHostSearch(query string, matches []hostView, asJSON bool) {
+	if asJSON {
+		writeHostJSON(struct {
+			OK        bool       `json:"ok"`
+			Query     string     `json:"query"`
+			Count     int        `json:"count"`
+			Ambiguous bool       `json:"ambiguous"`
+			Matches   []hostView `json:"matches"`
+		}{OK: true, Query: query, Count: len(matches), Ambiguous: len(matches) > 1, Matches: matches})
+		return
+	}
+	for _, match := range matches {
+		writeHostView(match, false)
+	}
 }
 
 func validateManagedConnection(c config.Connection, v *config.Vault) error {
@@ -808,6 +874,7 @@ func hasJSONFlag(args []string) bool {
 func hostCommandUsage() {
 	fmt.Print(`Usage:
   sshctl host list [--json] [--offline]
+  sshctl host search <query> [--json] [--offline]
   sshctl host show <alias> [--json] [--offline]
 	  sshctl host add <alias> --host <address> --user <user> [--port 22] [--group <name>] <auth> [--verify] [--push] [--json] [--offline]
 	  sshctl host update <alias> [--host ...] [--user ...] [--port ...] [--group ...] [<auth>] [--verify] [--push] [--json] [--offline]

@@ -22,6 +22,19 @@ type CloudConfig struct {
 	Email  string `json:"email,omitempty"`
 }
 
+type SyncConflict struct {
+	DetectedAt string `json:"detected_at"`
+	LocalETag  string `json:"local_etag"`
+	RemoteETag string `json:"remote_etag"`
+	CachedETag string `json:"cached_etag"`
+}
+
+type SyncConflictError struct{ Conflict SyncConflict }
+
+func (e *SyncConflictError) Error() string {
+	return "local and remote encrypted vaults both changed since the last successful sync"
+}
+
 var httpClient = &http.Client{Timeout: 15 * time.Second}
 
 var maxPullBlobBytes int64 = 64 << 20
@@ -121,6 +134,7 @@ func Push(cfg *CloudConfig) error {
 		etag = hashBytes(data)
 	}
 	_ = saveRemoteETag(etag)
+	_ = os.Remove(syncConflictPath())
 	config.Debug("push: success")
 	config.RecordSync("push")
 	return nil
@@ -175,6 +189,7 @@ func Pull(cfg *CloudConfig) error {
 	if etag := strings.Trim(resp.Header.Get("ETag"), `"`); etag != "" {
 		_ = saveRemoteETag(etag)
 	}
+	_ = os.Remove(syncConflictPath())
 	config.Debug("pull: success")
 	config.RecordSync("pull")
 	return nil
@@ -214,6 +229,14 @@ func PullIfChanged(cfg *CloudConfig) (bool, error) {
 	local := loadRemoteETag()
 	if remote != "" && remote == local {
 		return false, nil
+	}
+	if local != "" && remote != "" {
+		localVault, hashErr := LocalVaultETag()
+		if hashErr == nil && localVault != local {
+			conflict := SyncConflict{DetectedAt: time.Now().UTC().Format(time.RFC3339), LocalETag: localVault, RemoteETag: remote, CachedETag: local}
+			_ = saveSyncConflict(conflict)
+			return false, &SyncConflictError{Conflict: conflict}
+		}
 	}
 	if err := Pull(cfg); err != nil {
 		return false, err
@@ -350,6 +373,28 @@ func saveRemoteETag(etag string) error {
 func hashBytes(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+func syncConflictPath() string { return filepath.Join(config.Dir(), "sync-conflict.json") }
+
+func saveSyncConflict(conflict SyncConflict) error {
+	data, err := json.MarshalIndent(conflict, "", "  ")
+	if err != nil {
+		return err
+	}
+	return config.WritePrivateFile(syncConflictPath(), append(data, '\n'))
+}
+
+func LoadSyncConflict() *SyncConflict {
+	data, err := os.ReadFile(syncConflictPath())
+	if err != nil {
+		return nil
+	}
+	var conflict SyncConflict
+	if err := json.Unmarshal(data, &conflict); err != nil {
+		return nil
+	}
+	return &conflict
 }
 
 // CachedRemoteETag returns the last successfully observed remote encrypted

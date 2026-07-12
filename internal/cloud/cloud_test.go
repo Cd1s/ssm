@@ -92,6 +92,45 @@ func TestLocalAndCachedETagExposeOnlyBlobIdentity(t *testing.T) {
 	}
 }
 
+func TestPullIfChangedStopsOnDivergedLocalAndRemoteVaults(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	localBlob := []byte("locally changed encrypted blob")
+	if err := config.WritePrivateFile(config.Path(), localBlob); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveRemoteETag("previous-remote-etag"); err != nil {
+		t.Fatal(err)
+	}
+	getCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"new-remote-etag"`)
+		if r.Method == http.MethodGet {
+			getCalled = true
+			_, _ = w.Write([]byte("remote encrypted blob"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	changed, err := PullIfChanged(&CloudConfig{Server: server.URL, Token: "test-token"})
+	if err == nil || changed {
+		t.Fatalf("changed=%t err=%v", changed, err)
+	}
+	if getCalled {
+		t.Fatal("remote blob was downloaded despite a two-sided conflict")
+	}
+	data, readErr := os.ReadFile(config.Path())
+	if readErr != nil || string(data) != string(localBlob) {
+		t.Fatalf("local vault changed: data=%q err=%v", data, readErr)
+	}
+	conflict := LoadSyncConflict()
+	if conflict == nil || conflict.LocalETag == "" || conflict.RemoteETag != "new-remote-etag" || conflict.CachedETag != "previous-remote-etag" {
+		t.Fatalf("conflict = %+v", conflict)
+	}
+}
+
 func TestPullRejectsEmptyBlobWithoutOverwritingVault(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
