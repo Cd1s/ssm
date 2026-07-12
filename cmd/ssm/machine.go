@@ -46,11 +46,19 @@ func writeMachineErrorStage(code, message, hint, stage, alias string, exit int, 
 }
 
 func writeCLIError(code, message, hint string, exit int) {
+	writeCLIErrorStage(code, message, hint, "", exit)
+}
+
+func writeCLIErrorStage(code, message, hint, stage string, exit int) {
 	if machineJSON {
-		writeMachineError(code, message, hint, "", exit, nil)
+		writeMachineErrorStage(code, message, hint, stage, "", exit, nil)
 		return
 	}
-	fmt.Fprintf(os.Stderr, "ssm: error=%s\nError: %s\n", code, redactString(message))
+	fmt.Fprintf(os.Stderr, "ssm: error=%s", code)
+	if stage != "" {
+		fmt.Fprintf(os.Stderr, " stage=%s", stage)
+	}
+	fmt.Fprintf(os.Stderr, "\nError: %s\n", redactString(message))
 	if hint != "" {
 		fmt.Fprintf(os.Stderr, "ssm: hint=%s\n", redactString(hint))
 	}

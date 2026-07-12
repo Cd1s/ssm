@@ -191,13 +191,22 @@ func runPullIfChanged() {
 }
 
 func pullIfChanged() {
+	if err := refreshVaultIfChanged(); err != nil {
+		writeCLIErrorStage("sync_pull_failed", err.Error(), "fix sync connectivity or retry explicitly with --offline", "sync_pull", 1)
+		os.Exit(1)
+	}
+}
+
+func refreshVaultIfChanged() error {
+	if offlineMode || !config.LoadSettings().AutoSync {
+		return nil
+	}
 	cfg, err := cloud.LoadCloud()
 	if err != nil {
-		return
+		return nil
 	}
-	if _, err := cloud.PullIfChanged(cfg); err != nil {
-		config.Debug("pull-if-changed: %v", err)
-	}
+	_, err = cloud.PullIfChanged(cfg)
+	return err
 }
 
 func runPull() {

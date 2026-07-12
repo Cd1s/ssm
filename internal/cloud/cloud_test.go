@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"ssm/internal/config"
 )
 
 func TestSaveCloudCreatesConfigDir(t *testing.T) {
@@ -68,6 +70,25 @@ func TestPullWritesVaultAndRemoteETagPrivately(t *testing.T) {
 		if info.Mode().Perm() != 0600 {
 			t.Fatalf("%s mode = %o, want 600", path, info.Mode().Perm())
 		}
+	}
+}
+
+func TestLocalAndCachedETagExposeOnlyBlobIdentity(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	blob := []byte("opaque encrypted bytes")
+	if err := config.WritePrivateFile(config.Path(), blob); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveRemoteETag(hashBytes(blob)); err != nil {
+		t.Fatal(err)
+	}
+	local, err := LocalVaultETag()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if local == "" || local != CachedRemoteETag() || strings.Contains(local, string(blob)) {
+		t.Fatalf("local=%q cached=%q", local, CachedRemoteETag())
 	}
 }
 

@@ -60,6 +60,20 @@ func TestParseGlobalArgsExtractsLeadingJSONOnly(t *testing.T) {
 	}
 }
 
+func TestParseGlobalArgsExtractsLeadingOffline(t *testing.T) {
+	oldOffline := offlineMode
+	t.Cleanup(func() { offlineMode = oldOffline })
+	offlineMode = false
+
+	got, err := parseGlobalArgs([]string{"--offline", "status"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !offlineMode || !reflect.DeepEqual(got, []string{"status"}) {
+		t.Fatalf("offline=%t args=%v", offlineMode, got)
+	}
+}
+
 func TestSplitRunAliasHandlesCommandLocalJSON(t *testing.T) {
 	alias, args, err := splitRunAlias([]string{"--json", "prod", "--argv", "hostname"})
 	if err != nil {

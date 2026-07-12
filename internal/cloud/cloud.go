@@ -351,3 +351,16 @@ func hashBytes(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
+
+// CachedRemoteETag returns the last successfully observed remote encrypted
+// blob identifier. It contains no vault plaintext or credentials.
+func CachedRemoteETag() string { return loadRemoteETag() }
+
+// LocalVaultETag hashes the encrypted on-disk blob for freshness comparison.
+func LocalVaultETag() (string, error) {
+	data, err := os.ReadFile(config.Path())
+	if err != nil {
+		return "", err
+	}
+	return hashBytes(data), nil
+}

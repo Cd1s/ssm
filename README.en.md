@@ -61,6 +61,8 @@ sshctl run old-alias hostname
 sshctl push
 ```
 
+`status` checks the configured sync endpoint by default and refreshes when its ETag changed. A sync failure returns `error:sync_pull_failed`, `stage:sync_pull`; cached data is never selected silently. Use `sshctl --json status --offline` (or global `--offline`) only when stale data is explicitly acceptable. Offline results include `offline:true`, `remote_state:not_checked`, `freshness`, `cache_age_seconds`, last pull/push times, and `pending_changes`.
+
 `sshctl request --file` is the preferred agent entry point. When remote shell semantics are necessary, use a `script_file`, `-f`, or stdin script with `run`; this project does not provide an interactive shell.
 
 ### Credential safety boundary

@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
+	"ssm/internal/cloud"
 	"ssm/internal/config"
 )
 
@@ -154,7 +156,9 @@ func runSSHCTL(args []string) {
 		writeCLIError("unsupported_command", "interactive shell support has been removed", "use sshctl run with --argv or a script source", 2)
 		os.Exit(2)
 	case "status":
-		if len(args) != 1 {
+		if len(args) == 2 && args[1] == "--offline" {
+			offlineMode = true
+		} else if len(args) != 1 {
 			sshctlUsageExit()
 		}
 		unlock()
@@ -314,6 +318,31 @@ func runSSHCTLStatus() {
 	}
 
 	reuse := map[bool]string{true: "on", false: "off"}[os.Getenv("SSM_REUSE") != "0" && os.Getenv("SSM_REUSE") != "off"]
+	settings := config.LoadSettings()
+	localETag, localErr := cloud.LocalVaultETag()
+	remoteETag := cloud.CachedRemoteETag()
+	freshness := "unknown"
+	pending := false
+	if localErr == nil && remoteETag != "" {
+		if localETag == remoteETag {
+			freshness = "fresh"
+		} else {
+			freshness = "local_ahead"
+			pending = true
+		}
+	}
+	lastSync, cacheAge := syncCacheAge(settings, time.Now())
+	remoteState := "checked"
+	if cloudStatus == "missing" {
+		remoteState = "not_configured"
+	} else if !settings.AutoSync {
+		remoteState = "auto_sync_disabled"
+	} else if offlineMode {
+		remoteState = "not_checked"
+		if freshness == "fresh" {
+			freshness = "cached"
+		}
+	}
 	if machineJSON {
 		writeMachineValue(struct {
 			OK         bool   `json:"ok"`
@@ -324,14 +353,40 @@ func runSSHCTLStatus() {
 			Redirects  int    `json:"redirects"`
 			Reuse      string `json:"reuse"`
 			ReuseScope string `json:"reuse_scope"`
-		}{OK: err == nil, Version: version, Hosts: count, Vault: vaultStatus, Sync: cloudStatus, Redirects: len(config.LoadRedirects()), Reuse: reuse, ReuseScope: "process"})
+			LastPull   string `json:"last_pull,omitempty"`
+			LastPush   string `json:"last_push,omitempty"`
+			LastSync   string `json:"last_sync,omitempty"`
+			Freshness  string `json:"freshness"`
+			Remote     string `json:"remote_state"`
+			Pending    bool   `json:"pending_changes"`
+			Offline    bool   `json:"offline"`
+			CacheAge   int64  `json:"cache_age_seconds,omitempty"`
+		}{OK: err == nil, Version: version, Hosts: count, Vault: vaultStatus, Sync: cloudStatus, Redirects: len(config.LoadRedirects()), Reuse: reuse, ReuseScope: "process", LastPull: settings.LastPull, LastPush: settings.LastPush, LastSync: lastSync, Freshness: freshness, Remote: remoteState, Pending: pending, Offline: offlineMode, CacheAge: cacheAge})
 		if err != nil {
 			os.Exit(1)
 		}
 		return
 	}
-	fmt.Printf("version=%s\nhosts=%d\nvault=%s\nsync=%s\nredirects=%d\nreuse=%s\nreuse_scope=process\n",
-		version, count, vaultStatus, cloudStatus, len(config.LoadRedirects()), reuse)
+	fmt.Printf("version=%s\nhosts=%d\nvault=%s\nsync=%s\nredirects=%d\nreuse=%s\nreuse_scope=process\nfreshness=%s\nremote_state=%s\npending_changes=%t\noffline=%t\ncache_age_seconds=%d\n",
+		version, count, vaultStatus, cloudStatus, len(config.LoadRedirects()), reuse, freshness, remoteState, pending, offlineMode, cacheAge)
+}
+
+func syncCacheAge(settings *config.Settings, now time.Time) (string, int64) {
+	var latest time.Time
+	for _, raw := range []string{settings.LastPull, settings.LastPush} {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err == nil && parsed.After(latest) {
+			latest = parsed
+		}
+	}
+	if latest.IsZero() {
+		return "", 0
+	}
+	age := now.Sub(latest)
+	if age < 0 {
+		age = 0
+	}
+	return latest.Format(time.RFC3339), int64(age / time.Second)
 }
 
 func sshctlUsage() {
@@ -342,7 +397,7 @@ func sshctlUsage() {
 	  sshctl host list|show|add|update|upsert|remove ...
 	  sshctl host-key inspect <alias> [--json]
 	  sshctl host-key accept <alias> --fingerprint SHA256:... --yes [--json]
-  sshctl status
+  sshctl status [--offline]
   sshctl check <alias> [--json]
 	  sshctl doctor [alias] [--deep] [--json]
 	  sshctl request [--file <request.json>|-]  # versioned agent JSON request

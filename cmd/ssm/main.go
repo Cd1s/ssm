@@ -14,6 +14,7 @@ import (
 var (
 	masterPass     string
 	masterPassFile string
+	offlineMode    bool
 	version        = "1.3.0"
 )
 
@@ -242,6 +243,8 @@ func parseGlobalArgs(args []string) ([]string, error) {
 		switch {
 		case !seenCommand && arg == "--json":
 			machineJSON = true
+		case !seenCommand && arg == "--offline":
+			offlineMode = true
 		case !seenCommand && arg == "--master-pass-file":
 			if i+1 >= len(args) {
 				return nil, fmt.Errorf("--master-pass-file requires a path")

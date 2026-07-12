@@ -61,6 +61,8 @@ sshctl run old-alias hostname
 sshctl push
 ```
 
+`status` 默认检查配置的同步端点并在远端 ETag 变化时刷新；同步失败会返回 `error:sync_pull_failed`、`stage:sync_pull`，不会静默使用缓存。只有调用方明确接受陈旧数据时才使用 `sshctl --json status --offline`（或全局 `--offline`）。离线结果包含 `offline:true`、`remote_state:not_checked`、`freshness`、`cache_age_seconds`、最近 pull/push 时间和 `pending_changes`。
+
 `sshctl request --file` 是 Agent 的首选入口。需要远端 shell 语义时，使用 `run` 的 `script_file`、`-f` 或 stdin 脚本模式；项目不提供交互式 shell。
 
 ### 凭据安全边界
