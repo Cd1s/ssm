@@ -6,11 +6,8 @@ import (
 	"os"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-
 	"ssm/internal/cloud"
 	"ssm/internal/config"
-	"ssm/internal/tui"
 )
 
 const defaultServer = ""
@@ -37,68 +34,8 @@ func runRegister(args []string) {
 		fmt.Println("Account registered.")
 		return
 	}
-	requireInteractive("ssm register")
-
-	fields := []tui.Field{
-		{Label: "Server", Value: defaultServer},
-		{Label: "Email", Required: true},
-		{Label: "Password", Required: true, Password: true},
-		{Label: "Confirm", Required: true, Password: true},
-	}
-
-	p := tea.NewProgram(tui.NewFormModel("Create account", fields), tea.WithAltScreen())
-	result, err := p.Run()
-	if err != nil {
-		printError(err)
-		os.Exit(1)
-	}
-
-	fm := result.(tui.FormModel)
-	if fm.Canceled || !fm.Done {
-		return
-	}
-
-	password := fm.GetValue("Password")
-	if password != fm.GetValue("Confirm") {
-		fmt.Fprintln(os.Stderr, "Passwords do not match.")
-		os.Exit(1)
-	}
-
-	server := fm.GetValue("Server")
-	email := fm.GetValue("Email")
-
-	fmt.Println("Creating account...")
-	token, err := cloud.Register(server, email, password)
-	if err != nil {
-		printError(err)
-		os.Exit(1)
-	}
-
-	cfg := &cloud.CloudConfig{Server: server, Token: token, Email: email}
-	if err := cloud.SaveCloud(cfg); err != nil {
-		printError(err)
-		os.Exit(1)
-	}
-
-	check := func() bool {
-		return cloud.CheckVerified(cfg)
-	}
-
-	vp := tea.NewProgram(tui.NewVerifyModel(email, check), tea.WithAltScreen())
-	vResult, err := vp.Run()
-	if err != nil {
-		fmt.Println("Account created. Check your email to verify your account.")
-		return
-	}
-	vm := vResult.(tui.VerifyModel)
-	if vm.Verified() {
-		fmt.Println("Account verified and ready.")
-		if err := cloud.Pull(cfg); err == nil {
-			fmt.Println("Vault synced from cloud.")
-		}
-	} else {
-		fmt.Println("Account created. Verify your email to use cloud sync.")
-	}
+	writeCLIError("invalid_arguments", "register requires explicit flags", "use --server, --email, and --password-file", 2)
+	os.Exit(2)
 }
 
 func runLogin(args []string) {
@@ -124,47 +61,8 @@ func runLogin(args []string) {
 		fmt.Println("Logged in.")
 		return
 	}
-	requireInteractive("ssm login")
-
-	fields := []tui.Field{
-		{Label: "Server", Value: defaultServer},
-		{Label: "Email", Required: true},
-		{Label: "Password", Required: true, Password: true},
-	}
-
-	p := tea.NewProgram(tui.NewFormModel("Login", fields), tea.WithAltScreen())
-	result, err := p.Run()
-	if err != nil {
-		printError(err)
-		os.Exit(1)
-	}
-
-	fm := result.(tui.FormModel)
-	if fm.Canceled || !fm.Done {
-		return
-	}
-
-	server := fm.GetValue("Server")
-	email := fm.GetValue("Email")
-	password := fm.GetValue("Password")
-
-	fmt.Println("Logging in...")
-	token, err := cloud.Login(server, email, password)
-	if err != nil {
-		printError(err)
-		os.Exit(1)
-	}
-
-	cfg := &cloud.CloudConfig{Server: server, Token: token, Email: email}
-	if err := cloud.SaveCloud(cfg); err != nil {
-		printError(err)
-		os.Exit(1)
-	}
-	fmt.Println("Logged in.")
-
-	if err := cloud.Pull(cfg); err == nil {
-		fmt.Println("Vault synced from cloud.")
-	}
+	writeCLIError("invalid_arguments", "login requires explicit flags", "use --server, --email, and --password-file", 2)
+	os.Exit(2)
 }
 
 type cloudAuthFlags struct {

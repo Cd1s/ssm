@@ -26,7 +26,7 @@ func TestBuildAuthRequiresConfiguredMethod(t *testing.T) {
 
 func TestUploadCommandRequiresSuccessfulWriteBeforeChmod(t *testing.T) {
 	got := uploadCommand("/tmp/remote file's name", 0644)
-	if !strings.Contains(got, " && chmod 0644 ") {
+	if !strings.Contains(got, " && chmod 0644 \"$tmp\"") {
 		t.Fatalf("upload command = %q, want chmod guarded by &&", got)
 	}
 	if strings.Contains(got, "; chmod") {
@@ -37,6 +37,12 @@ func TestUploadCommandRequiresSuccessfulWriteBeforeChmod(t *testing.T) {
 	}
 	if !strings.Contains(got, "mkdir -p '/tmp'") {
 		t.Fatalf("upload command = %q, want mkdir -p parent", got)
+	}
+	if !strings.Contains(got, ".ssm-upload.$$") || !strings.Contains(got, "mv -f -- \"$tmp\"") {
+		t.Fatalf("upload command = %q, want atomic sibling temp and rename", got)
+	}
+	if !strings.Contains(got, "trap 'rm -f -- \"$tmp\"'") {
+		t.Fatalf("upload command = %q, want partial upload cleanup", got)
 	}
 }
 
@@ -125,25 +131,6 @@ func TestSaveHostKeyReportsDirectoryErrors(t *testing.T) {
 	err := saveHostKey(filepath.Join(notDir, "known_hosts"), "127.0.0.1:22", testPublicKey(t))
 	if err == nil {
 		t.Fatal("expected directory creation error")
-	}
-}
-
-func TestMarkSessionClosedLockedIsIdempotent(t *testing.T) {
-	m := NewSessionManager(&config.Vault{}, nil)
-	s := &SSHSession{done: make(chan struct{})}
-
-	m.mu.Lock()
-	m.markSessionClosedLocked(s)
-	m.markSessionClosedLocked(s)
-	m.mu.Unlock()
-
-	if !s.closed {
-		t.Fatal("session was not marked closed")
-	}
-	select {
-	case <-s.done:
-	default:
-		t.Fatal("session done channel was not closed")
 	}
 }
 

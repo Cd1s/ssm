@@ -124,7 +124,10 @@ func uploadCommand(remotePath string, mode os.FileMode) string {
 	if parent != "" {
 		prefix += "mkdir -p " + ShellQuote(parent) + " && "
 	}
-	return fmt.Sprintf("%scat > %s && chmod %04o %s", prefix, quotedPath, uint32(mode.Perm()), quotedPath)
+	// Stream into a sibling temporary file and rename only after the complete
+	// payload and mode have been written. A failed transfer leaves the previous
+	// destination intact and the trap removes the partial upload.
+	return fmt.Sprintf("%stmp=%s.ssm-upload.$$; trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM; cat > \"$tmp\" && chmod %04o \"$tmp\" && mv -f -- \"$tmp\" %s && trap - EXIT HUP INT TERM", prefix, quotedPath, uint32(mode.Perm()), quotedPath)
 }
 
 func downloadCommand(remotePath string) string {

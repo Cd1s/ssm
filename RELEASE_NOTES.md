@@ -2,6 +2,12 @@
 
 ## v1.3.0
 
+### Non-interactive CLI only
+
+- Remove the Bubble Tea/Lip Gloss TUI, interactive connection manager, shell entry points, and their dependencies.
+- Require explicit commands and file-backed credentials for vault creation/unlock and sync login/register; no command waits for terminal input.
+- Keep connection management through `sshctl host` and versioned typed requests. Uploads now stream to a sibling temporary file and atomically rename on success, preserving an existing destination after interrupted or failed transfers.
+
 ### Typed agent interface
 
 - Add `sshctl request [--file <json>|-]` with strict schema version 1 and unknown-field rejection. A run request must select exactly one of `argv`, `shell_command`, or `script_file`.
@@ -15,7 +21,7 @@
 - Require `--verify` when a host mutation uses `--push`. A push failure reports `sync_push_failed` while preserving the verified local change as pending.
 - Default typed host add/update/upsert requests to candidate verification.
 - Remove the destructive `import-json` default. Callers must choose `--merge`, or explicitly authorize full replacement with `--replace --yes`.
-- Fail every TUI-only path immediately when no terminal is available, including vault creation/unlock, add/edit, key entry, and interactive login/register.
+- Replace former add/edit/key-entry paths with explicit host CLI/request operations and file-backed credential inputs.
 
 ### Script and host-key hardening
 
@@ -28,7 +34,7 @@
 
 - Strict request parsing, exact argv/secret-file handling, import mode guards, verify/push option guards, and global JSON parsing tests.
 - In-process SSH coverage for script syntax preflight and host-key inspect/accept with wrong-fingerprint immutability.
-- Real OpenSSH matrix covers candidate-vault rollback, typed argv/script requests, syntax-error no-side-effect behavior, host-key fingerprint guards, guarded import, and non-TTY TUI rejection.
+- Real OpenSSH matrix covers candidate-vault rollback, typed argv/script requests, syntax-error no-side-effect behavior, host-key fingerprint guards, and guarded import.
 
 ## v1.2.0
 

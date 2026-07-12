@@ -12,7 +12,7 @@ Use this skill when an agent needs to:
 
 - inspect the SSH inventory managed by `ssm` / `sshctl`;
 - run a command, open a shell, or upload a file to a known host alias;
-- add, edit, or remove a host from the encrypted vault without opening the TUI;
+- add, update, or remove a host from the encrypted vault through explicit non-interactive commands;
 - recover from sync or SSH host-key problems without leaking credentials.
 
 ## What it protects

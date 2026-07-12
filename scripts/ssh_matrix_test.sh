@@ -369,22 +369,11 @@ set +e
 edit_out=$(HOME="$TMP/home" SSM_UPDATE_REPO=off "$BIN" --master-pass-file "$TMP/home/.config/ssm/master.pass" edit local 2>&1)
 edit_rc=$?
 set -e
-if [ "$edit_rc" != "2" ] || ! printf '%s' "$edit_out" | grep -q 'interactive_required'; then
-  echo "non-tty edit: rc=$edit_rc out=[$edit_out]" >&2
-  exit 1
+if [ "$edit_rc" = "0" ] || ! printf '%s' "$edit_out" | grep -q 'Unknown command'; then
+	echo "removed edit command: rc=$edit_rc out=[$edit_out]" >&2
+	exit 1
 fi
-echo "ok non_tty_tui_guard"
-
-cat > "$TMP/run_shell.sh" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-export HOME="$TMP/home"
-export SSM_UPDATE_REPO=off
-exec "$TMP/sshctl" shell local
-EOF
-chmod 700 "$TMP/run_shell.sh"
-printf 'exit\r' | script -qfec "$TMP/run_shell.sh" /dev/null >/dev/null
-echo "ok shell"
+echo "ok removed_tui_command"
 
 set +e
 missing_auth=$(HOME="$TMP/home" SSM_UPDATE_REPO=off "$BIN" --master-pass-file "$TMP/home/.config/ssm/master.pass" exec missing true 2>&1)

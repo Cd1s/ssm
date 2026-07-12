@@ -1,6 +1,6 @@
 # ssm
 
-Headless SSH manager for agents. SSH hosts live in a local encrypted vault, sync moves only encrypted data, and real SSH connections always start from the current machine.
+Non-interactive SSH vault management CLI for agents and automation. Neither `ssm` nor `sshctl` starts a TUI, opens an interactive shell, or waits for terminal input. SSH hosts live in a local encrypted vault, sync moves only encrypted data, and real SSH connections always start from the current machine.
 
 [中文](README.md) | [English](README.en.md)
 
@@ -15,10 +15,10 @@ The installer downloads the matching program from `Cd1s/ssm`, installs `/usr/loc
 ## Commands
 
 ```bash
-sshctl status
-sshctl list --json
+sshctl --json status
+sshctl --json host list
 sshctl sync
-sshctl doctor <alias> --deep --json
+sshctl --json doctor <alias> --deep
 sshctl check <alias>
 
 # Headless host management (verify the candidate before saving)
@@ -60,6 +60,12 @@ sshctl run old-alias hostname
 
 sshctl push
 ```
+
+`sshctl request --file` is the preferred agent entry point. When remote shell semantics are necessary, use a `script_file`, `-f`, or stdin script with `run`; this project does not provide an interactive shell.
+
+### Credential safety boundary
+
+Passwords, private keys, and other secrets must only be referenced through permission-restricted file paths. Never put them or vault contents in JSON, command-line arguments, logs, error reports, GitHub Issues, or commits. `--password-file`, `--key-file`, `--master-pass-file`, and request `secret_files` read the referenced files; structured output never echoes their contents.
 
 Connection-layer JSON failures use `error=dial_*|host_key_mismatch|alias_not_found|...` and normally exit **255**. Do not classify from 255 alone because a remote process can also return 255. Connection reuse is process-scoped and on by default (`SSM_REUSE=0` / `--no-reuse`). Global `sshctl --json ...` also makes argument, unlock, alias, and sync failures emit exactly one JSON value.
 
@@ -151,7 +157,7 @@ ssm login --server <sync-server-url> --email <email> --password-file <sync-passw
 sshctl sync
 ```
 
-The center server stores only encrypted vault blobs. It never decrypts SSH passwords or private keys. `sshctl list/run/shell/status` and `ssm list/exec/shell` check the remote ETag before reading the vault and auto-pull when it changed. TUI mutations follow auto-sync settings; agent-facing `sshctl host` mutations deliberately remain local until verification and an explicit `sshctl push`.
+The center server stores only encrypted vault blobs. It never decrypts SSH passwords or private keys. `sshctl list/run/status` and `ssm list/exec` check the remote ETag before reading the vault and auto-pull when it changed. Agent-facing `sshctl host` mutations deliberately remain local until verification and an explicit `sshctl push`.
 
 ## Center Server
 

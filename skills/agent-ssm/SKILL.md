@@ -169,7 +169,7 @@ Use `sshctl --json doctor <alias> --deep` when the category is unclear.
 
 `sshctl` reads `SSM_MASTER_PASS_FILE` or defaults to `~/.config/ssm/master.pass`. `SSM_MASTER_PASS` is unsupported. Never print `master.pass` or `cloud.json`.
 
-Do not use TUI commands (`ssm add/edit`) in an agent session. Do not use `import-json` for one host. Bulk migration requires explicit `--merge`; full replacement requires `--replace --yes` and reviewed user authorization.
+The project has no TUI or interactive shell. Use `sshctl host` or typed requests for connection changes. Do not use `import-json` for one host. Bulk migration requires explicit `--merge`; full replacement requires `--replace --yes` and reviewed user authorization.
 
 ## Never
 

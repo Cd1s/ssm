@@ -7,13 +7,8 @@ import (
 	"runtime"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"golang.org/x/term"
-
 	"ssm/internal/config"
-	"ssm/internal/tui"
 	"ssm/internal/update"
-	"ssm/internal/vault"
 )
 
 var (
@@ -58,10 +53,8 @@ func main() {
 	}
 
 	if len(args) < 1 {
-		requireInteractive("ssm")
-		unlock()
-		runTUI()
-		return
+		writeCLIError("missing_command", "command required", "use ssm --help or sshctl --help", 2)
+		os.Exit(2)
 	}
 
 	switch args[0] {
@@ -72,11 +65,7 @@ func main() {
 		fmt.Printf("ssm %s - SSH connection manager\n", version)
 		fmt.Print(`
 Usage:
-  ssm                  open interactive connection list
-  ssm add              add a new connection
-  ssm edit <name>      edit a connection
-  ssm remove <name>    remove a connection
-  ssm host ...         headless host list/show/add/update/upsert/remove
+  ssm host ...         host list/show/add/update/upsert/remove
   ssm list [--json]    list all connections
   ssm exec/run <name> ...   remote command (--json/--plan/--secret/-s/-f)
   ssm plan <name> ...       dry-run: show remote_command + risk (no dial)
@@ -85,11 +74,9 @@ Usage:
   ssm check/doctor          triage / deep health
   ssm redirect list|set|rm  alias soft-links after migration
   ssm keys             list saved SSH keys
-  ssm keys add         add a new SSH key
   ssm keys remove <n>  remove a SSH key
   ssm update           update ssm to the latest version
-  ssm shell <name>     open an interactive shell
-	  ssm import-json <path> (--merge | --replace --yes) import reviewed JSON connections
+  ssm import-json <path> (--merge | --replace --yes) import reviewed JSON connections
   ssm server           run the headless encrypted sync server
 
 Cloud (optional):
@@ -101,13 +88,6 @@ Cloud (optional):
   ssm remote-hash      print remote encrypted vault hash
   ssm logout           remove sync credentials
 
-Shortcuts (in TUI):
-  enter       connect        /    search
-  a           add            e    edit
-  d           delete         K/k  manage keys
-  s           settings
-  Ctrl+T n    new tab        Ctrl+T 1-9  switch tab
-  Ctrl+T w    close tab      Ctrl+T d    detach
 `)
 		return
 	case "update":
@@ -117,10 +97,6 @@ Shortcuts (in TUI):
 			os.Exit(1)
 		}
 		return
-	case "add":
-		requireInteractive("ssm add")
-		unlock()
-		runAdd()
 	case "host", "hosts":
 		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
 		unlock()
@@ -132,23 +108,10 @@ Shortcuts (in TUI):
 		}
 		unlock()
 		runRemove(args[1])
-	case "edit":
-		if len(args) < 2 {
-			fmt.Println("Usage: ssm edit <name>")
-			os.Exit(1)
-		}
-		requireInteractive("ssm edit")
-		unlock()
-		runEdit(args[1])
 	case "keys":
-		if len(args) >= 2 && args[1] == "add" {
-			requireInteractive("ssm keys add")
-		}
 		unlock()
 		if len(args) >= 2 {
 			switch args[1] {
-			case "add":
-				runKeysAdd()
 			case "remove":
 				if len(args) < 3 {
 					fmt.Println("Usage: ssm keys remove <name>")
@@ -236,13 +199,6 @@ Shortcuts (in TUI):
 		}
 		unlock()
 		runGet(args[1], args[2], args[3])
-	case "shell":
-		if len(args) < 2 {
-			fmt.Println("Usage: ssm shell <name>")
-			os.Exit(1)
-		}
-		unlock()
-		runShell(args[1])
 	case "import-json":
 		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
 		unlock()
@@ -264,8 +220,12 @@ Shortcuts (in TUI):
 	case "remote-hash":
 		runRemoteHash()
 	default:
+		if machineJSON {
+			writeCLIError("unknown_command", fmt.Sprintf("unknown command %q", args[0]), "use ssm --help for available commands", 2)
+			os.Exit(2)
+		}
 		fmt.Printf("Unknown command: %s\n", args[0])
-		fmt.Println("Usage: ssm [host|add|remove|edit|list|keys|exec|put|shell|import-json|server|update|login|register|push|pull|pull-if-changed|remote-hash|logout]")
+		fmt.Println("Usage: ssm [host|remove|list|keys|exec|put|get|import-json|server|update|login|register|push|pull|pull-if-changed|remote-hash|logout]")
 		os.Exit(1)
 	}
 }
@@ -301,17 +261,6 @@ func parseGlobalArgs(args []string) ([]string, error) {
 		}
 	}
 	return out, nil
-}
-
-func requireInteractive(command string) {
-	stdinFD := int(os.Stdin.Fd())   //nolint:gosec // terminal APIs require int file descriptors
-	stdoutFD := int(os.Stdout.Fd()) //nolint:gosec // terminal APIs require int file descriptors
-	if term.IsTerminal(stdinFD) && term.IsTerminal(stdoutFD) {
-		return
-	}
-	hint := "use sshctl host add/update/upsert for host changes; interactive TUI commands require a terminal"
-	writeCLIError("interactive_required", command+" requires a TTY", hint, 2)
-	os.Exit(2)
 }
 
 func checkUpdate() {
@@ -352,24 +301,8 @@ func unlock() {
 	}
 
 	if !config.Exists() {
-		requireInteractive("vault creation")
-		p := tea.NewProgram(tui.NewUnlockModel(tui.UnlockCreate), tea.WithAltScreen())
-		result, err := p.Run()
-		if err != nil {
-			printError(err)
-			os.Exit(1)
-		}
-		m := result.(tui.UnlockModel)
-		if m.Canceled {
-			os.Exit(0)
-		}
-		masterPass = m.Password
-		_ = config.Save(&config.Vault{}, masterPass)
-		settings := config.LoadSettings()
-		if settings.PasswordCache == "session" {
-			config.CachePassword(masterPass)
-		}
-		return
+		writeCLIError("master_pass_file_required", "vault does not exist", "provide --master-pass-file or SSM_MASTER_PASS_FILE to create it non-interactively", 2)
+		os.Exit(2)
 	}
 
 	settings := config.LoadSettings()
@@ -383,34 +316,6 @@ func unlock() {
 		}
 	}
 
-	for attempts := 0; attempts < 3; attempts++ {
-		requireInteractive("vault unlock")
-		m := tui.NewUnlockModel(tui.UnlockLogin)
-		p := tea.NewProgram(m, tea.WithAltScreen())
-		result, err := p.Run()
-		if err != nil {
-			printError(err)
-			os.Exit(1)
-		}
-		um := result.(tui.UnlockModel)
-		if um.Canceled {
-			os.Exit(0)
-		}
-
-		_, err = config.Load(um.Password)
-		if err == nil {
-			masterPass = um.Password
-			if settings.PasswordCache == "session" {
-				config.CachePassword(masterPass)
-			}
-			return
-		}
-		if err != vault.ErrWrongPassword {
-			printError(err)
-			os.Exit(1)
-		}
-	}
-
-	fmt.Fprintln(os.Stderr, "Too many attempts.")
-	os.Exit(1)
+	writeCLIError("master_pass_file_required", "vault passphrase is required", "provide --master-pass-file or SSM_MASTER_PASS_FILE; credentials are never accepted inline", 2)
+	os.Exit(2)
 }

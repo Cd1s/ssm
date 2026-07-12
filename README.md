@@ -1,6 +1,6 @@
 # ssm
 
-面向 agent 的无头 SSH 管理器。SSH 主机信息保存在本机加密 vault 中，同步时只上传和下载加密后的数据，真正的 SSH 连接始终从当前机器发起。
+面向 Agent 与自动化的非交互 SSH vault 管理 CLI。`ssm` 和 `sshctl` 不启动 TUI、不打开交互 shell，也不等待终端输入。SSH 主机信息保存在本机加密 vault 中，同步时只传输加密数据，真正的 SSH 连接始终从当前机器发起。
 
 [中文](README.md) | [English](README.en.md)
 
@@ -15,10 +15,10 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 ## 常用命令
 
 ```bash
-sshctl status
-sshctl list --json
+sshctl --json status
+sshctl --json host list
 sshctl sync
-sshctl doctor <alias> --deep --json     # vault + 连通 + 远端健康
+sshctl --json doctor <alias> --deep     # vault + 连通 + 远端健康
 sshctl check <alias>
 
 # 无头主机管理（候选配置先验证，成功后才保存）
@@ -60,6 +60,12 @@ sshctl run old-alias hostname
 
 sshctl push
 ```
+
+`sshctl request --file` 是 Agent 的首选入口。需要远端 shell 语义时，使用 `run` 的 `script_file`、`-f` 或 stdin 脚本模式；项目不提供交互式 shell。
+
+### 凭据安全边界
+
+密码、私钥和其他 secret 只能通过受限权限的文件路径引用。绝不要把它们或 vault 内容写入 JSON、命令行参数、日志、错误报告、GitHub Issue 或提交。`--password-file`、`--key-file`、`--master-pass-file` 与 request 的 `secret_files` 只读取路径指向的文件；结构化输出不会回显内容。
 
 连接层失败的 JSON `error` 为 `dial_timeout|host_key_mismatch|alias_not_found|...`，通常退出码是 **255**。不要只凭 255 分类，因为远端程序本身也可能返回 255。默认 **连接复用**，作用域是当前 `sshctl` 进程（`SSM_REUSE=0` / `--no-reuse` 关闭）。全局 `sshctl --json ...` 会让参数、解锁、alias 和同步错误也只输出一个 JSON 值。
 
@@ -152,7 +158,7 @@ ssm login --server <sync-server-url> --email <email> --password-file <sync-passw
 sshctl sync
 ```
 
-中心服务器只保存加密 vault blob，不解密 SSH 密码或私钥。`sshctl list/run/shell/status` 和 `ssm list/exec/shell` 会在读取 vault 前检测远端 ETag；远端有新版本时会自动拉取。TUI 变更遵循 auto-sync 设置；面向 agent 的 `sshctl host` 变更故意留在本地，验证后用 `sshctl push` 明确同步。
+中心服务器只保存加密 vault blob，不解密 SSH 密码或私钥。`sshctl list/run/status` 和 `ssm list/exec` 会在读取 vault 前检测远端 ETag；远端有新版本时会自动拉取。`sshctl host` 变更故意留在本地，验证后用 `sshctl push` 明确同步。
 
 ## 中心服务器
 

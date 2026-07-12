@@ -151,16 +151,8 @@ func runSSHCTL(args []string) {
 		unlock()
 		runRedirect(args[1:])
 	case "shell":
-		if len(args) != 2 {
-			sshctlUsageExit()
-		}
-		if machineJSON {
-			writeCLIError("interactive_required", "sshctl shell cannot run in JSON mode", "use sshctl run with --argv or a script source", 2)
-			os.Exit(2)
-		}
-		requireInteractive("sshctl shell")
-		unlock()
-		runShell(args[1])
+		writeCLIError("unsupported_command", "interactive shell support has been removed", "use sshctl run with --argv or a script source", 2)
+		os.Exit(2)
 	case "status":
 		if len(args) != 1 {
 			sshctlUsageExit()
@@ -182,15 +174,11 @@ func runSSHCTL(args []string) {
 	case "-h", "--help", "help":
 		sshctlUsage()
 	default:
-		if machineJSON && len(args) == 1 {
-			writeCLIError("interactive_required", "implicit shell cannot run in JSON mode", "use sshctl --json run <alias> --argv <command>", 2)
+		if len(args) == 1 {
+			writeCLIError("unknown_command", fmt.Sprintf("unknown command %q", args[0]), "use sshctl run <alias> --argv <command> or sshctl --help", 2)
 			os.Exit(2)
 		}
 		unlock()
-		if len(args) == 1 {
-			runShell(args[0])
-			return
-		}
 		runSSHCTLRun(args[0], args[1:])
 	}
 }
@@ -383,8 +371,6 @@ func sshctlUsage() {
   sshctl put <alias> <local> <remote>       # file or directory tree
   sshctl get <alias> <remote> <local>
   sshctl redirect list|set <old> <new>|rm <old>
-  sshctl shell <alias>
-
 Env: SSM_TRACE=1  SSM_TIMEOUT=10s  SSM_REUSE=0  SSM_FORWARD_STDIN=1
 `)
 }
