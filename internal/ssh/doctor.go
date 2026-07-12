@@ -25,6 +25,10 @@ type DoctorReport struct {
 	Check         *CheckResult      `json:"check,omitempty"`
 	Deep          map[string]string `json:"deep,omitempty"`
 	Error         string            `json:"error,omitempty"`
+	Message       string            `json:"message,omitempty"`
+	Hint          string            `json:"hint,omitempty"`
+	Exit          int               `json:"exit"`
+	Stage         string            `json:"stage,omitempty"`
 	LatencyMS     int64             `json:"latency_ms,omitempty"`
 }
 
@@ -61,6 +65,10 @@ func Doctor(v *config.Vault, alias string, deep bool) DoctorReport {
 	if !ok {
 		rep.OK = false
 		rep.Error = ErrCodeAliasNotFound
+		rep.Message = "requested alias was not found"
+		rep.Hint = "use sshctl --json host list and retry with an exact alias"
+		rep.Exit = ExitConnectionFailed
+		rep.Stage = "lookup"
 		rep.ResolvedAlias = resolved
 		rep.LatencyMS = time.Since(start).Milliseconds()
 		return rep
@@ -73,6 +81,10 @@ func Doctor(v *config.Vault, alias string, deep bool) DoctorReport {
 	if !ch.OK {
 		rep.OK = false
 		rep.Error = ch.Error
+		rep.Message = ch.Message
+		rep.Hint = ch.Hint
+		rep.Exit = ch.Exit
+		rep.Stage = ch.Stage
 		rep.LatencyMS = time.Since(start).Milliseconds()
 		return rep
 	}
@@ -81,6 +93,7 @@ func Doctor(v *config.Vault, alias string, deep bool) DoctorReport {
 		rep.Deep = deepProbe(c, v)
 	}
 	rep.OK = true
+	rep.Exit = 0
 	rep.LatencyMS = time.Since(start).Milliseconds()
 	return rep
 }
@@ -154,6 +167,15 @@ func WriteDoctorReport(rep DoctorReport, asJSON bool) {
 	}
 	if rep.Error != "" {
 		fmt.Printf("error=%s\n", rep.Error)
+	}
+	if rep.Message != "" {
+		fmt.Printf("message=%s\n", rep.Message)
+	}
+	if rep.Hint != "" {
+		fmt.Printf("hint=%s\n", rep.Hint)
+	}
+	if rep.Stage != "" {
+		fmt.Printf("stage=%s\n", rep.Stage)
 	}
 	if rep.LatencyMS > 0 {
 		fmt.Printf("latency_ms=%d\n", rep.LatencyMS)

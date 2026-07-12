@@ -53,7 +53,9 @@ type RunResult struct {
 	LatencyMS     int64  `json:"latency_ms,omitempty"`
 	RemoteCommand string `json:"remote_command,omitempty"` // secrets redacted
 	Error         string `json:"error,omitempty"`
+	Message       string `json:"message,omitempty"`
 	Hint          string `json:"hint,omitempty"`
+	Stage         string `json:"stage,omitempty"`
 	Plan          bool   `json:"plan,omitempty"`
 	Risk          string `json:"risk,omitempty"`
 	ScriptLabel   string `json:"script,omitempty"` // multi-script map label
@@ -243,7 +245,9 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 		res.OK = false
 		res.Exit = ExitConnectionFailed
 		res.Error = ce.Code
+		res.Message = ce.Error()
 		res.Hint = ce.Hint
+		res.Stage = "dial"
 		res.LatencyMS = time.Since(start).Milliseconds()
 		if !opts.Capture {
 			PrintAgentError(err, c)
@@ -262,6 +266,8 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 			res.Error = ErrCodeSession
 		}
 		res.Hint = ce.Hint
+		res.Message = ce.Error()
+		res.Stage = "session"
 		res.LatencyMS = time.Since(start).Milliseconds()
 		if !opts.Capture {
 			PrintAgentError(err, c)
@@ -288,6 +294,9 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 				res.OK = false
 				res.Exit = 1
 				res.Error = ErrCodeInternal
+				res.Message = "failed to open SSH stdin"
+				res.Hint = "retry the operation; report the failure if it persists"
+				res.Stage = "session"
 				res.LatencyMS = time.Since(start).Milliseconds()
 				return res
 			}
@@ -312,16 +321,26 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 			res.OK = false
 			if opts.Input != "" {
 				if res.Exit == 127 && (!opts.Capture || strings.Contains(res.Stderr, "ssm: error=interpreter_not_found")) {
-					res.Error = "interpreter_not_found"
+					res.Error = ErrCodeInterpreter
+					res.Message = "remote script interpreter is unavailable"
 					res.Hint = fmt.Sprintf("remote shell %q is unavailable; retry with --shell sh or install it", opts.Interpreter)
+					res.Stage = "interpreter"
 				} else {
-					res.Error = "remote_script_failed"
+					res.Error = ErrCodeRemoteScript
+					res.Message = "remote script exited non-zero"
 					res.Hint = "the script reached the remote interpreter but exited non-zero; inspect stderr"
+					res.Stage = "remote_execution"
 				}
 				if !opts.Capture {
 					fmt.Fprintf(os.Stderr, "ssm: error=%s script=%s exit=%d\n", res.Error, opts.ScriptLabel, res.Exit)
 					fmt.Fprintf(os.Stderr, "ssm: hint=%s\n", res.Hint)
 				}
+			}
+			if res.Error == "" {
+				res.Error = ErrCodeRemote
+				res.Message = "remote command exited non-zero"
+				res.Hint = "inspect stdout/stderr; SSH transport succeeded"
+				res.Stage = "remote_execution"
 			}
 			return res
 		}
@@ -329,7 +348,9 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 		res.OK = false
 		res.Exit = ExitCodeFor(err)
 		res.Error = ce.Code
+		res.Message = ce.Error()
 		res.Hint = ce.Hint
+		res.Stage = "session"
 		if !opts.Capture {
 			PrintAgentError(err, c)
 		}
@@ -362,8 +383,10 @@ func RunScriptPreflight(c config.Connection, v *config.Vault, spec ScriptSpec, n
 		return res
 	}
 	res.Preflight = "failed"
-	if res.Error == "remote_script_failed" {
-		res.Error = "script_syntax_error"
+	if res.Error == ErrCodeRemoteScript {
+		res.Error = ErrCodeScriptSyntax
+		res.Message = "remote interpreter rejected script syntax"
+		res.Stage = "syntax_preflight"
 		line := syntaxErrorLine(res.Stderr)
 		res.Stderr = ""
 		res.Hint = "the remote interpreter rejected the script syntax; no script body was executed and raw parser output was suppressed"
@@ -440,8 +463,14 @@ func WriteRunResult(res RunResult, asJSON bool) {
 	if res.Error != "" {
 		fmt.Printf("error=%s\n", res.Error)
 	}
+	if res.Message != "" {
+		fmt.Printf("message=%s\n", res.Message)
+	}
 	if res.Hint != "" {
 		fmt.Printf("hint=%s\n", res.Hint)
+	}
+	if res.Stage != "" {
+		fmt.Printf("stage=%s\n", res.Stage)
 	}
 	if res.Stdout != "" {
 		fmt.Printf("stdout=%s\n", strings.ReplaceAll(res.Stdout, "\n", "\\n"))

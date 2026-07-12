@@ -76,12 +76,37 @@ type hostMutationResult struct {
 type hostCLIError struct {
 	Code    string `json:"error"`
 	Message string `json:"message"`
+	Hint    string `json:"hint"`
+	Exit    int    `json:"exit"`
+	Stage   string `json:"stage"`
 }
 
 func (e *hostCLIError) Error() string { return e.Message }
 
 func newHostError(code, format string, args ...any) error {
-	return &hostCLIError{Code: code, Message: fmt.Sprintf(format, args...)}
+	canonical, hint, stage, exit := hostErrorContract(code)
+	return &hostCLIError{Code: canonical, Message: fmt.Sprintf(format, args...), Hint: hint, Exit: exit, Stage: stage}
+}
+
+func hostErrorContract(code string) (canonical, hint, stage string, exit int) {
+	switch code {
+	case "invalid_args", "invalid_port", "invalid_auth", "invalid_key_name":
+		return agentssh.ErrCodeInvalidArgs, "review sshctl host --help and retry with explicit flags", "validate", 2
+	case "host_not_found", agentssh.ErrCodeAliasNotFound:
+		return agentssh.ErrCodeAliasNotFound, "use sshctl --json host list and retry with an exact alias", "lookup", agentssh.ExitConnectionFailed
+	case "sync_pull_failed":
+		return agentssh.ErrCodeSyncPull, "fix sync connectivity or retry explicitly with --offline", "sync_pull", 1
+	case "sync_push_failed":
+		return agentssh.ErrCodeSyncPush, "local changes remain pending; fix sync and retry push", "sync_push", 1
+	case "vault_error":
+		return code, "verify the encrypted vault and master pass file", "vault", 1
+	case "auth_required":
+		return code, "provide --key, --key-file, or --password-file", "validate", 2
+	case "confirmation_required":
+		return code, "review the alias and pass --yes explicitly", "validate", 2
+	default:
+		return code, "review the error and retry safely", "apply", 1
+	}
 }
 
 func parseHostCommandArgs(args []string) (hostCommandOptions, error) {
@@ -300,7 +325,7 @@ func runHostCommand(args []string) {
 	case "show":
 		idx := exactConnectionIndex(v, opts.alias)
 		if idx < 0 {
-			writeHostCommandError(opts.asJSON, newHostError("host_not_found", "host %q not found", opts.alias))
+			writeHostCommandError(opts.asJSON, newHostError("alias_not_found", "host %q not found", opts.alias))
 			os.Exit(1)
 		}
 		writeHostView(newHostView(v.Connections[idx]), opts.asJSON)
@@ -369,7 +394,7 @@ func mutateHost(v *config.Vault, opts hostCommandOptions) (*config.Vault, hostMu
 
 	if opts.action == "remove" {
 		if idx < 0 {
-			return nil, hostMutationResult{}, newHostError("host_not_found", "host %q not found", opts.alias)
+			return nil, hostMutationResult{}, newHostError("alias_not_found", "host %q not found", opts.alias)
 		}
 		removed := updated.Connections[idx]
 		updated.Connections = append(updated.Connections[:idx], updated.Connections[idx+1:]...)
@@ -387,7 +412,7 @@ func mutateHost(v *config.Vault, opts hostCommandOptions) (*config.Vault, hostMu
 		return nil, hostMutationResult{}, newHostError("host_exists", "host %q already exists; use host upsert or update", opts.alias)
 	}
 	if opts.action == "update" && !exists {
-		return nil, hostMutationResult{}, newHostError("host_not_found", "host %q not found; use host upsert or add", opts.alias)
+		return nil, hostMutationResult{}, newHostError("alias_not_found", "host %q not found; use host upsert or add", opts.alias)
 	}
 	if !exists && !safeHostAliasPattern.MatchString(opts.alias) {
 		return nil, hostMutationResult{}, newHostError("invalid_alias", "new aliases must match [A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -700,6 +725,9 @@ func writeHostVerificationFailure(result hostMutationResult, asJSON bool) {
 			OK           bool                  `json:"ok"`
 			Error        string                `json:"error"`
 			Message      string                `json:"message"`
+			Hint         string                `json:"hint"`
+			Exit         int                   `json:"exit"`
+			Stage        string                `json:"stage"`
 			Action       string                `json:"action"`
 			Changed      bool                  `json:"changed"`
 			Applied      bool                  `json:"applied"`
@@ -708,6 +736,7 @@ func writeHostVerificationFailure(result hostMutationResult, asJSON bool) {
 			SyncPending  bool                  `json:"sync_pending"`
 		}{
 			OK: false, Error: "verification_failed", Message: "candidate host failed SSH verification; vault was not changed",
+			Hint: "inspect verification.error and fix the candidate before retrying", Exit: agentssh.ExitConnectionFailed, Stage: "verify",
 			Action: "not_applied", Changed: result.Changed, Applied: false, Host: result.Host,
 			Verification: result.Verification, SyncPending: false,
 		})
@@ -725,6 +754,9 @@ func writeHostPushFailure(result hostMutationResult, asJSON bool, err error) {
 			OK           bool                  `json:"ok"`
 			Error        string                `json:"error"`
 			Message      string                `json:"message"`
+			Hint         string                `json:"hint"`
+			Exit         int                   `json:"exit"`
+			Stage        string                `json:"stage"`
 			Action       string                `json:"action"`
 			Changed      bool                  `json:"changed"`
 			Applied      bool                  `json:"applied"`
@@ -733,7 +765,8 @@ func writeHostPushFailure(result hostMutationResult, asJSON bool, err error) {
 			Verification *agentssh.CheckResult `json:"verification,omitempty"`
 			SyncPending  bool                  `json:"sync_pending"`
 		}{
-			OK: false, Error: "sync_push_failed", Message: redactError(err), Action: result.Action,
+			OK: false, Error: agentssh.ErrCodeSyncPush, Message: redactError(err),
+			Hint: "local changes remain pending; fix sync and retry push", Exit: 1, Stage: "sync_push", Action: result.Action,
 			Changed: result.Changed, Applied: true, Pushed: false, Host: result.Host,
 			Verification: result.Verification, SyncPending: true,
 		})
@@ -745,7 +778,7 @@ func writeHostPushFailure(result hostMutationResult, asJSON bool, err error) {
 func writeHostCommandError(asJSON bool, err error) {
 	ce, ok := err.(*hostCLIError)
 	if !ok {
-		ce = &hostCLIError{Code: "internal", Message: redactError(err)}
+		ce = newHostError("internal", "%s", redactError(err)).(*hostCLIError)
 	}
 	if asJSON {
 		writeHostJSON(struct {
@@ -754,7 +787,7 @@ func writeHostCommandError(asJSON bool, err error) {
 		}{OK: false, hostCLIError: ce})
 		return
 	}
-	fmt.Fprintf(os.Stderr, "ssm: error=%s\nError: %s\n", ce.Code, ce.Message)
+	fmt.Fprintf(os.Stderr, "ssm: error=%s stage=%s\nError: %s\nssm: hint=%s\n", ce.Code, ce.Stage, ce.Message, ce.Hint)
 }
 
 func writeHostJSON(value any) {

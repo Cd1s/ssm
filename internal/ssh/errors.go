@@ -18,6 +18,8 @@ import (
 // triage without re-reading raw dial strings.
 const (
 	ErrCodeAliasNotFound = "alias_not_found"
+	ErrCodeInvalidArgs   = "invalid_arguments"
+	ErrCodeInvalidReq    = "invalid_request"
 	ErrCodeDialTimeout   = "dial_timeout"
 	ErrCodeDialRefused   = "dial_refused"
 	ErrCodeDialNetwork   = "dial_network"
@@ -26,6 +28,12 @@ const (
 	ErrCodeNoAuth        = "no_auth_configured"
 	ErrCodeSession       = "session_failed"
 	ErrCodeRemote        = "remote_failed"
+	ErrCodeInterpreter   = "interpreter_not_found"
+	ErrCodeScriptSyntax  = "script_syntax_error"
+	ErrCodeRemoteScript  = "remote_script_failed"
+	ErrCodeTransfer      = "transfer_failed"
+	ErrCodeSyncPull      = "sync_pull_failed"
+	ErrCodeSyncPush      = "sync_push_failed"
 	ErrCodeInternal      = "internal"
 )
 

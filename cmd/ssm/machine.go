@@ -16,6 +16,7 @@ type machineErrorOutput struct {
 	Error      string   `json:"error"`
 	Message    string   `json:"message"`
 	Hint       string   `json:"hint,omitempty"`
+	Stage      string   `json:"stage,omitempty"`
 	Alias      string   `json:"alias,omitempty"`
 	Exit       int      `json:"exit"`
 	Candidates []string `json:"candidates,omitempty"`
@@ -28,11 +29,16 @@ func writeMachineValue(value any) {
 }
 
 func writeMachineError(code, message, hint, alias string, exit int, candidates []string) {
+	writeMachineErrorStage(code, message, hint, "", alias, exit, candidates)
+}
+
+func writeMachineErrorStage(code, message, hint, stage, alias string, exit int, candidates []string) {
 	writeMachineValue(machineErrorOutput{
 		OK:         false,
 		Error:      code,
 		Message:    redactString(message),
 		Hint:       redactString(hint),
+		Stage:      stage,
 		Alias:      alias,
 		Exit:       exit,
 		Candidates: candidates,

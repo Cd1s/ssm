@@ -44,6 +44,22 @@ func TestParseHostOfflineFlag(t *testing.T) {
 	}
 }
 
+func TestHostErrorsUseCanonicalMachineContract(t *testing.T) {
+	err := newHostError("host_not_found", "host %q not found", "missing")
+	ce, ok := err.(*hostCLIError)
+	if !ok {
+		t.Fatalf("error type = %T", err)
+	}
+	if ce.Code != "alias_not_found" || ce.Message == "" || ce.Hint == "" || ce.Exit != 255 || ce.Stage != "lookup" {
+		t.Fatalf("contract = %+v", ce)
+	}
+
+	invalid := newHostError("invalid_args", "bad option").(*hostCLIError)
+	if invalid.Code != "invalid_arguments" || invalid.Exit != 2 || invalid.Stage != "validate" {
+		t.Fatalf("invalid contract = %+v", invalid)
+	}
+}
+
 func TestParseHostVerifyAndPushRequireSafeOrder(t *testing.T) {
 	opts, err := parseHostCommandArgs([]string{
 		"upsert", "prod", "--host", "203.0.113.10", "--user", "root", "--key", "deploy", "--verify", "--push",

@@ -21,7 +21,10 @@ type CheckResult struct {
 	Hostname  string `json:"hostname,omitempty"`
 	Uname     string `json:"uname,omitempty"`
 	Error     string `json:"error,omitempty"`
+	Message   string `json:"message,omitempty"`
 	Hint      string `json:"hint,omitempty"`
+	Exit      int    `json:"exit"`
+	Stage     string `json:"stage,omitempty"`
 	Address   string `json:"address,omitempty"`
 }
 
@@ -51,6 +54,9 @@ func Check(c config.Connection, v *config.Vault) CheckResult {
 			res.Error = ErrCodeRemote
 		}
 		res.Hint = run.Hint
+		res.Message = run.Message
+		res.Exit = run.Exit
+		res.Stage = run.Stage
 		if run.Stderr != "" {
 			res.Hint = strings.TrimSpace(run.Stderr) + "; " + res.Hint
 		}
@@ -64,6 +70,7 @@ func Check(c config.Connection, v *config.Vault) CheckResult {
 		res.Uname = strings.TrimSpace(lines[1])
 	}
 	res.OK = true
+	res.Exit = 0
 	return res
 }
 
@@ -95,8 +102,14 @@ func WriteCheckResult(res CheckResult, asJSON bool) {
 	if res.Error != "" {
 		fmt.Printf("error=%s\n", res.Error)
 	}
+	if res.Message != "" {
+		fmt.Printf("message=%s\n", res.Message)
+	}
 	if res.Hint != "" {
 		fmt.Printf("hint=%s\n", res.Hint)
+	}
+	if res.Stage != "" {
+		fmt.Printf("stage=%s\n", res.Stage)
 	}
 }
 

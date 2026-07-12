@@ -1,11 +1,29 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestMachineErrorContractHasStableFields(t *testing.T) {
+	value := machineErrorOutput{OK: false, Error: "alias_not_found", Message: "missing", Hint: "list aliases", Exit: 255, Stage: "lookup"}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"ok", "error", "message", "hint", "exit", "stage"} {
+		if _, ok := got[field]; !ok {
+			t.Fatalf("missing %q in %s", field, encoded)
+		}
+	}
+}
 
 func TestParseGlobalArgsExtractsMasterPassFile(t *testing.T) {
 	old := masterPassFile

@@ -60,8 +60,10 @@ func runHostKeyCommand(args []string) {
 				Error   string                `json:"error"`
 				Message string                `json:"message"`
 				Hint    string                `json:"hint,omitempty"`
+				Exit    int                   `json:"exit"`
+				Stage   string                `json:"stage"`
 				Report  ssh.HostKeyInspection `json:"inspection"`
-			}{OK: false, Error: code, Message: redactError(err), Hint: hint, Report: report})
+			}{OK: false, Error: code, Message: redactError(err), Hint: hint, Exit: 1, Stage: "host_key", Report: report})
 		} else {
 			writeCLIError(code, err.Error(), hint, 1)
 		}

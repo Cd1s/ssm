@@ -69,6 +69,10 @@ Passwords, private keys, and other secrets must only be referenced through permi
 
 Connection-layer JSON failures use `error=dial_*|host_key_mismatch|alias_not_found|...` and normally exit **255**. Do not classify from 255 alone because a remote process can also return 255. Connection reuse is process-scoped and on by default (`SSM_REUSE=0` / `--no-reuse`). Global `sshctl --json ...` also makes argument, unlock, alias, and sync failures emit exactly one JSON value.
 
+### Stable JSON error contract
+
+Failure objects use `ok:false`, `error`, `message`, `hint`, and `exit`, plus `stage` when a failure stage is known. Canonical classes include `alias_not_found`, `invalid_arguments`, `invalid_request`, `sync_pull_failed`, `sync_push_failed`, `dial_timeout|dial_refused|dial_network`, `host_key_mismatch`, `auth_failed|no_auth_configured`, `session_failed`, `interpreter_not_found`, `script_syntax_error|remote_script_failed|remote_failed`, and `transfer_failed`. `host_not_found` and `invalid_args` are legacy v1.3-and-earlier values; v1.4 normalizes them to `alias_not_found` and `invalid_arguments`. Classify with `error` and `stage`; use `exit` only for process control.
+
 ### Typed agent request (v1.3)
 
 `sshctl request` reads schema version 1 from stdin or `--file`. A run request must select exactly one of `argv`, `shell_command`, or `script_file`; `secret_files` accepts paths only. Agents should create the JSON with a file-writing tool instead of assembling it with shell `echo`.

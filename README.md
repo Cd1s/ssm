@@ -69,6 +69,10 @@ sshctl push
 
 连接层失败的 JSON `error` 为 `dial_timeout|host_key_mismatch|alias_not_found|...`，通常退出码是 **255**。不要只凭 255 分类，因为远端程序本身也可能返回 255。默认 **连接复用**，作用域是当前 `sshctl` 进程（`SSM_REUSE=0` / `--no-reuse` 关闭）。全局 `sshctl --json ...` 会让参数、解锁、alias 和同步错误也只输出一个 JSON 值。
 
+### 稳定 JSON 错误契约
+
+失败对象使用 `ok:false`、`error`、`message`、`hint`、`exit`，并在可定位阶段时提供 `stage`。canonical 分类包括：`alias_not_found`、`invalid_arguments`、`invalid_request`、`sync_pull_failed`、`sync_push_failed`、`dial_timeout|dial_refused|dial_network`、`host_key_mismatch`、`auth_failed|no_auth_configured`、`session_failed`、`interpreter_not_found`、`script_syntax_error|remote_script_failed|remote_failed` 与 `transfer_failed`。`host_not_found` 和 `invalid_args` 是 v1.3 及更早版本的旧值；v1.4 起统一为 `alias_not_found` 和 `invalid_arguments`。调用方应依据 `error` 与 `stage` 分类，`exit` 只用于进程控制。
+
 ### Agent 类型化 request（v1.3）
 
 `sshctl request` 从 stdin 或 `--file` 读取 schema version 1。运行请求必须在 `argv`、`shell_command`、`script_file` 中三选一；`secret_files` 只接受文件路径。推荐 agent 通过文件写入工具创建 JSON，而不是在 shell 中拼接或 `echo` JSON。

@@ -81,7 +81,7 @@ func TestRunClassifiesRemoteScriptExit(t *testing.T) {
 		ScriptLabel:    script.Label,
 		RequestedAlias: conn.Name,
 	})
-	if res.OK || res.Exit != 9 || res.Error != "remote_script_failed" || res.Stderr != "failure" {
+	if res.OK || res.Exit != 9 || res.Error != "remote_script_failed" || res.Stderr != "failure" || res.Message == "" || res.Hint == "" || res.Stage != "remote_execution" {
 		t.Fatalf("result = %+v", res)
 	}
 }
@@ -99,7 +99,7 @@ func TestRunScriptPreflightRejectsSyntaxWithoutExecuting(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := RunScriptPreflight(conn, vault, script, true, conn.Name, conn.Name)
-	if res.OK || res.Error != "script_syntax_error" || res.Preflight != "failed" {
+	if res.OK || res.Error != "script_syntax_error" || res.Preflight != "failed" || res.Message == "" || res.Hint == "" || res.Stage != "syntax_preflight" {
 		t.Fatalf("preflight = %+v", res)
 	}
 	if res.Stderr != "" || strings.Contains(res.Hint, "if then") {
