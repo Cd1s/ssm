@@ -19,7 +19,7 @@
 
 ### Validation
 
-- Unit, shuffled, race, vet, staticcheck, dead-code, build, vulnerability, skill/schema, and real OpenSSH matrix checks pass without skipped tests.
+- Unit, shuffled, race, vet, golangci-lint, staticcheck, dead-code, build, vulnerability, skill/schema, and real OpenSSH matrix checks pass without skipped tests.
 
 ## v1.4.0
 
