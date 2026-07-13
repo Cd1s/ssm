@@ -20,6 +20,7 @@
 ### Validation
 
 - Unit, shuffled, race, vet, golangci-lint, staticcheck, dead-code, build, vulnerability, skill/schema, and real OpenSSH matrix checks pass without skipped tests.
+- The complete lint baseline from v1.2.0 is clean; file and process safety annotations are limited to explicit user paths or test-owned temporary paths.
 
 ## v1.4.0
 
