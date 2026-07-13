@@ -1,5 +1,39 @@
 # Release Notes Draft
 
+## v1.4.0
+
+### Transactional inventory sync
+
+- Give each changed host mutation a stable transaction ID and expose a secret-free pending mutation list through `status --json`.
+- Add `push --only <transaction-id>` with an exact alias/operation preflight so unrelated local changes remain pending.
+- Add deliberate `push --all`; retain bare push only as a compatibility push-all path. Transaction journals stay inside the encrypted local vault, while the sync service continues to receive only an encrypted inventory blob.
+
+### Explicit SSH host trust
+
+- Reject both first-use and changed host keys during normal run/check operations; no key is auto-saved or auto-replaced.
+- Expand `host-key inspect --json` with address/port, observed and known fingerprints, `new|mismatch|trusted` classification, and safe guidance.
+- Require the exact re-observed SHA-256 fingerprint plus `--yes` for acceptance. Remove automatic `ssh-keygen -R`/`ssh-keyscan` recovery advice.
+
+### Atomic, observable, resumable put
+
+- Stream regular files into private sibling temporary files, verify remote byte count, and atomically rename only after completion. Optional `--sha256` performs end-to-end digest verification; `--timeout` reports a stable timeout stage and byte count.
+- Return structured transfer stage, bytes sent, integrity, atomicity, and resume status. Distinguish local read, SSH dial/auth, remote write, timeout, integrity, capability, partial-state, and publish failures.
+- Add explicit regular-file-only `--resume=v1` and typed request support. Resume state is mode 0600 and bound to protocol version, destination hash, local size, and full digest; local and remote prefix digests must match before append.
+- Preserve verified partial state across interruption, report reused versus sent bytes, verify full SHA-256 before atomic publish, reject changed/corrupt/ambiguous state, and opportunistically expire same-target v1 state older than seven days. Directory uploads remain non-resumable.
+
+### Agent-safe contract and diagnostics
+
+- Normalize machine failures around stable `ok/error/message/hint/exit/stage` fields while preserving a remote program's own exit 255 as a remote failure rather than assuming transport failure.
+- Make alias drift, sync freshness/offline state, conflicts, and exact candidate selection explicit; never auto-select suggestions or silently fall back offline.
+- Consolidate README, CLI help, request schema, and the `agent-ssm` skill around global `--json`, `request --file`, literal `argv`, file-backed `script_file`, and path-only `secret_files`.
+- Mark one-string shell commands as compatibility-only with quoting/expansion warnings, and add troubleshooting for alias, sync, host-key, remote-process, and transfer failures.
+
+### Validation
+
+- Unit and integration coverage for scoped push isolation, secret-free transaction status, first-use/changed host-key rejection, wrong-fingerprint immutability, atomic upload cleanup, SHA-256 mismatch, missing verification tooling, and resume state validation.
+- Real OpenSSH matrix forces upload timeouts and mid-transfer disconnects, resumes only a verified prefix with exact byte accounting, rejects corrupt partials, handles changed sources and shell-metacharacter paths, and verifies final digests.
+- Release gates: formatting, tests, race tests, vet, build, SSH matrix, request/skill artifact validation, and diff checks.
+
 ## v1.3.0
 
 ### Non-interactive CLI only
