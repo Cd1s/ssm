@@ -33,14 +33,13 @@ sshctl push --all
 # 单机（字面 argv 或 stdin 脚本；连接默认复用）
 sshctl run <alias> --argv hostname
 sshctl run <alias> --json hostname
-sshctl plan <alias> bash -c 'echo hi'   # 干跑：remote_command + risk，不连机
-sshctl run <alias> --secret API_KEY=@./key.txt -- printenv API_KEY
+sshctl plan <alias> --argv hostname      # 干跑：remote_command + risk，不连机
 sshctl run <alias> --shell bash -s <<'EOF'
 echo "any quotes fine"
 EOF
 
 # Agent 首选：类型化 JSON request，不让本地 shell 重解析 argv
-sshctl request --file ./request.json
+sshctl request --file ./request.json     # 首选：argv/script_file/secret_files 仅放路径
 
 # 观察/接受 host key；accept 必须绑定刚观察到的完整指纹
 sshctl host-key inspect <alias> --json
@@ -62,7 +61,7 @@ sshctl get <alias> /remote/dir ./dir
 sshctl redirect set old-alias limee-hk
 sshctl run old-alias hostname
 
-sshctl push
+sshctl push --all  # 审查 status 后显式发布全部兼容变更
 ```
 
 首次出现的 host key 和变化后的 host key 都会被普通 run/check 拒绝。不要使用自动 `ssh-keygen -R` + `ssh-keyscan` 捷径；先通过 `inspect` 获取 `observed_fingerprint`、`known_fingerprints` 与 `classification:new|mismatch|trusted`，经可信渠道核对后，再用完全相同的指纹显式 `accept --yes`。
@@ -85,7 +84,16 @@ resume 仅支持 regular file，且必须用 `--resume=v1` 显式启用；未提
 
 失败对象使用 `ok:false`、`error`、`message`、`hint`、`exit`，并在可定位阶段时提供 `stage`。canonical 分类包括：`alias_not_found`、`invalid_arguments`、`invalid_request`、`sync_pull_failed`、`sync_push_failed`、`dial_timeout|dial_refused|dial_network`、`host_key_unknown|host_key_mismatch`、`auth_failed|no_auth_configured`、`session_failed`、`interpreter_not_found`、`script_syntax_error|remote_script_failed|remote_failed` 与 `transfer_failed`。`host_not_found` 和 `invalid_args` 是 v1.3 及更早版本的旧值；v1.4 起统一为 `alias_not_found` 和 `invalid_arguments`。调用方应依据 `error` 与 `stage` 分类，`exit` 只用于进程控制。
 
-### Agent 类型化 request（v1.3）
+Agent 排障示例：
+
+- alias miss：检查 `sshctl --json host list` 或 `host search`；绝不自动执行 suggestion。
+- sync pull failure：停止；修复连接，或仅在明确接受 stale inventory 后使用 `--offline`，不会静默 fallback。
+- sync push failure：检查 `status.pending_mutations`，重试 `push --only <same-id>`；不得扩大为 push-all。
+- host-key change：先 `host-key inspect --json`，out-of-band 核验 `observed_fingerprint`，再 exact `accept ... --yes`；不得自动 remove/rescan。
+- remote failure：`remote_failed|remote_script_failed` 表示 SSH transport 已成功；依据 `stage`、`stderr` 和 remote exit（包括 255）处理，不得误判为 transport failure。
+- transfer failure：依据 `stage`、`bytes_sent`、`bytes_reused`、`resume`、`integrity`；不得 append incompatible partial。
+
+### Agent 类型化 request（v1.4；schema version 1）
 
 `sshctl request` 从 stdin 或 `--file` 读取 schema version 1。运行请求必须在 `argv`、`shell_command`、`script_file` 中三选一；`secret_files` 只接受文件路径。推荐 agent 通过文件写入工具创建 JSON，而不是在 shell 中拼接或 `echo` JSON。
 
@@ -169,7 +177,7 @@ Host request 使用 `op: host.upsert|host.update|...` 与嵌套 `host` 字段，
 | 写法 | 行为 | 适用 |
 |------|------|------|
 | `sshctl run host --argv cmd arg1` | 始终逐参数 shell 转义，单参数也不例外 | agent 生成的字面 argv |
-| `sshctl run host cmd arg1 arg2` | 多参数自动逐项转义；单字符串保留旧 shell 行为 | 兼容旧调用 |
+| `sshctl run host cmd arg1 arg2` | 多参数自动逐项转义；单字符串保留旧 shell parsing | 仅兼容旧调用 |
 | `sshctl run host -s <<'EOF'` | 正文从 SSH stdin 送入固定 `sh -s` runner | 多行、管道、重定向、任意引号 |
 | `sshctl run host --shell bash -f x.sh -- arg` | shebang/显式 shell + 精确脚本参数 | Bash 脚本、生成脚本 |
 | `sshctl run host --preflight -f x.sh` | 远端同解释器 `-n` 后再执行 | 阻止语法错误产生副作用 |
@@ -179,6 +187,8 @@ Host request 使用 `op: host.upsert|host.update|...` 与嵌套 `host` 字段，
 | `sshctl run host --secret K=@file cmd` | 密钥作远端 env，trace 脱敏 | 密钥不进 argv 展示 |
 
 `-s`、`-f` 和 `--scripts` 不要求本地文件有执行权限，也不会把脚本文本嵌进 SSH command。SSM 会移除 UTF-8 BOM、统一 CRLF、拒绝 NUL/超大脚本，并根据 shell shebang 自动选择 `sh/bash/dash/ash/ksh/zsh`；无 shebang 默认 `sh`。`--plan/--json` 返回 `interpreter`、`stdin_bytes`、`script_sha256`，不回显脚本正文。语法预检只能保证 shell 能解析脚本，运行期依赖、权限和业务逻辑仍可能失败。
+
+直接单字符串 run 与 request `shell_command` 仅为兼容路径，会触发远端 shell quoting、glob、expansion、substitution、redirection；generated/untrusted text 可能改变语义或执行非预期代码。新 agent flow 必须用 request `argv` 表达字面参数，或用 `script_file` 表达 shell 语义。
 
 旧的批量迁移命令不再有危险默认值：`ssm import-json` 必须明确选择 `--merge`，或使用 `--replace --yes` 执行整库替换。单机变更始终使用 `sshctl host` 或 request。
 
@@ -192,7 +202,7 @@ ssm login --server <sync-server-url> --email <email> --password-file <sync-passw
 sshctl sync
 ```
 
-中心服务器只保存加密 vault blob，不解密 SSH 密码或私钥。`sshctl list/run/status` 和 `ssm list/exec` 会在读取 vault 前检测远端 ETag；远端有新版本时会自动拉取。`sshctl host` 变更故意留在本地，验证后用 `sshctl push` 明确同步。
+中心服务器只保存加密 vault blob，不解密 SSH 密码或私钥。`sshctl list/run/status` 和 `ssm list/exec` 会在读取 vault 前检测远端 ETag；远端有新版本时会自动拉取。Agent host mutation 以 transaction 留在本地：单个 reviewed change 用 `push --only <transaction-id>`，只有审查全部 pending mutation 后才用 `push --all`；裸 `push` 是兼容 push-all。
 
 ## 中心服务器
 
@@ -234,7 +244,7 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 如果已有同步配置，把 master.pass 和 cloud.json 放到 /root/.config/ssm，并执行 chmod 600。
 然后执行 sshctl sync，用 sshctl status 和 sshctl list 验证。
 优先使用 sshctl request --file <json>：字面参数放 argv 数组，脚本使用 script_file/script_args，secret_files 只放路径。
-新增/修改服务器用 host.upsert/host.update request，保持 verify:true；验证成功后才显式 push。
+新增/修改服务器用 host.upsert/host.update request，保持 verify:true；成功后只用 push --only 发布返回的 transaction_id，审查全部 pending mutation 后才可 push --all。
 兼容 CLI 中字面参数用 --argv，复杂脚本用 --preflight -f；不要把生成脚本塞进 bash -c。
 ```
 

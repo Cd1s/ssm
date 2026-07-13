@@ -392,6 +392,11 @@ func syncCacheAge(settings *config.Settings, now time.Time) (string, int64) {
 
 func sshctlUsage() {
 	fmt.Print(`Usage:
+	  # Preferred agent entry points (strict single-value JSON)
+	  sshctl --json status
+	  sshctl --json host list
+	  sshctl request --file <request.json>  # argv, script_file, secret_files paths
+
 	  sshctl [--json] <command> ...
 	  sshctl sync | pull | push --only <transaction-id> | push --all
   sshctl list [--json]
@@ -401,14 +406,12 @@ func sshctlUsage() {
   sshctl status [--offline]
   sshctl check <alias> [--json]
 	  sshctl doctor [alias] [--deep] [--json]
-	  sshctl request [--file <request.json>|-]  # versioned agent JSON request
+	  sshctl request [--file <request.json>|-]
 
-  # Single host (agent-safe quoting)
-  sshctl run <alias> <command...>
+  # Single host agent-safe forms
   sshctl run <alias> --json <command...>
   sshctl run <alias> --plan <command...>     # dry-run: show remote_command + risk
   sshctl plan <alias> <command...>          # same as run --plan
-  sshctl run <alias> --secret NAME=val ...
   sshctl run <alias> --secret NAME=@file ...
   sshctl run <alias> --timeout 10s ...
 	  sshctl run <alias> --no-reuse ...
@@ -417,6 +420,9 @@ func sshctlUsage() {
   sshctl run <alias> -s [--shell sh|bash] [-- args...]
   sshctl run <alias> -f script.sh [-- args...]   # script body goes over stdin
   sshctl run <alias> --scripts a.sh,b.sh    # parallel scripts on one host
+
+  # Compatibility only: remote shell parsing has quoting/expansion risk
+  sshctl run <alias> '<shell command string>'
 
   # Multi-host / multi-script parallel fleet
   sshctl map <alias|pattern>[,more...] [options] <command...>

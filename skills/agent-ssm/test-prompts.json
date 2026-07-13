@@ -18,7 +18,7 @@
       "Uses a host.upsert request with key_file and verify:true, or the compatible host upsert --verify form",
       "Does not place key material inline or create temporary import JSON",
       "Requires verification success and applied:true before any push",
-      "Pushes only after verification succeeds"
+      "Uses the returned transaction_id with push --only after verification succeeds"
     ]
   },
   {
@@ -29,7 +29,7 @@
       "Uses a host.remove request with confirm:true and prune_key:true",
       "Relies on --prune-key to preserve any key still referenced by another host",
       "Verifies the alias is gone from sshctl host list --json",
-      "Runs sshctl push after successful cleanup"
+      "Uses the removal transaction_id with push --only after successful cleanup"
     ]
   },
   {

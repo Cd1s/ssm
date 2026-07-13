@@ -11,7 +11,7 @@
 Use this skill when an agent needs to:
 
 - inspect the SSH inventory managed by `ssm` / `sshctl`;
-- run a command, open a shell, or upload a file to a known host alias;
+- run argv or a file-backed script, or upload a file to a known host alias;
 - add, update, or remove a host from the encrypted vault through explicit non-interactive commands;
 - recover from sync or SSH host-key problems without leaking credentials.
 
@@ -20,7 +20,7 @@ Use this skill when an agent needs to:
 - SSH credentials stay in the local encrypted vault.
 - Sync servers only store opaque encrypted vault blobs.
 - Agents must use exact aliases instead of guessing hostnames.
-- Single-host changes use typed `sshctl request` operations and verify candidates before saving.
+- Single-host changes use typed `sshctl request` operations, verify candidates, and return scoped transaction IDs.
 - Generated argv is carried as a JSON array; scripts use file paths, stdin transport, and syntax preflight.
 - Bulk import has no destructive default and full replacement requires `--replace --yes`.
 - Secrets such as `master.pass`, private keys, passwords, tokens, and decrypted vault contents must never be printed.
@@ -63,13 +63,13 @@ For pi-agent local installs, the skill directory is commonly:
 ## Expected workflow
 
 ```bash
-sshctl status
+sshctl --json status
 sshctl sync
-sshctl host list --json
+sshctl --json host list
 sshctl request --file ./ssm-request.json
 ```
 
-Use request schema version 1 for run and host operations. Add/update requests default to candidate verification; push only after success. Detailed request and legacy bulk-import guidance is in `SKILL.md` and `references/import-json.md`.
+Use request schema version 1 for run, put, and host operations. Add/update requests default to candidate verification; publish the returned transaction with `push --only <transaction-id>`. Use push-all only after reviewing every pending mutation. Detailed request and legacy bulk-import guidance is in `SKILL.md` and `references/import-json.md`.
 
 ## Safety boundaries
 

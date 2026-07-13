@@ -66,9 +66,11 @@ func main() {
 		fmt.Printf("ssm %s - SSH connection manager\n", version)
 		fmt.Print(`
 Usage:
+  sshctl --json status          preferred machine-readable discovery
+  sshctl request --file <json>  preferred typed agent operation
   ssm host ...         host list/show/add/update/upsert/remove
   ssm list [--json]    list all connections
-  ssm exec/run <name> ...   remote command (--json/--plan/--secret/-s/-f)
+  ssm exec/run <name> ...   remote command (--json/--plan/--secret NAME=@file/-s/-f)
   ssm plan <name> ...       dry-run: show remote_command + risk (no dial)
   ssm map <targets> ...     parallel multi-host/script fleet
   ssm put/get               file or directory tree
@@ -83,7 +85,8 @@ Usage:
 Cloud (optional):
   ssm login            authenticate with sync server
   ssm register         create a sync account
-  ssm push             upload encrypted vault
+  ssm push --only <transaction-id>  publish one reviewed mutation
+  ssm push --all       deliberately publish all pending mutations
   ssm pull             download encrypted vault
   ssm pull-if-changed  download encrypted vault only if remote changed
   ssm remote-hash      print remote encrypted vault hash

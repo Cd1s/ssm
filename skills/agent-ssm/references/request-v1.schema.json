@@ -13,6 +13,7 @@
         "plan",
         "check",
         "doctor",
+        "put",
         "host.list",
         "host.search",
         "host.show",
@@ -44,6 +45,10 @@
     "no_reuse": {"type": "boolean"},
     "preflight": {"type": "boolean"},
     "deep": {"type": "boolean"},
+    "local_path": {"type": "string", "minLength": 1},
+    "remote_path": {"type": "string", "minLength": 1},
+    "resume": {"enum": ["v1"]},
+    "sha256": {"type": "boolean"},
     "host": {"$ref": "#/$defs/host"}
   },
   "$defs": {
@@ -72,6 +77,7 @@
       "if": {"properties": {"op": {"enum": ["run", "plan"]}}},
       "then": {
         "required": ["alias"],
+        "not": {"anyOf": [{"required": ["local_path"]}, {"required": ["remote_path"]}, {"required": ["resume"]}, {"required": ["sha256"]}]},
         "oneOf": [
           {"required": ["argv"], "not": {"anyOf": [{"required": ["shell_command"]}, {"required": ["script_file"]}]}},
           {"required": ["shell_command"], "not": {"anyOf": [{"required": ["argv"]}, {"required": ["script_file"]}]}},
@@ -82,6 +88,13 @@
     {
       "if": {"properties": {"op": {"enum": ["check", "host.search", "host.show", "host.add", "host.update", "host.upsert", "host.remove"]}}},
       "then": {"required": ["alias"]}
+    },
+    {
+      "if": {"properties": {"op": {"const": "put"}}},
+      "then": {
+        "required": ["alias", "local_path", "remote_path"],
+        "not": {"anyOf": [{"required": ["argv"]}, {"required": ["shell_command"]}, {"required": ["script_file"]}, {"required": ["script_args"]}, {"required": ["shell"]}, {"required": ["secret_files"]}, {"required": ["no_reuse"]}, {"required": ["preflight"]}, {"required": ["deep"]}, {"required": ["host"]}]}
+      }
     }
   ]
 }

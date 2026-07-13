@@ -33,14 +33,13 @@ sshctl push --all
 # Single host (literal argv or stdin script; connection reuse by default)
 sshctl run <alias> --argv hostname
 sshctl run <alias> --json hostname
-sshctl plan <alias> bash -c 'echo hi'    # dry-run: remote_command + risk
-sshctl run <alias> --secret API_KEY=@./key.txt -- printenv API_KEY
+sshctl plan <alias> --argv hostname       # dry-run: remote_command + risk
 sshctl run <alias> --shell bash -s <<'EOF'
 echo "any quotes fine"
 EOF
 
 # Preferred for agents: typed JSON request; local shell never reparses argv
-sshctl request --file ./request.json
+sshctl request --file ./request.json      # preferred: argv/script_file/secret_files paths
 
 # Observe/accept host keys; accept is bound to the full observed fingerprint
 sshctl host-key inspect <alias> --json
@@ -62,7 +61,7 @@ sshctl get <alias> /remote/dir ./dir
 sshctl redirect set old-alias limee-hk
 sshctl run old-alias hostname
 
-sshctl push
+sshctl push --all  # deliberate compatibility push-all after reviewing status
 ```
 
 Normal run/check operations reject both first-use and changed host keys. Never use an automatic `ssh-keygen -R` plus `ssh-keyscan` shortcut. Inspect `observed_fingerprint`, `known_fingerprints`, and `classification:new|mismatch|trusted`, verify through a trusted channel, then explicitly accept the exact same fingerprint with `--yes`.
@@ -85,7 +84,16 @@ Connection-layer JSON failures use `error=dial_*|host_key_mismatch|alias_not_fou
 
 Failure objects use `ok:false`, `error`, `message`, `hint`, and `exit`, plus `stage` when a failure stage is known. Canonical classes include `alias_not_found`, `invalid_arguments`, `invalid_request`, `sync_pull_failed`, `sync_push_failed`, `dial_timeout|dial_refused|dial_network`, `host_key_unknown|host_key_mismatch`, `auth_failed|no_auth_configured`, `session_failed`, `interpreter_not_found`, `script_syntax_error|remote_script_failed|remote_failed`, and `transfer_failed`. `host_not_found` and `invalid_args` are legacy v1.3-and-earlier values; v1.4 normalizes them to `alias_not_found` and `invalid_arguments`. Classify with `error` and `stage`; use `exit` only for process control.
 
-### Typed agent request (v1.3)
+Agent troubleshooting examples:
+
+- Alias miss: inspect `sshctl --json host list` or `host search`; never execute a suggested candidate automatically.
+- Sync pull failure: stop. Retry connectivity, or use explicit `--offline` only after accepting stale inventory; no silent fallback occurs.
+- Sync push failure: inspect `status.pending_mutations`, then retry `push --only <same-id>`; do not broaden to push-all.
+- Host-key change: `host-key inspect --json`, verify `observed_fingerprint` out-of-band, then exact `accept ... --yes`; never remove/rescan automatically.
+- Remote failure: `remote_failed|remote_script_failed` means SSH transport succeeded. Inspect `stage`, `stderr`, and the remote exit—even 255—without reclassifying it as transport failure.
+- Transfer failure: use `stage`, `bytes_sent`, `bytes_reused`, `resume`, and `integrity`; never append an incompatible partial.
+
+### Typed agent request (v1.4; schema version 1)
 
 `sshctl request` reads schema version 1 from stdin or `--file`. A run request must select exactly one of `argv`, `shell_command`, or `script_file`; `secret_files` accepts paths only. Agents should create the JSON with a file-writing tool instead of assembling it with shell `echo`.
 
@@ -168,7 +176,7 @@ One target failing does **not** drop other targets’ results.
 | Form | Behavior | Best for |
 |------|----------|----------|
 | `sshctl run host --argv cmd arg1` | Always quote each argv, including one argument | Agent-generated literal argv |
-| `sshctl run host cmd arg1 arg2` | Multi-arg quoting; one string keeps legacy shell behavior | Compatible calls |
+| `sshctl run host cmd arg1 arg2` | Multi-arg quoting; one string keeps legacy shell parsing | Compatibility only |
 | `sshctl run host -s <<'EOF'` | Body over SSH stdin to a fixed `sh -s` runner | Multi-line, pipes, redirects, quotes |
 | `sshctl run host --shell bash -f x.sh -- arg` | Shebang/explicit shell plus exact script args | Bash and generated scripts |
 | `sshctl run host --preflight -f x.sh` | Same remote interpreter parses with `-n` first | Prevent syntax-error side effects |
@@ -178,6 +186,8 @@ One target failing does **not** drop other targets’ results.
 | `sshctl run host --secret K=@file cmd` | Secret as remote env; redacted in plan/trace | Secrets |
 
 `-s`, `-f`, and `--scripts` do not require an executable local file and never embed the script body in the SSH command. SSM strips a UTF-8 BOM, normalizes CRLF, rejects NUL/oversized input, and auto-selects `sh/bash/dash/ash/ksh/zsh` from the shebang; no shebang defaults to `sh`. Plan/JSON output includes `interpreter`, `stdin_bytes`, and `script_sha256`, never the body. Syntax preflight proves only that the shell can parse the body; runtime dependencies, permissions, and business logic can still fail.
+
+Direct one-string run and request `shell_command` are compatibility paths. They invoke remote shell quoting, globbing, expansion, substitution, and redirection; generated or untrusted text can change meaning or execute unintended code. New agent flows must use request `argv` for literal arguments or `script_file` for shell semantics.
 
 Legacy bulk import no longer has a destructive default: `ssm import-json` must explicitly use `--merge`, or `--replace --yes` for full-vault replacement. Use host CRUD/request for one host.
 
@@ -191,7 +201,7 @@ ssm login --server <sync-server-url> --email <email> --password-file <sync-passw
 sshctl sync
 ```
 
-The center server stores only encrypted vault blobs. It never decrypts SSH passwords or private keys. `sshctl list/run/status` and `ssm list/exec` check the remote ETag before reading the vault and auto-pull when it changed. Agent-facing `sshctl host` mutations deliberately remain local until verification and an explicit `sshctl push`.
+The center server stores only encrypted vault blobs. It never decrypts SSH passwords or private keys. `sshctl list/run/status` and `ssm list/exec` check the remote ETag before reading the vault and auto-pull when it changed. Agent-facing host mutations remain local as transactions: use `push --only <transaction-id>` for one reviewed change, and `push --all` only after reviewing every pending mutation. Bare `push` is compatibility push-all.
 
 ## Center Server
 
@@ -233,7 +243,7 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 If sync is already configured, put master.pass and cloud.json in /root/.config/ssm with chmod 600.
 Then run sshctl sync and verify with sshctl status and sshctl list.
 Prefer sshctl request --file <json>: put literal arguments in argv, scripts in script_file/script_args, and only paths in secret_files.
-Use host.upsert/host.update requests with verify:true; push only after successful verification.
+Use host.upsert/host.update requests with verify:true; after success publish only its returned transaction_id with push --only. Use push --all only after reviewing every pending mutation.
 For compatible CLI calls use --argv for literals and --preflight -f for generated scripts; never wrap generated bodies in bash -c.
 ```
 

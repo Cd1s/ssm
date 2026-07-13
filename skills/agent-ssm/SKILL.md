@@ -1,15 +1,14 @@
 ---
 name: agent-ssm
-description: "Manage SSH hosts through Cd1s/ssm with typed requests, verified host transactions, stdin scripts, exact aliases, structured triage, and no secret disclosure."
-version: 3.0.0
+description: "Manage SSH hosts and transfers through Cd1s/ssm using strict JSON, typed request files, exact aliases, scoped inventory transactions, verified host keys, resumable uploads, structured triage, and file-path-only secrets. Use for non-interactive SSH inventory, remote execution, host changes, sync/push, troubleshooting, or put operations where credentials and vault data must not be disclosed."
 metadata:
   hermes:
     tags: [ssh, ssm, servers, vault, fleet, scripts, automation]
 ---
 
-# Agent SSM (v1.3+)
+# Agent SSM (v1.4+)
 
-Requires **ssm >= 1.3.0**.
+Requires **ssm >= 1.4.0**.
 
 Rule: **exact alias -> typed request -> candidate verification -> explicit push; paths for secrets; classify from `error`, never from exit code alone.**
 
@@ -25,7 +24,7 @@ sshctl --json host show <exact-alias>
 sshctl request --file ./ssm-request.json
 ```
 
-`sshctl --json ...` emits exactly one JSON value even for argument, unlock, alias, and sync failures. `sshctl request` always emits JSON. For result/error objects, read `ok`, `error`, and `exit`; list operations return one JSON array. A remote command can itself exit 255, so exit 255 without an `error` classification is not proof of a connection failure.
+`sshctl --json ...` emits exactly one JSON value even for argument, unlock, alias, and sync failures. `sshctl request` always emits JSON. For result/error objects, read `ok`, `error`, `stage`, and `exit`; list operations return one JSON array. A remote command can itself exit 255, so exit 255 without a transport `error` classification is not proof of a connection failure.
 
 The machine-readable schema is `references/request-v1.schema.json`. The CLI decoder is authoritative and rejects unknown fields or trailing JSON values.
 
@@ -51,7 +50,7 @@ Then run:
 sshctl request --file ./ssm-request.json
 ```
 
-Use `shell_command` only when the user explicitly needs shell operators in a short command. Use `script_file` for generated, multi-line, redirected, piped, or expanded shell code. The three fields are mutually exclusive.
+Use `shell_command` only as a compatibility path when the user explicitly needs shell operators in a short command. It invokes remote shell parsing, so quoting, globbing, expansion, substitution, and redirection can change meaning. Use `script_file` for generated, multi-line, redirected, piped, or expanded shell code. The three fields are mutually exclusive.
 
 ```json
 {
@@ -91,13 +90,16 @@ Use a typed host request. Add/update/upsert defaults to candidate verification b
 }
 ```
 
-Auth is exactly one of `saved_key`, `key_file` plus optional `key_name`, or `password_file`. Never put a password or private key in JSON. Verify file existence/permissions with metadata only; do not print file contents.
+Auth is exactly one of `saved_key`, `key_file` plus optional `key_name`, or `password_file`. JSON and argv may contain protected paths, never password/private-key contents. Verify file existence/permissions with metadata only; do not print file contents.
 
-On candidate failure, require `error:"verification_failed"`, `applied:false`, and unchanged local inventory. Do not push. On success, the result includes `applied:true`, a `verification` object, and `sync_pending:true`. Push only when the user requested synchronization:
+On candidate failure, require `error:"verification_failed"`, `applied:false`, and unchanged local inventory. Do not push. On success, the result includes `applied:true`, a `verification` object, `sync_pending:true`, and a stable `transaction_id`. Inspect the secret-free pending list and publish only the reviewed transaction:
 
 ```bash
-sshctl --json push
+sshctl --json status
+sshctl --json push --only <transaction-id>
 ```
+
+The push preflight lists exact IDs, aliases, and operations. `push --only` does not publish unrelated mutations. Use `sshctl --json push --all` only when the user deliberately authorizes every pending mutation. Bare `push` is a compatibility alias for push-all; do not use it in new agent workflows.
 
 The compatible direct form is:
 
@@ -106,7 +108,7 @@ sshctl host upsert <alias> --host <address> --user <user> \
   --key-file </secure/key> --verify --json
 ```
 
-`--push` is accepted only together with `--verify`. If it returns `sync_push_failed`, the local verified change remains pending.
+`--push` is accepted only together with `--verify` and scopes publication to the new transaction. If it returns `sync_push_failed`, the local verified change remains pending.
 
 If remote refresh returns `sync_pull_failed`, stop. Use `--offline` only after the user accepts stale-inventory risk.
 
@@ -123,7 +125,26 @@ Deletion requires authorization for the exact alias:
 }
 ```
 
-`prune_key` removes a saved key only after its final host reference is gone. Inspect the list and explicitly push after successful removal when synchronization is requested.
+`prune_key` removes a saved key only after its final host reference is gone. Scoped-push the returned `transaction_id` only when synchronization is requested.
+
+## Upload a regular file
+
+Use typed request paths; never embed file contents:
+
+```json
+{
+  "version": 1,
+  "op": "put",
+  "alias": "app-prod",
+  "local_path": "/secure/artifact.tar",
+  "remote_path": "/srv/artifact.tar",
+  "resume": "v1",
+  "sha256": true,
+  "timeout": "2m"
+}
+```
+
+Without `resume`, regular-file put uses a sibling temporary file, verifies size and optional SHA-256, then atomically publishes. `resume:"v1"` is explicit, regular-file-only, requires remote `sha256sum`, validates version/size/full digest and both prefix digests before append, and reports `bytes_reused`, `bytes_sent`, `resume`, and `integrity`. Never claim directory resume.
 
 ## Parallel fleet
 
@@ -146,7 +167,7 @@ Never remove a changed host key and blindly scan a replacement. First observe wi
 sshctl host-key inspect <exact-alias> --json
 ```
 
-Compare `fingerprint` through a trusted channel and obtain user authorization. Then bind acceptance to that exact value:
+Compare `observed_fingerprint` through a trusted channel and obtain user authorization. Review `known_fingerprints` and `classification:new|mismatch|trusted`, then bind acceptance to that exact observed value:
 
 ```bash
 sshctl host-key accept <exact-alias> --fingerprint SHA256:<full-value> --yes --json
@@ -156,12 +177,15 @@ sshctl host-key accept <exact-alias> --fingerprint SHA256:<full-value> --yes --j
 
 ## Failure triage
 
-1. `alias_not_found` or `host_not_found`: refresh `host list`; do not guess from `candidates`.
-2. `dial_*`, `host_key_*`, `auth_failed`: network/identity/auth layer, not quoting.
-3. `interpreter_not_found`: retry a portable script with `shell:"sh"` or report the missing shell.
-4. `script_syntax_error`: fix generated syntax; the body was not executed.
-5. `remote_script_failed`: inspect captured stderr; syntax passed and execution began.
-6. Successful connection but wrong arguments: use request `argv`, not `shell_command`.
+1. `alias_not_found`: run `sshctl --json host list` or `host search`; never auto-select `candidates`.
+2. `sync_pull_failed`: stop; do not silently use cache. Use explicit `--offline` only after stale-state risk is accepted.
+3. `sync_push_failed`: the encrypted local mutation remains pending; inspect `status.pending_mutations` and retry the same scoped transaction.
+4. `host_key_unknown|host_key_mismatch`: inspect, verify out-of-band, exact-accept; never remove/rescan automatically.
+5. `dial_*|auth_failed`: network/identity/auth layer, not quoting.
+6. `remote_failed|remote_script_failed`: transport succeeded and the remote program ran; inspect structured stderr/stage and preserve its exit, including 255.
+7. `interpreter_not_found|script_syntax_error`: choose an available shell or fix syntax; syntax failure means the body did not execute.
+8. `transfer_timeout|partial_state_*|integrity_failed`: use byte/resume/integrity fields; never publish or append ambiguous state.
+9. Successful connection but wrong arguments: use request `argv`, not `shell_command`.
 
 Use `sshctl --json doctor <alias> --deep` when the category is unclear.
 
@@ -171,12 +195,15 @@ Use `sshctl --json doctor <alias> --deep` when the category is unclear.
 
 The project has no TUI or interactive shell. Use `sshctl host` or typed requests for connection changes. Do not use `import-json` for one host. Bulk migration requires explicit `--merge`; full replacement requires `--replace --yes` and reviewed user authorization.
 
+Direct `sshctl run <alias> '<shell string>'` and request `shell_command` exist only for compatibility. Warn that local/remote quoting, globbing, expansion, and substitution can alter arguments or execute unintended code. Prefer request `argv` for literals and `script_file` for shell semantics.
+
 ## Never
 
 - print `master.pass`, `cloud.json`, private keys, passwords, tokens, decrypted vault data, or secret-file contents;
-- place credentials inline or in request JSON;
+- place credentials inline in argv, request JSON, logs, Issues, or commits; request JSON may contain protected file paths only;
 - use bare `ssh`/`sshpass` for normal SSM work;
 - guess aliases or auto-select a suggested candidate;
 - push after candidate verification failed;
 - repair network, auth, or host-key errors by changing quotes;
-- encode a generated script into `bash -c`.
+- encode a generated script into `bash -c`;
+- silently switch offline, automatically accept a host key, auto-select an alias suggestion, or publish all pending transactions.

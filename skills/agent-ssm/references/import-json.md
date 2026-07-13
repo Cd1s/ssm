@@ -1,6 +1,6 @@
 # SSM host management and guarded bulk import
 
-Use typed `sshctl request` host operations or first-class `sshctl host` commands for single-host changes on SSM 1.3 and later. `import-json` remains a migration/bulk-replacement interface, not the normal agent CRUD path.
+Use typed `sshctl request` host operations or first-class `sshctl host` commands for single-host changes on SSM 1.4 and later. `import-json` remains a migration/bulk-replacement interface, not the normal agent CRUD path.
 
 ## Unlock behavior
 
@@ -93,10 +93,11 @@ sshctl host show <alias> --json
 sshctl check <alias> --json
 sshctl run <alias> --json --argv hostname
 sshctl run <alias> --json --argv uname -sr
-sshctl push
+sshctl --json status
+sshctl --json push --only <transaction-id>
 ```
 
-Do not push when verification fails. Correct the local host entry or report the structured failure first.
+Use the mutation result's exact `transaction_id`; do not push when verification fails. `push --all` is only for deliberately publishing every reviewed pending mutation. Bare push is compatibility push-all.
 
 ## Remove
 
@@ -105,7 +106,7 @@ After authorization for the exact alias:
 ```bash
 sshctl host remove <alias> --yes --prune-key --json
 sshctl host list --json
-sshctl push
+sshctl --json push --only <removal-transaction-id>
 ```
 
 `--prune-key` removes only a key with zero remaining host references. Without it, keys are retained.
