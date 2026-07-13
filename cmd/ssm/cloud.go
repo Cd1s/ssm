@@ -227,11 +227,6 @@ func mutationViews(mutations []config.PendingMutation) []pendingMutationView {
 	return views
 }
 
-func pushVault() error {
-	_, err := pushTransactionScope("")
-	return err
-}
-
 func runRemoteHash() {
 	cfg, err := cloud.LoadCloud()
 	if err != nil {

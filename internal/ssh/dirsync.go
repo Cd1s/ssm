@@ -12,13 +12,6 @@ import (
 	"ssm/internal/config"
 )
 
-// UploadPath uploads a file or directory tree to the remote host.
-// Directories use tar-over-ssh in one session (creates remote parent).
-func UploadPath(c config.Connection, v *config.Vault, localPath, remotePath string) error {
-	_, err := UploadPathWithOptions(c, v, localPath, remotePath, UploadOptions{})
-	return err
-}
-
 func UploadPathWithOptions(c config.Connection, v *config.Vault, localPath, remotePath string, opts UploadOptions) (TransferResult, error) {
 	info, err := os.Stat(localPath)
 	if err != nil {

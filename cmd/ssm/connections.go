@@ -91,10 +91,6 @@ func runRemove(name string) {
 	fmt.Printf("Connection \"%s\" removed.\n", name)
 }
 
-func runExec(name, cmd string) {
-	runExecSpec(name, remoteRunSpec{Command: cmd})
-}
-
 func runExecSpec(name string, spec remoteRunSpec) {
 	if len(spec.Scripts) > 1 {
 		runMap([]string{name}, spec)
@@ -292,10 +288,6 @@ func runPutArgs(args []string) {
 		os.Exit(2)
 	}
 	runPutWithOptions(opts)
-}
-
-func runPut(name, localPath, remotePath string) {
-	runPutWithOptions(putOptions{name: name, localPath: localPath, remotePath: remotePath})
 }
 
 func runPutWithOptions(opts putOptions) {
@@ -510,11 +502,6 @@ func runRedirect(args []string) {
 
 func resolveConnection(v *config.Vault, name string) (config.Connection, string, bool) {
 	return config.ResolveAlias(v, name)
-}
-
-func findConnection(v *config.Vault, name string) (config.Connection, bool) {
-	c, _, ok := resolveConnection(v, name)
-	return c, ok
 }
 
 func connectionNotFound(name string, v *config.Vault) {

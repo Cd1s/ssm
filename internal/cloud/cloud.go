@@ -320,22 +320,6 @@ func AutoPush() {
 	}
 }
 
-func AutoPull() {
-	settings := config.LoadSettings()
-	if !settings.AutoSync {
-		config.Debug("auto-pull: skipped (auto_sync disabled)")
-		return
-	}
-	cfg, err := LoadCloud()
-	if err != nil {
-		config.Debug("auto-pull: skipped (%v)", err)
-		return
-	}
-	if err := Pull(cfg); err != nil {
-		config.Debug("auto-pull: %v", err)
-	}
-}
-
 func parseError(resp *http.Response) error {
 	var result struct {
 		Error string `json:"error"`

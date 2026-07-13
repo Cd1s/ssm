@@ -42,6 +42,17 @@ func TestParseGlobalArgsExtractsMasterPassFile(t *testing.T) {
 	}
 }
 
+func TestInformationalInvocationSkipsUpdateCheck(t *testing.T) {
+	for _, args := range [][]string{{"--help"}, {"push", "--help"}, {"help", "put"}, {"--version"}} {
+		if !isInformationalInvocation(args) {
+			t.Fatalf("isInformationalInvocation(%q) = false", args)
+		}
+	}
+	if isInformationalInvocation([]string{"run", "host", "--", "--help"}) {
+		t.Fatal("remote --help after delimiter must not affect update policy")
+	}
+}
+
 func TestParseGlobalArgsExtractsLeadingJSONOnly(t *testing.T) {
 	oldJSON := machineJSON
 	t.Cleanup(func() { machineJSON = oldJSON })

@@ -115,22 +115,3 @@ func releaseClient(client *gossh.Client, noReuse bool) {
 	}
 	_ = client.Close()
 }
-
-// ClosePool closes all pooled clients (tests / process exit).
-func ClosePool() {
-	poolMu.Lock()
-	defer poolMu.Unlock()
-	for k, p := range pool {
-		if p.client != nil {
-			_ = p.client.Close()
-		}
-		delete(pool, k)
-	}
-}
-
-// PoolSize returns number of cached clients (tests).
-func PoolSize() int {
-	poolMu.Lock()
-	defer poolMu.Unlock()
-	return len(pool)
-}

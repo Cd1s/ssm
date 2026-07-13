@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"sync"
 
 	"ssm/internal/config"
@@ -227,11 +226,4 @@ func MapExitCode(results []RunResult) int {
 // DefaultMapWorkers returns concurrency from env or default 8.
 func DefaultMapWorkers() int {
 	return 8
-}
-
-// SortedAliasList helper for tests.
-func SortedAliasList(names []string) []string {
-	out := append([]string(nil), names...)
-	sort.Strings(out)
-	return out
 }

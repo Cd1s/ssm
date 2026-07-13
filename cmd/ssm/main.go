@@ -40,7 +40,9 @@ func main() {
 	if version == "dev" {
 		config.EnableDebug()
 	}
-	checkUpdate()
+	if !isInformationalInvocation(os.Args[1:]) {
+		checkUpdate()
+	}
 
 	if strings.EqualFold(filepath.Base(os.Args[0]), "sshctl") {
 		runSSHCTL(os.Args[1:])
@@ -229,6 +231,19 @@ Cloud (optional):
 		fmt.Println("Usage: ssm [host|remove|list|keys|exec|put|get|import-json|server|update|login|register|push|pull|pull-if-changed|remote-hash|logout]")
 		os.Exit(1)
 	}
+}
+
+func isInformationalInvocation(args []string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		switch arg {
+		case "--help", "-h", "help", "--version", "-v":
+			return true
+		}
+	}
+	return false
 }
 
 func parseGlobalArgs(args []string) ([]string, error) {

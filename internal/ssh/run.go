@@ -407,12 +407,6 @@ func syntaxErrorLine(stderr string) string {
 	return ""
 }
 
-// Exec is the classic streaming entry point (exit code only).
-func Exec(c config.Connection, v *config.Vault, cmd string) int {
-	res := Run(c, v, RunOptions{Command: cmd, Capture: false})
-	return res.Exit
-}
-
 // WriteRunResult prints a RunResult as JSON or key=value.
 func WriteRunResult(res RunResult, asJSON bool) {
 	if asJSON {

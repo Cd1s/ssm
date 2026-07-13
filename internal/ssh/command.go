@@ -5,12 +5,6 @@ import (
 	"strings"
 )
 
-// TraceEnabled reports whether remote-command tracing is on via env.
-// Agents can set SSM_TRACE=1 to see the exact remote shell line (quote debug).
-func TraceEnabled() bool {
-	return traceEnabled()
-}
-
 func traceEnabled() bool {
 	v := strings.ToLower(strings.TrimSpace(os.Getenv("SSM_TRACE")))
 	switch v {
