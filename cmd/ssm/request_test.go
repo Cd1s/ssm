@@ -107,3 +107,18 @@ func TestRequestHostMutationDefaultsToVerify(t *testing.T) {
 		t.Fatalf("host args = %v", args)
 	}
 }
+
+func TestLoadAgentPutRequestResumeV1(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "put.json")
+	body := `{"version":1,"op":"put","alias":"prod","local_path":"/secure/artifact","remote_path":"/srv/artifact","resume":"v1","sha256":true,"timeout":"2m"}`
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	req, err := loadAgentRequest([]string{"--file", path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Op != "put" || req.Resume != "v1" || !req.SHA256 || req.LocalPath == "" || req.RemotePath == "" {
+		t.Fatalf("put request = %+v", req)
+	}
+}

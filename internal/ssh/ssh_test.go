@@ -101,6 +101,55 @@ func TestUploadCommandRejectsChecksumMismatchAndCleansTemp(t *testing.T) {
 	}
 }
 
+func TestResumeCommandReportsMissingVerificationUtility(t *testing.T) {
+	cmd := exec.Command("sh", "-c", resumeAppendCommand("/tmp/final", "/tmp/partial", "/tmp/meta", 0600, 10, strings.Repeat("a", 64), 0, strings.Repeat("b", 64)))
+	cmd.Env = []string{"PATH=/definitely-missing"}
+	output, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "SSM_RESUME_ERROR tool_missing") {
+		t.Fatalf("missing verification utility: err=%v output=%s", err, output)
+	}
+}
+
+func TestResumeChecksumMismatchNeverPublishesDestination(t *testing.T) {
+	dir := t.TempDir()
+	destination := filepath.Join(dir, "final ' target")
+	partial := filepath.Join(dir, ".partial")
+	metadata := partial + ".meta"
+	if err := os.WriteFile(destination, []byte("original"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(partial, []byte("abc"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	wrongDigest := strings.Repeat("0", 64)
+	if err := os.WriteFile(metadata, []byte("v1 6 "+wrongDigest+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	prefix := sha256.Sum256([]byte("abc"))
+	cmd := exec.Command("sh", "-c", resumeAppendCommand(destination, partial, metadata, 0600, 6, wrongDigest, 3, hex.EncodeToString(prefix[:])))
+	cmd.Stdin = strings.NewReader("def")
+	output, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "SSM_RESUME_ERROR digest_mismatch") {
+		t.Fatalf("resume checksum mismatch: err=%v output=%s", err, output)
+	}
+	data, err := os.ReadFile(destination)
+	if err != nil || string(data) != "original" {
+		t.Fatalf("destination changed: data=%q err=%v", data, err)
+	}
+}
+
+func TestResumePathsAreDeterministicAndShellSafe(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	partial, metadata, pattern := resumePaths("/tmp/weird ' target;$(touch nope)", digest)
+	if !strings.HasPrefix(filepath.Base(partial), ".ssm-resume-v1-") || !strings.HasSuffix(partial, digest) || metadata != partial+".meta" || !strings.HasSuffix(pattern, "-*") {
+		t.Fatalf("resume paths: partial=%q metadata=%q pattern=%q", partial, metadata, pattern)
+	}
+	command := resumeAppendCommand("/tmp/weird ' target;$(touch nope)", partial, metadata, 0600, 1, digest, 0, strings.Repeat("b", 64))
+	if !strings.Contains(command, "chmod 0600") || !strings.Contains(command, "mv -f --") {
+		t.Fatalf("resume command lacks restrictive mode or atomic publish: %s", command)
+	}
+}
+
 func TestDownloadCommandQuotesPath(t *testing.T) {
 	got := downloadCommand("/tmp/file's name")
 	if !strings.Contains(got, "cat -- ") {

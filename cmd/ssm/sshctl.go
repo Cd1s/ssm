@@ -424,7 +424,7 @@ func sshctlUsage() {
   sshctl map host1,host2 --scripts s1.sh,s2.sh   # host×script jobs in parallel
   sshctl map host --plan -j 4 'uname -s'
 
-  sshctl put <alias> <local> <remote> [--sha256] [--timeout 2m] [--json]
+  sshctl put <alias> <local> <remote> [--resume=v1] [--sha256] [--timeout 2m] [--json]
   sshctl get <alias> <remote> <local>
   sshctl redirect list|set <old> <new>|rm <old>
 Env: SSM_TRACE=1  SSM_TIMEOUT=10s  SSM_REUSE=0  SSM_FORWARD_STDIN=1

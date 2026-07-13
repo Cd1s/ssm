@@ -239,6 +239,7 @@ type putOptions struct {
 	name, localPath, remotePath string
 	verifySHA256                bool
 	timeout                     time.Duration
+	resumeVersion               string
 }
 
 func parsePutArgs(args []string) (putOptions, error) {
@@ -250,6 +251,11 @@ func parsePutArgs(args []string) (putOptions, error) {
 			machineJSON = true
 		case args[i] == "--sha256":
 			opts.verifySHA256 = true
+		case args[i] == "--resume" && i+1 < len(args):
+			i++
+			opts.resumeVersion = args[i]
+		case strings.HasPrefix(args[i], "--resume="):
+			opts.resumeVersion = strings.TrimPrefix(args[i], "--resume=")
 		case args[i] == "--timeout" && i+1 < len(args):
 			i++
 			duration, err := time.ParseDuration(args[i])
@@ -272,6 +278,9 @@ func parsePutArgs(args []string) (putOptions, error) {
 	if len(positionals) != 3 {
 		return opts, fmt.Errorf("put requires alias, local path, and remote path")
 	}
+	if opts.resumeVersion != "" && opts.resumeVersion != "v1" {
+		return opts, fmt.Errorf("--resume supports only version v1")
+	}
 	opts.name, opts.localPath, opts.remotePath = positionals[0], positionals[1], positionals[2]
 	return opts, nil
 }
@@ -279,7 +288,7 @@ func parsePutArgs(args []string) (putOptions, error) {
 func runPutArgs(args []string) {
 	opts, err := parsePutArgs(args)
 	if err != nil {
-		writeCLIErrorStage("invalid_arguments", err.Error(), "use sshctl put <alias> <local> <remote> [--sha256] [--timeout <duration>] [--json]", "validate", 2)
+		writeCLIErrorStage("invalid_arguments", err.Error(), "use sshctl put <alias> <local> <remote> [--resume=v1] [--sha256] [--timeout <duration>] [--json]", "validate", 2)
 		os.Exit(2)
 	}
 	runPutWithOptions(opts)
@@ -301,7 +310,7 @@ func runPutWithOptions(opts putOptions) {
 	if !ok {
 		connectionNotFound(opts.name, v)
 	}
-	result, err := ssh.UploadPathWithOptions(c, v, opts.localPath, opts.remotePath, ssh.UploadOptions{VerifySHA256: opts.verifySHA256, Timeout: opts.timeout})
+	result, err := ssh.UploadPathWithOptions(c, v, opts.localPath, opts.remotePath, ssh.UploadOptions{VerifySHA256: opts.verifySHA256, Timeout: opts.timeout, ResumeVersion: opts.resumeVersion})
 	if err != nil {
 		if machineJSON {
 			code, stage, hint, bytesSent := ssh.ErrCodeTransfer, "remote_write", "retry after inspecting the transfer stage", result.BytesSent

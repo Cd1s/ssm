@@ -55,6 +55,7 @@ sshctl run host --scripts a.sh,b.sh          # parallel scripts on one host
 # File or directory trees
 sshctl put <alias> ./dir /remote/dir
 sshctl put <alias> ./artifact.tar /srv/artifact.tar --sha256 --timeout 2m --json
+sshctl put <alias> ./artifact.tar /srv/artifact.tar --resume=v1 --timeout 2m --json
 sshctl get <alias> /remote/dir ./dir
 
 # Migration soft-links
@@ -66,7 +67,9 @@ sshctl push
 
 Normal run/check operations reject both first-use and changed host keys. Never use an automatic `ssh-keygen -R` plus `ssh-keyscan` shortcut. Inspect `observed_fingerprint`, `known_fingerprints`, and `classification:new|mismatch|trusted`, verify through a trusted channel, then explicitly accept the exact same fingerprint with `--yes`.
 
-Regular-file `put` always streams to a private sibling temporary file, verifies the remote byte count, and atomically renames only after successful completion. Add `--sha256` for local/remote SHA-256 verification and `--timeout <duration>` for an explicit deadline. JSON success and failure report `stage`, `bytes_sent`, `integrity`, `atomic`, and `resume`; failures distinguish `local_read_failed`, SSH dial/auth errors, `remote_write_failed`, `transfer_timeout`, and `integrity_failed`. Directory uploads retain the legacy tar behavior and do not claim atomicity or integrity. Resume is intentionally `unsupported` in this issue: there is no append or partial-state reuse; versioned, opt-in regular-file resume is tracked separately in #10.
+Regular-file `put` always streams to a private sibling temporary file, verifies the remote byte count, and atomically renames only after successful completion. Add `--sha256` for local/remote SHA-256 verification and `--timeout <duration>` for an explicit deadline. JSON success and failure report `stage`, `bytes_sent`, `integrity`, `atomic`, and `resume`; failures distinguish `local_read_failed`, SSH dial/auth errors, `remote_write_failed`, `transfer_timeout`, and `integrity_failed`. Directory uploads retain the legacy tar behavior and do not claim atomicity or integrity.
+
+Resume is regular-file-only and explicitly enabled with `--resume=v1`; existing put behavior is unchanged when it is absent. v1 requires remote `sha256sum`, binds a private `0600` sibling partial and metadata file to the protocol version, destination-path hash, complete local size, and SHA-256 digest, then verifies the remote prefix against the same local prefix before appending. A changed source starts separate state rather than reusing the old partial; corrupt, missing, or ambiguous state returns `partial_state_mismatch|partial_state_incompatible` and never replaces the destination. A completed size and digest are verified before atomic publish. Interrupted v1 state is retained for retry, while states for the same destination older than seven days are removed opportunistically during a later probe; operators may review and remove the deterministic `.ssm-resume-v1-*` siblings sooner. Results include `bytes_reused` and `bytes_sent`. Directory resume is unsupported.
 
 `status` checks the configured sync endpoint by default and refreshes when its ETag changed. A sync failure returns `error:sync_pull_failed`, `stage:sync_pull`; cached data is never selected silently. Use `sshctl --json status --offline` (or global `--offline`) only when stale data is explicitly acceptable. Offline results include `offline:true`, `remote_state:not_checked`, `freshness`, `cache_age_seconds`, last pull/push times, `pending_changes`, and non-secret `pending_mutations` (`id`, `alias`, `operation`, `created_at`). Mutation results return a stable `transaction_id`. Publish one reviewed change with `push --only <transaction-id>`; its preflight lists the exact alias/operation and unrelated changes stay pending. Use `push --all` (or the legacy bare `push`) only to deliberately publish every pending change.
 
@@ -97,6 +100,21 @@ Failure objects use `ok:false`, `error`, `message`, `hint`, and `exit`, plus `st
 ```
 
 Script requests use `script_file`, `script_args`, `shell`, and `secret_files`. They default to a remote syntax preflight using the same interpreter with `-n`; failure returns `script_syntax_error` before the body executes. Results identify `mode`, `transport`, and `preflight`.
+
+Resumable put also uses request schema version 1 with an explicitly versioned resume capability:
+
+```json
+{
+  "version": 1,
+  "op": "put",
+  "alias": "prod-api",
+  "local_path": "/secure/artifact.tar",
+  "remote_path": "/srv/artifact.tar",
+  "resume": "v1",
+  "sha256": true,
+  "timeout": "2m"
+}
+```
 
 Host requests use `op: host.upsert|host.update|...` plus a nested `host` object. Add/update defaults to `verify:true`:
 

@@ -55,6 +55,7 @@ sshctl run host --scripts a.sh,b.sh          # 单机多脚本并行
 # 文件与目录树
 sshctl put <alias> ./dir /remote/dir
 sshctl put <alias> ./artifact.tar /srv/artifact.tar --sha256 --timeout 2m --json
+sshctl put <alias> ./artifact.tar /srv/artifact.tar --resume=v1 --timeout 2m --json
 sshctl get <alias> /remote/dir ./dir
 
 # 迁移后旧名软链
@@ -66,7 +67,9 @@ sshctl push
 
 首次出现的 host key 和变化后的 host key 都会被普通 run/check 拒绝。不要使用自动 `ssh-keygen -R` + `ssh-keyscan` 捷径；先通过 `inspect` 获取 `observed_fingerprint`、`known_fingerprints` 与 `classification:new|mismatch|trusted`，经可信渠道核对后，再用完全相同的指纹显式 `accept --yes`。
 
-regular-file `put` 始终写入同目录的私有临时文件，核对远端 byte count 后才原子 rename；加 `--sha256` 可做本地/远端 SHA-256 核验，`--timeout <duration>` 设置显式 deadline。JSON 成功与失败均报告 `stage`、`bytes_sent`、`integrity`、`atomic`、`resume`；错误区分 `local_read_failed`、SSH dial/auth、`remote_write_failed`、`transfer_timeout` 与 `integrity_failed`。目录上传保留旧 tar 行为，不声称 atomicity 或 integrity。本 Issue 明确不支持 resume：不会 append 或复用 partial state；带版本契约、显式启用的 regular-file resume 由 #10 单独实现。
+regular-file `put` 始终写入同目录的私有临时文件，核对远端 byte count 后才原子 rename；加 `--sha256` 可做本地/远端 SHA-256 核验，`--timeout <duration>` 设置显式 deadline。JSON 成功与失败均报告 `stage`、`bytes_sent`、`integrity`、`atomic`、`resume`；错误区分 `local_read_failed`、SSH dial/auth、`remote_write_failed`、`transfer_timeout` 与 `integrity_failed`。目录上传保留旧 tar 行为，不声称 atomicity 或 integrity。
+
+resume 仅支持 regular file，且必须用 `--resume=v1` 显式启用；未提供时旧 put 行为不变。v1 要求远端有 `sha256sum`，以协议版本、目标路径 hash、完整 local size 与 SHA-256 digest 绑定权限为 `0600` 的 sibling partial/metadata；append 前还会把远端 prefix digest 与本地同长度 prefix digest 核对。source 改变时使用独立 state，不复用旧 partial；corrupt、缺失或歧义 state 返回 `partial_state_mismatch|partial_state_incompatible`，绝不替换目标。完整 size/digest 通过后才 atomic publish。中断后的 v1 state 保留供 retry；后续 probe 会顺带清理同一目标超过 7 天的 `.ssm-resume-v1-*` state，operator 也可在审查后提前删除。结果包含 `bytes_reused` 与 `bytes_sent`。目录 resume 不支持。
 
 `status` 默认检查配置的同步端点并在远端 ETag 变化时刷新；同步失败会返回 `error:sync_pull_failed`、`stage:sync_pull`，不会静默使用缓存。只有调用方明确接受陈旧数据时才使用 `sshctl --json status --offline`（或全局 `--offline`）。离线结果包含 `offline:true`、`remote_state:not_checked`、`freshness`、`cache_age_seconds`、最近 pull/push 时间、`pending_changes` 与不含 secret 的 `pending_mutations`（`id`、`alias`、`operation`、`created_at`）。mutation 结果返回稳定的 `transaction_id`；用 `push --only <transaction-id>` 发布单个已审查变更，其 preflight 会列出准确 alias/operation，无关变更继续 pending。仅在明确发布全部 pending change 时使用 `push --all`（裸 `push` 作为兼容路径仍表示全部发布）。
 
@@ -97,6 +100,21 @@ regular-file `put` 始终写入同目录的私有临时文件，核对远端 byt
 ```
 
 脚本请求用 `script_file`、`script_args`、`shell` 和 `secret_files`。脚本默认先在远端使用同一个解释器执行 `-n` 语法预检；失败返回 `script_syntax_error`，正文不会执行。请求结果包含 `mode: argv|shell_command|script`、`transport: ssh_exec|ssh_stdin` 和 `preflight`。
+
+resumable put 同样使用 request schema version 1，并显式声明 resume capability 版本：
+
+```json
+{
+  "version": 1,
+  "op": "put",
+  "alias": "prod-api",
+  "local_path": "/secure/artifact.tar",
+  "remote_path": "/srv/artifact.tar",
+  "resume": "v1",
+  "sha256": true,
+  "timeout": "2m"
+}
+```
 
 Host request 使用 `op: host.upsert|host.update|...` 与嵌套 `host` 字段，新增/修改默认 `verify:true`：
 

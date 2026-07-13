@@ -18,8 +18,9 @@ import (
 )
 
 type UploadOptions struct {
-	VerifySHA256 bool
-	Timeout      time.Duration
+	VerifySHA256  bool
+	Timeout       time.Duration
+	ResumeVersion string
 }
 
 type TransferResult struct {
@@ -31,6 +32,7 @@ type TransferResult struct {
 	RemoteSHA256 string `json:"remote_sha256,omitempty"`
 	Atomic       bool   `json:"atomic"`
 	Resume       string `json:"resume"`
+	BytesReused  int64  `json:"bytes_reused,omitempty"`
 }
 
 type TransferError struct {
@@ -50,6 +52,9 @@ func UploadFile(c config.Connection, v *config.Vault, localPath, remotePath stri
 }
 
 func UploadFileWithOptions(c config.Connection, v *config.Vault, localPath, remotePath string, opts UploadOptions) (TransferResult, error) {
+	if opts.ResumeVersion != "" {
+		return uploadFileResumable(c, v, localPath, remotePath, opts)
+	}
 	result := TransferResult{Stage: "local_read", Integrity: "not_checked", Atomic: true, Resume: "unsupported"}
 	f, err := os.Open(localPath)
 	if err != nil {

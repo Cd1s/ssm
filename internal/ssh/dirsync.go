@@ -30,8 +30,8 @@ func UploadPathWithOptions(c config.Connection, v *config.Vault, localPath, remo
 	if !info.IsDir() {
 		return TransferResult{Stage: "local_read", Integrity: "not_checked", Resume: "unsupported"}, transferError("local_read_failed", "local_read", "use a regular file or directory", 0, fmt.Errorf("%s is not a regular file or directory", localPath))
 	}
-	if opts.VerifySHA256 || opts.Timeout > 0 {
-		return TransferResult{Stage: "validate", Integrity: "not_available", Resume: "unsupported"}, transferError("unsupported_transfer_option", "validate", "SHA-256 and timeout options currently support regular-file put only", 0, errors.New("directory transfer does not support requested reliability options"))
+	if opts.VerifySHA256 || opts.Timeout > 0 || opts.ResumeVersion != "" {
+		return TransferResult{Stage: "validate", Integrity: "not_available", Resume: "unsupported"}, transferError("unsupported_transfer_option", "validate", "SHA-256, timeout, and resume v1 options support regular-file put only", 0, errors.New("directory transfer does not support requested reliability options"))
 	}
 	err = uploadDirTar(c, v, localPath, remotePath)
 	if err != nil {

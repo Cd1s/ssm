@@ -370,6 +370,83 @@ if [ "${timeout_clean:-0}" != 1 ]; then
 fi
 echo "ok put_timeout_cleanup"
 
+head -c 33554432 /dev/zero > "$TMP/resume-payload"
+printf 'resume-tail' >> "$TMP/resume-payload"
+resume_remote="$TMP/resume weird ' path"
+printf -v resume_remote_q %q "$resume_remote"
+set +e
+resume_interrupted=$(run_sshctl put local "$TMP/resume-payload" "$resume_remote" --resume=v1 --timeout 2ms --json)
+resume_interrupted_rc=$?
+set -e
+if [ "$resume_interrupted_rc" = "0" ] || ! printf '%s' "$resume_interrupted" | grep -q '"error": "transfer_timeout"'; then
+  echo "resume forced disconnect: rc=$resume_interrupted_rc out=[$resume_interrupted]" >&2
+  exit 1
+fi
+resume_partial=$(run_sshctl run local "find '$TMP' -maxdepth 1 -type f -name '.ssm-resume-v1-*' ! -name '*.meta' | head -n 1")
+resume_partial_size=$(run_sshctl run local "wc -c < '$resume_partial' | tr -d ' '")
+if [ -z "$resume_partial" ] || [ "$resume_partial_size" -le 0 ]; then
+  echo "resume did not preserve a non-empty partial: path=[$resume_partial] size=[$resume_partial_size]" >&2
+  exit 1
+fi
+resume_completed=$(run_sshctl put local "$TMP/resume-payload" "$resume_remote" --resume=v1 --json)
+printf '%s' "$resume_completed" | grep -q '"resume": "resumed"' || { echo "resume state: $resume_completed" >&2; exit 1; }
+printf '%s' "$resume_completed" | grep -q '"integrity": "sha256_verified"' || { echo "resume integrity: $resume_completed" >&2; exit 1; }
+resume_reused=$(printf '%s\n' "$resume_completed" | sed -n 's/.*"bytes_reused": \([0-9][0-9]*\).*/\1/p')
+resume_sent=$(printf '%s\n' "$resume_completed" | sed -n 's/.*"bytes_sent": \([0-9][0-9]*\).*/\1/p')
+resume_total=$(wc -c < "$TMP/resume-payload" | tr -d ' ')
+if [ -z "$resume_reused" ] || [ "$resume_reused" -le 0 ] || [ -z "$resume_sent" ] || [ $((resume_reused + resume_sent)) -ne "$resume_total" ]; then
+  echo "resume byte accounting: reused=$resume_reused sent=$resume_sent total=$resume_total out=[$resume_completed]" >&2
+  exit 1
+fi
+local_resume_sha=$(sha256sum "$TMP/resume-payload" | awk '{print $1}')
+remote_resume_sha=$(run_sshctl run local "sha256sum -- $resume_remote_q | awk '{print \$1}'")
+if [ "$local_resume_sha" != "$remote_resume_sha" ]; then
+  echo "resume final digest mismatch" >&2
+  exit 1
+fi
+echo "ok put_resume_forced_disconnect"
+
+corrupt_remote="$TMP/corrupt-resume-target"
+set +e
+corrupt_seed=$(run_sshctl put local "$TMP/resume-payload" "$corrupt_remote" --resume=v1 --timeout 2ms --json)
+corrupt_seed_rc=$?
+set -e
+if [ "$corrupt_seed_rc" = "0" ]; then
+  echo "corrupt resume seed unexpectedly completed: $corrupt_seed" >&2
+  exit 1
+fi
+corrupt_partial=$(run_sshctl run local "find '$TMP' -maxdepth 1 -type f -name '.ssm-resume-v1-*' ! -name '*.meta' | head -n 1")
+run_sshctl run local "printf X | dd of='$corrupt_partial' bs=1 seek=0 conv=notrunc status=none"
+set +e
+corrupt_retry=$(run_sshctl put local "$TMP/resume-payload" "$corrupt_remote" --resume=v1 --json)
+corrupt_retry_rc=$?
+set -e
+if [ "$corrupt_retry_rc" = "0" ] || ! printf '%s' "$corrupt_retry" | grep -q '"error": "partial_state_mismatch"'; then
+  echo "corrupt partial accepted: rc=$corrupt_retry_rc out=[$corrupt_retry]" >&2
+  exit 1
+fi
+if run_sshctl run local "test -e '$corrupt_remote'"; then
+  echo "corrupt partial replaced final destination" >&2
+  exit 1
+fi
+echo "ok put_resume_corrupt_partial"
+
+cp "$TMP/resume-payload" "$TMP/resume-changed"
+printf changed-source >> "$TMP/resume-changed"
+changed_resume=$(run_sshctl put local "$TMP/resume-changed" "$corrupt_remote" --resume=v1 --json)
+printf '%s' "$changed_resume" | grep -q '"resume": "started"' || { echo "changed source reused incompatible partial: $changed_resume" >&2; exit 1; }
+if printf '%s' "$changed_resume" | grep -q '"bytes_reused"'; then
+  echo "changed source reported reused bytes: $changed_resume" >&2
+  exit 1
+fi
+changed_local_sha=$(sha256sum "$TMP/resume-changed" | awk '{print $1}')
+changed_remote_sha=$(run_sshctl run local "sha256sum -- '$corrupt_remote' | awk '{print \$1}'")
+if [ "$changed_local_sha" != "$changed_remote_sha" ]; then
+  echo "changed source final digest mismatch" >&2
+  exit 1
+fi
+echo "ok put_resume_changed_source"
+
 # put creates nested remote parents
 printf 'nested' > "$TMP/nested.txt"
 run_sshctl put local "$TMP/nested.txt" "$TMP/nested/dir/file.txt"

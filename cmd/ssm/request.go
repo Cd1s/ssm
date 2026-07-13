@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"ssm/internal/ssh"
 )
@@ -29,6 +30,10 @@ type agentRequest struct {
 	Preflight    *bool             `json:"preflight,omitempty"`
 	Deep         bool              `json:"deep,omitempty"`
 	Host         *agentHostRequest `json:"host,omitempty"`
+	LocalPath    string            `json:"local_path,omitempty"`
+	RemotePath   string            `json:"remote_path,omitempty"`
+	Resume       string            `json:"resume,omitempty"`
+	SHA256       bool              `json:"sha256,omitempty"`
 }
 
 type agentHostRequest struct {
@@ -99,8 +104,32 @@ func runAgentRequest(args []string) {
 		}
 		unlock()
 		runHostCommand(hostArgs)
+	case "put":
+		if err := validateRequestAlias(req); err != nil {
+			writeMachineError("invalid_request", err.Error(), "provide one exact inventory alias", req.Alias, 2, nil)
+			os.Exit(2)
+		}
+		if req.Host != nil || req.Deep || req.Argv != nil || req.ShellCommand != nil || req.ScriptFile != "" || len(req.ScriptArgs) > 0 || req.Shell != "" || len(req.SecretFiles) > 0 || req.NoReuse || req.Preflight != nil {
+			writeMachineError("invalid_request", "put accepts only alias, local_path, remote_path, resume, sha256, and timeout", "use file paths; never place file contents or credentials in the request", req.Alias, 2, nil)
+			os.Exit(2)
+		}
+		if strings.TrimSpace(req.LocalPath) == "" || strings.TrimSpace(req.RemotePath) == "" || (req.Resume != "" && req.Resume != "v1") {
+			writeMachineError("invalid_request", "put requires local_path and remote_path; resume supports only v1", "use resume:\"v1\" explicitly for regular-file retry", req.Alias, 2, nil)
+			os.Exit(2)
+		}
+		timeout := time.Duration(0)
+		if req.Timeout != "" {
+			var err error
+			timeout, err = parseCLITimeout(req.Timeout)
+			if err != nil {
+				writeMachineError("invalid_request", err.Error(), "timeout must be a positive duration", req.Alias, 2, nil)
+				os.Exit(2)
+			}
+		}
+		unlock()
+		runPutWithOptions(putOptions{name: req.Alias, localPath: req.LocalPath, remotePath: req.RemotePath, resumeVersion: req.Resume, verifySHA256: req.SHA256, timeout: timeout})
 	default:
-		writeMachineError("invalid_request", fmt.Sprintf("unsupported request op %q", req.Op), "use run, plan, check, doctor, or host.list/search/show/add/update/upsert/remove", req.Alias, 2, nil)
+		writeMachineError("invalid_request", fmt.Sprintf("unsupported request op %q", req.Op), "use run, plan, check, doctor, put, or host.list/search/show/add/update/upsert/remove", req.Alias, 2, nil)
 		os.Exit(2)
 	}
 }
@@ -183,7 +212,7 @@ func requestRunSpec(req agentRequest) (remoteRunSpec, error) {
 	if err := validateRequestAlias(req); err != nil {
 		return remoteRunSpec{}, err
 	}
-	if req.Host != nil || req.Deep {
+	if req.Host != nil || req.Deep || req.LocalPath != "" || req.RemotePath != "" || req.Resume != "" || req.SHA256 {
 		return remoteRunSpec{}, fmt.Errorf("run requests do not accept host or deep fields")
 	}
 	sources := 0
@@ -328,7 +357,8 @@ func validateRequestAlias(req agentRequest) error {
 
 func hasRunRequestFields(req agentRequest) bool {
 	return req.Argv != nil || req.ShellCommand != nil || req.ScriptFile != "" || len(req.ScriptArgs) > 0 ||
-		req.Shell != "" || len(req.SecretFiles) > 0 || req.Timeout != "" || req.NoReuse || req.Preflight != nil
+		req.Shell != "" || len(req.SecretFiles) > 0 || req.Timeout != "" || req.NoReuse || req.Preflight != nil ||
+		req.LocalPath != "" || req.RemotePath != "" || req.Resume != "" || req.SHA256
 }
 
 func rejectRunRequestFields(req agentRequest) error {
