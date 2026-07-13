@@ -44,6 +44,10 @@ func runSSHCTL(args []string) {
 		sshctlUsage()
 		return
 	}
+	if command, rest, ok := sshctlHelpRequest(args); ok {
+		sshctlCommandUsage(command, rest)
+		return
+	}
 
 	switch args[0] {
 	case "request":
