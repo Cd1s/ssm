@@ -63,12 +63,12 @@ func TestUploadCommandCleansPartialAndPreservesDestination(t *testing.T) {
 	if err := os.WriteFile(destination, []byte("original"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("sh", "-c", uploadCommandWithIntegrity(destination, 0600, 100, ""))
+	cmd := exec.Command("sh", "-c", uploadCommandWithIntegrity(destination, 0600, 100, "")) //nolint:gosec // test executes a command generated from a test-owned path
 	cmd.Stdin = strings.NewReader("partial")
 	if output, err := cmd.CombinedOutput(); err == nil {
 		t.Fatalf("partial upload succeeded: %s", output)
 	}
-	data, err := os.ReadFile(destination)
+	data, err := os.ReadFile(destination) //nolint:gosec // destination is inside t.TempDir
 	if err != nil {
 		t.Fatal(err)
 	}

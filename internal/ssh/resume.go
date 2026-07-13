@@ -31,11 +31,11 @@ func uploadFileResumable(c config.Connection, v *config.Vault, localPath, remote
 	if opts.ResumeVersion != resumeProtocolV1 {
 		return result, transferError("unsupported_resume_version", "validate", "use --resume=v1", 0, fmt.Errorf("unsupported resume version %q", opts.ResumeVersion))
 	}
-	f, err := os.Open(localPath)
+	f, err := os.Open(localPath) //nolint:gosec // localPath is the explicit user-selected upload source
 	if err != nil {
 		return result, transferError("local_read_failed", "local_read", "verify the local path and read permissions", 0, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() {
 		if err == nil {
@@ -84,7 +84,7 @@ func uploadFileResumable(c config.Connection, v *config.Vault, localPath, remote
 	if err != nil {
 		return result, transferError("session_failed", "dial", "retry after checking SSH session limits", 0, err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	stdin, err := session.StdinPipe()
 	if err != nil {
 		return result, transferError("remote_write_failed", "remote_write", "retry resume; existing verified prefix remains available", 0, err)
@@ -169,7 +169,7 @@ func probeResumeState(client *gossh.Client, c config.Connection, partial, metada
 	if err != nil {
 		return resumeState{}, transferError("session_failed", "resume_probe", "retry after checking SSH session limits", 0, err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	parent := RemoteParentDir(partial)
 	if parent == "" {
 		parent = "."

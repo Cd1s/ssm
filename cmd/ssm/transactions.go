@@ -108,13 +108,14 @@ func publishProjection(v *config.Vault, only string) (*config.Vault, []config.Pe
 
 func applyMutation(v *config.Vault, mutation config.PendingMutation) {
 	idx := exactConnectionIndex(v, mutation.Alias)
-	if mutation.After == nil {
+	switch {
+	case mutation.After == nil:
 		if idx >= 0 {
 			v.Connections = append(v.Connections[:idx], v.Connections[idx+1:]...)
 		}
-	} else if idx >= 0 {
+	case idx >= 0:
 		v.Connections[idx] = *mutation.After
-	} else {
+	default:
 		v.Connections = append(v.Connections, *mutation.After)
 	}
 	applyKeyDelta(v, mutation.KeysBefore, mutation.KeysAfter)

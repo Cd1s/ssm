@@ -337,11 +337,12 @@ func runSSHCTLStatus() {
 	}
 	lastSync, cacheAge := syncCacheAge(settings, time.Now())
 	remoteState := "checked"
-	if cloudStatus == "missing" {
+	switch {
+	case cloudStatus == "missing":
 		remoteState = "not_configured"
-	} else if !settings.AutoSync {
+	case !settings.AutoSync:
 		remoteState = "auto_sync_disabled"
-	} else if offlineMode {
+	case offlineMode:
 		remoteState = "not_checked"
 		if freshness == "fresh" {
 			freshness = "cached"

@@ -81,11 +81,13 @@ func saveHostKey(path, hostname string, key gossh.PublicKey) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // caller supplies the configured known_hosts path
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	_, err = fmt.Fprintln(f, knownhosts.Line([]string{hostname}, key))
-	return err
+	if _, err := fmt.Fprintln(f, knownhosts.Line([]string{hostname}, key)); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
