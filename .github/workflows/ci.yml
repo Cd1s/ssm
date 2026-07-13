@@ -17,7 +17,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.25.12"
 
       - name: Format check
         run: test -z "$(gofmt -l .)"
@@ -38,6 +38,9 @@ jobs:
 
       - name: Vet
         run: go vet ./...
+
+      - name: Vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
       - name: Build
         run: go build ./cmd/ssm
