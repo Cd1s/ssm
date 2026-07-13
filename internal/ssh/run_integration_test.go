@@ -25,6 +25,7 @@ func TestRunTransportsScriptOverSSHStdin(t *testing.T) {
 	}
 	conn, vault := startRunTestSSHServer(t)
 	t.Setenv("HOME", t.TempDir())
+	trustRunTestHost(t, conn)
 
 	body := `printf 'arg=<%s>\n' "$1"
 printf 'token=<%s>\n' "$TOKEN"
@@ -67,6 +68,7 @@ func TestRunClassifiesRemoteScriptExit(t *testing.T) {
 	}
 	conn, vault := startRunTestSSHServer(t)
 	t.Setenv("HOME", t.TempDir())
+	trustRunTestHost(t, conn)
 	script, err := PrepareScript("failure.sh", []byte("printf failure >&2\nexit 9\n"), "sh", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -92,6 +94,7 @@ func TestRunScriptPreflightRejectsSyntaxWithoutExecuting(t *testing.T) {
 	}
 	conn, vault := startRunTestSSHServer(t)
 	t.Setenv("HOME", t.TempDir())
+	trustRunTestHost(t, conn)
 	marker := filepath.Join(t.TempDir(), "must-not-exist")
 	body := "printf touched > " + ShellQuote(marker) + "\nif then\n"
 	script, err := PrepareScript("invalid.sh", []byte(body), "sh", nil)
@@ -160,6 +163,17 @@ func startRunTestSSHServer(t *testing.T) (config.Connection, *config.Vault) {
 	vault := &config.Vault{Keys: []config.SSHKey{{Name: "integration", PrivateKey: string(pem.EncodeToMemory(block))}}}
 	conn := config.Connection{Name: "integration", Host: "127.0.0.1", Port: port, User: "test", KeyName: "integration"}
 	return conn, vault
+}
+
+func trustRunTestHost(t *testing.T, connection config.Connection) {
+	t.Helper()
+	inspection, err := InspectHostKey(connection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AcceptHostKey(connection, inspection.ObservedFingerprint); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func serveRunTestSSH(listener net.Listener, cfg *gossh.ServerConfig) {

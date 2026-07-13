@@ -17,24 +17,25 @@ import (
 // Agent-oriented failure classes. Printed as ssm: error=<code> so agents can
 // triage without re-reading raw dial strings.
 const (
-	ErrCodeAliasNotFound = "alias_not_found"
-	ErrCodeInvalidArgs   = "invalid_arguments"
-	ErrCodeInvalidReq    = "invalid_request"
-	ErrCodeDialTimeout   = "dial_timeout"
-	ErrCodeDialRefused   = "dial_refused"
-	ErrCodeDialNetwork   = "dial_network"
-	ErrCodeHostKey       = "host_key_mismatch"
-	ErrCodeAuth          = "auth_failed"
-	ErrCodeNoAuth        = "no_auth_configured"
-	ErrCodeSession       = "session_failed"
-	ErrCodeRemote        = "remote_failed"
-	ErrCodeInterpreter   = "interpreter_not_found"
-	ErrCodeScriptSyntax  = "script_syntax_error"
-	ErrCodeRemoteScript  = "remote_script_failed"
-	ErrCodeTransfer      = "transfer_failed"
-	ErrCodeSyncPull      = "sync_pull_failed"
-	ErrCodeSyncPush      = "sync_push_failed"
-	ErrCodeInternal      = "internal"
+	ErrCodeAliasNotFound  = "alias_not_found"
+	ErrCodeInvalidArgs    = "invalid_arguments"
+	ErrCodeInvalidReq     = "invalid_request"
+	ErrCodeDialTimeout    = "dial_timeout"
+	ErrCodeDialRefused    = "dial_refused"
+	ErrCodeDialNetwork    = "dial_network"
+	ErrCodeHostKey        = "host_key_mismatch"
+	ErrCodeHostKeyUnknown = "host_key_unknown"
+	ErrCodeAuth           = "auth_failed"
+	ErrCodeNoAuth         = "no_auth_configured"
+	ErrCodeSession        = "session_failed"
+	ErrCodeRemote         = "remote_failed"
+	ErrCodeInterpreter    = "interpreter_not_found"
+	ErrCodeScriptSyntax   = "script_syntax_error"
+	ErrCodeRemoteScript   = "remote_script_failed"
+	ErrCodeTransfer       = "transfer_failed"
+	ErrCodeSyncPull       = "sync_pull_failed"
+	ErrCodeSyncPush       = "sync_push_failed"
+	ErrCodeInternal       = "internal"
 )
 
 // Exit code used for connection-layer failures (distinct from remote exit status).
@@ -98,17 +99,16 @@ func ClassifyError(err error, c config.Connection) *ClassifiedError {
 	}
 
 	var keyErr *knownhosts.KeyError
+	if errors.As(err, &keyErr) && len(keyErr.Want) == 0 {
+		out.Code = ErrCodeHostKeyUnknown
+		out.Message = "remote host key is not trusted yet"
+		out.Hint = "run sshctl host-key inspect <alias> --json, verify the observed fingerprint through a trusted channel, then use fingerprint-bound host-key accept"
+		return out
+	}
 	if errors.As(err, &keyErr) || strings.Contains(low, "host key") || strings.Contains(low, "knownhosts") {
 		out.Code = ErrCodeHostKey
 		out.Message = "remote host key does not match known_hosts (host reinstalled or MITM)"
-		hostArg := c.Host
-		if port != 22 {
-			hostArg = fmt.Sprintf("[%s]:%d", c.Host, port)
-		}
-		out.Hint = fmt.Sprintf(
-			"after user confirms host rebuild is expected: ssh-keygen -R %q && ssh-keyscan -p %d -t ed25519,rsa,ecdsa %s >> ~/.ssh/known_hosts",
-			hostArg, port, c.Host,
-		)
+		out.Hint = "do not remove or rescan automatically; run sshctl host-key inspect <alias> --json, verify out-of-band, then accept the exact observed fingerprint"
 		return out
 	}
 

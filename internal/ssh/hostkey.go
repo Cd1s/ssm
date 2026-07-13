@@ -19,18 +19,22 @@ import (
 )
 
 type HostKeyInspection struct {
-	OK                bool     `json:"ok"`
-	Alias             string   `json:"alias"`
-	ResolvedAlias     string   `json:"resolved_alias,omitempty"`
-	Host              string   `json:"host"`
-	Port              int      `json:"port"`
-	Address           string   `json:"address"`
-	Status            string   `json:"status"` // trusted|new|mismatch
-	Algorithm         string   `json:"algorithm"`
-	Fingerprint       string   `json:"fingerprint"`
-	KnownFingerprints []string `json:"known_fingerprints,omitempty"`
-	KnownHostsPath    string   `json:"known_hosts_path"`
-	Accepted          bool     `json:"accepted,omitempty"`
+	OK                  bool     `json:"ok"`
+	Alias               string   `json:"alias"`
+	ResolvedAlias       string   `json:"resolved_alias,omitempty"`
+	Host                string   `json:"host"`
+	Port                int      `json:"port"`
+	Address             string   `json:"address"`
+	Status              string   `json:"status"` // trusted|new|mismatch
+	Classification      string   `json:"classification"`
+	Algorithm           string   `json:"algorithm"`
+	Fingerprint         string   `json:"fingerprint"`
+	ObservedFingerprint string   `json:"observed_fingerprint"`
+	KnownFingerprints   []string `json:"known_fingerprints,omitempty"`
+	KnownHostsPath      string   `json:"known_hosts_path"`
+	Accepted            bool     `json:"accepted,omitempty"`
+	Message             string   `json:"message,omitempty"`
+	Hint                string   `json:"hint,omitempty"`
 }
 
 type HostKeyOperationError struct {
@@ -91,12 +95,25 @@ func InspectHostKey(c config.Connection) (HostKeyInspection, error) {
 
 	report.Algorithm = observed.Type()
 	report.Fingerprint = gossh.FingerprintSHA256(observed)
+	report.ObservedFingerprint = report.Fingerprint
 	status, known, err := inspectKnownHost(report.KnownHostsPath, address, remote, observed)
 	if err != nil {
 		return report, err
 	}
 	report.Status = status
+	report.Classification = status
 	report.KnownFingerprints = known
+	switch status {
+	case "trusted":
+		report.Message = "observed host key matches known_hosts"
+		report.Hint = "no host-key change is required"
+	case "new":
+		report.Message = "endpoint has no trusted host key entry"
+		report.Hint = "verify observed_fingerprint through a trusted channel, then use host-key accept with the exact fingerprint and --yes"
+	case "mismatch":
+		report.Message = "observed host key differs from known_hosts"
+		report.Hint = "treat as a possible interception until rebuild or reassignment is confirmed out-of-band; never remove and rescan automatically"
+	}
 	report.OK = true
 	return report, nil
 }
@@ -178,8 +195,11 @@ func AcceptHostKey(c config.Connection, expectedFingerprint string) (HostKeyInsp
 		return report, &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "fix known_hosts permissions and retry", Cause: err}
 	}
 	report.Status = "trusted"
+	report.Classification = "trusted"
 	report.KnownFingerprints = []string{expectedFingerprint}
 	report.Accepted = true
+	report.Message = "exact observed host key fingerprint accepted"
+	report.Hint = "future connections will require this trusted key"
 	return report, nil
 }
 

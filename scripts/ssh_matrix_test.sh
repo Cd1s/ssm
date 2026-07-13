@@ -92,21 +92,58 @@ printf 'test-master\n' > "$TMP/home/.config/ssm/master.pass"
 chmod 600 "$TMP/home/.config/ssm/master.pass"
 
 host_created=$(HOME="$TMP/home" SSM_UPDATE_REPO=off "$BIN" --master-pass-file "$TMP/home/.config/ssm/master.pass" \
-  host upsert local --host 127.0.0.1 --port "$PORT" --user "$TEST_USER" --key-file "$TMP/client_key" --verify --json)
+  host upsert local --host 127.0.0.1 --port "$PORT" --user "$TEST_USER" --key-file "$TMP/client_key" --json)
 printf '%s' "$host_created" | grep -q '"action": "created"' || { echo "host create: $host_created" >&2; exit 1; }
 printf '%s' "$host_created" | grep -q '"applied": true' || { echo "host candidate apply: $host_created" >&2; exit 1; }
-printf '%s' "$host_created" | grep -q '"verification"' || { echo "host candidate verification: $host_created" >&2; exit 1; }
 ln -s "$BIN" "$TMP/sshctl"
 
 run_sshctl() {
   HOME="$TMP/home" SSM_UPDATE_REPO=off "$TMP/sshctl" "$@"
 }
 
+set +e
+unknown_key=$(run_sshctl run local --json true)
+unknown_key_rc=$?
+set -e
+if [ "$unknown_key_rc" != "255" ] || ! printf '%s' "$unknown_key" | grep -q '"error": "host_key_unknown"'; then
+  echo "first-use host key rejection: rc=$unknown_key_rc out=[$unknown_key]" >&2
+  exit 1
+fi
+if [ -e "$TMP/home/.ssh/known_hosts" ]; then
+  echo "first-use rejection unexpectedly created known_hosts" >&2
+  exit 1
+fi
+
+new_key=$(run_sshctl host-key inspect local --json)
+printf '%s' "$new_key" | grep -q '"classification": "new"' || { echo "new host key classification: $new_key" >&2; exit 1; }
+printf '%s' "$new_key" | grep -q '"address": "127.0.0.1:' || { echo "new host key address: $new_key" >&2; exit 1; }
+printf '%s' "$new_key" | grep -q '"port": ' || { echo "new host key port: $new_key" >&2; exit 1; }
+observed_fingerprint=$(printf '%s\n' "$new_key" | sed -n 's/.*"observed_fingerprint": "\([^"]*\)".*/\1/p')
+if [ -z "$observed_fingerprint" ]; then
+  echo "new host key missing observed fingerprint: $new_key" >&2
+  exit 1
+fi
+
+set +e
+wrong_new_key=$(run_sshctl host-key accept local --fingerprint SHA256:not-the-observed-key --yes --json)
+wrong_new_key_rc=$?
+set -e
+if [ "$wrong_new_key_rc" = "0" ] || [ -e "$TMP/home/.ssh/known_hosts" ]; then
+  echo "new host wrong fingerprint mutated trust: rc=$wrong_new_key_rc out=[$wrong_new_key]" >&2
+  exit 1
+fi
+printf '%s' "$wrong_new_key" | grep -q '"error": "fingerprint_mismatch"' || { echo "new host wrong fingerprint class: $wrong_new_key" >&2; exit 1; }
+
+accepted_new_key=$(run_sshctl host-key accept local --fingerprint "$observed_fingerprint" --yes --json)
+printf '%s' "$accepted_new_key" | grep -q '"accepted": true' || { echo "new host exact acceptance: $accepted_new_key" >&2; exit 1; }
+echo "ok host_key_first_use_workflow"
+
 host_unchanged=$(run_sshctl host upsert local --host 127.0.0.1 --port "$PORT" --user "$TEST_USER" --key-file "$TMP/client_key" --json)
 printf '%s' "$host_unchanged" | grep -q '"action": "unchanged"' || { echo "host upsert retry: $host_unchanged" >&2; exit 1; }
 printf '%s' "$host_unchanged" | grep -q '"sync_pending": true' || { echo "host sync state: $host_unchanged" >&2; exit 1; }
 host_updated=$(run_sshctl host update local --group matrix --verify --json)
 printf '%s' "$host_updated" | grep -q '"action": "updated"' || { echo "host update: $host_updated" >&2; exit 1; }
+printf '%s' "$host_updated" | grep -q '"verification"' || { echo "host candidate verification: $host_updated" >&2; exit 1; }
 host_show=$(run_sshctl host show local --json)
 printf '%s' "$host_show" | grep -q '"auth": "key"' || { echo "host show: $host_show" >&2; exit 1; }
 echo "ok host_crud"
@@ -336,7 +373,39 @@ printf '%s' "$check_json" | grep -q '"ok": true' || { echo "check json: $check_j
 echo "ok check_json"
 
 host_key=$(run_sshctl host-key inspect local --json)
-printf '%s' "$host_key" | grep -q '"status": "trusted"' || { echo "host key inspect: $host_key" >&2; exit 1; }
+printf '%s' "$host_key" | grep -q '"classification": "trusted"' || { echo "host key inspect: $host_key" >&2; exit 1; }
+
+old_sshd_pid=$(cat "$TMP/sshd.pid")
+kill "$old_sshd_pid"
+for _ in $(seq 1 50); do
+  if ! kill -0 "$old_sshd_pid" 2>/dev/null; then
+    break
+  fi
+  sleep 0.1
+done
+rm -f "$TMP/sshd.pid"
+ssh-keygen -q -t ed25519 -N '' -f "$TMP/host_key_changed"
+sed -i "s|^HostKey .*|HostKey $TMP/host_key_changed|" "$TMP/sshd_config"
+"$SSHD" -f "$TMP/sshd_config" -E "$TMP/sshd.log"
+
+set +e
+changed_key_run=$(run_sshctl run local --json true)
+changed_key_run_rc=$?
+set -e
+if [ "$changed_key_run_rc" != "255" ] || ! printf '%s' "$changed_key_run" | grep -q '"error": "host_key_mismatch"'; then
+  echo "changed host key rejection: rc=$changed_key_run_rc out=[$changed_key_run]" >&2
+  exit 1
+fi
+
+changed_key=$(run_sshctl host-key inspect local --json)
+printf '%s' "$changed_key" | grep -q '"classification": "mismatch"' || { echo "changed host key classification: $changed_key" >&2; exit 1; }
+printf '%s' "$changed_key" | grep -q '"known_fingerprints":' || { echo "changed host key known fingerprints: $changed_key" >&2; exit 1; }
+changed_fingerprint=$(printf '%s\n' "$changed_key" | sed -n 's/.*"observed_fingerprint": "\([^"]*\)".*/\1/p')
+if [ -z "$changed_fingerprint" ]; then
+  echo "changed host key missing observed fingerprint: $changed_key" >&2
+  exit 1
+fi
+
 known_before=$(sha256sum "$TMP/home/.ssh/known_hosts" | awk '{print $1}')
 set +e
 wrong_key=$(run_sshctl host-key accept local --fingerprint SHA256:not-the-observed-key --yes --json)
@@ -349,6 +418,11 @@ if [ "$wrong_key_rc" = "0" ] || [ "$known_before" != "$known_after" ]; then
 fi
 printf '%s' "$wrong_key" | grep -q '"error": "fingerprint_mismatch"' || { echo "host key mismatch class: $wrong_key" >&2; exit 1; }
 echo "ok host_key_fingerprint_guard"
+
+accepted_changed_key=$(run_sshctl host-key accept local --fingerprint "$changed_fingerprint" --yes --json)
+printf '%s' "$accepted_changed_key" | grep -q '"accepted": true' || { echo "changed host key exact acceptance: $accepted_changed_key" >&2; exit 1; }
+run_sshctl run local true
+echo "ok host_key_changed_workflow"
 
 cat > "$TMP/import.json" <<EOF
 [{"alias":"danger","host":"127.0.0.1","port":$PORT,"user":"$TEST_USER","private_key_path":"$TMP/client_key"}]

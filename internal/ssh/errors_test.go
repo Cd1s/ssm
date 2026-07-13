@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/ssh/knownhosts"
+
 	"ssm/internal/config"
 )
 
@@ -35,8 +37,15 @@ func TestClassifyHostKey(t *testing.T) {
 	if ce.Code != ErrCodeHostKey {
 		t.Fatalf("code=%s", ce.Code)
 	}
-	if !strings.Contains(ce.Hint, "ssh-keygen -R") {
+	if !strings.Contains(ce.Hint, "host-key inspect") || strings.Contains(ce.Hint, "ssh-keyscan") {
 		t.Fatalf("hint=%s", ce.Hint)
+	}
+}
+
+func TestClassifyUnknownHostKeyRequiresExplicitAcceptance(t *testing.T) {
+	ce := ClassifyError(&knownhosts.KeyError{}, config.Connection{Name: "new-host", Host: "example.test", Port: 22})
+	if ce.Code != ErrCodeHostKeyUnknown || !strings.Contains(ce.Hint, "host-key inspect") || strings.Contains(ce.Hint, "ssh-keyscan") {
+		t.Fatalf("classified = %+v", ce)
 	}
 }
 

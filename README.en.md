@@ -62,6 +62,8 @@ sshctl run old-alias hostname
 sshctl push
 ```
 
+Normal run/check operations reject both first-use and changed host keys. Never use an automatic `ssh-keygen -R` plus `ssh-keyscan` shortcut. Inspect `observed_fingerprint`, `known_fingerprints`, and `classification:new|mismatch|trusted`, verify through a trusted channel, then explicitly accept the exact same fingerprint with `--yes`.
+
 `status` checks the configured sync endpoint by default and refreshes when its ETag changed. A sync failure returns `error:sync_pull_failed`, `stage:sync_pull`; cached data is never selected silently. Use `sshctl --json status --offline` (or global `--offline`) only when stale data is explicitly acceptable. Offline results include `offline:true`, `remote_state:not_checked`, `freshness`, `cache_age_seconds`, last pull/push times, and `pending_changes`.
 
 `sshctl request --file` is the preferred agent entry point. When remote shell semantics are necessary, use a `script_file`, `-f`, or stdin script with `run`; this project does not provide an interactive shell.
@@ -74,7 +76,7 @@ Connection-layer JSON failures use `error=dial_*|host_key_mismatch|alias_not_fou
 
 ### Stable JSON error contract
 
-Failure objects use `ok:false`, `error`, `message`, `hint`, and `exit`, plus `stage` when a failure stage is known. Canonical classes include `alias_not_found`, `invalid_arguments`, `invalid_request`, `sync_pull_failed`, `sync_push_failed`, `dial_timeout|dial_refused|dial_network`, `host_key_mismatch`, `auth_failed|no_auth_configured`, `session_failed`, `interpreter_not_found`, `script_syntax_error|remote_script_failed|remote_failed`, and `transfer_failed`. `host_not_found` and `invalid_args` are legacy v1.3-and-earlier values; v1.4 normalizes them to `alias_not_found` and `invalid_arguments`. Classify with `error` and `stage`; use `exit` only for process control.
+Failure objects use `ok:false`, `error`, `message`, `hint`, and `exit`, plus `stage` when a failure stage is known. Canonical classes include `alias_not_found`, `invalid_arguments`, `invalid_request`, `sync_pull_failed`, `sync_push_failed`, `dial_timeout|dial_refused|dial_network`, `host_key_unknown|host_key_mismatch`, `auth_failed|no_auth_configured`, `session_failed`, `interpreter_not_found`, `script_syntax_error|remote_script_failed|remote_failed`, and `transfer_failed`. `host_not_found` and `invalid_args` are legacy v1.3-and-earlier values; v1.4 normalizes them to `alias_not_found` and `invalid_arguments`. Classify with `error` and `stage`; use `exit` only for process control.
 
 ### Typed agent request (v1.3)
 

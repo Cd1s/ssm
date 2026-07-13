@@ -103,21 +103,17 @@ func TestHostKeyCallbackRejectsMalformedKnownHosts(t *testing.T) {
 	}
 }
 
-func TestHostKeyCallbackSavesUnknownHost(t *testing.T) {
+func TestHostKeyCallbackRejectsUnknownHostWithoutMutation(t *testing.T) {
 	dir := t.TempDir()
 	knownHostsPath := filepath.Join(dir, "known_hosts")
 	cb := buildHostKeyCallbackForPath(knownHostsPath)
 
 	key := testPublicKey(t)
-	if err := cb("127.0.0.1:2222", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 2222}, key); err != nil {
-		t.Fatalf("save host key: %v", err)
+	if err := cb("127.0.0.1:2222", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 2222}, key); err == nil {
+		t.Fatal("unknown host key was accepted")
 	}
-	data, err := os.ReadFile(knownHostsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), "[127.0.0.1]:2222") {
-		t.Fatalf("known_hosts = %q, want normalized host:port entry", data)
+	if _, err := os.Stat(knownHostsPath); !os.IsNotExist(err) {
+		t.Fatalf("known_hosts was created or stat failed: %v", err)
 	}
 }
 

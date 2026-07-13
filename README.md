@@ -62,6 +62,8 @@ sshctl run old-alias hostname
 sshctl push
 ```
 
+首次出现的 host key 和变化后的 host key 都会被普通 run/check 拒绝。不要使用自动 `ssh-keygen -R` + `ssh-keyscan` 捷径；先通过 `inspect` 获取 `observed_fingerprint`、`known_fingerprints` 与 `classification:new|mismatch|trusted`，经可信渠道核对后，再用完全相同的指纹显式 `accept --yes`。
+
 `status` 默认检查配置的同步端点并在远端 ETag 变化时刷新；同步失败会返回 `error:sync_pull_failed`、`stage:sync_pull`，不会静默使用缓存。只有调用方明确接受陈旧数据时才使用 `sshctl --json status --offline`（或全局 `--offline`）。离线结果包含 `offline:true`、`remote_state:not_checked`、`freshness`、`cache_age_seconds`、最近 pull/push 时间和 `pending_changes`。
 
 `sshctl request --file` 是 Agent 的首选入口。需要远端 shell 语义时，使用 `run` 的 `script_file`、`-f` 或 stdin 脚本模式；项目不提供交互式 shell。
@@ -74,7 +76,7 @@ sshctl push
 
 ### 稳定 JSON 错误契约
 
-失败对象使用 `ok:false`、`error`、`message`、`hint`、`exit`，并在可定位阶段时提供 `stage`。canonical 分类包括：`alias_not_found`、`invalid_arguments`、`invalid_request`、`sync_pull_failed`、`sync_push_failed`、`dial_timeout|dial_refused|dial_network`、`host_key_mismatch`、`auth_failed|no_auth_configured`、`session_failed`、`interpreter_not_found`、`script_syntax_error|remote_script_failed|remote_failed` 与 `transfer_failed`。`host_not_found` 和 `invalid_args` 是 v1.3 及更早版本的旧值；v1.4 起统一为 `alias_not_found` 和 `invalid_arguments`。调用方应依据 `error` 与 `stage` 分类，`exit` 只用于进程控制。
+失败对象使用 `ok:false`、`error`、`message`、`hint`、`exit`，并在可定位阶段时提供 `stage`。canonical 分类包括：`alias_not_found`、`invalid_arguments`、`invalid_request`、`sync_pull_failed`、`sync_push_failed`、`dial_timeout|dial_refused|dial_network`、`host_key_unknown|host_key_mismatch`、`auth_failed|no_auth_configured`、`session_failed`、`interpreter_not_found`、`script_syntax_error|remote_script_failed|remote_failed` 与 `transfer_failed`。`host_not_found` 和 `invalid_args` 是 v1.3 及更早版本的旧值；v1.4 起统一为 `alias_not_found` 和 `invalid_arguments`。调用方应依据 `error` 与 `stage` 分类，`exit` 只用于进程控制。
 
 ### Agent 类型化 request（v1.3）
 

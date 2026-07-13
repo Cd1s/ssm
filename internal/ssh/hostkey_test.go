@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -17,7 +18,7 @@ func TestInspectAndAcceptHostKeyRequiresExactFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !inspection.OK || inspection.Status != "new" || inspection.Fingerprint == "" {
+	if !inspection.OK || inspection.Status != "new" || inspection.Fingerprint == "" || inspection.ObservedFingerprint != inspection.Fingerprint || inspection.Hint == "" {
 		t.Fatalf("inspection = %+v", inspection)
 	}
 	if _, err := AcceptHostKey(conn, "SHA256:not-the-key"); err == nil {
@@ -64,6 +65,9 @@ func TestAcceptHostKeyAtomicallyReplacesMismatch(t *testing.T) {
 	}
 	if inspection.Status != "mismatch" {
 		t.Fatalf("inspection = %+v", inspection)
+	}
+	if inspection.ObservedFingerprint == "" || inspection.Hint == "" || !strings.Contains(inspection.Hint, "never remove") {
+		t.Fatalf("unsafe mismatch diagnosis: %+v", inspection)
 	}
 	if _, err := AcceptHostKey(conn, "SHA256:wrong"); err == nil {
 		t.Fatal("accepted wrong fingerprint over a mismatch")

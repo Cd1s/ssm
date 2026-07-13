@@ -46,7 +46,7 @@ func buildHostKeyCallback() gossh.HostKeyCallback {
 func buildHostKeyCallbackForPath(path string) gossh.HostKeyCallback {
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
-			return acceptAndSaveHostKey(path)
+			return rejectUnknownHostKey(path)
 		}
 		return rejectHostKey(fmt.Errorf("known_hosts stat failed: %w", err))
 	}
@@ -63,7 +63,7 @@ func buildHostKeyCallbackForPath(path string) gossh.HostKeyCallback {
 		if errors.As(err, &keyErr) && len(keyErr.Want) > 0 {
 			return err
 		}
-		return saveHostKey(path, hostname, key)
+		return err
 	}
 }
 
@@ -71,9 +71,9 @@ func rejectHostKey(err error) gossh.HostKeyCallback {
 	return func(string, net.Addr, gossh.PublicKey) error { return err }
 }
 
-func acceptAndSaveHostKey(path string) gossh.HostKeyCallback {
-	return func(hostname string, _ net.Addr, key gossh.PublicKey) error {
-		return saveHostKey(path, hostname, key)
+func rejectUnknownHostKey(path string) gossh.HostKeyCallback {
+	return func(hostname string, remote net.Addr, key gossh.PublicKey) error {
+		return &knownhosts.KeyError{}
 	}
 }
 

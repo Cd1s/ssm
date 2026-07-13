@@ -73,7 +73,7 @@ func runHostKeyCommand(args []string) {
 		writeMachineValue(report)
 		return
 	}
-	fmt.Printf("alias=%s\naddress=%s\nstatus=%s\nalgorithm=%s\nfingerprint=%s\n", report.Alias, report.Address, report.Status, report.Algorithm, report.Fingerprint)
+	fmt.Printf("alias=%s\naddress=%s\nstatus=%s\nclassification=%s\nalgorithm=%s\nobserved_fingerprint=%s\n", report.Alias, report.Address, report.Status, report.Classification, report.Algorithm, report.ObservedFingerprint)
 	if report.ResolvedAlias != "" {
 		fmt.Printf("resolved_alias=%s\n", report.ResolvedAlias)
 	}
@@ -82,6 +82,12 @@ func runHostKeyCommand(args []string) {
 	}
 	if report.Accepted {
 		fmt.Println("accepted=1")
+	}
+	if report.Message != "" {
+		fmt.Printf("message=%s\n", report.Message)
+	}
+	if report.Hint != "" {
+		fmt.Printf("hint=%s\n", report.Hint)
 	}
 }
 
