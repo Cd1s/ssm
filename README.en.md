@@ -54,6 +54,7 @@ sshctl run host --scripts a.sh,b.sh          # parallel scripts on one host
 
 # File or directory trees
 sshctl put <alias> ./dir /remote/dir
+sshctl put <alias> ./artifact.tar /srv/artifact.tar --sha256 --timeout 2m --json
 sshctl get <alias> /remote/dir ./dir
 
 # Migration soft-links
@@ -64,6 +65,8 @@ sshctl push
 ```
 
 Normal run/check operations reject both first-use and changed host keys. Never use an automatic `ssh-keygen -R` plus `ssh-keyscan` shortcut. Inspect `observed_fingerprint`, `known_fingerprints`, and `classification:new|mismatch|trusted`, verify through a trusted channel, then explicitly accept the exact same fingerprint with `--yes`.
+
+Regular-file `put` always streams to a private sibling temporary file, verifies the remote byte count, and atomically renames only after successful completion. Add `--sha256` for local/remote SHA-256 verification and `--timeout <duration>` for an explicit deadline. JSON success and failure report `stage`, `bytes_sent`, `integrity`, `atomic`, and `resume`; failures distinguish `local_read_failed`, SSH dial/auth errors, `remote_write_failed`, `transfer_timeout`, and `integrity_failed`. Directory uploads retain the legacy tar behavior and do not claim atomicity or integrity. Resume is intentionally `unsupported` in this issue: there is no append or partial-state reuse; versioned, opt-in regular-file resume is tracked separately in #10.
 
 `status` checks the configured sync endpoint by default and refreshes when its ETag changed. A sync failure returns `error:sync_pull_failed`, `stage:sync_pull`; cached data is never selected silently. Use `sshctl --json status --offline` (or global `--offline`) only when stale data is explicitly acceptable. Offline results include `offline:true`, `remote_state:not_checked`, `freshness`, `cache_age_seconds`, last pull/push times, `pending_changes`, and non-secret `pending_mutations` (`id`, `alias`, `operation`, `created_at`). Mutation results return a stable `transaction_id`. Publish one reviewed change with `push --only <transaction-id>`; its preflight lists the exact alias/operation and unrelated changes stay pending. Use `push --all` (or the legacy bare `push`) only to deliberately publish every pending change.
 

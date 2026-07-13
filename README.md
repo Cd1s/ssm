@@ -54,6 +54,7 @@ sshctl run host --scripts a.sh,b.sh          # 单机多脚本并行
 
 # 文件与目录树
 sshctl put <alias> ./dir /remote/dir
+sshctl put <alias> ./artifact.tar /srv/artifact.tar --sha256 --timeout 2m --json
 sshctl get <alias> /remote/dir ./dir
 
 # 迁移后旧名软链
@@ -64,6 +65,8 @@ sshctl push
 ```
 
 首次出现的 host key 和变化后的 host key 都会被普通 run/check 拒绝。不要使用自动 `ssh-keygen -R` + `ssh-keyscan` 捷径；先通过 `inspect` 获取 `observed_fingerprint`、`known_fingerprints` 与 `classification:new|mismatch|trusted`，经可信渠道核对后，再用完全相同的指纹显式 `accept --yes`。
+
+regular-file `put` 始终写入同目录的私有临时文件，核对远端 byte count 后才原子 rename；加 `--sha256` 可做本地/远端 SHA-256 核验，`--timeout <duration>` 设置显式 deadline。JSON 成功与失败均报告 `stage`、`bytes_sent`、`integrity`、`atomic`、`resume`；错误区分 `local_read_failed`、SSH dial/auth、`remote_write_failed`、`transfer_timeout` 与 `integrity_failed`。目录上传保留旧 tar 行为，不声称 atomicity 或 integrity。本 Issue 明确不支持 resume：不会 append 或复用 partial state；带版本契约、显式启用的 regular-file resume 由 #10 单独实现。
 
 `status` 默认检查配置的同步端点并在远端 ETag 变化时刷新；同步失败会返回 `error:sync_pull_failed`、`stage:sync_pull`，不会静默使用缓存。只有调用方明确接受陈旧数据时才使用 `sshctl --json status --offline`（或全局 `--offline`）。离线结果包含 `offline:true`、`remote_state:not_checked`、`freshness`、`cache_age_seconds`、最近 pull/push 时间、`pending_changes` 与不含 secret 的 `pending_mutations`（`id`、`alias`、`operation`、`created_at`）。mutation 结果返回稳定的 `transaction_id`；用 `push --only <transaction-id>` 发布单个已审查变更，其 preflight 会列出准确 alias/operation，无关变更继续 pending。仅在明确发布全部 pending change 时使用 `push --all`（裸 `push` 作为兼容路径仍表示全部发布）。
 

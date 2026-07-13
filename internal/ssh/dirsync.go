@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,17 +15,29 @@ import (
 // UploadPath uploads a file or directory tree to the remote host.
 // Directories use tar-over-ssh in one session (creates remote parent).
 func UploadPath(c config.Connection, v *config.Vault, localPath, remotePath string) error {
+	_, err := UploadPathWithOptions(c, v, localPath, remotePath, UploadOptions{})
+	return err
+}
+
+func UploadPathWithOptions(c config.Connection, v *config.Vault, localPath, remotePath string, opts UploadOptions) (TransferResult, error) {
 	info, err := os.Stat(localPath)
 	if err != nil {
-		return err
+		return TransferResult{Stage: "local_read", Integrity: "not_checked", Resume: "unsupported"}, transferError("local_read_failed", "local_read", "verify the local path and read permissions", 0, err)
 	}
 	if info.Mode().IsRegular() {
-		return UploadFile(c, v, localPath, remotePath)
+		return UploadFileWithOptions(c, v, localPath, remotePath, opts)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("%s is not a regular file or directory", localPath)
+		return TransferResult{Stage: "local_read", Integrity: "not_checked", Resume: "unsupported"}, transferError("local_read_failed", "local_read", "use a regular file or directory", 0, fmt.Errorf("%s is not a regular file or directory", localPath))
 	}
-	return uploadDirTar(c, v, localPath, remotePath)
+	if opts.VerifySHA256 || opts.Timeout > 0 {
+		return TransferResult{Stage: "validate", Integrity: "not_available", Resume: "unsupported"}, transferError("unsupported_transfer_option", "validate", "SHA-256 and timeout options currently support regular-file put only", 0, errors.New("directory transfer does not support requested reliability options"))
+	}
+	err = uploadDirTar(c, v, localPath, remotePath)
+	if err != nil {
+		return TransferResult{Stage: "remote_write", Integrity: "not_available", Resume: "unsupported"}, err
+	}
+	return TransferResult{OK: true, Stage: "complete", Integrity: "not_available", Atomic: false, Resume: "unsupported"}, nil
 }
 
 // DownloadPath downloads a remote file or directory tree.

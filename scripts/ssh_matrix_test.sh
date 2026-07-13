@@ -341,6 +341,35 @@ printf 'payload' > "$TMP/payload.txt"
 run_sshctl put local "$TMP/payload.txt" "$TMP/uploaded.txt"
 expect_output put_upload "payload" "cat '$TMP/uploaded.txt'"
 
+verified_put=$(run_sshctl put local "$TMP/payload.txt" "$TMP/verified.txt" --sha256 --json)
+printf '%s' "$verified_put" | grep -q '"stage": "complete"' || { echo "put complete stage: $verified_put" >&2; exit 1; }
+printf '%s' "$verified_put" | grep -q '"bytes_sent": 7' || { echo "put bytes: $verified_put" >&2; exit 1; }
+printf '%s' "$verified_put" | grep -q '"integrity": "sha256_verified"' || { echo "put integrity: $verified_put" >&2; exit 1; }
+printf '%s' "$verified_put" | grep -q '"atomic": true' || { echo "put atomic: $verified_put" >&2; exit 1; }
+echo "ok put_sha256"
+
+head -c 16777216 /dev/zero > "$TMP/timeout-payload"
+set +e
+timeout_put=$(run_sshctl put local "$TMP/timeout-payload" "$TMP/timeout-target" --timeout 1ms --json)
+timeout_put_rc=$?
+set -e
+if [ "$timeout_put_rc" = "0" ] || ! printf '%s' "$timeout_put" | grep -q '"error": "transfer_timeout"' || ! printf '%s' "$timeout_put" | grep -q '"stage": "timeout"'; then
+  echo "put timeout: rc=$timeout_put_rc out=[$timeout_put]" >&2
+  exit 1
+fi
+for _ in $(seq 1 20); do
+  if run_sshctl run local "test ! -e '$TMP/timeout-target' && ! find '$TMP' -maxdepth 1 -name 'timeout-target.ssm-upload.*' | grep -q ."; then
+    timeout_clean=1
+    break
+  fi
+  sleep 0.1
+done
+if [ "${timeout_clean:-0}" != 1 ]; then
+  echo "put timeout left final or partial file" >&2
+  exit 1
+fi
+echo "ok put_timeout_cleanup"
+
 # put creates nested remote parents
 printf 'nested' > "$TMP/nested.txt"
 run_sshctl put local "$TMP/nested.txt" "$TMP/nested/dir/file.txt"

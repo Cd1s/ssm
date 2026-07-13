@@ -187,12 +187,9 @@ Cloud (optional):
 		unlock()
 		runRedirect(args[1:])
 	case "put":
-		if len(args) != 4 {
-			fmt.Println("Usage: ssm put <name> <local> <remote>")
-			os.Exit(1)
-		}
+		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
 		unlock()
-		runPut(args[1], args[2], args[3])
+		runPutArgs(args[1:])
 	case "get":
 		if len(args) != 4 {
 			fmt.Println("Usage: ssm get <name> <remote> <local>")

@@ -134,11 +134,9 @@ func runSSHCTL(args []string) {
 		unlock()
 		runSSHCTLDoctor(args[1:])
 	case "put":
-		if len(args) != 4 {
-			sshctlUsageExit()
-		}
+		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
 		unlock()
-		runPut(args[1], args[2], args[3])
+		runPutArgs(args[1:])
 	case "get":
 		if len(args) != 4 {
 			sshctlUsageExit()
@@ -426,7 +424,7 @@ func sshctlUsage() {
   sshctl map host1,host2 --scripts s1.sh,s2.sh   # host×script jobs in parallel
   sshctl map host --plan -j 4 'uname -s'
 
-  sshctl put <alias> <local> <remote>       # file or directory tree
+  sshctl put <alias> <local> <remote> [--sha256] [--timeout 2m] [--json]
   sshctl get <alias> <remote> <local>
   sshctl redirect list|set <old> <new>|rm <old>
 Env: SSM_TRACE=1  SSM_TIMEOUT=10s  SSM_REUSE=0  SSM_FORWARD_STDIN=1

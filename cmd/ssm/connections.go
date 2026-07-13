@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"ssm/internal/cloud"
 	"ssm/internal/config"
@@ -233,7 +235,61 @@ func runMap(targetPatterns []string, spec remoteRunSpec) {
 	os.Exit(ssh.MapExitCode(results))
 }
 
+type putOptions struct {
+	name, localPath, remotePath string
+	verifySHA256                bool
+	timeout                     time.Duration
+}
+
+func parsePutArgs(args []string) (putOptions, error) {
+	var opts putOptions
+	positionals := make([]string, 0, 3)
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--json":
+			machineJSON = true
+		case args[i] == "--sha256":
+			opts.verifySHA256 = true
+		case args[i] == "--timeout" && i+1 < len(args):
+			i++
+			duration, err := time.ParseDuration(args[i])
+			if err != nil || duration <= 0 {
+				return opts, fmt.Errorf("--timeout requires a positive duration")
+			}
+			opts.timeout = duration
+		case strings.HasPrefix(args[i], "--timeout="):
+			duration, err := time.ParseDuration(strings.TrimPrefix(args[i], "--timeout="))
+			if err != nil || duration <= 0 {
+				return opts, fmt.Errorf("--timeout requires a positive duration")
+			}
+			opts.timeout = duration
+		case strings.HasPrefix(args[i], "-"):
+			return opts, fmt.Errorf("unknown put option %q", args[i])
+		default:
+			positionals = append(positionals, args[i])
+		}
+	}
+	if len(positionals) != 3 {
+		return opts, fmt.Errorf("put requires alias, local path, and remote path")
+	}
+	opts.name, opts.localPath, opts.remotePath = positionals[0], positionals[1], positionals[2]
+	return opts, nil
+}
+
+func runPutArgs(args []string) {
+	opts, err := parsePutArgs(args)
+	if err != nil {
+		writeCLIErrorStage("invalid_arguments", err.Error(), "use sshctl put <alias> <local> <remote> [--sha256] [--timeout <duration>] [--json]", "validate", 2)
+		os.Exit(2)
+	}
+	runPutWithOptions(opts)
+}
+
 func runPut(name, localPath, remotePath string) {
+	runPutWithOptions(putOptions{name: name, localPath: localPath, remotePath: remotePath})
+}
+
+func runPutWithOptions(opts putOptions) {
 	pullIfChanged()
 	v, err := config.Load(masterPass)
 	if err != nil {
@@ -241,14 +297,34 @@ func runPut(name, localPath, remotePath string) {
 		os.Exit(1)
 	}
 
-	c, _, ok := resolveConnection(v, name)
+	c, _, ok := resolveConnection(v, opts.name)
 	if !ok {
-		connectionNotFound(name, v)
+		connectionNotFound(opts.name, v)
 	}
-	if err := ssh.UploadPath(c, v, localPath, remotePath); err != nil {
+	result, err := ssh.UploadPathWithOptions(c, v, opts.localPath, opts.remotePath, ssh.UploadOptions{VerifySHA256: opts.verifySHA256, Timeout: opts.timeout})
+	if err != nil {
 		if machineJSON {
-			ce := ssh.ClassifyError(err, c)
-			writeMachineError(ce.Code, ce.Error(), ce.Hint, name, ssh.ExitCodeFor(err), nil)
+			code, stage, hint, bytesSent := ssh.ErrCodeTransfer, "remote_write", "retry after inspecting the transfer stage", result.BytesSent
+			var transferErr *ssh.TransferError
+			if errors.As(err, &transferErr) {
+				code, stage, hint, bytesSent = transferErr.Code, transferErr.Stage, transferErr.Hint, transferErr.BytesSent
+			} else {
+				ce := ssh.ClassifyError(err, c)
+				code, hint = ce.Code, ce.Hint
+			}
+			writeMachineValue(struct {
+				OK        bool   `json:"ok"`
+				Error     string `json:"error"`
+				Message   string `json:"message"`
+				Hint      string `json:"hint"`
+				Exit      int    `json:"exit"`
+				Stage     string `json:"stage"`
+				Alias     string `json:"alias"`
+				BytesSent int64  `json:"bytes_sent"`
+				Integrity string `json:"integrity"`
+				Atomic    bool   `json:"atomic"`
+				Resume    string `json:"resume"`
+			}{false, code, err.Error(), hint, ssh.ExitCodeFor(err), stage, opts.name, bytesSent, result.Integrity, result.Atomic, result.Resume})
 			os.Exit(ssh.ExitCodeFor(err))
 		}
 		ssh.PrintAgentError(err, c)
@@ -256,12 +332,12 @@ func runPut(name, localPath, remotePath string) {
 	}
 	if machineJSON {
 		writeMachineValue(struct {
-			OK     bool   `json:"ok"`
 			Action string `json:"action"`
 			Alias  string `json:"alias"`
 			Local  string `json:"local"`
 			Remote string `json:"remote"`
-		}{OK: true, Action: "put", Alias: name, Local: localPath, Remote: remotePath})
+			ssh.TransferResult
+		}{Action: "put", Alias: opts.name, Local: opts.localPath, Remote: opts.remotePath, TransferResult: result})
 	}
 }
 
