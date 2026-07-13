@@ -118,27 +118,118 @@ func runLogout() {
 	fmt.Println("Logged out.")
 }
 
-func runPush() {
-	if err := pushVault(); err != nil {
+type pushResult struct {
+	OK        bool                  `json:"ok"`
+	Action    string                `json:"action"`
+	Scope     string                `json:"scope"`
+	Only      string                `json:"transaction_id,omitempty"`
+	Preflight []pendingMutationView `json:"preflight"`
+	Remaining []pendingMutationView `json:"remaining_mutations"`
+}
+
+func runPush(args []string) {
+	only := ""
+	all := false
+	seenOnly := false
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--all":
+			all = true
+		case args[i] == "--only" && i+1 < len(args):
+			i++
+			only = args[i]
+			seenOnly = true
+		case strings.HasPrefix(args[i], "--only="):
+			only = strings.TrimPrefix(args[i], "--only=")
+			seenOnly = true
+		default:
+			writeCLIError("invalid_arguments", "push accepts --all or --only <transaction-id>", "inspect pending_mutations with sshctl --json status", 2)
+			os.Exit(2)
+		}
+	}
+	if seenOnly && strings.TrimSpace(only) == "" {
+		writeCLIError("invalid_arguments", "--only requires a non-empty transaction id", "copy an exact id from sshctl --json status", 2)
+		os.Exit(2)
+	}
+	if all && only != "" {
+		writeCLIError("invalid_arguments", "--all and --only are mutually exclusive", "choose one explicit push scope", 2)
+		os.Exit(2)
+	}
+	result, err := pushTransactionScope(only)
+	if err != nil {
 		writeCLIError("sync_push_failed", err.Error(), "local vault remains pending; fix sync and retry push", 1)
 		os.Exit(1)
 	}
 	if machineJSON {
-		writeMachineValue(struct {
-			OK     bool   `json:"ok"`
-			Action string `json:"action"`
-		}{OK: true, Action: "pushed"})
+		writeMachineValue(result)
 		return
+	}
+	fmt.Printf("push scope=%s\n", result.Scope)
+	for _, mutation := range result.Preflight {
+		fmt.Printf("publish transaction=%s alias=%s operation=%s\n", mutation.ID, mutation.Alias, mutation.Operation)
 	}
 	fmt.Println("Vault pushed to cloud.")
 }
 
-func pushVault() error {
-	cfg, err := cloud.LoadCloud()
-	if err != nil {
-		return err
+func pushTransactions(only string) (bool, error) {
+	if only == "" {
+		return false, fmt.Errorf("host mutation did not create a transaction to push")
 	}
-	return cloud.Push(cfg)
+	result, err := pushTransactionScope(only)
+	return len(result.Remaining) > 0, err
+}
+
+func pushTransactionScope(only string) (pushResult, error) {
+	v, err := config.Load(masterPass)
+	if err != nil {
+		return pushResult{}, err
+	}
+	projected, selected, err := publishProjection(v, only)
+	if err != nil {
+		return pushResult{}, err
+	}
+	blob, err := config.EncryptVault(projected, masterPass)
+	if err != nil {
+		return pushResult{}, err
+	}
+	localAfter := cloneVault(v)
+	markPublished(localAfter, selected, projected)
+	if err := config.Save(localAfter, masterPass); err != nil {
+		return pushResult{}, err
+	}
+	if only == "" {
+		blob, err = os.ReadFile(config.Path())
+		if err != nil {
+			_ = config.Save(v, masterPass)
+			return pushResult{}, err
+		}
+	}
+	cfg, err := cloud.LoadCloud()
+	if err == nil {
+		err = cloud.PushBlob(cfg, blob)
+	}
+	if err != nil {
+		_ = config.Save(v, masterPass)
+		return pushResult{}, err
+	}
+	scope := "all"
+	if only != "" {
+		scope = "only"
+	}
+	return pushResult{OK: true, Action: "pushed", Scope: scope, Only: only, Preflight: mutationViews(selected), Remaining: pendingMutationViews(localAfter)}, nil
+}
+
+func mutationViews(mutations []config.PendingMutation) []pendingMutationView {
+	views := make([]pendingMutationView, 0, len(mutations))
+	for _, mutation := range mutations {
+		views = append(views, pendingMutationView{ID: mutation.ID, Alias: mutation.Alias, Operation: mutation.Operation, CreatedAt: mutation.CreatedAt})
+	}
+	return views
+}
+
+func pushVault() error {
+	_, err := pushTransactionScope("")
+	return err
 }
 
 func runRemoteHash() {

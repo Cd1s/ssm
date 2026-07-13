@@ -100,15 +100,21 @@ func Login(server, email, password string) (string, error) {
 }
 
 func Push(cfg *CloudConfig) error {
-	if err := requireToken(cfg); err != nil {
-		return err
-	}
-	server := strings.TrimRight(cfg.Server, "/")
 	data, err := os.ReadFile(config.Path())
 	if err != nil {
 		config.Debug("push: no local vault: %v", err)
 		return fmt.Errorf("no local vault found")
 	}
+	return PushBlob(cfg, data)
+}
+
+// PushBlob publishes an already-encrypted vault blob. The sync service never
+// receives plaintext inventory or local transaction metadata.
+func PushBlob(cfg *CloudConfig, data []byte) error {
+	if err := requireToken(cfg); err != nil {
+		return err
+	}
+	server := strings.TrimRight(cfg.Server, "/")
 
 	req, err := http.NewRequest("PUT", server+"/sync", bytes.NewReader(data))
 	if err != nil {

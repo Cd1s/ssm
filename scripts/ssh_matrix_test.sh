@@ -95,11 +95,22 @@ host_created=$(HOME="$TMP/home" SSM_UPDATE_REPO=off "$BIN" --master-pass-file "$
   host upsert local --host 127.0.0.1 --port "$PORT" --user "$TEST_USER" --key-file "$TMP/client_key" --json)
 printf '%s' "$host_created" | grep -q '"action": "created"' || { echo "host create: $host_created" >&2; exit 1; }
 printf '%s' "$host_created" | grep -q '"applied": true' || { echo "host candidate apply: $host_created" >&2; exit 1; }
+printf '%s' "$host_created" | grep -q '"transaction_id": "tx_[0-9a-f]\{32\}"' || { echo "host transaction id: $host_created" >&2; exit 1; }
 ln -s "$BIN" "$TMP/sshctl"
 
 run_sshctl() {
   HOME="$TMP/home" SSM_UPDATE_REPO=off "$TMP/sshctl" "$@"
 }
+
+pending_status=$(run_sshctl --offline --json status)
+printf '%s' "$pending_status" | grep -q '"pending_changes": true' || { echo "pending status: $pending_status" >&2; exit 1; }
+printf '%s' "$pending_status" | grep -q '"pending_mutations": \[' || { echo "pending mutations: $pending_status" >&2; exit 1; }
+printf '%s' "$pending_status" | grep -q '"alias": "local"' || { echo "pending alias: $pending_status" >&2; exit 1; }
+if printf '%s' "$pending_status" | grep -Fq 'test-master'; then
+  echo "pending status leaked secret" >&2
+  exit 1
+fi
+echo "ok transaction_status"
 
 set +e
 unknown_key=$(run_sshctl run local --json true)

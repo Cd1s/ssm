@@ -63,16 +63,17 @@ type hostView struct {
 }
 
 type hostMutationResult struct {
-	OK           bool                  `json:"ok"`
-	Action       string                `json:"action"`
-	Changed      bool                  `json:"changed"`
-	Host         hostView              `json:"host"`
-	KeyAdded     string                `json:"key_added,omitempty"`
-	KeyPruned    string                `json:"key_pruned,omitempty"`
-	SyncPending  bool                  `json:"sync_pending"`
-	Applied      bool                  `json:"applied"`
-	Pushed       bool                  `json:"pushed"`
-	Verification *agentssh.CheckResult `json:"verification,omitempty"`
+	OK            bool                  `json:"ok"`
+	Action        string                `json:"action"`
+	Changed       bool                  `json:"changed"`
+	Host          hostView              `json:"host"`
+	KeyAdded      string                `json:"key_added,omitempty"`
+	KeyPruned     string                `json:"key_pruned,omitempty"`
+	SyncPending   bool                  `json:"sync_pending"`
+	Applied       bool                  `json:"applied"`
+	Pushed        bool                  `json:"pushed"`
+	TransactionID string                `json:"transaction_id,omitempty"`
+	Verification  *agentssh.CheckResult `json:"verification,omitempty"`
 }
 
 type hostCLIError struct {
@@ -379,6 +380,10 @@ func runHostCommand(args []string) {
 		}
 	}
 	if result.Changed {
+		if err := appendHostMutation(v, updated, &result); err != nil {
+			writeHostCommandError(opts.asJSON, newHostError("transaction_error", "%s", redactError(err)))
+			os.Exit(1)
+		}
 		if err := config.Save(updated, masterPass); err != nil {
 			writeHostCommandError(opts.asJSON, newHostError("vault_error", "%s", redactError(err)))
 			os.Exit(1)
@@ -386,12 +391,13 @@ func runHostCommand(args []string) {
 	}
 	result.Applied = true
 	if opts.push {
-		if err := pushVault(); err != nil {
+		remaining, err := pushTransactions(result.TransactionID)
+		if err != nil {
 			writeHostPushFailure(result, opts.asJSON, err)
 			os.Exit(1)
 		}
 		result.Pushed = true
-		result.SyncPending = false
+		result.SyncPending = remaining
 	}
 	writeHostMutationResult(result, opts.asJSON)
 }
@@ -537,8 +543,10 @@ func cloneVault(v *config.Vault) *config.Vault {
 		return &config.Vault{}
 	}
 	return &config.Vault{
-		Connections: append([]config.Connection(nil), v.Connections...),
-		Keys:        append([]config.SSHKey(nil), v.Keys...),
+		Connections:      append([]config.Connection(nil), v.Connections...),
+		Keys:             append([]config.SSHKey(nil), v.Keys...),
+		PendingBase:      v.PendingBase,
+		PendingMutations: append([]config.PendingMutation(nil), v.PendingMutations...),
 	}
 }
 

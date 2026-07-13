@@ -27,7 +27,8 @@ sshctl host search prod-web --json       # 只返回候选，不自动选择或�
 sshctl host upsert prod-api --host 203.0.113.10 --user root --port 22 --key-file /secure/prod-api.key --verify --json
 sshctl host update prod-api --port 2222 --verify --json
 sshctl host show prod-api --json
-sshctl push
+sshctl push --only <transaction-id>
+sshctl push --all
 
 # 单机（字面 argv 或 stdin 脚本；连接默认复用）
 sshctl run <alias> --argv hostname
@@ -64,7 +65,7 @@ sshctl push
 
 首次出现的 host key 和变化后的 host key 都会被普通 run/check 拒绝。不要使用自动 `ssh-keygen -R` + `ssh-keyscan` 捷径；先通过 `inspect` 获取 `observed_fingerprint`、`known_fingerprints` 与 `classification:new|mismatch|trusted`，经可信渠道核对后，再用完全相同的指纹显式 `accept --yes`。
 
-`status` 默认检查配置的同步端点并在远端 ETag 变化时刷新；同步失败会返回 `error:sync_pull_failed`、`stage:sync_pull`，不会静默使用缓存。只有调用方明确接受陈旧数据时才使用 `sshctl --json status --offline`（或全局 `--offline`）。离线结果包含 `offline:true`、`remote_state:not_checked`、`freshness`、`cache_age_seconds`、最近 pull/push 时间和 `pending_changes`。
+`status` 默认检查配置的同步端点并在远端 ETag 变化时刷新；同步失败会返回 `error:sync_pull_failed`、`stage:sync_pull`，不会静默使用缓存。只有调用方明确接受陈旧数据时才使用 `sshctl --json status --offline`（或全局 `--offline`）。离线结果包含 `offline:true`、`remote_state:not_checked`、`freshness`、`cache_age_seconds`、最近 pull/push 时间、`pending_changes` 与不含 secret 的 `pending_mutations`（`id`、`alias`、`operation`、`created_at`）。mutation 结果返回稳定的 `transaction_id`；用 `push --only <transaction-id>` 发布单个已审查变更，其 preflight 会列出准确 alias/operation，无关变更继续 pending。仅在明确发布全部 pending change 时使用 `push --all`（裸 `push` 作为兼容路径仍表示全部发布）。
 
 `sshctl request --file` 是 Agent 的首选入口。需要远端 shell 语义时，使用 `run` 的 `script_file`、`-f` 或 stdin 脚本模式；项目不提供交互式 shell。
 

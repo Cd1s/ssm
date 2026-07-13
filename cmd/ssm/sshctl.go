@@ -54,10 +54,7 @@ func runSSHCTL(args []string) {
 		}
 		runPull()
 	case "push":
-		if len(args) != 1 {
-			sshctlUsageExit()
-		}
-		runPush()
+		runPush(args[1:])
 	case "list":
 		jsonFlag := machineJSON
 		switch len(args) {
@@ -323,6 +320,11 @@ func runSSHCTLStatus() {
 	remoteETag := cloud.CachedRemoteETag()
 	freshness := "unknown"
 	pending := false
+	pendingMutations := []pendingMutationView{}
+	if v != nil {
+		pendingMutations = pendingMutationViews(v)
+		pending = len(pendingMutations) > 0
+	}
 	if localErr == nil && remoteETag != "" {
 		if localETag == remoteETag {
 			freshness = "fresh"
@@ -345,23 +347,24 @@ func runSSHCTLStatus() {
 	}
 	if machineJSON {
 		writeMachineValue(struct {
-			OK         bool   `json:"ok"`
-			Version    string `json:"version"`
-			Hosts      int    `json:"hosts"`
-			Vault      string `json:"vault"`
-			Sync       string `json:"sync"`
-			Redirects  int    `json:"redirects"`
-			Reuse      string `json:"reuse"`
-			ReuseScope string `json:"reuse_scope"`
-			LastPull   string `json:"last_pull,omitempty"`
-			LastPush   string `json:"last_push,omitempty"`
-			LastSync   string `json:"last_sync,omitempty"`
-			Freshness  string `json:"freshness"`
-			Remote     string `json:"remote_state"`
-			Pending    bool   `json:"pending_changes"`
-			Offline    bool   `json:"offline"`
-			CacheAge   int64  `json:"cache_age_seconds,omitempty"`
-		}{OK: err == nil, Version: version, Hosts: count, Vault: vaultStatus, Sync: cloudStatus, Redirects: len(config.LoadRedirects()), Reuse: reuse, ReuseScope: "process", LastPull: settings.LastPull, LastPush: settings.LastPush, LastSync: lastSync, Freshness: freshness, Remote: remoteState, Pending: pending, Offline: offlineMode, CacheAge: cacheAge})
+			OK         bool                  `json:"ok"`
+			Version    string                `json:"version"`
+			Hosts      int                   `json:"hosts"`
+			Vault      string                `json:"vault"`
+			Sync       string                `json:"sync"`
+			Redirects  int                   `json:"redirects"`
+			Reuse      string                `json:"reuse"`
+			ReuseScope string                `json:"reuse_scope"`
+			LastPull   string                `json:"last_pull,omitempty"`
+			LastPush   string                `json:"last_push,omitempty"`
+			LastSync   string                `json:"last_sync,omitempty"`
+			Freshness  string                `json:"freshness"`
+			Remote     string                `json:"remote_state"`
+			Pending    bool                  `json:"pending_changes"`
+			Mutations  []pendingMutationView `json:"pending_mutations"`
+			Offline    bool                  `json:"offline"`
+			CacheAge   int64                 `json:"cache_age_seconds,omitempty"`
+		}{OK: err == nil, Version: version, Hosts: count, Vault: vaultStatus, Sync: cloudStatus, Redirects: len(config.LoadRedirects()), Reuse: reuse, ReuseScope: "process", LastPull: settings.LastPull, LastPush: settings.LastPush, LastSync: lastSync, Freshness: freshness, Remote: remoteState, Pending: pending, Mutations: pendingMutations, Offline: offlineMode, CacheAge: cacheAge})
 		if err != nil {
 			os.Exit(1)
 		}
@@ -392,7 +395,7 @@ func syncCacheAge(settings *config.Settings, now time.Time) (string, int64) {
 func sshctlUsage() {
 	fmt.Print(`Usage:
 	  sshctl [--json] <command> ...
-	  sshctl sync | pull | push
+	  sshctl sync | pull | push --only <transaction-id> | push --all
   sshctl list [--json]
 	  sshctl host list|show|add|update|upsert|remove ...
 	  sshctl host-key inspect <alias> [--json]

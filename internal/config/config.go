@@ -27,8 +27,26 @@ type Connection struct {
 }
 
 type Vault struct {
+	Connections      []Connection       `json:"connections"`
+	Keys             []SSHKey           `json:"keys"`
+	PendingBase      *InventorySnapshot `json:"pending_base,omitempty"`
+	PendingMutations []PendingMutation  `json:"pending_mutations,omitempty"`
+}
+
+type InventorySnapshot struct {
 	Connections []Connection `json:"connections"`
 	Keys        []SSHKey     `json:"keys"`
+}
+
+type PendingMutation struct {
+	ID         string      `json:"id"`
+	Alias      string      `json:"alias"`
+	Operation  string      `json:"operation"`
+	CreatedAt  string      `json:"created_at"`
+	Before     *Connection `json:"before,omitempty"`
+	After      *Connection `json:"after,omitempty"`
+	KeysBefore []SSHKey    `json:"keys_before"`
+	KeysAfter  []SSHKey    `json:"keys_after"`
 }
 
 type MergeConflict struct {
@@ -132,17 +150,25 @@ func Load(masterPass string) (*Vault, error) {
 }
 
 func Save(v *Vault, masterPass string) error {
-	plaintext, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	encrypted, err := vault.Encrypt(plaintext, masterPass)
+	encrypted, err := EncryptVault(v, masterPass)
 	if err != nil {
 		return err
 	}
 
 	return WritePrivateFile(Path(), encrypted)
+}
+
+func EncryptVault(v *Vault, masterPass string) ([]byte, error) {
+	plaintext, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+
+	encrypted, err := vault.Encrypt(plaintext, masterPass)
+	if err != nil {
+		return nil, err
+	}
+	return encrypted, nil
 }
 
 func MergeVaults(local, remote *Vault) *Vault {

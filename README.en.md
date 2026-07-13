@@ -27,7 +27,8 @@ sshctl host search prod-web --json       # candidates only; never auto-selects o
 sshctl host upsert prod-api --host 203.0.113.10 --user root --port 22 --key-file /secure/prod-api.key --verify --json
 sshctl host update prod-api --port 2222 --verify --json
 sshctl host show prod-api --json
-sshctl push
+sshctl push --only <transaction-id>
+sshctl push --all
 
 # Single host (literal argv or stdin script; connection reuse by default)
 sshctl run <alias> --argv hostname
@@ -64,7 +65,7 @@ sshctl push
 
 Normal run/check operations reject both first-use and changed host keys. Never use an automatic `ssh-keygen -R` plus `ssh-keyscan` shortcut. Inspect `observed_fingerprint`, `known_fingerprints`, and `classification:new|mismatch|trusted`, verify through a trusted channel, then explicitly accept the exact same fingerprint with `--yes`.
 
-`status` checks the configured sync endpoint by default and refreshes when its ETag changed. A sync failure returns `error:sync_pull_failed`, `stage:sync_pull`; cached data is never selected silently. Use `sshctl --json status --offline` (or global `--offline`) only when stale data is explicitly acceptable. Offline results include `offline:true`, `remote_state:not_checked`, `freshness`, `cache_age_seconds`, last pull/push times, and `pending_changes`.
+`status` checks the configured sync endpoint by default and refreshes when its ETag changed. A sync failure returns `error:sync_pull_failed`, `stage:sync_pull`; cached data is never selected silently. Use `sshctl --json status --offline` (or global `--offline`) only when stale data is explicitly acceptable. Offline results include `offline:true`, `remote_state:not_checked`, `freshness`, `cache_age_seconds`, last pull/push times, `pending_changes`, and non-secret `pending_mutations` (`id`, `alias`, `operation`, `created_at`). Mutation results return a stable `transaction_id`. Publish one reviewed change with `push --only <transaction-id>`; its preflight lists the exact alias/operation and unrelated changes stay pending. Use `push --all` (or the legacy bare `push`) only to deliberately publish every pending change.
 
 `sshctl request --file` is the preferred agent entry point. When remote shell semantics are necessary, use a `script_file`, `-f`, or stdin script with `run`; this project does not provide an interactive shell.
 

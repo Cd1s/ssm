@@ -213,7 +213,7 @@ Cloud (optional):
 	case "logout":
 		runLogout()
 	case "push":
-		runPush()
+		runPush(args[1:])
 	case "pull":
 		runPull()
 	case "pull-if-changed":
