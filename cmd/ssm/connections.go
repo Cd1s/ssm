@@ -305,13 +305,15 @@ func runPutWithOptions(opts putOptions) {
 	result, err := ssh.UploadPathWithOptions(c, v, opts.localPath, opts.remotePath, ssh.UploadOptions{VerifySHA256: opts.verifySHA256, Timeout: opts.timeout, ResumeVersion: opts.resumeVersion})
 	if err != nil {
 		if machineJSON {
-			code, stage, hint, bytesSent := ssh.ErrCodeTransfer, "remote_write", "retry after inspecting the transfer stage", result.BytesSent
+			var code, stage, hint string
+			bytesSent := result.BytesSent
 			var transferErr *ssh.TransferError
 			if errors.As(err, &transferErr) {
 				code, stage, hint, bytesSent = transferErr.Code, transferErr.Stage, transferErr.Hint, transferErr.BytesSent
 			} else {
 				ce := ssh.ClassifyError(err, c)
 				code, hint = ce.Code, ce.Hint
+				stage = "remote_write"
 			}
 			writeMachineValue(struct {
 				OK        bool   `json:"ok"`

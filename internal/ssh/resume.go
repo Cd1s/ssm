@@ -58,7 +58,7 @@ func uploadFileResumable(c config.Connection, v *config.Vault, localPath, remote
 		return result, transferError(classified.Code, "dial", classified.Hint, 0, classified)
 	}
 	defer releaseClient(client, false)
-	state, err := probeResumeState(client, c, partial, metadata, cleanupPattern, info.Size(), fullDigest)
+	state, err := probeResumeState(client, partial, metadata, cleanupPattern, info.Size(), fullDigest)
 	if err != nil {
 		return result, err
 	}
@@ -164,7 +164,7 @@ func resumePaths(remotePath, digest string) (partial, metadata, cleanupPattern s
 	return partial, partial + ".meta", prefix + "*"
 }
 
-func probeResumeState(client *gossh.Client, c config.Connection, partial, metadata, cleanupPattern string, size int64, digest string) (resumeState, error) {
+func probeResumeState(client *gossh.Client, partial, metadata, cleanupPattern string, size int64, digest string) (resumeState, error) {
 	session, err := client.NewSession()
 	if err != nil {
 		return resumeState{}, transferError("session_failed", "resume_probe", "retry after checking SSH session limits", 0, err)

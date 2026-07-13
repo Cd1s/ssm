@@ -86,7 +86,7 @@ func TestUploadCommandRejectsChecksumMismatchAndCleansTemp(t *testing.T) {
 	destination := filepath.Join(dir, "target")
 	payload := []byte("complete payload")
 	wrong := sha256.Sum256([]byte("different payload"))
-	cmd := exec.Command("sh", "-c", uploadCommandWithIntegrity(destination, 0600, int64(len(payload)), hex.EncodeToString(wrong[:])))
+	cmd := exec.Command("sh", "-c", uploadCommandWithIntegrity(destination, 0600, int64(len(payload)), hex.EncodeToString(wrong[:]))) //nolint:gosec // test executes a command generated from a test-owned path
 	cmd.Stdin = bytes.NewReader(payload)
 	output, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "SSM_INTEGRITY_MISMATCH") {
@@ -102,7 +102,7 @@ func TestUploadCommandRejectsChecksumMismatchAndCleansTemp(t *testing.T) {
 }
 
 func TestResumeCommandReportsMissingVerificationUtility(t *testing.T) {
-	cmd := exec.Command("sh", "-c", resumeAppendCommand("/tmp/final", "/tmp/partial", "/tmp/meta", 0600, 10, strings.Repeat("a", 64), 0, strings.Repeat("b", 64)))
+	cmd := exec.Command("sh", "-c", resumeAppendCommand("/tmp/final", "/tmp/partial", "/tmp/meta", 0600, 10, strings.Repeat("a", 64), 0, strings.Repeat("b", 64))) //nolint:gosec // test executes only fixed test paths
 	cmd.Env = []string{"PATH=/definitely-missing"}
 	output, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "SSM_RESUME_ERROR tool_missing") {
@@ -126,13 +126,13 @@ func TestResumeChecksumMismatchNeverPublishesDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 	prefix := sha256.Sum256([]byte("abc"))
-	cmd := exec.Command("sh", "-c", resumeAppendCommand(destination, partial, metadata, 0600, 6, wrongDigest, 3, hex.EncodeToString(prefix[:])))
+	cmd := exec.Command("sh", "-c", resumeAppendCommand(destination, partial, metadata, 0600, 6, wrongDigest, 3, hex.EncodeToString(prefix[:]))) //nolint:gosec // test executes a command generated from test-owned paths
 	cmd.Stdin = strings.NewReader("def")
 	output, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "SSM_RESUME_ERROR digest_mismatch") {
 		t.Fatalf("resume checksum mismatch: err=%v output=%s", err, output)
 	}
-	data, err := os.ReadFile(destination)
+	data, err := os.ReadFile(destination) //nolint:gosec // destination is inside t.TempDir
 	if err != nil || string(data) != "original" {
 		t.Fatalf("destination changed: data=%q err=%v", data, err)
 	}
