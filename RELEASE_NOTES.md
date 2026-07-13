@@ -1,5 +1,26 @@
 # Release Notes Draft
 
+## v1.4.1
+
+### Consistent non-interactive help
+
+- Add command-specific, pre-unlock help for request, push, put, get, run, map, host, host-key, doctor, status, sync, pull, and redirect, including nested host operations.
+- Keep help and version paths free of vault unlocks, network calls, and secret access while preserving one-value JSON errors for invalid invocations.
+
+### Smaller agent and code surface
+
+- Reduce the agent SSM skill to its decision rules and security boundaries; command help and the request schema are now the authoritative detail sources.
+- Remove 13 unreachable legacy helpers and the unused ring buffer. Bubble Tea, Lip Gloss, TUI entry points, interactive shells, and terminal prompts remain absent.
+
+### Security maintenance
+
+- Raise the supported toolchain to Go 1.25.12 and update the existing `x/crypto`, `x/sys`, and `x/term` modules, fixing all vulnerabilities reachable in the prior build according to `govulncheck`.
+- Add a pinned vulnerability scan to CI.
+
+### Validation
+
+- Unit, shuffled, race, vet, staticcheck, dead-code, build, vulnerability, skill/schema, and real OpenSSH matrix checks pass without skipped tests.
+
 ## v1.4.0
 
 ### Transactional inventory sync
