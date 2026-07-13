@@ -46,7 +46,7 @@ func TestInspectAndAcceptHostKeyRequiresExactFingerprint(t *testing.T) {
 
 func TestAcceptHostKeyAtomicallyReplacesMismatch(t *testing.T) {
 	if _, err := exec.LookPath("ssh-keygen"); err != nil {
-		t.Skip("ssh-keygen is required for mismatch replacement")
+		t.Fatal("ssh-keygen is required for mismatch replacement")
 	}
 	conn, _ := startRunTestSSHServer(t)
 	home := t.TempDir()

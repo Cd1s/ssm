@@ -21,7 +21,7 @@ import (
 
 func TestRunTransportsScriptOverSSHStdin(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("sh is required for the in-process SSH integration test")
+		t.Fatal("sh is required for the in-process SSH integration test")
 	}
 	conn, vault := startRunTestSSHServer(t)
 	t.Setenv("HOME", t.TempDir())
@@ -64,7 +64,7 @@ printf 'quote=<%s>\n' "single' and \"double\""
 
 func TestRunClassifiesRemoteScriptExit(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("sh is required for the in-process SSH integration test")
+		t.Fatal("sh is required for the in-process SSH integration test")
 	}
 	conn, vault := startRunTestSSHServer(t)
 	t.Setenv("HOME", t.TempDir())
@@ -90,7 +90,7 @@ func TestRunClassifiesRemoteScriptExit(t *testing.T) {
 
 func TestRunScriptPreflightRejectsSyntaxWithoutExecuting(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("sh is required for the in-process SSH integration test")
+		t.Fatal("sh is required for the in-process SSH integration test")
 	}
 	conn, vault := startRunTestSSHServer(t)
 	t.Setenv("HOME", t.TempDir())
