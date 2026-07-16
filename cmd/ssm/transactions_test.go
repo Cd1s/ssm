@@ -5,6 +5,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -12,6 +15,49 @@ import (
 	"ssm/internal/config"
 	securevault "ssm/internal/vault"
 )
+
+func TestPushCommandLoadsMasterPassFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	pass := "push-command-test-pass" //nolint:gosec // test-only vault passphrase
+	if err := config.Save(&config.Vault{}, pass); err != nil {
+		t.Fatal(err)
+	}
+	passPath := filepath.Join(config.Dir(), "master.pass")
+	if err := os.WriteFile(passPath, []byte(pass+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/sync" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: "test-token"}); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestPushCommandHelper") //nolint:gosec // executes this test binary with fixed arguments
+	cmd.Env = append(os.Environ(), "HOME="+home, "SSM_TEST_PUSH_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("push command failed: %v: %s", err, output)
+	}
+	if !strings.Contains(string(output), `"ok": true`) {
+		t.Fatalf("push output = %s", output)
+	}
+}
+
+func TestPushCommandHelper(t *testing.T) {
+	t.Helper()
+	if os.Getenv("SSM_TEST_PUSH_HELPER") != "1" {
+		return
+	}
+	runSSHCTL([]string{"--json", "push", "--all"})
+}
 
 func TestScopedPushDoesNotPublishUnrelatedPendingMutation(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())

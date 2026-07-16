@@ -155,6 +155,7 @@ func runPush(args []string) {
 		writeCLIError("invalid_arguments", "--all and --only are mutually exclusive", "choose one explicit push scope", 2)
 		os.Exit(2)
 	}
+	unlock()
 	result, err := pushTransactionScope(only)
 	if err != nil {
 		writeCLIError("sync_push_failed", err.Error(), "local vault remains pending; fix sync and retry push", 1)
