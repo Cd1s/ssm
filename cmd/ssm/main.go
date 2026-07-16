@@ -15,7 +15,7 @@ var (
 	masterPass     string
 	masterPassFile string
 	offlineMode    bool
-	version        = "1.4.1"
+	version        = "1.4.2"
 )
 
 func main() {

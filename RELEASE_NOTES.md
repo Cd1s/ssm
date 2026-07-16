@@ -1,5 +1,17 @@
 # Release Notes Draft
 
+## v1.4.2
+
+### Push unlock fix
+
+- Load the vault passphrase from the configured private file before both `ssm push` and `sshctl push` read the encrypted local vault.
+- Preserve pre-unlock validation for invalid push arguments and keep scoped/all transaction semantics unchanged.
+- Add a subprocess regression test that performs a push using only a real `master.pass` file, without pre-populating process-global credentials.
+
+### Validation
+
+- Formatting, unit tests, race tests, vet, golangci-lint, vulnerability scanning, build, and the real OpenSSH matrix pass.
+
 ## v1.4.1
 
 ### Consistent non-interactive help
