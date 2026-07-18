@@ -1,6 +1,6 @@
 # Release Notes Draft
 
-## Unreleased
+## v1.4.3
 
 ### Fast agent execution
 

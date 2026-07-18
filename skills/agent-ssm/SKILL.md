@@ -8,7 +8,7 @@ metadata:
 
 # Agent SSM
 
-Requires ssm >= 1.4.0. The CLI help and `references/request-v1.schema.json` are authoritative.
+Requires ssm >= 1.4.3. The CLI help and `references/request-v1.schema.json` are authoritative.
 
 ## Start here
 
