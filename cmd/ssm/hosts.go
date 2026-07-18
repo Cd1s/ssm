@@ -328,7 +328,7 @@ func runHostCommand(args []string) {
 		writeHostCommandError(opts.asJSON, newHostError("sync_pull_failed", "%s; retry only with --offline if stale local state is acceptable", redactError(err)))
 		os.Exit(1)
 	}
-	v, err := config.Load(masterPass)
+	v, err := loadVault()
 	if err != nil {
 		writeHostCommandError(opts.asJSON, newHostError("vault_error", "%s", redactError(err)))
 		os.Exit(1)
@@ -417,7 +417,10 @@ func refreshHostVault(offline bool) error {
 	if err != nil {
 		return err
 	}
-	_, err = cloud.PullIfChanged(cfg)
+	changed, err := cloud.PullIfChanged(cfg)
+	if changed {
+		invalidateVaultCache()
+	}
 	return err
 }
 

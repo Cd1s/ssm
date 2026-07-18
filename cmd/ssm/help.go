@@ -40,7 +40,7 @@ func sshctlCommandUsage(command string, args []string) {
 	case "get":
 		fmt.Print("Usage: sshctl get <alias> <remote> <local>\nDownloads a file or directory; local files publish atomically.\nExample: sshctl get app /var/log/app.log ./app.log\n")
 	case "run", "exec", "plan":
-		fmt.Print("Usage: sshctl ", command, " <alias> [--argv] <command> [args...]\nOptions: --json, --timeout <duration>, --no-reuse, --secret NAME=@file, -f <script>, -s, --preflight.\nPrefer --argv for literals and -f for shell semantics; one-string shell commands are compatibility-only.\nExample: sshctl ", command, " app --argv hostname\n")
+		fmt.Print("Usage: sshctl ", command, " <alias> [--argv] <command> [args...]\nOptions: --json, --timeout <duration>, --no-reuse, --secret NAME=@file, -f <script>, -s, --preflight.\nFast repeated argv mode: sshctl run <alias> --stream [--refresh 30s]; send one JSON string array per line and receive NDJSON results.\nPrefer --argv for literals and -f for shell semantics; one-string shell commands are compatibility-only.\nExample: sshctl ", command, " app --argv hostname\n")
 	case "map":
 		fmt.Print("Usage: sshctl map <alias|glob>[,more...] [-j <workers>] [--json|--plan] [--argv] <command...>\nDefaults to bounded workers; one failure does not hide other results.\nExample: sshctl map 'web-*' -j 4 --json --argv hostname\n")
 	case "host", "hosts":

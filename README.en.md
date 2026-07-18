@@ -30,16 +30,21 @@ sshctl host show prod-api --json
 sshctl push --only <transaction-id>
 sshctl push --all
 
-# Single host (literal argv or stdin script; connection reuse by default)
-sshctl run <alias> --argv hostname
-sshctl run <alias> --json hostname
+# Simple one-shot command: fastest path, no request file
+sshctl --json run <alias> --argv hostname
+sshctl --json run <alias> --argv uname -a
 sshctl plan <alias> --argv hostname       # dry-run: remote_command + risk
 sshctl run <alias> --shell bash -s <<'EOF'
 echo "any quotes fine"
 EOF
 
-# Preferred for agents: typed JSON request; local shell never reparses argv
-sshctl request --file ./request.json      # preferred: argv/script_file/secret_files paths
+# Repeated simple commands: one sync/unlock/dial; one JSON argv array per line
+sshctl run <alias> --stream
+["hostname"]
+["uname","-a"]
+
+# Dynamic argv, scripts, secrets, and mutations: typed JSON request
+sshctl request --file ./request.json      # argv/script_file/secret_files paths
 
 # Observe/accept host keys; accept is bound to the full observed fingerprint
 sshctl host-key inspect <alias> --json
@@ -72,13 +77,13 @@ Resume is regular-file-only and explicitly enabled with `--resume=v1`; existing 
 
 `status` checks the configured sync endpoint by default and refreshes when its ETag changed. A sync failure returns `error:sync_pull_failed`, `stage:sync_pull`; cached data is never selected silently. Use `sshctl --json status --offline` (or global `--offline`) only when stale data is explicitly acceptable. Offline results include `offline:true`, `remote_state:not_checked`, `freshness`, `cache_age_seconds`, last pull/push times, `pending_changes`, and non-secret `pending_mutations` (`id`, `alias`, `operation`, `created_at`). Mutation results return a stable `transaction_id`. Publish one reviewed change with `push --only <transaction-id>`; its preflight lists the exact alias/operation and unrelated changes stay pending. Use `push --all` (or the legacy bare `push`) only to deliberately publish every pending change.
 
-`sshctl request --file` is the preferred agent entry point. When remote shell semantics are necessary, use a `script_file`, `-f`, or stdin script with `run`; this project does not provide an interactive shell.
+Use `sshctl --json run <alias> --argv ...` directly for simple, fixed, reviewed literal arguments; no request file is needed. For repeated simple commands, `sshctl run <alias> --stream` reads one JSON string array per stdin line and writes one compact JSON result per stdout line. It syncs and decrypts once at startup, checks inventory again every 30 seconds by default, and stops on refresh failure instead of using stale data. Keep `sshctl request --file` for dynamic or untrusted arguments, scripts, secrets, and host mutations. The project does not provide an interactive shell.
 
 ### Credential safety boundary
 
 Passwords, private keys, and other secrets must only be referenced through permission-restricted file paths. Never put them or vault contents in JSON, command-line arguments, logs, error reports, GitHub Issues, or commits. `--password-file`, `--key-file`, `--master-pass-file`, and request `secret_files` read the referenced files; structured output never echoes their contents.
 
-Connection-layer JSON failures use `error=dial_*|host_key_mismatch|alias_not_found|...` and normally exit **255**. Do not classify from 255 alone because a remote process can also return 255. Connection reuse is process-scoped and on by default (`SSM_REUSE=0` / `--no-reuse`). Global `sshctl --json ...` also makes argument, unlock, alias, and sync failures emit exactly one JSON value.
+Connection-layer JSON failures use `error=dial_*|host_key_mismatch|alias_not_found|...` and normally exit **255**. Do not classify from 255 alone because a remote process can also return 255. Connection reuse is process-scoped and on by default (`SSM_REUSE=0` / `--no-reuse`): ordinary one-shot connections close with the process, while `run --stream` keeps that process and its SSH connection alive across commands. Global `sshctl --json ...` also makes argument, unlock, alias, and sync failures emit exactly one JSON value; stream mode explicitly uses one NDJSON result per input line.
 
 ### Stable JSON error contract
 
@@ -175,12 +180,13 @@ One target failing does **not** drop other targets’ results.
 
 | Form | Behavior | Best for |
 |------|----------|----------|
-| `sshctl run host --argv cmd arg1` | Always quote each argv, including one argument | Agent-generated literal argv |
+| `sshctl --json run host --argv cmd arg1` | Direct one-shot; always quotes every argv item | Simple, fixed, reviewed literal argv |
+| `sshctl run host --stream` | One JSON argv array per line; reuses sync, decrypt, and SSH | Repeated iterative simple commands |
 | `sshctl run host cmd arg1 arg2` | Multi-arg quoting; one string keeps legacy shell parsing | Compatibility only |
 | `sshctl run host -s <<'EOF'` | Body over SSH stdin to a fixed `sh -s` runner | Multi-line, pipes, redirects, quotes |
 | `sshctl run host --shell bash -f x.sh -- arg` | Shebang/explicit shell plus exact script args | Bash and generated scripts |
 | `sshctl run host --preflight -f x.sh` | Same remote interpreter parses with `-n` first | Prevent syntax-error side effects |
-| `sshctl request --file request.json` | argv/script args come from JSON arrays | Preferred agent interface |
+| `sshctl request --file request.json` | argv/script args come from JSON arrays | Dynamic or untrusted input without local shell ambiguity |
 | `sshctl run host --json cmd` | Structured result | Agents |
 | `sshctl plan host cmd` | Dry-run + risk | Confirm before exec |
 | `sshctl run host --secret K=@file cmd` | Secret as remote env; redacted in plan/trace | Secrets |
@@ -242,7 +248,8 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 
 If sync is already configured, put master.pass and cloud.json in /root/.config/ssm with chmod 600.
 Then run sshctl sync and verify with sshctl status and sshctl list.
-Prefer sshctl request --file <json>: put literal arguments in argv, scripts in script_file/script_args, and only paths in secret_files.
+Use sshctl --json run <alias> --argv ... directly for simple fixed commands; use sshctl run <alias> --stream for repeated simple commands.
+For dynamic or untrusted input, prefer sshctl request --file <json>: put literal arguments in argv, scripts in script_file/script_args, and only paths in secret_files.
 Use host.upsert/host.update requests with verify:true; after success publish only its returned transaction_id with push --only. Use push --all only after reviewing every pending mutation.
 For compatible CLI calls use --argv for literals and --preflight -f for generated scripts; never wrap generated bodies in bash -c.
 ```

@@ -20,11 +20,13 @@ sshctl --json status
 sshctl --json host list
 ```
 
-Use exact aliases. Never select a suggestion automatically. `--json` must produce one JSON value; classify results with `ok`, `error`, and `stage`. A remote program may exit 255, so `exit` alone does not prove SSH transport failure.
+Use exact aliases. Never select a suggestion automatically. Normal `--json` commands must produce one JSON value; explicit `run --stream` produces one NDJSON value per input line. Classify results with `ok`, `error`, and `stage`. A remote program may exit 255, so `exit` alone does not prove SSH transport failure.
 
 ## Choose the smallest safe operation
 
-- Literal command and arguments: request v1 `op:"run"` with `argv`.
+- Simple fixed/reviewed literal argv: `sshctl --json run <exact-alias> --argv <command> [args...]`; this is the fastest one-shot path and needs no request file.
+- Repeated simple argv on one exact alias: keep `sshctl run <exact-alias> --stream` open and send one JSON string array per line. Inspect every NDJSON result. It refreshes inventory every 30 seconds and must stop on refresh failure.
+- Dynamic, untrusted, or data-dependent argv: request v1 `op:"run"` with `argv`.
 - Shell syntax or a generated script: `script_file` plus optional `script_args` and `shell`.
 - Secrets: `secret_files` or credential file options; values are file paths, never secret contents.
 - Host change: typed `host.add|host.update|host.upsert|host.remove`; verify first, then publish only its `transaction_id`.
@@ -32,7 +34,7 @@ Use exact aliases. Never select a suggestion automatically. `--json` must produc
 - Fleet operation: `sshctl map` with explicit argv or scripts; inspect every result.
 - Unsure about fields or flags: run the relevant command help or read the request schema. Do not guess.
 
-Write request JSON with a file-writing API, not shell interpolation, then run:
+When the typed request path is required, write JSON with a file-writing API, not shell interpolation, then run:
 
 ```bash
 sshctl request --file ./ssm-request.json

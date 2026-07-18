@@ -181,7 +181,7 @@ func pushTransactions(only string) (bool, error) {
 }
 
 func pushTransactionScope(only string) (pushResult, error) {
-	v, err := config.Load(masterPass)
+	v, err := loadVault()
 	if err != nil {
 		return pushResult{}, err
 	}
@@ -291,15 +291,23 @@ func pullIfChanged() {
 }
 
 func refreshVaultIfChanged() error {
+	_, err := refreshVaultIfChangedResult()
+	return err
+}
+
+func refreshVaultIfChangedResult() (bool, error) {
 	if offlineMode || !config.LoadSettings().AutoSync {
-		return nil
+		return false, nil
 	}
 	cfg, err := cloud.LoadCloud()
 	if err != nil {
-		return nil
+		return false, nil
 	}
-	_, err = cloud.PullIfChanged(cfg)
-	return err
+	changed, err := cloud.PullIfChanged(cfg)
+	if changed {
+		invalidateVaultCache()
+	}
+	return changed, err
 }
 
 func runPull() {
@@ -313,6 +321,7 @@ func runPull() {
 		writeCLIError("sync_pull_failed", err.Error(), "local inventory was not replaced", 1)
 		os.Exit(1)
 	}
+	invalidateVaultCache()
 	if machineJSON {
 		writeMachineValue(struct {
 			OK     bool   `json:"ok"`

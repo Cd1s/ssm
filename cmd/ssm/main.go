@@ -15,6 +15,7 @@ var (
 	masterPass     string
 	masterPassFile string
 	offlineMode    bool
+	unlockedVault  *config.Vault
 	version        = "1.4.2"
 )
 
@@ -69,7 +70,9 @@ func main() {
 		fmt.Print(`
 Usage:
   sshctl --json status          preferred machine-readable discovery
-  sshctl request --file <json>  preferred typed agent operation
+  sshctl run <alias> --argv ... fast one-shot literal command
+  sshctl run <alias> --stream   persistent NDJSON argv stream
+  sshctl request --file <json>  typed dynamic/complex operation
   ssm host ...         host list/show/add/update/upsert/remove
   ssm list [--json]    list all connections
   ssm exec/run <name> ...   remote command (--json/--plan/--secret NAME=@file/-s/-f)
@@ -303,18 +306,22 @@ func unlock() {
 
 		if !config.Exists() {
 			masterPass = pass
-			if err := config.Save(&config.Vault{}, masterPass); err != nil {
+			unlockedVault = &config.Vault{}
+			if err := config.Save(unlockedVault, masterPass); err != nil {
+				unlockedVault = nil
 				writeCLIError("vault_error", err.Error(), "verify configuration directory permissions", 1)
 				os.Exit(1)
 			}
 			return
 		}
 
-		if _, err := config.Load(pass); err != nil {
+		v, err := config.Load(pass)
+		if err != nil {
 			writeCLIError("vault_unlock_failed", err.Error(), "verify the master pass file belongs to this encrypted vault", 1)
 			os.Exit(1)
 		}
 		masterPass = pass
+		unlockedVault = v
 		return
 	}
 
@@ -326,8 +333,9 @@ func unlock() {
 	settings := config.LoadSettings()
 	if settings.PasswordCache == "session" {
 		if cached := config.GetCachedPassword(); cached != "" {
-			if _, err := config.Load(cached); err == nil {
+			if v, err := config.Load(cached); err == nil {
 				masterPass = cached
+				unlockedVault = v
 				return
 			}
 			config.ClearPasswordCache()
@@ -336,4 +344,25 @@ func unlock() {
 
 	writeCLIError("master_pass_file_required", "vault passphrase is required", "provide --master-pass-file or SSM_MASTER_PASS_FILE; credentials are never accepted inline", 2)
 	os.Exit(2)
+}
+
+// loadVault consumes the vault already decrypted by unlock. Commands used to
+// decrypt once in unlock and immediately decrypt the same unchanged file
+// again. Consuming the snapshot avoids that duplicate Argon2 operation while
+// ensuring a later load in the same process observes any intervening save.
+func loadVault() (*config.Vault, error) {
+	if unlockedVault != nil {
+		v := unlockedVault
+		unlockedVault = nil
+		return v, nil
+	}
+	v, err := config.Load(masterPass)
+	if err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+func invalidateVaultCache() {
+	unlockedVault = nil
 }

@@ -3,9 +3,12 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"ssm/internal/config"
 )
 
 func TestMachineErrorContractHasStableFields(t *testing.T) {
@@ -152,5 +155,45 @@ func TestRedactErrorCoversSecretBearingPaths(t *testing.T) {
 	got := redactError(&os.PathError{Op: "open", Path: "/tmp/password=hunter2", Err: os.ErrNotExist})
 	if strings.Contains(got, "hunter2") {
 		t.Fatalf("redacted path still contains secret: %q", got)
+	}
+}
+
+func TestLoadVaultConsumesUnlockedSnapshotThenReadsLaterSave(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	oldPass, oldPassFile, oldVault := masterPass, masterPassFile, unlockedVault
+	t.Cleanup(func() {
+		masterPass, masterPassFile, unlockedVault = oldPass, oldPassFile, oldVault
+	})
+
+	const pass = "test-vault-pass"
+	if err := config.Save(&config.Vault{Connections: []config.Connection{{Name: "before"}}}, pass); err != nil {
+		t.Fatal(err)
+	}
+	passFile := filepath.Join(t.TempDir(), "master.pass")
+	if err := os.WriteFile(passFile, []byte(pass+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	masterPassFile = passFile
+	unlockedVault = nil
+	unlock()
+	unlocked := unlockedVault
+
+	first, err := loadVault()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != unlocked || unlockedVault != nil || len(first.Connections) != 1 || first.Connections[0].Name != "before" {
+		t.Fatalf("first vault = %+v", first)
+	}
+
+	if err := config.Save(&config.Vault{Connections: []config.Connection{{Name: "after"}}}, pass); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := loadVault()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded == first || len(reloaded.Connections) != 1 || reloaded.Connections[0].Name != "after" {
+		t.Fatalf("reloaded vault = %+v", reloaded)
 	}
 }

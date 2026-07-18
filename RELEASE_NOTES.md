@@ -1,5 +1,18 @@
 # Release Notes Draft
 
+## Unreleased
+
+### Fast agent execution
+
+- Keep one-shot literal commands on the direct `sshctl --json run <alias> --argv ...` path; typed request files remain the safer path for dynamic argv, scripts, secrets, and mutations.
+- Add `sshctl run <alias> --stream`, a headless NDJSON argv stream that syncs and decrypts once, reuses the SSH connection across commands, refreshes inventory every 30 seconds by default, and stops rather than using stale data after a refresh failure.
+- Reuse the already-validated decrypted vault for the command's first load, removing the duplicate Argon2 decrypt previously performed immediately after unlock while allowing later same-process loads to observe intervening saves.
+- Open the actual pooled SSH session directly instead of opening and closing a probe channel first. Serialize dials per destination rather than globally, allowing different fleet targets to establish SSH connections concurrently.
+
+### Validation
+
+- Add strict stream parsing/error tests and an in-process SSH regression proving that two commands use one connection and exactly two command sessions.
+
 ## v1.4.2
 
 ### Push unlock fix

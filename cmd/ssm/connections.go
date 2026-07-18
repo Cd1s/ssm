@@ -24,7 +24,7 @@ type connectionJSON struct {
 
 func runList(jsonOutput bool) {
 	pullIfChanged()
-	v, err := config.Load(masterPass)
+	v, err := loadVault()
 	if err != nil {
 		printError(err)
 		os.Exit(1)
@@ -64,7 +64,7 @@ func runList(jsonOutput bool) {
 }
 
 func runRemove(name string) {
-	v, err := config.Load(masterPass)
+	v, err := loadVault()
 	if err != nil {
 		printError(err)
 		os.Exit(1)
@@ -97,15 +97,48 @@ func runExecSpec(name string, spec remoteRunSpec) {
 		return
 	}
 	pullIfChanged()
-	v, err := config.Load(masterPass)
+	v, err := loadVault()
 	if err != nil {
 		printError(err)
 		os.Exit(1)
 	}
 
+	res := executeRunSpec(v, name, spec)
+	if res.Error == ssh.ErrCodeAliasNotFound {
+		connectionNotFound(name, v)
+	}
+	if res.Preflight == "failed" && !spec.JSON && !spec.Plan {
+		ssh.WriteRunResult(res, false)
+		os.Exit(res.Exit)
+	}
+	if spec.JSON || spec.Plan {
+		ssh.WriteRunResult(res, spec.JSON)
+		if spec.Plan {
+			os.Exit(0)
+		}
+		if !res.OK {
+			os.Exit(res.Exit)
+		}
+		os.Exit(0)
+	}
+	os.Exit(res.Exit)
+}
+
+// executeRunSpec performs one already-parsed run without syncing, decrypting,
+// printing, or exiting. The streaming fast path uses it repeatedly with the
+// same vault and process-local SSH pool.
+func executeRunSpec(v *config.Vault, name string, spec remoteRunSpec) ssh.RunResult {
 	c, resolved, ok := resolveConnection(v, name)
 	if !ok {
-		connectionNotFound(name, v)
+		return ssh.RunResult{
+			OK:      false,
+			Alias:   name,
+			Exit:    ssh.ExitConnectionFailed,
+			Error:   ssh.ErrCodeAliasNotFound,
+			Message: fmt.Sprintf("connection %q not found", name),
+			Hint:    "use sshctl host list --json and retry with an exact alias",
+			Stage:   "lookup",
+		}
 	}
 	applyRunSpecEnv(spec)
 	runOpts := ssh.RunOptions{
@@ -123,8 +156,7 @@ func runExecSpec(name string, spec remoteRunSpec) {
 		if spec.Preflight && !spec.Plan {
 			preflight := ssh.RunScriptPreflight(c, v, script, spec.NoReuse, name, resolved)
 			if !preflight.OK {
-				ssh.WriteRunResult(preflight, spec.JSON)
-				os.Exit(preflight.Exit)
+				return preflight
 			}
 		}
 		runOpts.Command = ssh.BuildScriptRunner(script)
@@ -141,22 +173,12 @@ func runExecSpec(name string, spec remoteRunSpec) {
 			res.Preflight = "passed"
 		}
 	}
-	if spec.JSON || spec.Plan {
-		ssh.WriteRunResult(res, spec.JSON)
-		if spec.Plan {
-			os.Exit(0)
-		}
-		if !res.OK {
-			os.Exit(res.Exit)
-		}
-		os.Exit(0)
-	}
-	os.Exit(res.Exit)
+	return res
 }
 
 func runMap(targetPatterns []string, spec remoteRunSpec) {
 	pullIfChanged()
-	v, err := config.Load(masterPass)
+	v, err := loadVault()
 	if err != nil {
 		printError(err)
 		os.Exit(1)
@@ -292,7 +314,7 @@ func runPutArgs(args []string) {
 
 func runPutWithOptions(opts putOptions) {
 	pullIfChanged()
-	v, err := config.Load(masterPass)
+	v, err := loadVault()
 	if err != nil {
 		printError(err)
 		os.Exit(1)
@@ -346,7 +368,7 @@ func runPutWithOptions(opts putOptions) {
 
 func runGet(name, remotePath, localPath string) {
 	pullIfChanged()
-	v, err := config.Load(masterPass)
+	v, err := loadVault()
 	if err != nil {
 		printError(err)
 		os.Exit(1)
@@ -378,7 +400,7 @@ func runGet(name, remotePath, localPath string) {
 
 func runCheck(name string, asJSON bool) {
 	pullIfChanged()
-	v, err := config.Load(masterPass)
+	v, err := loadVault()
 	if err != nil {
 		printError(err)
 		os.Exit(1)
@@ -401,7 +423,7 @@ func runCheck(name string, asJSON bool) {
 
 func runDoctor(alias string, deep, asJSON bool) {
 	pullIfChanged()
-	v, err := config.Load(masterPass)
+	v, err := loadVault()
 	if err != nil {
 		printError(err)
 		os.Exit(1)
@@ -551,7 +573,7 @@ func runImportJSON(args []string) {
 		os.Exit(1)
 	}
 
-	current, err := config.Load(masterPass)
+	current, err := loadVault()
 	if err != nil {
 		printError(err)
 		os.Exit(1)

@@ -30,16 +30,21 @@ sshctl host show prod-api --json
 sshctl push --only <transaction-id>
 sshctl push --all
 
-# 单机（字面 argv 或 stdin 脚本；连接默认复用）
-sshctl run <alias> --argv hostname
-sshctl run <alias> --json hostname
+# 单条简单命令：最快路径，不创建 request 文件
+sshctl --json run <alias> --argv hostname
+sshctl --json run <alias> --argv uname -a
 sshctl plan <alias> --argv hostname      # 干跑：remote_command + risk，不连机
 sshctl run <alias> --shell bash -s <<'EOF'
 echo "any quotes fine"
 EOF
 
-# Agent 首选：类型化 JSON request，不让本地 shell 重解析 argv
-sshctl request --file ./request.json     # 首选：argv/script_file/secret_files 仅放路径
+# 连续简单命令：一次同步/解密/建连，每行输入一个 JSON argv 数组
+sshctl run <alias> --stream
+["hostname"]
+["uname","-a"]
+
+# 动态参数、脚本、secret 和变更：类型化 JSON request
+sshctl request --file ./request.json     # argv/script_file/secret_files 仅放路径
 
 # 观察/接受 host key；accept 必须绑定刚观察到的完整指纹
 sshctl host-key inspect <alias> --json
@@ -72,13 +77,13 @@ resume 仅支持 regular file，且必须用 `--resume=v1` 显式启用；未提
 
 `status` 默认检查配置的同步端点并在远端 ETag 变化时刷新；同步失败会返回 `error:sync_pull_failed`、`stage:sync_pull`，不会静默使用缓存。只有调用方明确接受陈旧数据时才使用 `sshctl --json status --offline`（或全局 `--offline`）。离线结果包含 `offline:true`、`remote_state:not_checked`、`freshness`、`cache_age_seconds`、最近 pull/push 时间、`pending_changes` 与不含 secret 的 `pending_mutations`（`id`、`alias`、`operation`、`created_at`）。mutation 结果返回稳定的 `transaction_id`；用 `push --only <transaction-id>` 发布单个已审查变更，其 preflight 会列出准确 alias/operation，无关变更继续 pending。仅在明确发布全部 pending change 时使用 `push --all`（裸 `push` 作为兼容路径仍表示全部发布）。
 
-`sshctl request --file` 是 Agent 的首选入口。需要远端 shell 语义时，使用 `run` 的 `script_file`、`-f` 或 stdin 脚本模式；项目不提供交互式 shell。
+简单、固定、已审查的字面参数直接使用 `sshctl --json run <alias> --argv ...`，无需创建 request 文件。连续的简单命令可使用 `sshctl run <alias> --stream`：stdin 每行是一个 JSON 字符串数组，stdout 每行是一个紧凑 JSON 结果；进程启动时同步并解密一次，默认每 30 秒重新检查 inventory，刷新失败立即停止而不会使用陈旧数据。需要动态/不可信参数、脚本、secret 或 host 变更时，仍使用 `sshctl request --file`。项目不提供交互式 shell。
 
 ### 凭据安全边界
 
 密码、私钥和其他 secret 只能通过受限权限的文件路径引用。绝不要把它们或 vault 内容写入 JSON、命令行参数、日志、错误报告、GitHub Issue 或提交。`--password-file`、`--key-file`、`--master-pass-file` 与 request 的 `secret_files` 只读取路径指向的文件；结构化输出不会回显内容。
 
-连接层失败的 JSON `error` 为 `dial_timeout|host_key_mismatch|alias_not_found|...`，通常退出码是 **255**。不要只凭 255 分类，因为远端程序本身也可能返回 255。默认 **连接复用**，作用域是当前 `sshctl` 进程（`SSM_REUSE=0` / `--no-reuse` 关闭）。全局 `sshctl --json ...` 会让参数、解锁、alias 和同步错误也只输出一个 JSON 值。
+连接层失败的 JSON `error` 为 `dial_timeout|host_key_mismatch|alias_not_found|...`，通常退出码是 **255**。不要只凭 255 分类，因为远端程序本身也可能返回 255。默认 **连接复用**，作用域是当前 `sshctl` 进程（`SSM_REUSE=0` / `--no-reuse` 关闭）；普通 one-shot 进程结束时连接随之关闭，`run --stream` 让同一进程跨多条命令持续复用。全局 `sshctl --json ...` 会让参数、解锁、alias 和同步错误也只输出一个 JSON 值；stream 模式显式使用 NDJSON，一行输入对应一行输出。
 
 ### 稳定 JSON 错误契约
 
@@ -176,12 +181,13 @@ Host request 使用 `op: host.upsert|host.update|...` 与嵌套 `host` 字段，
 
 | 写法 | 行为 | 适用 |
 |------|------|------|
-| `sshctl run host --argv cmd arg1` | 始终逐参数 shell 转义，单参数也不例外 | agent 生成的字面 argv |
+| `sshctl --json run host --argv cmd arg1` | 单次进程直跑；始终逐参数 shell 转义 | 简单、固定、已审查的字面 argv |
+| `sshctl run host --stream` | 每行一个 JSON argv 数组；复用同步、解密和 SSH 连接 | 连续、迭代式简单命令 |
 | `sshctl run host cmd arg1 arg2` | 多参数自动逐项转义；单字符串保留旧 shell parsing | 仅兼容旧调用 |
 | `sshctl run host -s <<'EOF'` | 正文从 SSH stdin 送入固定 `sh -s` runner | 多行、管道、重定向、任意引号 |
 | `sshctl run host --shell bash -f x.sh -- arg` | shebang/显式 shell + 精确脚本参数 | Bash 脚本、生成脚本 |
 | `sshctl run host --preflight -f x.sh` | 远端同解释器 `-n` 后再执行 | 阻止语法错误产生副作用 |
-| `sshctl request --file request.json` | argv/脚本参数来自 JSON 数组 | agent 首选，无本地 shell 引号歧义 |
+| `sshctl request --file request.json` | argv/脚本参数来自 JSON 数组 | 动态或不可信输入，无本地 shell 引号歧义 |
 | `sshctl run host --json cmd` | 结构化结果 | agent 解析 |
 | `sshctl plan host cmd` | 干跑 + risk | 确认再执行 |
 | `sshctl run host --secret K=@file cmd` | 密钥作远端 env，trace 脱敏 | 密钥不进 argv 展示 |
@@ -243,7 +249,8 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 
 如果已有同步配置，把 master.pass 和 cloud.json 放到 /root/.config/ssm，并执行 chmod 600。
 然后执行 sshctl sync，用 sshctl status 和 sshctl list 验证。
-优先使用 sshctl request --file <json>：字面参数放 argv 数组，脚本使用 script_file/script_args，secret_files 只放路径。
+简单固定命令直接使用 sshctl --json run <alias> --argv ...；连续简单命令使用 sshctl run <alias> --stream。
+动态或不可信参数使用 sshctl request --file <json>：字面参数放 argv 数组，脚本使用 script_file/script_args，secret_files 只放路径。
 新增/修改服务器用 host.upsert/host.update request，保持 verify:true；成功后只用 push --only 发布返回的 transaction_id，审查全部 pending mutation 后才可 push --all。
 兼容 CLI 中字面参数用 --argv，复杂脚本用 --preflight -f；不要把生成脚本塞进 bash -c。
 ```

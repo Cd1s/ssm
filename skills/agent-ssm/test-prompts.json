@@ -6,7 +6,7 @@
       "Runs sshctl status or sync before operating when appropriate",
       "Uses sshctl list with a safe filter to find candidate aliases",
       "Does not guess if multiple aliases match",
-      "Uses a version 1 sshctl request with an argv array only after an exact alias is known",
+      "Uses sshctl --json run with --argv after an exact alias is known; no request file is needed for this fixed simple command",
       "Does not print vault contents or secrets"
     ]
   },
@@ -41,6 +41,17 @@
       "Does not print the token or script secret values",
       "Classifies script_syntax_error, interpreter_not_found, and remote_script_failed separately",
       "Uses captured JSON stderr and exit status for triage"
+    ]
+  },
+  {
+    "name": "repeated-simple-commands-fast-path",
+    "prompt": "On exact alias app-prod, run hostname, uname -a, and df -h as three separate read-only checks with the lowest connection overhead.",
+    "expected_behavior": [
+      "Uses one sshctl run app-prod --stream process",
+      "Sends one JSON argv array per input line without shell interpolation",
+      "Inspects each NDJSON result using ok, error, stage, and exit",
+      "Does not create three request files or start three sshctl processes",
+      "Stops if stream inventory refresh fails"
     ]
   },
   {

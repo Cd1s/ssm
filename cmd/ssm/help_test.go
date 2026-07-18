@@ -29,6 +29,13 @@ func TestSSHCTLHelpFormsAndSubcommand(t *testing.T) {
 	}
 }
 
+func TestRunHelpDocumentsFastStream(t *testing.T) {
+	out := captureHelpOutput(t, func() { runSSHCTL([]string{"run", "--help"}) })
+	if !strings.Contains(out, "--stream") || !strings.Contains(out, "JSON string array") {
+		t.Fatalf("run help does not document stream mode: %q", out)
+	}
+}
+
 func captureHelpOutput(t *testing.T, fn func()) string {
 	t.Helper()
 	read, write, err := os.Pipe()

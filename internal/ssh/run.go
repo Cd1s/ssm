@@ -239,15 +239,18 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 	}
 
 	start := time.Now()
-	client, err := dialSSHOpts(c, v, opts.NoReuse)
+	client, session, acquireStage, err := acquireSSHSession(c, v, opts.NoReuse)
 	if err != nil {
 		ce := ClassifyError(err, c)
 		res.OK = false
 		res.Exit = ExitConnectionFailed
 		res.Error = ce.Code
+		if acquireStage == "session" && res.Error == ErrCodeInternal {
+			res.Error = ErrCodeSession
+		}
 		res.Message = ce.Error()
 		res.Hint = ce.Hint
-		res.Stage = "dial"
+		res.Stage = acquireStage
 		res.LatencyMS = time.Since(start).Milliseconds()
 		if !opts.Capture {
 			PrintAgentError(err, c)
@@ -255,25 +258,6 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 		return res
 	}
 	defer releaseClient(client, opts.NoReuse)
-
-	session, err := client.NewSession()
-	if err != nil {
-		ce := ClassifyError(err, c)
-		res.OK = false
-		res.Exit = ExitConnectionFailed
-		res.Error = ce.Code
-		if res.Error == ErrCodeInternal {
-			res.Error = ErrCodeSession
-		}
-		res.Hint = ce.Hint
-		res.Message = ce.Error()
-		res.Stage = "session"
-		res.LatencyMS = time.Since(start).Milliseconds()
-		if !opts.Capture {
-			PrintAgentError(err, c)
-		}
-		return res
-	}
 	defer session.Close()
 
 	var stdoutBuf, stderrBuf bytes.Buffer

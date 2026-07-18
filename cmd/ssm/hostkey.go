@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 
-	"ssm/internal/config"
 	"ssm/internal/ssh"
 )
 
@@ -26,7 +25,7 @@ func runHostKeyCommand(args []string) {
 	}
 	machineJSON = machineJSON || opts.asJSON
 	pullIfChanged()
-	v, err := config.Load(masterPass)
+	v, err := loadVault()
 	if err != nil {
 		writeCLIError("vault_error", err.Error(), "unlock the vault and retry", 1)
 		os.Exit(1)

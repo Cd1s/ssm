@@ -10,7 +10,7 @@ import (
 )
 
 func runKeysList() {
-	v, err := config.Load(masterPass)
+	v, err := loadVault()
 	if err != nil {
 		printError(err)
 		os.Exit(1)
@@ -28,7 +28,7 @@ func runKeysList() {
 }
 
 func runKeysRemove(name string) {
-	v, err := config.Load(masterPass)
+	v, err := loadVault()
 	if err != nil {
 		printError(err)
 		os.Exit(1)

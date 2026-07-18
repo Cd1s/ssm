@@ -187,6 +187,13 @@ func runSSHCTL(args []string) {
 }
 
 func runSSHCTLRun(alias string, cmdArgs []string) {
+	if streamOpts, stream, err := parseRunStreamArgs(cmdArgs); stream {
+		if err != nil {
+			writeCLIError("invalid_arguments", err.Error(), "use sshctl run <alias> --stream [--refresh 30s]", 2)
+			os.Exit(2)
+		}
+		exitRunArgvStream(alias, streamOpts)
+	}
 	spec, err := parseRemoteRunArgs(cmdArgs)
 	if err != nil {
 		if err.Error() == "help" {
@@ -286,7 +293,7 @@ func runSSHCTLDoctor(args []string) {
 
 func runSSHCTLList() {
 	pullIfChanged()
-	v, err := config.Load(masterPass)
+	v, err := loadVault()
 	if err != nil {
 		printError(err)
 		os.Exit(1)
@@ -303,7 +310,7 @@ func runSSHCTLList() {
 func runSSHCTLStatus() {
 	pullIfChanged()
 	count := 0
-	v, err := config.Load(masterPass)
+	v, err := loadVault()
 	if err == nil {
 		count = len(v.Connections)
 	}
@@ -397,7 +404,7 @@ func syncCacheAge(settings *config.Settings, now time.Time) (string, int64) {
 
 func sshctlUsage() {
 	fmt.Print(`Usage:
-	  # Preferred agent entry points (strict single-value JSON)
+	  # Agent discovery and typed operations
 	  sshctl --json status
 	  sshctl --json host list
 	  sshctl request --file <request.json>  # argv, script_file, secret_files paths
@@ -414,7 +421,8 @@ func sshctlUsage() {
 	  sshctl request [--file <request.json>|-]
 
   # Single host agent-safe forms
-  sshctl run <alias> --json <command...>
+  sshctl --json run <alias> --argv <command...>  # fastest one-shot literal argv
+  sshctl run <alias> --stream [--refresh 30s]    # JSON argv lines; NDJSON results
   sshctl run <alias> --plan <command...>     # dry-run: show remote_command + risk
   sshctl plan <alias> <command...>          # same as run --plan
   sshctl run <alias> --secret NAME=@file ...

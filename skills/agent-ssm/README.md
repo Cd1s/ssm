@@ -21,7 +21,8 @@ Use this skill when an agent needs to:
 - Sync servers only store opaque encrypted vault blobs.
 - Agents must use exact aliases instead of guessing hostnames.
 - Single-host changes use typed `sshctl request` operations, verify candidates, and return scoped transaction IDs.
-- Generated argv is carried as a JSON array; scripts use file paths, stdin transport, and syntax preflight.
+- Fixed literal argv can use the direct one-shot path; repeated literal argv can keep a headless stream and SSH connection open.
+- Dynamic argv is carried as a typed JSON array; scripts use file paths, stdin transport, and syntax preflight.
 - Bulk import has no destructive default and full replacement requires `--replace --yes`.
 - Secrets such as `master.pass`, private keys, passwords, tokens, and decrypted vault contents must never be printed.
 
@@ -66,10 +67,12 @@ For pi-agent local installs, the skill directory is commonly:
 sshctl --json status
 sshctl sync
 sshctl --json host list
+sshctl --json run <exact-alias> --argv hostname
+sshctl run <exact-alias> --stream
 sshctl request --file ./ssm-request.json
 ```
 
-Use request schema version 1 for run, put, and host operations. Add/update requests default to candidate verification; publish the returned transaction with `push --only <transaction-id>`. Use push-all only after reviewing every pending mutation. Detailed request and legacy bulk-import guidance is in `SKILL.md` and `references/import-json.md`.
+Use direct `run --argv` for a simple fixed one-shot, `run --stream` for repeated simple commands, and request schema version 1 for dynamic argv, scripts, put, and host operations. Add/update requests default to candidate verification; publish the returned transaction with `push --only <transaction-id>`. Use push-all only after reviewing every pending mutation. Detailed request and legacy bulk-import guidance is in `SKILL.md` and `references/import-json.md`.
 
 ## Safety boundaries
 

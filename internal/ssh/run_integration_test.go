@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -113,7 +114,49 @@ func TestRunScriptPreflightRejectsSyntaxWithoutExecuting(t *testing.T) {
 	}
 }
 
+func TestRunReusesConnectionWithoutProbeSession(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Fatal("sh is required for the in-process SSH integration test")
+	}
+	ClosePool()
+	t.Cleanup(ClosePool)
+	conn, vault, stats := startTrackedRunTestSSHServer(t)
+	t.Setenv("HOME", t.TempDir())
+	trustRunTestHost(t, conn)
+	stats.connections.Store(0)
+	stats.sessions.Store(0)
+
+	for _, command := range []string{"printf first", "printf second"} {
+		res := Run(conn, vault, RunOptions{
+			Command:        command,
+			Capture:        true,
+			RequestedAlias: conn.Name,
+			Mode:           "argv",
+		})
+		if !res.OK {
+			t.Fatalf("run failed: %+v", res)
+		}
+	}
+	if got := stats.connections.Load(); got != 1 {
+		t.Fatalf("SSH connections = %d, want 1", got)
+	}
+	if got := stats.sessions.Load(); got != 2 {
+		t.Fatalf("SSH sessions = %d, want exactly the two command sessions", got)
+	}
+}
+
+type runTestServerStats struct {
+	connections atomic.Int64
+	sessions    atomic.Int64
+}
+
 func startRunTestSSHServer(t *testing.T) (config.Connection, *config.Vault) {
+	t.Helper()
+	conn, vault, _ := startTrackedRunTestSSHServer(t)
+	return conn, vault
+}
+
+func startTrackedRunTestSSHServer(t *testing.T) (config.Connection, *config.Vault, *runTestServerStats) {
 	t.Helper()
 	_, hostPrivate, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -146,7 +189,8 @@ func startRunTestSSHServer(t *testing.T) (config.Connection, *config.Vault) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
-	go serveRunTestSSH(listener, serverConfig)
+	stats := &runTestServerStats{}
+	go serveRunTestSSH(listener, serverConfig, stats)
 
 	_, portText, err := net.SplitHostPort(listener.Addr().String())
 	if err != nil {
@@ -162,7 +206,7 @@ func startRunTestSSHServer(t *testing.T) (config.Connection, *config.Vault) {
 	}
 	vault := &config.Vault{Keys: []config.SSHKey{{Name: "integration", PrivateKey: string(pem.EncodeToMemory(block))}}}
 	conn := config.Connection{Name: "integration", Host: "127.0.0.1", Port: port, User: "test", KeyName: "integration"}
-	return conn, vault
+	return conn, vault, stats
 }
 
 func trustRunTestHost(t *testing.T, connection config.Connection) {
@@ -176,7 +220,7 @@ func trustRunTestHost(t *testing.T, connection config.Connection) {
 	}
 }
 
-func serveRunTestSSH(listener net.Listener, cfg *gossh.ServerConfig) {
+func serveRunTestSSH(listener net.Listener, cfg *gossh.ServerConfig, stats *runTestServerStats) {
 	for {
 		raw, err := listener.Accept()
 		if err != nil {
@@ -188,6 +232,7 @@ func serveRunTestSSH(listener net.Listener, cfg *gossh.ServerConfig) {
 				_ = raw.Close()
 				return
 			}
+			stats.connections.Add(1)
 			defer func() { _ = serverConn.Close() }()
 			go gossh.DiscardRequests(requests)
 			for newChannel := range channels {
@@ -199,6 +244,7 @@ func serveRunTestSSH(listener net.Listener, cfg *gossh.ServerConfig) {
 				if err != nil {
 					continue
 				}
+				stats.sessions.Add(1)
 				go serveRunTestSession(channel, channelRequests)
 			}
 		}()
