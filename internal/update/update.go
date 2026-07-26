@@ -147,8 +147,12 @@ func DownloadVersion(version string, verbose bool) error {
 }
 
 func assetName() string {
-	name := fmt.Sprintf("ssm-%s-%s", runtime.GOOS, runtime.GOARCH)
-	if runtime.GOOS == "windows" {
+	return assetNameFor(runtime.GOOS, runtime.GOARCH)
+}
+
+func assetNameFor(goos, goarch string) string {
+	name := fmt.Sprintf("ssm-%s-%s", goos, goarch)
+	if goos == "windows" {
 		name += ".exe"
 	}
 	return name

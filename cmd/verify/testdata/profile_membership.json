@@ -1,0 +1,59 @@
+[
+  {
+    "name": "list",
+    "checks": []
+  },
+  {
+    "name": "fast",
+    "checks": [
+      "format",
+      "vet",
+      "unit"
+    ]
+  },
+  {
+    "name": "ci",
+    "checks": [
+      "format",
+      "lint",
+      "vet",
+      "vulnerability",
+      "build",
+      "unit",
+      "race",
+      "agent-prompts-json",
+      "request-schema-json",
+      "ssh-matrix-shell-syntax",
+      "ssh-matrix"
+    ]
+  },
+  {
+    "name": "release",
+    "checks": [
+      "format",
+      "lint",
+      "vet",
+      "vulnerability",
+      "build",
+      "unit",
+      "race",
+      "agent-prompts-json",
+      "request-schema-json",
+      "ssh-matrix-shell-syntax",
+      "ssh-matrix",
+      "source-version",
+      "asset-linux-amd64",
+      "asset-linux-arm64",
+      "asset-darwin-amd64",
+      "asset-darwin-arm64",
+      "asset-windows-amd64",
+      "asset-windows-arm64",
+      "updater-selection",
+      "release-notes",
+      "release-checksums",
+      "checksum-failure-paths",
+      "migration-extension",
+      "provenance-extension"
+    ]
+  }
+]

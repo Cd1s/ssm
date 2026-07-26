@@ -88,6 +88,27 @@ func TestChecksumForAsset(t *testing.T) {
 	}
 }
 
+func TestAssetNameForSupportedPlatforms(t *testing.T) {
+	for _, test := range []struct {
+		goos   string
+		goarch string
+		want   string
+	}{
+		{goos: "linux", goarch: "amd64", want: "ssm-linux-amd64"},
+		{goos: "linux", goarch: "arm64", want: "ssm-linux-arm64"},
+		{goos: "darwin", goarch: "amd64", want: "ssm-darwin-amd64"},
+		{goos: "darwin", goarch: "arm64", want: "ssm-darwin-arm64"},
+		{goos: "windows", goarch: "amd64", want: "ssm-windows-amd64.exe"},
+		{goos: "windows", goarch: "arm64", want: "ssm-windows-arm64.exe"},
+	} {
+		t.Run(test.goos+"-"+test.goarch, func(t *testing.T) {
+			if got := assetNameFor(test.goos, test.goarch); got != test.want {
+				t.Fatalf("assetNameFor(%q, %q) = %q, want %q", test.goos, test.goarch, got, test.want)
+			}
+		})
+	}
+}
+
 func TestChecksumForAssetRequiresMatchingAsset(t *testing.T) {
 	_, err := checksumForAsset([]byte(strings.Repeat("a", sha256.Size*2)+"  other\n"), "ssm-linux-amd64")
 	if err == nil {

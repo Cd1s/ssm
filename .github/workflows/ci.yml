@@ -7,6 +7,9 @@ on:
   pull_request:
     branches: [agent-headless-sync, dev, main]
 
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -19,49 +22,35 @@ jobs:
         with:
           go-version: "1.25.12"
 
-      - name: Format check
-        run: test -z "$(gofmt -l .)"
-
-      - name: Lint
-        if: github.event_name != 'workflow_dispatch'
-        uses: golangci/golangci-lint-action@v9
-        with:
-          version: v2.11.4
-          only-new-issues: true
-
-      - name: Lint (manual, changes since v1.2.0)
-        if: github.event_name == 'workflow_dispatch'
-        uses: golangci/golangci-lint-action@v9
-        with:
-          version: v2.11.4
-          args: --new-from-rev=v1.2.0
-
-      - name: Vet
-        run: go vet ./...
-
-      - name: Vulnerability scan
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
-
-      - name: Build
-        run: go build ./cmd/ssm
-
-      - name: Test
-        run: go test ./...
-
-      - name: Race test
-        run: go test -race ./...
-
-      - name: Validate agent artifacts
+      - name: Install workflow prerequisites
         run: |
-          jq empty skills/agent-ssm/test-prompts.json
-          jq empty skills/agent-ssm/references/request-v1.schema.json
-          bash -n scripts/ssh_matrix_test.sh
-
-      - name: Prepare SSH server
-        run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y openssh-server
+          sudo apt-get install -y jq openssh-server
           sudo mkdir -p /run/sshd
 
-      - name: SSH matrix
-        run: scripts/ssh_matrix_test.sh
+      - name: Install official golangci-lint prebuilt
+        env:
+          GOLANGCI_LINT_VERSION: "2.11.4"
+        run: |
+          set -euo pipefail
+          archive="golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64.tar.gz"
+          release="https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_LINT_VERSION}"
+          curl -sSfL "$release/$archive" -o "$RUNNER_TEMP/$archive"
+          curl -sSfL "$release/golangci-lint-${GOLANGCI_LINT_VERSION}-checksums.txt" \
+            -o "$RUNNER_TEMP/golangci-lint-checksums.txt"
+          grep "  $archive\$" "$RUNNER_TEMP/golangci-lint-checksums.txt" \
+            > "$RUNNER_TEMP/golangci-lint-selected-checksum.txt"
+          (
+            cd "$RUNNER_TEMP"
+            sha256sum -c golangci-lint-selected-checksum.txt
+          )
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          mkdir -p "$RUNNER_TEMP/bin"
+          install -m 0755 \
+            "$RUNNER_TEMP/golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64/golangci-lint" \
+            "$RUNNER_TEMP/bin/golangci-lint"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Verify CI profile
+        run: go run ./cmd/verify ci

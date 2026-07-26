@@ -17,4 +17,5 @@ fmt:
 lint:
 	golangci-lint run ./...
 
-check: fmt lint build
+check:
+	go run ./cmd/verify ci

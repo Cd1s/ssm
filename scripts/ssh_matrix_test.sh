@@ -2,14 +2,14 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-BIN="$ROOT/ssm-it"
 TMP=$(mktemp -d)
+BIN="$TMP/ssm-it"
 
 cleanup() {
   if [ -f "$TMP/sshd.pid" ]; then
     kill "$(cat "$TMP/sshd.pid")" 2>/dev/null || true
   fi
-  rm -rf "$TMP" "$BIN"
+  rm -rf "$TMP"
 }
 trap cleanup EXIT
 
@@ -33,7 +33,7 @@ if [ -z "$SSHD" ]; then
   exit 2
 fi
 
-go build -o "$BIN" ./cmd/ssm
+go build -buildvcs=false -o "$BIN" ./cmd/ssm
 
 ssh-keygen -q -t ed25519 -N '' -f "$TMP/client_key"
 ssh-keygen -q -t ed25519 -N '' -f "$TMP/host_key"
