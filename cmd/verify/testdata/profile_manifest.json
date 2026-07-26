@@ -1,0 +1,1021 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "name": "list",
+      "purpose": "Print this deterministic machine-reviewable manifest.",
+      "equivalence": "manifest_only",
+      "prerequisites": [],
+      "checks": []
+    },
+    {
+      "name": "fast",
+      "purpose": "Convenience-only developer feedback; not merge- or release-equivalent.",
+      "equivalence": "convenience_only",
+      "prerequisites": [
+        {
+          "kind": "tool",
+          "name": "git",
+          "version": "any"
+        }
+      ],
+      "checks": [
+        {
+          "id": "format",
+          "description": "Require gofmt-clean source without rewriting files.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "{goroot}/bin/gofmt{exe}",
+              "args": [
+                "-l",
+                "."
+              ],
+              "expect": "stdout_empty"
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "gofmt",
+              "version": "go1.25.12"
+            }
+          ]
+        },
+        {
+          "id": "vet",
+          "description": "Run Go vet across all packages.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "go",
+              "args": [
+                "vet",
+                "./..."
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            }
+          ]
+        },
+        {
+          "id": "unit",
+          "description": "Run the complete Go unit and integration test suite.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "go",
+              "args": [
+                "test",
+                "./..."
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ci",
+      "purpose": "The complete non-publishing merge verification profile used by Make and GitHub CI.",
+      "equivalence": "merge",
+      "prerequisites": [
+        {
+          "kind": "tool",
+          "name": "git",
+          "version": "any"
+        }
+      ],
+      "checks": [
+        {
+          "id": "format",
+          "description": "Require gofmt-clean source without rewriting files.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "{goroot}/bin/gofmt{exe}",
+              "args": [
+                "-l",
+                "."
+              ],
+              "expect": "stdout_empty"
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "gofmt",
+              "version": "go1.25.12"
+            }
+          ]
+        },
+        {
+          "id": "lint",
+          "description": "Run the reviewed golangci-lint baseline.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "golangci-lint",
+              "args": [
+                "run",
+                "--new-from-rev=v1.2.0"
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "golangci-lint",
+              "version": "2.11.4"
+            }
+          ]
+        },
+        {
+          "id": "vet",
+          "description": "Run Go vet across all packages.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "go",
+              "args": [
+                "vet",
+                "./..."
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            }
+          ]
+        },
+        {
+          "id": "vulnerability",
+          "description": "Run govulncheck v1.6.0 across all packages.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "go",
+              "args": [
+                "run",
+                "golang.org/x/vuln/cmd/govulncheck@v1.6.0",
+                "./..."
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "govulncheck-module",
+              "version": "network-or-module-cache"
+            }
+          ]
+        },
+        {
+          "id": "build",
+          "description": "Build ssm into a profile-owned temporary directory.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "go",
+              "args": [
+                "build",
+                "-buildvcs=false",
+                "-o",
+                "{temp}/ssm{exe}",
+                "./cmd/ssm"
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            }
+          ]
+        },
+        {
+          "id": "unit",
+          "description": "Run the complete Go unit and integration test suite.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "go",
+              "args": [
+                "test",
+                "./..."
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            }
+          ]
+        },
+        {
+          "id": "race",
+          "description": "Run the complete Go test suite with the race detector.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "go",
+              "args": [
+                "test",
+                "-race",
+                "./..."
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            }
+          ]
+        },
+        {
+          "id": "agent-prompts-json",
+          "description": "Validate the agent prompt artifact as JSON.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "jq",
+              "args": [
+                "empty",
+                "skills/agent-ssm/test-prompts.json"
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "jq",
+              "version": "any"
+            }
+          ]
+        },
+        {
+          "id": "request-schema-json",
+          "description": "Validate the request-v1 schema artifact as JSON.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "jq",
+              "args": [
+                "empty",
+                "skills/agent-ssm/references/request-v1.schema.json"
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "jq",
+              "version": "any"
+            }
+          ]
+        },
+        {
+          "id": "ssh-matrix-shell-syntax",
+          "description": "Parse the live SSH matrix script without executing it.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "bash",
+              "args": [
+                "-n",
+                "scripts/ssh_matrix_test.sh"
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "bash",
+              "version": "any"
+            }
+          ]
+        },
+        {
+          "id": "ssh-matrix",
+          "description": "Run the existing live OpenSSH behavior matrix when its Linux prerequisites are available.",
+          "requirement": "conditional",
+          "required_contexts": [
+            "github_actions_linux"
+          ],
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "bash",
+              "args": [
+                "scripts/ssh_matrix_test.sh"
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "platform",
+              "name": "linux",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "bash",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "ssh",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "ssh-keygen",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "sshd",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "script",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "jq",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "sha256sum",
+              "version": "any"
+            },
+            {
+              "kind": "system_path",
+              "name": "/run/sshd",
+              "version": "directory"
+            },
+            {
+              "kind": "system_path",
+              "name": "/usr/sbin/sshd",
+              "version": "executable"
+            },
+            {
+              "kind": "system_path",
+              "name": "/usr/lib/openssh/sftp-server",
+              "version": "executable"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "release",
+      "purpose": "Ticket #18 non-publishing release preflight; this is not a claim of initial-v2 release readiness.",
+      "equivalence": "ticket_18_release_preflight",
+      "prerequisites": [
+        {
+          "kind": "tool",
+          "name": "git",
+          "version": "any"
+        }
+      ],
+      "checks": [
+        {
+          "id": "format",
+          "description": "Require gofmt-clean source without rewriting files.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "{goroot}/bin/gofmt{exe}",
+              "args": [
+                "-l",
+                "."
+              ],
+              "expect": "stdout_empty"
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "gofmt",
+              "version": "go1.25.12"
+            }
+          ]
+        },
+        {
+          "id": "lint",
+          "description": "Run the reviewed golangci-lint baseline.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "golangci-lint",
+              "args": [
+                "run",
+                "--new-from-rev=v1.2.0"
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "golangci-lint",
+              "version": "2.11.4"
+            }
+          ]
+        },
+        {
+          "id": "vet",
+          "description": "Run Go vet across all packages.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "go",
+              "args": [
+                "vet",
+                "./..."
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            }
+          ]
+        },
+        {
+          "id": "vulnerability",
+          "description": "Run govulncheck v1.6.0 across all packages.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "go",
+              "args": [
+                "run",
+                "golang.org/x/vuln/cmd/govulncheck@v1.6.0",
+                "./..."
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "govulncheck-module",
+              "version": "network-or-module-cache"
+            }
+          ]
+        },
+        {
+          "id": "build",
+          "description": "Build ssm into a profile-owned temporary directory.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "go",
+              "args": [
+                "build",
+                "-buildvcs=false",
+                "-o",
+                "{temp}/ssm{exe}",
+                "./cmd/ssm"
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            }
+          ]
+        },
+        {
+          "id": "unit",
+          "description": "Run the complete Go unit and integration test suite.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "go",
+              "args": [
+                "test",
+                "./..."
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            }
+          ]
+        },
+        {
+          "id": "race",
+          "description": "Run the complete Go test suite with the race detector.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "go",
+              "args": [
+                "test",
+                "-race",
+                "./..."
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            }
+          ]
+        },
+        {
+          "id": "agent-prompts-json",
+          "description": "Validate the agent prompt artifact as JSON.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "jq",
+              "args": [
+                "empty",
+                "skills/agent-ssm/test-prompts.json"
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "jq",
+              "version": "any"
+            }
+          ]
+        },
+        {
+          "id": "request-schema-json",
+          "description": "Validate the request-v1 schema artifact as JSON.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "jq",
+              "args": [
+                "empty",
+                "skills/agent-ssm/references/request-v1.schema.json"
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "jq",
+              "version": "any"
+            }
+          ]
+        },
+        {
+          "id": "ssh-matrix-shell-syntax",
+          "description": "Parse the live SSH matrix script without executing it.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "bash",
+              "args": [
+                "-n",
+                "scripts/ssh_matrix_test.sh"
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "bash",
+              "version": "any"
+            }
+          ]
+        },
+        {
+          "id": "ssh-matrix",
+          "description": "Run the existing live OpenSSH behavior matrix when its Linux prerequisites are available.",
+          "requirement": "conditional",
+          "required_contexts": [
+            "github_actions_linux"
+          ],
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "bash",
+              "args": [
+                "scripts/ssh_matrix_test.sh"
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "platform",
+              "name": "linux",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "bash",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "ssh",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "ssh-keygen",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "sshd",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "script",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "jq",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "sha256sum",
+              "version": "any"
+            },
+            {
+              "kind": "system_path",
+              "name": "/run/sshd",
+              "version": "directory"
+            },
+            {
+              "kind": "system_path",
+              "name": "/usr/sbin/sshd",
+              "version": "executable"
+            },
+            {
+              "kind": "system_path",
+              "name": "/usr/lib/openssh/sftp-server",
+              "version": "executable"
+            }
+          ]
+        },
+        {
+          "id": "source-version",
+          "description": "Validate the source version as a release version.",
+          "requirement": "required",
+          "action": {
+            "kind": "builtin",
+            "name": "source-version"
+          },
+          "prerequisites": [
+            {
+              "kind": "file",
+              "name": "cmd/ssm/main.go",
+              "version": "tracked"
+            }
+          ]
+        },
+        {
+          "id": "asset-linux-amd64",
+          "description": "Build the canonical ssm-linux-amd64 release asset in temporary storage.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "go",
+              "args": [
+                "build",
+                "-buildvcs=false",
+                "-ldflags=-s -w -X main.version={version}",
+                "-o",
+                "{temp}/ssm-linux-amd64",
+                "./cmd/ssm"
+              ],
+              "env": [
+                "GOOS=linux",
+                "GOARCH=amd64"
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            }
+          ]
+        },
+        {
+          "id": "asset-linux-arm64",
+          "description": "Build the canonical ssm-linux-arm64 release asset in temporary storage.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "go",
+              "args": [
+                "build",
+                "-buildvcs=false",
+                "-ldflags=-s -w -X main.version={version}",
+                "-o",
+                "{temp}/ssm-linux-arm64",
+                "./cmd/ssm"
+              ],
+              "env": [
+                "GOOS=linux",
+                "GOARCH=arm64"
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            }
+          ]
+        },
+        {
+          "id": "asset-darwin-amd64",
+          "description": "Build the canonical ssm-darwin-amd64 release asset in temporary storage.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "go",
+              "args": [
+                "build",
+                "-buildvcs=false",
+                "-ldflags=-s -w -X main.version={version}",
+                "-o",
+                "{temp}/ssm-darwin-amd64",
+                "./cmd/ssm"
+              ],
+              "env": [
+                "GOOS=darwin",
+                "GOARCH=amd64"
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            }
+          ]
+        },
+        {
+          "id": "asset-darwin-arm64",
+          "description": "Build the canonical ssm-darwin-arm64 release asset in temporary storage.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "go",
+              "args": [
+                "build",
+                "-buildvcs=false",
+                "-ldflags=-s -w -X main.version={version}",
+                "-o",
+                "{temp}/ssm-darwin-arm64",
+                "./cmd/ssm"
+              ],
+              "env": [
+                "GOOS=darwin",
+                "GOARCH=arm64"
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            }
+          ]
+        },
+        {
+          "id": "asset-windows-amd64",
+          "description": "Build the canonical ssm-windows-amd64.exe release asset in temporary storage.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "go",
+              "args": [
+                "build",
+                "-buildvcs=false",
+                "-ldflags=-s -w -X main.version={version}",
+                "-o",
+                "{temp}/ssm-windows-amd64.exe",
+                "./cmd/ssm"
+              ],
+              "env": [
+                "GOOS=windows",
+                "GOARCH=amd64"
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            }
+          ]
+        },
+        {
+          "id": "asset-windows-arm64",
+          "description": "Build the canonical ssm-windows-arm64.exe release asset in temporary storage.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "go",
+              "args": [
+                "build",
+                "-buildvcs=false",
+                "-ldflags=-s -w -X main.version={version}",
+                "-o",
+                "{temp}/ssm-windows-arm64.exe",
+                "./cmd/ssm"
+              ],
+              "env": [
+                "GOOS=windows",
+                "GOARCH=arm64"
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            }
+          ]
+        },
+        {
+          "id": "updater-selection",
+          "description": "Prove updater selection matches all six release asset names.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "go",
+              "args": [
+                "test",
+                "./internal/update",
+                "-run",
+                "^TestAssetNameForSupportedPlatforms$",
+                "-count=1"
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            }
+          ]
+        },
+        {
+          "id": "release-notes",
+          "description": "Require non-empty release notes for the source version.",
+          "requirement": "required",
+          "action": {
+            "kind": "builtin",
+            "name": "release-notes"
+          },
+          "prerequisites": [
+            {
+              "kind": "file",
+              "name": "RELEASE_NOTES.md",
+              "version": "tracked"
+            }
+          ]
+        },
+        {
+          "id": "release-checksums",
+          "description": "Compute SHA-256 digests for all six assets and install.sh without writing release output.",
+          "requirement": "required",
+          "action": {
+            "kind": "builtin",
+            "name": "release-checksums"
+          },
+          "prerequisites": [
+            {
+              "kind": "file",
+              "name": "install.sh",
+              "version": "tracked"
+            }
+          ]
+        },
+        {
+          "id": "checksum-failure-paths",
+          "description": "Exercise checksum selection, mismatch, and no-replacement failure paths.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "go",
+              "args": [
+                "test",
+                "./internal/update",
+                "-run",
+                "^(TestChecksumForAsset|TestChecksumForAssetRequiresMatchingAsset|TestCopyAndVerifyRejectsChecksumMismatch|TestDownloadVersionVerifiesChecksumBeforeReplace)$",
+                "-count=1"
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            }
+          ]
+        }
+      ],
+      "extensions": [
+        {
+          "name": "migration-extension",
+          "description": "v2 migration contract and failure-path verification",
+          "required_before": "initial_v2_release"
+        },
+        {
+          "name": "provenance-extension",
+          "description": "keyless provenance identity and trust verification",
+          "required_before": "initial_v2_release"
+        }
+      ]
+    }
+  ]
+}

@@ -2,12 +2,13 @@ package main
 
 import (
 	"encoding/json"
+
+	"ssm/internal/releaseasset"
 )
 
 const (
-	actionCommand   = "command"
-	actionBuiltin   = "builtin"
-	actionExtension = "extension"
+	actionCommand = "command"
+	actionBuiltin = "builtin"
 
 	requirementRequired    = "required"
 	requirementConditional = "conditional"
@@ -24,21 +25,28 @@ type Profile struct {
 	Equivalence   string         `json:"equivalence"`
 	Prerequisites []Prerequisite `json:"prerequisites"`
 	Checks        []Check        `json:"checks"`
+	Extensions    []Extension    `json:"extensions,omitempty"`
+}
+
+type Extension struct {
+	Name           string `json:"name"`
+	Description    string `json:"description"`
+	RequiredBefore string `json:"required_before"`
 }
 
 type Check struct {
-	ID            string         `json:"id"`
-	Description   string         `json:"description"`
-	Requirement   string         `json:"requirement"`
-	Action        Action         `json:"action"`
-	Prerequisites []Prerequisite `json:"prerequisites"`
+	ID               string         `json:"id"`
+	Description      string         `json:"description"`
+	Requirement      string         `json:"requirement"`
+	RequiredContexts []string       `json:"required_contexts,omitempty"`
+	Action           Action         `json:"action"`
+	Prerequisites    []Prerequisite `json:"prerequisites"`
 }
 
 type Action struct {
 	Kind    string   `json:"kind"`
 	Name    string   `json:"name,omitempty"`
 	Command *Command `json:"command,omitempty"`
-	Reason  string   `json:"reason,omitempty"`
 }
 
 type Command struct {
@@ -87,10 +95,22 @@ func verificationManifest() Manifest {
 			},
 			{
 				Name:          "release",
-				Purpose:       "Non-publishing release preparation; conditionally unavailable extension seams are never reported as passed.",
-				Equivalence:   "non_publishing_release_preparation",
+				Purpose:       "Ticket #18 non-publishing release preflight; this is not a claim of initial-v2 release readiness.",
+				Equivalence:   "ticket_18_release_preflight",
 				Prerequisites: profilePrerequisites(),
 				Checks:        release,
+				Extensions: []Extension{
+					{
+						Name:           "migration-extension",
+						Description:    "v2 migration contract and failure-path verification",
+						RequiredBefore: "initial_v2_release",
+					},
+					{
+						Name:           "provenance-extension",
+						Description:    "keyless provenance identity and trust verification",
+						RequiredBefore: "initial_v2_release",
+					},
+				},
 			},
 		},
 	}
@@ -119,7 +139,7 @@ func ciChecks() []Check {
 }
 
 func releaseChecks() []Check {
-	return []Check{
+	checks := []Check{
 		{
 			ID:          "source-version",
 			Description: "Validate the source version as a release version.",
@@ -129,13 +149,12 @@ func releaseChecks() []Check {
 				{Kind: "file", Name: "cmd/ssm/main.go", Version: "tracked"},
 			},
 		},
-		assetCheck("linux", "amd64", ""),
-		assetCheck("linux", "arm64", ""),
-		assetCheck("darwin", "amd64", ""),
-		assetCheck("darwin", "arm64", ""),
-		assetCheck("windows", "amd64", ".exe"),
-		assetCheck("windows", "arm64", ".exe"),
-		{
+	}
+	for _, target := range releaseasset.SupportedTargets() {
+		checks = append(checks, assetCheck(target.GOOS, target.GOARCH))
+	}
+	checks = append(checks,
+		Check{
 			ID:          "updater-selection",
 			Description: "Prove updater selection matches all six release asset names.",
 			Requirement: requirementRequired,
@@ -144,7 +163,7 @@ func releaseChecks() []Check {
 			}, nil, ""),
 			Prerequisites: goPrerequisites(),
 		},
-		{
+		Check{
 			ID:          "release-notes",
 			Description: "Require non-empty release notes for the source version.",
 			Requirement: requirementRequired,
@@ -153,7 +172,7 @@ func releaseChecks() []Check {
 				{Kind: "file", Name: "RELEASE_NOTES.md", Version: "tracked"},
 			},
 		},
-		{
+		Check{
 			ID:          "release-checksums",
 			Description: "Compute SHA-256 digests for all six assets and install.sh without writing release output.",
 			Requirement: requirementRequired,
@@ -162,7 +181,7 @@ func releaseChecks() []Check {
 				{Kind: "file", Name: "install.sh", Version: "tracked"},
 			},
 		},
-		{
+		Check{
 			ID:          "checksum-failure-paths",
 			Description: "Exercise checksum selection, mismatch, and no-replacement failure paths.",
 			Requirement: requirementRequired,
@@ -173,29 +192,8 @@ func releaseChecks() []Check {
 			}, nil, ""),
 			Prerequisites: goPrerequisites(),
 		},
-		{
-			ID:          "migration-extension",
-			Description: "Named seam for later v2 migration contract checks.",
-			Requirement: requirementConditional,
-			Action: Action{
-				Kind:   actionExtension,
-				Name:   "v2-migration-contracts",
-				Reason: "no migration contract action is implemented by this ticket",
-			},
-			Prerequisites: []Prerequisite{},
-		},
-		{
-			ID:          "provenance-extension",
-			Description: "Named seam for later keyless provenance and trust checks.",
-			Requirement: requirementConditional,
-			Action: Action{
-				Kind:   actionExtension,
-				Name:   "keyless-provenance-trust",
-				Reason: "no provenance action is implemented by this ticket",
-			},
-			Prerequisites: []Prerequisite{},
-		},
-	}
+	)
+	return checks
 }
 
 func formatCheck() Check {
@@ -203,7 +201,7 @@ func formatCheck() Check {
 		ID:          "format",
 		Description: "Require gofmt-clean source without rewriting files.",
 		Requirement: requirementRequired,
-		Action:      commandAction("gofmt", []string{"-l", "."}, nil, "stdout_empty"),
+		Action:      commandAction("{goroot}/bin/gofmt{exe}", []string{"-l", "."}, nil, "stdout_empty"),
 		Prerequisites: []Prerequisite{
 			{Kind: "tool", Name: "gofmt", Version: "go1.25.12"},
 		},
@@ -235,7 +233,7 @@ func vetCheck() Check {
 }
 
 func vulnerabilityCheck() Check {
-	return Check{
+	check := Check{
 		ID:          "vulnerability",
 		Description: "Run govulncheck v1.6.0 across all packages.",
 		Requirement: requirementRequired,
@@ -244,6 +242,12 @@ func vulnerabilityCheck() Check {
 		}, nil, ""),
 		Prerequisites: goPrerequisites(),
 	}
+	check.Prerequisites = append(check.Prerequisites, Prerequisite{
+		Kind:    "capability",
+		Name:    "govulncheck-module",
+		Version: "network-or-module-cache",
+	})
+	return check
 }
 
 func buildCheck() Check {
@@ -325,6 +329,9 @@ func sshMatrixCheck() Check {
 		ID:          "ssh-matrix",
 		Description: "Run the existing live OpenSSH behavior matrix when its Linux prerequisites are available.",
 		Requirement: requirementConditional,
+		RequiredContexts: []string{
+			"github_actions_linux",
+		},
 		Action: commandAction("bash", []string{
 			"scripts/ssh_matrix_test.sh",
 		}, nil, ""),
@@ -335,13 +342,17 @@ func sshMatrixCheck() Check {
 			{Kind: "tool", Name: "ssh-keygen", Version: "any"},
 			{Kind: "tool", Name: "sshd", Version: "any"},
 			{Kind: "tool", Name: "script", Version: "any"},
+			{Kind: "tool", Name: "jq", Version: "any"},
 			{Kind: "tool", Name: "sha256sum", Version: "any"},
+			{Kind: "system_path", Name: "/run/sshd", Version: "directory"},
+			{Kind: "system_path", Name: "/usr/sbin/sshd", Version: "executable"},
+			{Kind: "system_path", Name: "/usr/lib/openssh/sftp-server", Version: "executable"},
 		},
 	}
 }
 
-func assetCheck(goos, goarch, extension string) Check {
-	name := "ssm-" + goos + "-" + goarch + extension
+func assetCheck(goos, goarch string) Check {
+	name := releaseasset.Name(goos, goarch)
 	return Check{
 		ID:          "asset-" + goos + "-" + goarch,
 		Description: "Build the canonical " + name + " release asset in temporary storage.",

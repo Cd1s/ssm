@@ -26,8 +26,51 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y jq openssh-server
-          sudo mkdir -p /run/sshd
+          sudo apt-get install -y \
+            bash \
+            coreutils \
+            dash \
+            findutils \
+            gawk \
+            grep \
+            jq \
+            openssh-client \
+            openssh-server \
+            sed \
+            util-linux
+          sudo install -d -m 0755 /run/sshd
+          command -v awk >/dev/null
+          command -v bash >/dev/null
+          command -v cat >/dev/null
+          command -v chmod >/dev/null
+          command -v cp >/dev/null
+          command -v dd >/dev/null
+          command -v dirname >/dev/null
+          command -v find >/dev/null
+          command -v go >/dev/null
+          command -v grep >/dev/null
+          command -v head >/dev/null
+          command -v id >/dev/null
+          command -v jq >/dev/null
+          command -v ln >/dev/null
+          command -v mkdir >/dev/null
+          command -v mktemp >/dev/null
+          command -v nohup >/dev/null
+          command -v rm >/dev/null
+          command -v script >/dev/null
+          command -v sed >/dev/null
+          command -v seq >/dev/null
+          command -v sh >/dev/null
+          command -v sha256sum >/dev/null
+          command -v sleep >/dev/null
+          command -v ssh >/dev/null
+          command -v ssh-keygen >/dev/null
+          command -v sshd >/dev/null
+          command -v tr >/dev/null
+          command -v wc >/dev/null
+          test -d /run/sshd
+          test -x /usr/sbin/sshd
+          test -x /usr/lib/openssh/sftp-server
 
       - name: Install official golangci-lint prebuilt
         env:

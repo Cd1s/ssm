@@ -3,17 +3,20 @@
 Status: implemented by GitHub Issue #18
 
 The checked-in Go manifest at `cmd/verify` is the sole owner of verification
-profile membership, ordering, actions, prerequisites, pinned tool versions,
-and required-versus-conditional status. Its stable review surface is:
+profile membership, ordering, exact actions, prerequisites, pinned tool
+versions, required-versus-conditional status, required execution contexts, and
+named future extensions. Its stable review surface is:
 
 ```sh
 go run ./cmd/verify list
 ```
 
-The output is deterministic JSON. Commands are represented as executable and
-argument arrays, with separate environment entries. `{temp}`, `{exe}`, and
-`{version}` are explicit cross-platform substitutions; commands are not joined
-into a host shell string.
+The output is deterministic JSON and is snapshot-tested in full. Commands are
+represented as executable and argument arrays, with separate environment
+entries. `{temp}`, `{exe}`, `{goroot}`, and `{version}` are explicit
+cross-platform substitutions; commands are not joined into a host shell
+string. Validation compares every action with its exact reviewed definition, so
+extra `go test`, `go vet`, output, or other flags are rejected.
 
 ## BC-10 old-to-new membership
 
@@ -47,10 +50,10 @@ The old GitHub CI membership and its new manifest entries are:
 | 10 | `bash -n scripts/ssh_matrix_test.sh` | `ssh-matrix-shell-syntax` |
 | 11 | `scripts/ssh_matrix_test.sh` after explicit OpenSSH setup | `ssh-matrix` |
 
-GitHub CI installs its OS and official prebuilt lint prerequisites visibly in
-workflow YAML, declares read-only repository permissions, and invokes only
-`go run ./cmd/verify ci`. The driver does not install packages or acquire
-permissions.
+GitHub CI installs and asserts its OS, OpenSSH, shell, JSON, hashing, and
+official prebuilt lint prerequisites visibly in workflow YAML, declares
+read-only repository permissions, and invokes only `go run ./cmd/verify ci`.
+The driver does not install packages or acquire permissions.
 
 ## Profiles
 
@@ -62,13 +65,17 @@ permissions.
 
 It is deliberately not merge-equivalent and not release-equivalent.
 
-`ci` is the ordered 11-check profile in the table above. Official GitHub CI is
-Linux and prepares every live-matrix prerequisite, so the existing SSH gate
-remains required in that environment. A local non-Linux machine, or a local
-machine missing a declared live-matrix tool, reports `ssh-matrix` as
-`unavailable`; it does not report that check as passed.
+`ci` is the ordered 11-check profile in the table above. `ssh-matrix` is
+conditional locally and explicitly required in the `github_actions_linux`
+context. Official GitHub CI prepares and asserts every live-matrix
+prerequisite, including `/run/sshd`, `/usr/sbin/sshd`, and the SFTP subsystem
+path. Absence of any declared prerequisite there fails the profile. A local
+non-Linux machine, or a local machine missing a declared live-matrix
+prerequisite, reports `ssh-matrix` as `unavailable` and the profile as
+`completed_with_unavailable`; neither is represented as passed.
 
-`release` begins with the exact `ci` sequence and then adds, in order:
+The executable `release` check list begins with the exact `ci` sequence and
+then adds, in order:
 
 1. source release-version validation;
 2. temporary builds named `ssm-linux-amd64`, `ssm-linux-arm64`,
@@ -77,14 +84,27 @@ machine missing a declared live-matrix tool, reports `ssh-matrix` as
 3. updater selection tests for those same six names;
 4. a non-empty `RELEASE_NOTES.md` section matching the source version;
 5. in-memory SHA-256 computation for the six assets and `install.sh`;
-6. updater checksum selection, mismatch, and no-replacement failure tests;
-7. named `migration-extension` and `provenance-extension` seams.
+6. updater checksum selection, mismatch, and no-replacement failure tests.
 
-The extension seams are conditionally unavailable until their owning later
-tickets supply real actions. They are reported as `unavailable`, never
-`passed`, and make the profile summary `passed_with_unavailable`. Consequently,
-the initial profile is not a claim that all v2 migration or provenance release
-blockers are complete.
+The release profile separately exposes metadata named `migration-extension`
+and `provenance-extension`. These are not executable Ticket #18 checks and do not
+appear in check results as passed, failed, or unavailable. Their manifest
+metadata says `required_before: initial_v2_release`, preserving the future
+migration/provenance seams required by Issue #18 while honoring ADR 0003 and
+Decisions 12–13: the initial v2 release remains blocked until later tickets add
+and pass those real gates.
+
+Accordingly, the exact command
+
+```sh
+go run ./cmd/verify release
+```
+
+returns zero only when all executable Ticket #18 release-preflight checks pass.
+Its terminal summary is `preflight_passed`, and its profile purpose and
+equivalence explicitly say that this is not a claim of initial-v2 release
+readiness. When later tickets implement either extension, they must promote it
+from metadata into a required executable check before the initial v2 release.
 
 No profile merges, tags, installs, replaces an executable, calls a publication
 API, creates or uploads a release, or writes release artifacts into the
@@ -96,17 +116,27 @@ outside this verification driver.
 Required prerequisites are listed in the manifest:
 
 - a Git worktree;
-- Go and gofmt 1.25.12;
+- Go 1.25.12 and the gofmt executable from that same resolved toolchain;
 - the official golangci-lint 2.11.4 prebuilt;
 - `jq` and `bash`;
 - a cold-cache network path for the pinned govulncheck module, or a populated
   Go module cache.
 
+Files declared `tracked` are verified through Git, not merely by filesystem
+presence. Verification snapshots the index, tracked worktree content, and the
+names, types, and content of untracked files before and after every profile, so
+it also detects further edits in an already-dirty file.
+
 The live SSH matrix is conditional locally on Linux, `bash`, `ssh`,
-`ssh-keygen`, `sshd`, `script`, and `sha256sum`. It uses only a temporary test
-home, temporary keys, a temporary OpenSSH server, and a temporary binary. It
-does not read the user's vault, master password, sync configuration, tokens,
-private keys, or decrypted inventory.
+`ssh-keygen`, `sshd`, `script`, `jq`, `sha256sum`, and its declared system
+paths. It uses only a temporary test home, temporary keys, a temporary OpenSSH
+server, and a temporary binary. It does not read the user's vault, master
+password, sync configuration, tokens, private keys, or decrypted inventory.
+
+The supported six-platform release target table is owned by
+`internal/releaseasset`. Manifest asset builds, checksum verification, and the
+production updater selector consume that same table/name function; a direct
+parity test also compares every manifest output with the updater selector.
 
 Expected runtime depends on caches and host speed:
 

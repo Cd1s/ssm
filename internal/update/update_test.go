@@ -102,8 +102,8 @@ func TestAssetNameForSupportedPlatforms(t *testing.T) {
 		{goos: "windows", goarch: "arm64", want: "ssm-windows-arm64.exe"},
 	} {
 		t.Run(test.goos+"-"+test.goarch, func(t *testing.T) {
-			if got := assetNameFor(test.goos, test.goarch); got != test.want {
-				t.Fatalf("assetNameFor(%q, %q) = %q, want %q", test.goos, test.goarch, got, test.want)
+			if got := AssetNameFor(test.goos, test.goarch); got != test.want {
+				t.Fatalf("AssetNameFor(%q, %q) = %q, want %q", test.goos, test.goarch, got, test.want)
 			}
 		})
 	}

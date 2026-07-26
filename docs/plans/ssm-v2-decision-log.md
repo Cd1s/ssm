@@ -160,8 +160,15 @@ release-pipeline tests are in v2 scope and block the initial release.
 
 One checked-in, non-mutating verification manifest owns the required commands
 and named profiles. `make check` and CI execute the same `verify ci` profile.
-`verify release` is a strict superset that covers cross-platform
-assets/updater behavior, signing and provenance identities, and failure paths.
+`verify release` is a strict superset. Its Issue #18 executable preflight covers
+current cross-platform asset/updater behavior and failure paths, while named
+metadata reserves the migration, signing, and provenance extension points.
+
+Issue #18 establishes the executable preflight and records not-yet-implemented
+migration and provenance gates as named extension metadata required before the
+initial v2 release. A passing Issue #18 preflight is not initial-v2 release
+readiness. The owning later tickets must promote those extensions to required
+executable checks; Decision 12 remains the release blocker throughout.
 
 Required public-seam scenarios, rather than a global coverage percentage, block
 merge and release. Coverage remains an observed report.
