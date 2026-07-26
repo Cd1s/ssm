@@ -384,13 +384,24 @@ func assertCompiledMachineContract(t *testing.T, result compiledCLIResult, want 
 			t.Fatalf("candidates = %v, want %v; output=%s", got, want.Candidates, compiledOutputIdentity(result))
 		}
 	}
-	if got, ok := value["exit"].(float64); !ok || int(got) != want.JSONExit {
+	if !compiledJSONExitEquals(value["exit"], want.JSONExit) {
 		t.Fatalf("JSON exit = %v, want %d; output=%s", value["exit"], want.JSONExit, compiledOutputIdentity(result))
 	}
 	for _, field := range want.Absent {
 		if _, ok := value[field]; ok {
 			t.Fatalf("field %q unexpectedly present; output=%s", field, compiledOutputIdentity(result))
 		}
+	}
+}
+
+func compiledJSONExitEquals(value any, want int) bool {
+	got, ok := value.(float64)
+	return ok && got == float64(want)
+}
+
+func TestCompiledJSONExitComparisonRejectsFraction(t *testing.T) {
+	if compiledJSONExitEquals(float64(1.5), 1) {
+		t.Fatal("fractional JSON number satisfied an integer exit contract")
 	}
 }
 
@@ -503,6 +514,14 @@ func assertCompiledJSONSuccess(t *testing.T, result compiledCLIResult) map[strin
 		t.Fatalf("ok = %v, want true; output=%s", value["ok"], compiledOutputIdentity(result))
 	}
 	return value
+}
+
+func assertCompiledExactMachineOutput(t *testing.T, result compiledCLIResult, want string) {
+	t.Helper()
+	if result.ProcessExit != 0 || result.Stderr != "" || result.Stdout != want {
+		t.Fatalf("compiled exact machine output contract failed; output=%s", compiledOutputIdentity(result))
+	}
+	decodeExactlyOneJSONObject(t, result.Stdout)
 }
 
 func assertCompiledJSONArraySuccess(t *testing.T, result compiledCLIResult, wantLength int) []any {
@@ -751,15 +770,32 @@ func compiledTransactionID(t *testing.T, value map[string]any, result compiledCL
 
 func compiledPendingTransactionViews(t *testing.T, value map[string]any, result compiledCLIResult) []pendingMutationView {
 	t.Helper()
+	transactions, err := parseCompiledPendingTransactionViews(value)
+	if err != nil {
+		t.Fatalf("%v; output=%s", err, compiledOutputIdentity(result))
+	}
+	return transactions
+}
+
+func parseCompiledPendingTransactionViews(value map[string]any) ([]pendingMutationView, error) {
+	if got, want := sortedCompiledJSONFields(value), []string{
+		"freshness", "hosts", "offline", "ok", "pending_changes", "pending_mutations", "redirects",
+		"remote_state", "reuse", "reuse_scope", "sync", "vault", "version",
+	}; !reflect.DeepEqual(got, want) {
+		return nil, fmt.Errorf("pending status top-level field set changed")
+	}
 	raw, ok := value["pending_mutations"].([]any)
 	if !ok {
-		t.Fatalf("pending_mutations has unexpected type; output=%s", compiledOutputIdentity(result))
+		return nil, fmt.Errorf("pending_mutations has unexpected type")
 	}
 	transactions := make([]pendingMutationView, len(raw))
 	for i, item := range raw {
 		mutation, ok := item.(map[string]any)
 		if !ok {
-			t.Fatalf("pending mutation %d has unexpected type; output=%s", i, compiledOutputIdentity(result))
+			return nil, fmt.Errorf("pending mutation %d has unexpected type", i)
+		}
+		if got, want := sortedCompiledJSONFields(mutation), []string{"alias", "created_at", "id", "operation"}; !reflect.DeepEqual(got, want) {
+			return nil, fmt.Errorf("pending mutation %d field set changed", i)
 		}
 		for field, destination := range map[string]*string{
 			"id": &transactions[i].ID, "alias": &transactions[i].Alias,
@@ -767,11 +803,48 @@ func compiledPendingTransactionViews(t *testing.T, value map[string]any, result 
 		} {
 			*destination, ok = mutation[field].(string)
 			if !ok {
-				t.Fatalf("pending mutation %d field %q has unexpected type; output=%s", i, field, compiledOutputIdentity(result))
+				return nil, fmt.Errorf("pending mutation %d field %q has unexpected type", i, field)
 			}
 		}
 	}
-	return transactions
+	return transactions, nil
+}
+
+func sortedCompiledJSONFields(value map[string]any) []string {
+	fields := make([]string, 0, len(value))
+	for field := range value {
+		fields = append(fields, field)
+	}
+	sort.Strings(fields)
+	return fields
+}
+
+func TestCompiledPendingTransactionViewParserRejectsUnexpectedFields(t *testing.T) {
+	fixture := func() map[string]any {
+		return map[string]any{
+			"ok": true, "version": "test", "hosts": float64(1), "vault": "present",
+			"sync": "configured", "redirects": float64(0), "reuse": "on", "reuse_scope": "process",
+			"freshness": "unknown", "remote_state": "not_checked", "pending_changes": true,
+			"pending_mutations": []any{map[string]any{
+				"id": "tx_safe", "alias": "safe", "operation": "created", "created_at": "2026-01-01T00:00:00Z",
+			}},
+			"offline": true,
+		}
+	}
+	t.Run("top level", func(t *testing.T) {
+		value := fixture()
+		value["unexpected"] = true
+		if _, err := parseCompiledPendingTransactionViews(value); err == nil {
+			t.Fatal("pending transaction view parser accepted an unexpected top-level field")
+		}
+	})
+	t.Run("nested mutation", func(t *testing.T) {
+		value := fixture()
+		value["pending_mutations"].([]any)[0].(map[string]any)["unexpected"] = true
+		if _, err := parseCompiledPendingTransactionViews(value); err == nil {
+			t.Fatal("pending transaction view parser accepted an unexpected nested field")
+		}
+	})
 }
 
 type compiledSecretIdentity struct {
@@ -1180,6 +1253,87 @@ func assertCompiledKnownHostsFileAbsent(t *testing.T, cli *compiledCLIHarness) {
 	t.Fatalf("rejected fingerprint installed a known_hosts file with %d bytes", info.Size())
 }
 
+func compiledLegacyImportStartingVault() *config.Vault {
+	baseConnection := config.Connection{
+		Name: "import-existing-password", Host: "192.0.2.80", Port: 2280, User: "base-user",
+		Password: "ISSUE17_IMPORT_BASE_PASSWORD_CANARY", Group: "base-group",
+	}
+	existingConnection := config.Connection{
+		Name: "import-existing-password", Host: "192.0.2.81", Port: 2281, User: "existing-user",
+		Password: "ISSUE17_IMPORT_EXISTING_PASSWORD_CANARY", Group: "existing-group",
+	}
+	keyConnection := config.Connection{
+		Name: "import-existing-key", Host: "192.0.2.82", Port: 2282, User: "key-user",
+		KeyName: "import-existing-key", Group: "key-group",
+	}
+	baseKey := config.SSHKey{
+		Name: "import-base-key", PrivateKey: "ISSUE17_IMPORT_BASE_PRIVATE_KEY_CANARY",
+	}
+	existingKey := config.SSHKey{
+		Name: "import-existing-key", PrivateKey: "ISSUE17_IMPORT_EXISTING_PRIVATE_KEY_CANARY",
+	}
+	return &config.Vault{
+		Connections: []config.Connection{existingConnection, keyConnection},
+		Keys:        []config.SSHKey{baseKey, existingKey},
+		PendingBase: &config.InventorySnapshot{
+			Connections: []config.Connection{baseConnection},
+			Keys:        []config.SSHKey{baseKey},
+		},
+		PendingMutations: []config.PendingMutation{
+			{
+				ID: "tx_import_existing_update", Alias: existingConnection.Name,
+				Operation: "updated", CreatedAt: "2026-01-03T00:00:00Z",
+				Before: &baseConnection, After: &existingConnection,
+				KeysBefore: []config.SSHKey{baseKey}, KeysAfter: []config.SSHKey{baseKey},
+			},
+			{
+				ID: "tx_import_existing_key", Alias: keyConnection.Name,
+				Operation: "created", CreatedAt: "2026-01-03T00:00:01Z",
+				After:      &keyConnection,
+				KeysBefore: []config.SSHKey{baseKey}, KeysAfter: []config.SSHKey{baseKey, existingKey},
+			},
+		},
+	}
+}
+
+func compiledLegacyPendingLedger() (*config.InventorySnapshot, []config.PendingMutation) {
+	baseConnection := config.Connection{
+		Name: "legacy-ledger-alpha", Host: "192.0.2.90", Port: 2290, User: "ledger-base-user",
+		Password: "ISSUE17_LEGACY_LEDGER_BASE_PASSWORD_CANARY", Group: "ledger-base-group",
+	}
+	updatedConnection := config.Connection{
+		Name: "legacy-ledger-alpha", Host: "192.0.2.91", Port: 2291, User: "ledger-updated-user",
+		Password: "ISSUE17_LEGACY_LEDGER_UPDATED_PASSWORD_CANARY", Group: "ledger-updated-group",
+	}
+	createdConnection := config.Connection{
+		Name: "legacy-ledger-beta", Host: "192.0.2.92", Port: 2292, User: "ledger-key-user",
+		KeyName: "legacy-ledger-pending-key", Group: "ledger-key-group",
+	}
+	baseKey := config.SSHKey{
+		Name: "legacy-ledger-base-key", PrivateKey: "ISSUE17_LEGACY_LEDGER_BASE_PRIVATE_KEY_CANARY",
+	}
+	pendingKey := config.SSHKey{
+		Name: "legacy-ledger-pending-key", PrivateKey: "ISSUE17_LEGACY_LEDGER_PENDING_PRIVATE_KEY_CANARY",
+	}
+	return &config.InventorySnapshot{
+			Connections: []config.Connection{baseConnection},
+			Keys:        []config.SSHKey{baseKey},
+		}, []config.PendingMutation{
+			{
+				ID: "tx_legacy_ledger_alpha", Alias: updatedConnection.Name,
+				Operation: "updated", CreatedAt: "2026-01-04T00:00:00Z",
+				Before: &baseConnection, After: &updatedConnection,
+				KeysBefore: []config.SSHKey{baseKey}, KeysAfter: []config.SSHKey{baseKey},
+			},
+			{
+				ID: "tx_legacy_ledger_beta", Alias: createdConnection.Name,
+				Operation: "created", CreatedAt: "2026-01-04T00:00:01Z",
+				After:      &createdConnection,
+				KeysBefore: []config.SSHKey{baseKey}, KeysAfter: []config.SSHKey{baseKey, pendingKey},
+			},
+		}
+}
+
 func compiledOutputIdentity(result compiledCLIResult) string {
 	stdoutDigest := sha256.Sum256([]byte(result.Stdout))
 	stderrDigest := sha256.Sum256([]byte(result.Stderr))
@@ -1464,8 +1618,8 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		}
 		assertCompiledStringField(t, invalid, "error", "invalid_request", result)
 		assertCompiledStringField(t, invalid, "stage", "decode", result)
-		if got := int(invalid["exit"].(float64)); got != 2 {
-			t.Fatalf("stream decode JSON exit = %d, want 2; output=%s", got, compiledOutputIdentity(result))
+		if !compiledJSONExitEquals(invalid["exit"], 2) {
+			t.Fatalf("stream decode JSON exit = %v, want 2; output=%s", invalid["exit"], compiledOutputIdentity(result))
 		}
 		var success map[string]any
 		if err := json.Unmarshal([]byte(lines[1]), &success); err != nil {
@@ -1498,7 +1652,29 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 
 	t.Run("compiled mutation IDs remain stable and scoped push stays isolated", func(t *testing.T) {
 		mutationCLI := newCompiledCLIHarness(t)
-		mutationCLI.SaveVault(t, &config.Vault{})
+		statusPassword := "ISSUE17_STATUS_UNRELATED_PASSWORD_CANARY"
+		statusPrivateKey := "ISSUE17_STATUS_PRIVATE_KEY_CANARY"
+		statusToken := "ISSUE17_STATUS_TOKEN_CANARY"
+		statusConfig := "ISSUE17_STATUS_CONFIG_CANARY"
+		statusInventory := "ISSUE17_STATUS_DECRYPTED_INVENTORY_CANARY"
+		statusKey := config.SSHKey{Name: "status-key", PrivateKey: statusPrivateKey}
+		statusKeyConnection := config.Connection{
+			Name: "status-key-host", Host: "192.0.2.68", Port: 2268, User: "key-user",
+			KeyName: statusKey.Name, Group: "status-key-group",
+		}
+		statusPasswordConnection := config.Connection{
+			Name: "status-password-host", Host: "192.0.2.69", Port: 2269, User: "password-user",
+			Password: statusPassword, Group: statusInventory,
+		}
+		mutationCLI.SaveVault(t, &config.Vault{
+			Connections: []config.Connection{statusKeyConnection, statusPasswordConnection},
+			Keys:        []config.SSHKey{statusKey},
+		})
+		mutationCLI.writeConfigFile(
+			t,
+			"cloud.json",
+			[]byte(`{"server":"https://`+statusConfig+`.invalid","token":"`+statusToken+`"}`),
+		)
 		alphaPassword := filepath.Join(mutationCLI.temp, "alpha.password")
 		betaPassword := filepath.Join(mutationCLI.temp, "beta.password")
 		if err := os.WriteFile(alphaPassword, []byte("ISSUE17_ALPHA_PASSWORD_CANARY\n"), 0o600); err != nil {
@@ -1514,7 +1690,18 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		})
 		alphaValue := assertCompiledJSONSuccess(t, alpha)
 		alphaID := compiledTransactionID(t, alphaValue, alpha)
-		beta := mutationCLI.Run(t, "sshctl", nil, "--json", "host", "add", "beta", "--host", "192.0.2.71", "--user", "runner", "--password-file", betaPassword, "--offline")
+		requestCanary := "ISSUE17_STATUS_REQUEST_BODY_CANARY"
+		betaRequest, err := json.Marshal(map[string]any{
+			"version": 1, "op": "host.add", "alias": "beta",
+			"host": map[string]any{
+				"address": "192.0.2.71", "user": "runner", "group": requestCanary,
+				"password_file": betaPassword, "offline": true, "verify": false,
+			},
+		})
+		if err != nil {
+			t.Fatalf("marshal status request canary fixture: %v", err)
+		}
+		beta := mutationCLI.Run(t, "sshctl", betaRequest, "request", "-")
 		assertNoCompiledCanaryLeak(t, beta, map[string]string{
 			"password":   "ISSUE17_BETA_PASSWORD_CANARY",
 			"passphrase": mutationCLI.passphrase,
@@ -1528,6 +1715,18 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		var pendingTransactions []pendingMutationView
 		for i := 0; i < 2; i++ {
 			status := mutationCLI.Run(t, "sshctl", nil, "--offline", "--json", "status")
+			assertNoCompiledCanaryLeak(t, status, map[string]string{
+				"alpha_password":      "ISSUE17_ALPHA_PASSWORD_CANARY",
+				"beta_password":       "ISSUE17_BETA_PASSWORD_CANARY",
+				"unrelated_password":  statusPassword,
+				"private_key":         statusPrivateKey,
+				"token":               statusToken,
+				"configuration":       statusConfig,
+				"request":             requestCanary,
+				"request_body":        string(betaRequest),
+				"decrypted_inventory": statusInventory,
+				"passphrase":          mutationCLI.passphrase,
+			})
 			value := assertCompiledJSONSuccess(t, status)
 			got := compiledPendingTransactionViews(t, value, status)
 			if i == 0 {
@@ -1548,30 +1747,40 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		pushedValue := assertCompiledJSONSuccess(t, pushed)
 		assertCompiledStringField(t, pushedValue, "transaction_id", betaID, pushed)
 		assertNoCompiledCanaryLeak(t, pushed, map[string]string{
-			"alpha_password": "ISSUE17_ALPHA_PASSWORD_CANARY",
-			"beta_password":  "ISSUE17_BETA_PASSWORD_CANARY",
-			"token":          "ISSUE17_SCOPED_PUSH_TOKEN_CANARY",
+			"alpha_password":      "ISSUE17_ALPHA_PASSWORD_CANARY",
+			"beta_password":       "ISSUE17_BETA_PASSWORD_CANARY",
+			"unrelated_password":  statusPassword,
+			"private_key":         statusPrivateKey,
+			"decrypted_inventory": statusInventory,
+			"token":               "ISSUE17_SCOPED_PUSH_TOKEN_CANARY",
+			"passphrase":          mutationCLI.passphrase,
 		})
 		alphaConnection := config.Connection{
 			Name: "alpha", Host: "192.0.2.70", Port: 22, User: "runner", Password: "ISSUE17_ALPHA_PASSWORD_CANARY",
 		}
 		betaConnection := config.Connection{
-			Name: "beta", Host: "192.0.2.71", Port: 22, User: "runner", Password: "ISSUE17_BETA_PASSWORD_CANARY",
+			Name: "beta", Host: "192.0.2.71", Port: 22, User: "runner",
+			Password: "ISSUE17_BETA_PASSWORD_CANARY", Group: requestCanary,
 		}
 		assertCompiledVaultIdentity(
 			t,
 			decodeCompiledVaultIdentity(t, sync.UploadedBlob(), mutationCLI.passphrase),
-			&config.Vault{Connections: []config.Connection{betaConnection}},
+			&config.Vault{
+				Connections: []config.Connection{betaConnection, statusKeyConnection, statusPasswordConnection},
+				Keys:        []config.SSHKey{statusKey},
+			},
 		)
 		assertCompiledVaultIdentity(t, mutationCLI.LoadVaultIdentity(t), &config.Vault{
-			Connections: []config.Connection{alphaConnection, betaConnection},
+			Connections: []config.Connection{statusKeyConnection, statusPasswordConnection, alphaConnection, betaConnection},
+			Keys:        []config.SSHKey{statusKey},
 			PendingBase: &config.InventorySnapshot{
-				Connections: []config.Connection{betaConnection},
+				Connections: []config.Connection{betaConnection, statusKeyConnection, statusPasswordConnection},
+				Keys:        []config.SSHKey{statusKey},
 			},
 			PendingMutations: []config.PendingMutation{{
 				ID: pendingTransactions[0].ID, Alias: pendingTransactions[0].Alias,
 				Operation: pendingTransactions[0].Operation, CreatedAt: pendingTransactions[0].CreatedAt,
-				After: &alphaConnection,
+				After: &alphaConnection, KeysBefore: []config.SSHKey{statusKey}, KeysAfter: []config.SSHKey{statusKey},
 			}},
 		})
 	})
@@ -1741,30 +1950,42 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 				KeyName: "preserved-key", Group: "key-group",
 			}
 			preservedKey := config.SSHKey{Name: "preserved-key", PrivateKey: preservedPrivateKey}
+			pendingBase, pendingMutations := compiledLegacyPendingLedger()
 			want := &config.Vault{
 				Connections: []config.Connection{preservedConnection, preservedKeyConnection},
 				Keys:        []config.SSHKey{preservedKey},
+				PendingBase: pendingBase, PendingMutations: pendingMutations,
 			}
 			cli.SaveVault(t, &config.Vault{
 				Connections: []config.Connection{removedConnection, preservedConnection, preservedKeyConnection},
 				Keys:        []config.SSHKey{preservedKey},
+				PendingBase: pendingBase, PendingMutations: pendingMutations,
 			})
 			cli.SaveCloud(t, sync.URL(), "ISSUE17_LEGACY_REMOVE_TOKEN_CANARY")
 			result := cli.Run(t, "ssm", nil, "remove", "legacy-remove")
 			assertCompiledHumanSuccess(t, result, "legacy-remove")
 			assertNoCompiledCanaryLeak(t, result, map[string]string{
-				"removed_password":   removedPassword,
-				"preserved_password": preservedPassword,
-				"private_key":        "ISSUE17_LEGACY_PRESERVED_PRIVATE_KEY_CANARY",
-				"token":              "ISSUE17_LEGACY_REMOVE_TOKEN_CANARY",
+				"removed_password":           removedPassword,
+				"preserved_password":         preservedPassword,
+				"private_key":                preservedPrivateKey,
+				"ledger_base_password":       "ISSUE17_LEGACY_LEDGER_BASE_PASSWORD_CANARY",
+				"ledger_updated_password":    "ISSUE17_LEGACY_LEDGER_UPDATED_PASSWORD_CANARY",
+				"ledger_base_private_key":    "ISSUE17_LEGACY_LEDGER_BASE_PRIVATE_KEY_CANARY",
+				"ledger_pending_private_key": "ISSUE17_LEGACY_LEDGER_PENDING_PRIVATE_KEY_CANARY",
+				"token":                      "ISSUE17_LEGACY_REMOVE_TOKEN_CANARY",
+				"passphrase":                 cli.passphrase,
 			})
 			if got := sync.MethodCount("PUT"); got != 1 {
 				t.Fatalf("legacy remove PUT count = %d, want 1", got)
 			}
 			assertCompiledEncryptedPublication(t, sync.UploadedBlob(), cli.passphrase, map[string]string{
-				"removed_password":   removedPassword,
-				"preserved_password": preservedPassword,
-				"private_key":        preservedPrivateKey,
+				"removed_password":           removedPassword,
+				"preserved_password":         preservedPassword,
+				"private_key":                preservedPrivateKey,
+				"ledger_base_password":       "ISSUE17_LEGACY_LEDGER_BASE_PASSWORD_CANARY",
+				"ledger_updated_password":    "ISSUE17_LEGACY_LEDGER_UPDATED_PASSWORD_CANARY",
+				"ledger_base_private_key":    "ISSUE17_LEGACY_LEDGER_BASE_PRIVATE_KEY_CANARY",
+				"ledger_pending_private_key": "ISSUE17_LEGACY_LEDGER_PENDING_PRIVATE_KEY_CANARY",
 			}, want)
 			assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), want)
 		})
@@ -1781,9 +2002,11 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 				Password: password, KeyName: "unrelated-key", Group: "unrelated-group",
 			}
 			unrelatedKey := config.SSHKey{Name: "unrelated-key", PrivateKey: preservedKey}
+			pendingBase, pendingMutations := compiledLegacyPendingLedger()
 			want := &config.Vault{
 				Connections: []config.Connection{connection},
 				Keys:        []config.SSHKey{unrelatedKey},
+				PendingBase: pendingBase, PendingMutations: pendingMutations,
 			}
 			cli.SaveVault(t, &config.Vault{
 				Connections: []config.Connection{connection},
@@ -1791,23 +2014,33 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 					{Name: "legacy-key", PrivateKey: removedKey},
 					unrelatedKey,
 				},
+				PendingBase: pendingBase, PendingMutations: pendingMutations,
 			})
 			cli.SaveCloud(t, sync.URL(), "ISSUE17_LEGACY_KEY_TOKEN_CANARY")
 			result := cli.Run(t, "ssm", nil, "keys", "remove", "legacy-key")
 			assertCompiledHumanSuccess(t, result, "legacy-key")
 			assertNoCompiledCanaryLeak(t, result, map[string]string{
-				"removed_private_key":   removedKey,
-				"preserved_private_key": preservedKey,
-				"password":              "ISSUE17_LEGACY_UNRELATED_PASSWORD_CANARY",
-				"token":                 "ISSUE17_LEGACY_KEY_TOKEN_CANARY",
+				"removed_private_key":        removedKey,
+				"preserved_private_key":      preservedKey,
+				"password":                   password,
+				"ledger_base_password":       "ISSUE17_LEGACY_LEDGER_BASE_PASSWORD_CANARY",
+				"ledger_updated_password":    "ISSUE17_LEGACY_LEDGER_UPDATED_PASSWORD_CANARY",
+				"ledger_base_private_key":    "ISSUE17_LEGACY_LEDGER_BASE_PRIVATE_KEY_CANARY",
+				"ledger_pending_private_key": "ISSUE17_LEGACY_LEDGER_PENDING_PRIVATE_KEY_CANARY",
+				"token":                      "ISSUE17_LEGACY_KEY_TOKEN_CANARY",
+				"passphrase":                 cli.passphrase,
 			})
 			if got := sync.MethodCount("PUT"); got != 1 {
 				t.Fatalf("legacy key remove PUT count = %d, want 1", got)
 			}
 			assertCompiledEncryptedPublication(t, sync.UploadedBlob(), cli.passphrase, map[string]string{
-				"removed_private_key":   removedKey,
-				"preserved_private_key": preservedKey,
-				"password":              password,
+				"removed_private_key":        removedKey,
+				"preserved_private_key":      preservedKey,
+				"password":                   password,
+				"ledger_base_password":       "ISSUE17_LEGACY_LEDGER_BASE_PASSWORD_CANARY",
+				"ledger_updated_password":    "ISSUE17_LEGACY_LEDGER_UPDATED_PASSWORD_CANARY",
+				"ledger_base_private_key":    "ISSUE17_LEGACY_LEDGER_BASE_PRIVATE_KEY_CANARY",
+				"ledger_pending_private_key": "ISSUE17_LEGACY_LEDGER_PENDING_PRIVATE_KEY_CANARY",
 			}, want)
 			assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), want)
 		})
@@ -1816,10 +2049,13 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 			t.Run("import "+mode+" saves without publication or transaction", func(t *testing.T) {
 				cli := newCompiledCLIHarness(t)
 				sync := newCompiledSyncFixture(t)
-				cli.SaveVault(t, &config.Vault{})
-				cli.SaveCloud(t, sync.URL(), "ISSUE17_IMPORT_TOKEN_CANARY")
+				starting := compiledLegacyImportStartingVault()
+				cli.SaveVault(t, starting)
+				token := "ISSUE17_IMPORT_TOKEN_CANARY"
+				cli.SaveCloud(t, sync.URL(), token)
 				importPath := filepath.Join(cli.temp, "import-"+mode+".json")
-				importBody := `[{"alias":"imported-` + mode + `","host":"192.0.2.60","port":22,"user":"runner","auth_type":"password","password":"ISSUE17_IMPORT_PASSWORD_CANARY"}]`
+				importPassword := "ISSUE17_IMPORT_PASSWORD_CANARY"
+				importBody := `[{"alias":"imported-` + mode + `","host":"192.0.2.60","port":22,"user":"runner","auth_type":"password","password":"` + importPassword + `"}]`
 				if err := os.WriteFile(importPath, []byte(importBody), 0o600); err != nil {
 					t.Fatalf("write import fixture: %v", err)
 				}
@@ -1828,20 +2064,34 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 					args = append(args, "--yes")
 				}
 				result := cli.Run(t, "ssm", nil, args...)
-				assertCompiledJSONSuccess(t, result)
 				assertNoCompiledCanaryLeak(t, result, map[string]string{
-					"password": "ISSUE17_IMPORT_PASSWORD_CANARY",
-					"token":    "ISSUE17_IMPORT_TOKEN_CANARY",
+					"imported_password":    importPassword,
+					"base_password":        "ISSUE17_IMPORT_BASE_PASSWORD_CANARY",
+					"existing_password":    "ISSUE17_IMPORT_EXISTING_PASSWORD_CANARY",
+					"base_private_key":     "ISSUE17_IMPORT_BASE_PRIVATE_KEY_CANARY",
+					"existing_private_key": "ISSUE17_IMPORT_EXISTING_PRIVATE_KEY_CANARY",
+					"token":                token,
+					"passphrase":           cli.passphrase,
 				})
+				action := mode + "d"
+				assertCompiledExactMachineOutput(t, result, "{\n  \"ok\": true,\n  \"action\": \""+action+"\",\n  \"connections\": 1,\n  \"keys\": 0\n}\n")
 				if got := sync.MethodCount("PUT"); got != 0 {
 					t.Fatalf("legacy import %s PUT count = %d, want 0", mode, got)
 				}
-				assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), &config.Vault{
-					Connections: []config.Connection{{
-						Name: "imported-" + mode, Host: "192.0.2.60", Port: 22, User: "runner",
-						Password: "ISSUE17_IMPORT_PASSWORD_CANARY", Group: "imported",
-					}},
-				})
+				imported := config.Connection{
+					Name: "imported-" + mode, Host: "192.0.2.60", Port: 22, User: "runner",
+					Password: importPassword, Group: "imported",
+				}
+				want := starting
+				if mode == "merge" {
+					want.Connections = append(want.Connections, imported)
+					want.PendingBase = nil
+					want.PendingMutations = nil
+				} else {
+					want.Connections = []config.Connection{imported}
+					want.Keys = nil
+				}
+				assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), want)
 			})
 		}
 	})
@@ -1888,6 +2138,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 					"password":    password,
 					"private_key": privateKey,
 				}, want)
+				assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), want)
 			})
 		}
 	})
