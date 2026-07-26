@@ -108,6 +108,24 @@ func TestFailuresNeverReportPassed(t *testing.T) {
 	}
 }
 
+func TestProfileCleanupFailureIsFatal(t *testing.T) {
+	deps := passingTestDependencies(t, newCleanTestRepository(t))
+	deps.removeAll = func(path string) error {
+		if err := os.RemoveAll(path); err != nil { //nolint:gosec // path is created by executeProfile for this injected cleanup seam
+			return err
+		}
+		return fmt.Errorf("injected cleanup failure")
+	}
+
+	result, err := executeProfile(context.Background(), verificationManifest(), "fast", deps)
+	if err == nil || !strings.Contains(err.Error(), "remove profile temporary directory") {
+		t.Fatalf("error = %v, want cleanup failure", err)
+	}
+	if result.Status != statusFailed {
+		t.Fatalf("status = %q, want %q", result.Status, statusFailed)
+	}
+}
+
 func TestPrerequisitesReportAvailabilityAndVersion(t *testing.T) {
 	repo := newCleanTestRepository(t)
 	writeTestFile(t, filepath.Join(repo, "untracked.txt"), "fixture\n")
@@ -399,6 +417,72 @@ func TestReleaseAssetsMatchProductionUpdater(t *testing.T) {
 	}
 }
 
+func TestAssetAndOutputPathSemanticsByOS(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		goos       string
+		goarch     string
+		tempDir    string
+		goRoot     string
+		wantBinary string
+		wantGofmt  string
+		wantAsset  string
+		wantName   string
+	}{
+		{
+			name:       "linux",
+			goos:       "linux",
+			goarch:     "amd64",
+			tempDir:    "/tmp/verify",
+			goRoot:     "/opt/go",
+			wantBinary: "/tmp/verify/ssm",
+			wantGofmt:  "/opt/go/bin/gofmt",
+			wantAsset:  "/tmp/verify/ssm-linux-amd64",
+			wantName:   "ssm-linux-amd64",
+		},
+		{
+			name:       "macos",
+			goos:       "darwin",
+			goarch:     "arm64",
+			tempDir:    "/private/tmp/verify",
+			goRoot:     "/opt/go",
+			wantBinary: "/private/tmp/verify/ssm",
+			wantGofmt:  "/opt/go/bin/gofmt",
+			wantAsset:  "/private/tmp/verify/ssm-darwin-arm64",
+			wantName:   "ssm-darwin-arm64",
+		},
+		{
+			name:       "windows",
+			goos:       "windows",
+			goarch:     "amd64",
+			tempDir:    `C:\verify`,
+			goRoot:     `C:\Go`,
+			wantBinary: `C:\verify\ssm.exe`,
+			wantGofmt:  `C:\Go\bin\gofmt.exe`,
+			wantAsset:  `C:\verify\ssm-windows-amd64.exe`,
+			wantName:   "ssm-windows-amd64.exe",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			actionCtx := actionContext{TempDir: test.tempDir, GoRoot: test.goRoot}
+			if got := expandActionValueForOS("{temp}/ssm{exe}", actionCtx, test.goos); got != test.wantBinary {
+				t.Fatalf("host binary path = %q, want %q", got, test.wantBinary)
+			}
+			if got := expandActionValueForOS("{goroot}/bin/gofmt{exe}", actionCtx, test.goos); got != test.wantGofmt {
+				t.Fatalf("gofmt path = %q, want %q", got, test.wantGofmt)
+			}
+
+			output := commandArgumentAfter(t, assetCheck(test.goos, test.goarch).Action.Command.Args, "-o")
+			if got := expandActionValueForOS(output, actionCtx, test.goos); got != test.wantAsset {
+				t.Fatalf("release asset path = %q, want %q", got, test.wantAsset)
+			}
+			if got := update.AssetNameFor(test.goos, test.goarch); got != test.wantName {
+				t.Fatalf("updater asset = %q, want %q", got, test.wantName)
+			}
+		})
+	}
+}
+
 func TestCIAdaptersUseManifestProfile(t *testing.T) {
 	makefile, err := os.ReadFile(filepath.Join("..", "..", "Makefile"))
 	if err != nil {
@@ -458,7 +542,101 @@ func TestOfficialCIInstallsAndAssertsSSHPrerequisites(t *testing.T) {
 			t.Errorf("workflow does not explicitly install package %q", packageName)
 		}
 	}
-	for _, command := range []string{
+	for _, command := range expectedSSHMatrixTools() {
+		assertion := `command -v ` + command + ` >/dev/null`
+		if !strings.Contains(workflow, assertion) {
+			t.Errorf("workflow does not assert %q", command)
+		}
+	}
+	for _, assertion := range []string{
+		"test -r /dev/null",
+		"test -r /dev/zero",
+		"test -d /run/sshd",
+		"test -x /usr/sbin/sshd",
+		"test -x /usr/lib/openssh/sftp-server",
+	} {
+		if !strings.Contains(workflow, assertion) {
+			t.Errorf("workflow does not assert system path with %q", assertion)
+		}
+	}
+}
+
+func TestSSHMatrixPrerequisitesMatchScriptAndOfficialCI(t *testing.T) {
+	manifest := verificationManifest()
+	ci, ok := findProfile(manifest, "ci")
+	if !ok {
+		t.Fatal("ci profile not found")
+	}
+	var matrix Check
+	for _, check := range ci.Checks {
+		if check.ID == "ssh-matrix" {
+			matrix = check
+			break
+		}
+	}
+	var manifestTools []string
+	var manifestPaths []string
+	for _, prerequisite := range matrix.Prerequisites {
+		switch prerequisite.Kind {
+		case "tool":
+			manifestTools = append(manifestTools, prerequisite.Name)
+		case "system_path":
+			manifestPaths = append(manifestPaths, prerequisite.Name+"="+prerequisite.Version)
+		}
+	}
+
+	scriptData, err := os.ReadFile(filepath.Join("..", "..", "scripts", "ssh_matrix_test.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowData, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTools := expectedSSHMatrixTools()
+	if got := requiredToolsFromScript(string(scriptData)); !reflect.DeepEqual(got, wantTools) {
+		t.Fatalf("script required tools = %v, want audited external tools %v", got, wantTools)
+	}
+	if !reflect.DeepEqual(manifestTools, wantTools) {
+		t.Fatalf("manifest SSH tools = %v, want script parity %v", manifestTools, wantTools)
+	}
+	if got := assertedToolsFromWorkflow(string(workflowData)); !reflect.DeepEqual(got, wantTools) {
+		t.Fatalf("official CI SSH assertions = %v, want manifest parity %v", got, wantTools)
+	}
+
+	wantPaths := []string{
+		"/dev/null=readable",
+		"/dev/zero=readable",
+		"/run/sshd=directory",
+		"/usr/sbin/sshd=executable",
+		"/usr/lib/openssh/sftp-server=executable",
+	}
+	if !reflect.DeepEqual(manifestPaths, wantPaths) {
+		t.Fatalf("manifest SSH system paths = %v, want %v", manifestPaths, wantPaths)
+	}
+	for _, builtin := range []string{
+		"cd",
+		"command",
+		"echo",
+		"kill",
+		"printf",
+		"pwd",
+		"set",
+		"test",
+		"trap",
+		"true",
+	} {
+		if containsString(manifestTools, builtin) {
+			t.Errorf("shell builtin %q is incorrectly declared as an external tool", builtin)
+		}
+	}
+	if containsString(manifestTools, "jq") {
+		t.Fatal("unused jq is still declared as an SSH matrix prerequisite")
+	}
+}
+
+func expectedSSHMatrixTools() []string {
+	return []string{
 		"awk",
 		"bash",
 		"cat",
@@ -471,11 +649,11 @@ func TestOfficialCIInstallsAndAssertsSSHPrerequisites(t *testing.T) {
 		"grep",
 		"head",
 		"id",
-		"jq",
 		"ln",
 		"mkdir",
 		"mktemp",
 		"nohup",
+		"printenv",
 		"rm",
 		"script",
 		"sed",
@@ -488,21 +666,41 @@ func TestOfficialCIInstallsAndAssertsSSHPrerequisites(t *testing.T) {
 		"sshd",
 		"tr",
 		"wc",
-	} {
-		assertion := `command -v ` + command + ` >/dev/null`
-		if !strings.Contains(workflow, assertion) {
-			t.Errorf("workflow does not assert %q", command)
+	}
+}
+
+func requiredToolsFromScript(script string) []string {
+	var tools []string
+	for _, line := range strings.Split(script, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "require" {
+			tools = append(tools, fields[1])
 		}
 	}
-	for _, assertion := range []string{
-		"test -d /run/sshd",
-		"test -x /usr/sbin/sshd",
-		"test -x /usr/lib/openssh/sftp-server",
-	} {
-		if !strings.Contains(workflow, assertion) {
-			t.Errorf("workflow does not assert system path with %q", assertion)
+	return tools
+}
+
+func assertedToolsFromWorkflow(workflow string) []string {
+	var tools []string
+	for _, line := range strings.Split(workflow, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 4 &&
+			fields[0] == "command" &&
+			fields[1] == "-v" &&
+			fields[3] == ">/dev/null" {
+			tools = append(tools, fields[2])
 		}
 	}
+	return tools
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestProfileManifest(t *testing.T) {
@@ -548,26 +746,29 @@ func TestProfilesAreNonMutating(t *testing.T) {
 	if err := validateNonMutating(manifest); err != nil {
 		t.Fatalf("manifest contains a mutating action: %v", err)
 	}
-	mutating := manifest
-	mutating.Profiles = append([]Profile(nil), manifest.Profiles...)
-	mutating.Profiles[1].Checks = append([]Check(nil), manifest.Profiles[1].Checks...)
-	mutating.Profiles[1].Checks = append(mutating.Profiles[1].Checks, Check{
-		ID:          "forbidden-tag",
-		Requirement: requirementRequired,
-		Action:      commandAction("git", []string{"tag", "v9.9.9"}, nil, ""),
-	})
-	if err := validateNonMutating(mutating); err == nil {
-		t.Fatal("manifest accepted a tag-creating action")
-	}
-	for _, action := range []Action{
-		commandAction("go", []string{"test", "-c", "-o", "mutated", "./..."}, nil, ""),
-		commandAction("go", []string{"vet", "-json", "-o", "mutated", "./..."}, nil, ""),
+
+	for _, test := range []struct {
+		name   string
+		action Action
+	}{
+		{name: "tag", action: commandAction("git", []string{"tag", "v9.9.9"}, nil, "")},
+		{name: "publish", action: commandAction("npm", []string{"publish"}, nil, "")},
+		{name: "upload", action: commandAction("gh", []string{"release", "upload", "v9.9.9", "asset"}, nil, "")},
+		{name: "release", action: commandAction("goreleaser", []string{"release"}, nil, "")},
+		{name: "install", action: commandAction("go", []string{"install", "./cmd/ssm"}, nil, "")},
+		{name: "repository binary", action: commandAction("go", []string{"build", "-o", "ssm", "./cmd/ssm"}, nil, "")},
+		{name: "mutating go test flags", action: commandAction("go", []string{"test", "-c", "-o", "mutated", "./..."}, nil, "")},
+		{name: "mutating go vet flags", action: commandAction("go", []string{"vet", "-json", "-o", "mutated", "./..."}, nil, "")},
+		{name: "arbitrary command", action: commandAction("sh", []string{"-c", "touch arbitrary"}, nil, "")},
+		{name: "publication builtin", action: Action{Kind: actionBuiltin, Name: "publish-release"}},
 	} {
-		changed := verificationManifest()
-		changed.Profiles[1].Checks[0].Action = action
-		if err := validateNonMutating(changed); err == nil {
-			t.Fatalf("manifest accepted unreviewed action: %+v", action.Command)
-		}
+		t.Run("rejects "+test.name, func(t *testing.T) {
+			changed := verificationManifest()
+			changed.Profiles[1].Checks[0].Action = test.action
+			if err := validateNonMutating(changed); err == nil {
+				t.Fatalf("manifest accepted forbidden action: %+v", test.action)
+			}
+		})
 	}
 
 	for _, profileName := range []string{"fast", "ci", "release"} {
@@ -665,6 +866,154 @@ func TestProfilesAreNonMutating(t *testing.T) {
 	})
 }
 
+func TestCanonicalConstructorsMatchReviewedActionPolicy(t *testing.T) {
+	canonical := make(map[string]Action)
+	for _, check := range append(ciChecks(), releaseChecks()...) {
+		canonical[check.ID] = check.Action
+	}
+	policy := reviewedActionPolicy()
+	if !reflect.DeepEqual(canonical, policy) {
+		t.Fatalf(
+			"canonical constructors differ from the independent reviewed security policy:\ncanonical: %#v\npolicy: %#v",
+			canonical,
+			policy,
+		)
+	}
+}
+
+func TestRepresentativeRealCIActionsAreNonMutating(t *testing.T) {
+	repo := newRepresentativeProfileRepository(t)
+	manifest := verificationManifest()
+	setProfileChecks(t, &manifest, "ci", []Check{
+		formatCheck(),
+		buildCheck(),
+		unitCheck(),
+	})
+
+	before, err := repositorySnapshot(repo)
+	if err != nil {
+		t.Fatalf("snapshot before representative CI actions: %v", err)
+	}
+	result, err := executeProfile(context.Background(), manifest, "ci", runtimeDependencies{
+		repoRoot: repo,
+		stdout:   io.Discard,
+		stderr:   io.Discard,
+		prerequisites: func(Prerequisite) prerequisiteState {
+			return prerequisiteState{available: true}
+		},
+		actions: executeAction,
+	})
+	if err != nil {
+		t.Fatalf("execute representative real CI actions: %v", err)
+	}
+	if result.Status != statusPassed {
+		t.Fatalf("representative CI status = %q, want %q", result.Status, statusPassed)
+	}
+	after, err := repositorySnapshot(repo)
+	if err != nil {
+		t.Fatalf("snapshot after representative CI actions: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("representative real CI actions mutated the test-owned repository")
+	}
+}
+
+func TestRepresentativeRealReleaseActionsAreNonMutating(t *testing.T) {
+	repo := newRepresentativeProfileRepository(t)
+	manifest := verificationManifest()
+	allReleaseChecks := releaseChecks()
+	representative := append([]Check{allReleaseChecks[0]}, allReleaseChecks[1:7]...)
+	representative = append(representative, allReleaseChecks[8], allReleaseChecks[9])
+	setProfileChecks(t, &manifest, "release", representative)
+
+	before, err := repositorySnapshot(repo)
+	if err != nil {
+		t.Fatalf("snapshot before representative release actions: %v", err)
+	}
+	result, err := executeProfile(context.Background(), manifest, "release", runtimeDependencies{
+		repoRoot: repo,
+		stdout:   io.Discard,
+		stderr:   io.Discard,
+		prerequisites: func(Prerequisite) prerequisiteState {
+			return prerequisiteState{available: true}
+		},
+		actions: executeAction,
+	})
+	if err != nil {
+		t.Fatalf("execute representative real release actions: %v", err)
+	}
+	if result.Status != statusPreflightPassed {
+		t.Fatalf("representative release status = %q, want %q", result.Status, statusPreflightPassed)
+	}
+	after, err := repositorySnapshot(repo)
+	if err != nil {
+		t.Fatalf("snapshot after representative release actions: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("representative real release actions mutated the test-owned repository")
+	}
+}
+
+func TestProfileRejectsNonIgnoredUntrackedPathsBeforeExecution(t *testing.T) {
+	repo := newCleanTestRepository(t)
+	writeTestFile(t, filepath.Join(repo, "scratch.txt"), "must not be read\n")
+
+	actionCalled := false
+	deps := passingTestDependencies(t, repo)
+	deps.actions = func(context.Context, Action, actionContext) checkResult {
+		actionCalled = true
+		return checkResult{Status: statusPassed}
+	}
+	result, err := executeProfile(context.Background(), verificationManifest(), "fast", deps)
+	if err == nil || !strings.Contains(err.Error(), "non-ignored untracked") {
+		t.Fatalf("error = %v, want clean-tree prerequisite failure", err)
+	}
+	if actionCalled {
+		t.Fatal("profile action ran before the clean-tree prerequisite was enforced")
+	}
+	if result.Status != statusFailed {
+		t.Fatalf("status = %q, want %q", result.Status, statusFailed)
+	}
+}
+
+func TestRepositorySnapshotUsesUntrackedNamesOnly(t *testing.T) {
+	repo := newCleanTestRepository(t)
+	path := filepath.Join(repo, "untracked.txt")
+	writeTestFile(t, path, "first secret value\n")
+	before, err := repositorySnapshot(repo)
+	if err != nil {
+		t.Fatalf("snapshot before: %v", err)
+	}
+	writeTestFile(t, path, "different secret value with the same path\n")
+	after, err := repositorySnapshot(repo)
+	if err != nil {
+		t.Fatalf("snapshot after: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("snapshot depends on untracked file contents instead of Git name metadata")
+	}
+}
+
+func TestRepositorySnapshotIgnoresUnreadableSecretLikeFiles(t *testing.T) {
+	repo := newCleanTestRepository(t)
+	writeTestFile(t, filepath.Join(repo, ".gitignore"), "master.pass\n")
+	gitOutput(t, repo, "add", ".gitignore")
+	gitOutput(t, repo, "commit", "--quiet", "-m", "ignore local secret")
+
+	secret := filepath.Join(repo, "master.pass")
+	writeTestFile(t, secret, "test-only secret\n")
+	if err := os.Chmod(secret, 0); err != nil {
+		t.Fatalf("make ignored secret unreadable: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(secret, 0o600)
+	})
+
+	if _, err := repositorySnapshot(repo); err != nil {
+		t.Fatalf("snapshot opened or otherwise depended on ignored secret-like file: %v", err)
+	}
+}
+
 func TestRepositorySnapshotDetectsEveryMutationClass(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -685,6 +1034,12 @@ func TestRepositorySnapshotDetectsEveryMutationClass(t *testing.T) {
 			},
 		},
 		{
+			name: "index flags",
+			mutate: func(t *testing.T, repo string) {
+				gitOutput(t, repo, "update-index", "--assume-unchanged", "sentinel.txt")
+			},
+		},
+		{
 			name: "untracked addition",
 			mutate: func(t *testing.T, repo string) {
 				writeTestFile(t, filepath.Join(repo, "new.txt"), "new\n")
@@ -702,21 +1057,30 @@ func TestRepositorySnapshotDetectsEveryMutationClass(t *testing.T) {
 			},
 		},
 		{
-			name: "untracked content",
-			before: func(t *testing.T, repo string) {
-				writeTestFile(t, filepath.Join(repo, "untracked.txt"), "before\n")
-			},
-			mutate: func(t *testing.T, repo string) {
-				writeTestFile(t, filepath.Join(repo, "untracked.txt"), "after\n")
-			},
-		},
-		{
 			name: "further dirty tracked content",
 			before: func(t *testing.T, repo string) {
 				writeTestFile(t, filepath.Join(repo, "sentinel.txt"), "dirty-before\n")
 			},
 			mutate: func(t *testing.T, repo string) {
 				writeTestFile(t, filepath.Join(repo, "sentinel.txt"), "dirty-after\n")
+			},
+		},
+		{
+			name: "HEAD allow-empty commit",
+			mutate: func(t *testing.T, repo string) {
+				gitOutput(t, repo, "commit", "--quiet", "--allow-empty", "-m", "ref-only mutation")
+			},
+		},
+		{
+			name: "tag ref",
+			mutate: func(t *testing.T, repo string) {
+				gitOutput(t, repo, "tag", "snapshot-mutation")
+			},
+		},
+		{
+			name: "remote ref",
+			mutate: func(t *testing.T, repo string) {
+				gitOutput(t, repo, "update-ref", "refs/remotes/origin/snapshot-mutation", "HEAD")
 			},
 		},
 	}
@@ -737,6 +1101,52 @@ func TestRepositorySnapshotDetectsEveryMutationClass(t *testing.T) {
 			}
 			if bytes.Equal(before, after) {
 				t.Fatal("repository snapshot did not change")
+			}
+		})
+	}
+}
+
+func TestProfileDetectsHEADTagAndRemoteRefMutations(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, string)
+	}{
+		{
+			name: "HEAD",
+			mutate: func(t *testing.T, repo string) {
+				gitOutput(t, repo, "commit", "--quiet", "--allow-empty", "-m", "profile mutation")
+			},
+		},
+		{
+			name: "tag",
+			mutate: func(t *testing.T, repo string) {
+				gitOutput(t, repo, "tag", "profile-mutation")
+			},
+		},
+		{
+			name: "remote ref",
+			mutate: func(t *testing.T, repo string) {
+				gitOutput(t, repo, "update-ref", "refs/remotes/origin/profile-mutation", "HEAD")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo := newCleanTestRepository(t)
+			deps := passingTestDependencies(t, repo)
+			mutated := false
+			deps.actions = func(context.Context, Action, actionContext) checkResult {
+				if !mutated {
+					test.mutate(t, repo)
+					mutated = true
+				}
+				return checkResult{Status: statusPassed}
+			}
+			result, err := executeProfile(context.Background(), verificationManifest(), "fast", deps)
+			if err == nil || !strings.Contains(err.Error(), "changed repository state") {
+				t.Fatalf("error = %v, want repository-state failure", err)
+			}
+			if result.Status != statusFailed {
+				t.Fatalf("status = %q, want %q", result.Status, statusFailed)
 			}
 		})
 	}
@@ -841,6 +1251,54 @@ func newGoTestRepository(t *testing.T) string {
 	gitOutput(t, repo, "add", ".")
 	gitOutput(t, repo, "commit", "--quiet", "-m", "test fixture")
 	return repo
+}
+
+func newRepresentativeProfileRepository(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	for _, directory := range []string{
+		filepath.Join("cmd", "ssm"),
+		filepath.Join("skills", "agent-ssm", "references"),
+		"scripts",
+	} {
+		if err := os.MkdirAll(filepath.Join(repo, directory), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestFile(t, filepath.Join(repo, "go.mod"), "module example.invalid/verifyfixture\n\ngo 1.25.12\n")
+	writeTestFile(
+		t,
+		filepath.Join(repo, "cmd", "ssm", "main.go"),
+		"package main\n\nvar version = \"1.2.3\"\n\nfunc main() {}\n",
+	)
+	writeTestFile(
+		t,
+		filepath.Join(repo, "cmd", "ssm", "main_test.go"),
+		"package main\n\nimport \"testing\"\n\nfunc TestVersion(t *testing.T) {\n\tif version == \"\" {\n\t\tt.Fatal(\"empty version\")\n\t}\n}\n",
+	)
+	writeTestFile(t, filepath.Join(repo, "RELEASE_NOTES.md"), "# Release Notes\n\n## v1.2.3\n\n- Test-owned release fixture.\n")
+	writeTestFile(t, filepath.Join(repo, "install.sh"), "#!/bin/sh\nexit 0\n")
+	writeTestFile(t, filepath.Join(repo, "skills", "agent-ssm", "test-prompts.json"), "{\"issue\":18}\n")
+	writeTestFile(t, filepath.Join(repo, "skills", "agent-ssm", "references", "request-v1.schema.json"), "{\"type\":\"object\"}\n")
+	writeTestFile(t, filepath.Join(repo, "scripts", "ssh_matrix_test.sh"), "#!/usr/bin/env bash\nset -euo pipefail\n:\n")
+
+	gitOutput(t, repo, "init", "--quiet")
+	gitOutput(t, repo, "config", "user.name", "Verify Test")
+	gitOutput(t, repo, "config", "user.email", "verify@example.invalid")
+	gitOutput(t, repo, "add", ".")
+	gitOutput(t, repo, "commit", "--quiet", "-m", "representative profile fixture")
+	return repo
+}
+
+func setProfileChecks(t *testing.T, manifest *Manifest, profileName string, checks []Check) {
+	t.Helper()
+	for index := range manifest.Profiles {
+		if manifest.Profiles[index].Name == profileName {
+			manifest.Profiles[index].Checks = checks
+			return
+		}
+	}
+	t.Fatalf("profile %q not found", profileName)
 }
 
 func passingTestDependencies(t *testing.T, repo string) runtimeDependencies {

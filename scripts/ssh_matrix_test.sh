@@ -20,9 +20,35 @@ require() {
   fi
 }
 
+require awk
+require bash
+require cat
+require chmod
+require cp
+require dd
+require dirname
+require find
+require go
+require grep
+require head
+require id
+require ln
+require mkdir
+require mktemp
+require nohup
+require printenv
+require rm
+require script
+require sed
+require seq
+require sh
+require sha256sum
+require sleep
 require ssh
 require ssh-keygen
-require script
+require sshd
+require tr
+require wc
 
 SSHD=${SSHD:-$(command -v sshd 2>/dev/null || true)}
 if [ -z "$SSHD" ] && [ -x /usr/sbin/sshd ]; then

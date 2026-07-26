@@ -356,7 +356,122 @@
             },
             {
               "kind": "tool",
+              "name": "awk",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
               "name": "bash",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "cat",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "chmod",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "cp",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "dd",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "dirname",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "find",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            },
+            {
+              "kind": "tool",
+              "name": "grep",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "head",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "id",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "ln",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "mkdir",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "mktemp",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "nohup",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "printenv",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "rm",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "script",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "sed",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "seq",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "sh",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "sha256sum",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "sleep",
               "version": "any"
             },
             {
@@ -376,18 +491,23 @@
             },
             {
               "kind": "tool",
-              "name": "script",
+              "name": "tr",
               "version": "any"
             },
             {
               "kind": "tool",
-              "name": "jq",
+              "name": "wc",
               "version": "any"
             },
             {
-              "kind": "tool",
-              "name": "sha256sum",
-              "version": "any"
+              "kind": "system_path",
+              "name": "/dev/null",
+              "version": "readable"
+            },
+            {
+              "kind": "system_path",
+              "name": "/dev/zero",
+              "version": "readable"
             },
             {
               "kind": "system_path",
@@ -675,7 +795,122 @@
             },
             {
               "kind": "tool",
+              "name": "awk",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
               "name": "bash",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "cat",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "chmod",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "cp",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "dd",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "dirname",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "find",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            },
+            {
+              "kind": "tool",
+              "name": "grep",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "head",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "id",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "ln",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "mkdir",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "mktemp",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "nohup",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "printenv",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "rm",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "script",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "sed",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "seq",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "sh",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "sha256sum",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "sleep",
               "version": "any"
             },
             {
@@ -695,18 +930,23 @@
             },
             {
               "kind": "tool",
-              "name": "script",
+              "name": "tr",
               "version": "any"
             },
             {
               "kind": "tool",
-              "name": "jq",
+              "name": "wc",
               "version": "any"
             },
             {
-              "kind": "tool",
-              "name": "sha256sum",
-              "version": "any"
+              "kind": "system_path",
+              "name": "/dev/null",
+              "version": "readable"
+            },
+            {
+              "kind": "system_path",
+              "name": "/dev/zero",
+              "version": "readable"
             },
             {
               "kind": "system_path",

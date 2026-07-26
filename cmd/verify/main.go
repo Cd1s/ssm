@@ -20,7 +20,8 @@ func main() {
 		prerequisites: func(prerequisite Prerequisite) prerequisiteState {
 			return checkPrerequisite(repoRoot, prerequisite)
 		},
-		actions: executeAction,
+		actions:   executeAction,
+		removeAll: os.RemoveAll,
 	}
 	if err := runCLI(context.Background(), os.Args[1:], os.Stdout, os.Stderr, deps); err != nil {
 		fmt.Fprintf(os.Stderr, "verify: %v\n", err)

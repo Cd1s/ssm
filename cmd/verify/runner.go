@@ -75,6 +75,7 @@ type runtimeDependencies struct {
 	stderr        io.Writer
 	prerequisites func(Prerequisite) prerequisiteState
 	actions       func(context.Context, Action, actionContext) checkResult
+	removeAll     func(string) error
 }
 
 func executeCommand(ctx context.Context, specification Command, actionCtx actionContext) checkResult {
@@ -118,11 +119,32 @@ func executeCommand(ctx context.Context, specification Command, actionCtx action
 }
 
 func expandActionValue(value string, actionCtx actionContext) string {
-	value = strings.ReplaceAll(value, "{temp}", actionCtx.TempDir)
-	value = strings.ReplaceAll(value, "{exe}", executableSuffix())
+	return expandActionValueForOS(value, actionCtx, runtime.GOOS)
+}
+
+func expandActionValueForOS(value string, actionCtx actionContext, goos string) string {
+	value = expandPathPlaceholder(value, "{temp}", actionCtx.TempDir, goos)
+	value = expandPathPlaceholder(value, "{goroot}", actionCtx.GoRoot, goos)
+	value = strings.ReplaceAll(value, "{exe}", executableSuffixFor(goos))
 	value = strings.ReplaceAll(value, "{version}", actionCtx.Version)
-	value = strings.ReplaceAll(value, "{goroot}", actionCtx.GoRoot)
 	return value
+}
+
+func expandPathPlaceholder(value, placeholder, root, goos string) string {
+	if value == placeholder {
+		return root
+	}
+	prefix := placeholder + "/"
+	if !strings.HasPrefix(value, prefix) {
+		return value
+	}
+	remainder := strings.TrimPrefix(value, prefix)
+	separator := "/"
+	if goos == "windows" {
+		separator = `\`
+		remainder = strings.ReplaceAll(remainder, "/", separator)
+	}
+	return strings.TrimRight(root, `/\`) + separator + remainder
 }
 
 func executeBuiltin(name string, actionCtx actionContext) checkResult {
@@ -272,7 +294,7 @@ func validateReleaseNotes(repoRoot, version string) error {
 }
 
 func validateNonMutating(manifest Manifest) error {
-	approved := approvedActions()
+	approved := reviewedActionPolicy()
 	for _, profile := range manifest.Profiles {
 		for _, check := range profile.Checks {
 			want, ok := approved[check.ID]
@@ -285,14 +307,6 @@ func validateNonMutating(manifest Manifest) error {
 		}
 	}
 	return nil
-}
-
-func approvedActions() map[string]Action {
-	actions := make(map[string]Action)
-	for _, check := range append(ciChecks(), releaseChecks()...) {
-		actions[check.ID] = check.Action
-	}
-	return actions
 }
 
 func executeProfile(ctx context.Context, manifest Manifest, profileName string, deps runtimeDependencies) (result profileResult, returnErr error) {
@@ -318,9 +332,15 @@ func executeProfile(ctx context.Context, manifest Manifest, profileName string, 
 		}
 	}
 
-	before, err := repositorySnapshot(deps.repoRoot)
+	before, untracked, err := captureRepositorySnapshot(deps.repoRoot)
 	if err != nil {
 		return result, err
+	}
+	if len(untracked) != 0 {
+		return result, fmt.Errorf(
+			"repository clean-tree prerequisite failed: %d non-ignored untracked path(s)",
+			len(bytes.Split(bytes.TrimSuffix(untracked, []byte{0}), []byte{0})),
+		)
 	}
 	defer func() {
 		after, stateErr := repositorySnapshot(deps.repoRoot)
@@ -338,8 +358,18 @@ func executeProfile(ctx context.Context, manifest Manifest, profileName string, 
 	if err != nil {
 		return result, fmt.Errorf("create profile temporary directory: %w", err)
 	}
+	removeAll := deps.removeAll
+	if removeAll == nil {
+		removeAll = os.RemoveAll
+	}
 	defer func() {
-		_ = os.RemoveAll(tempDir) //nolint:gosec // tempDir is created immediately above by os.MkdirTemp
+		if cleanupErr := removeAll(tempDir); cleanupErr != nil {
+			result.Status = statusFailed
+			returnErr = errors.Join(
+				returnErr,
+				fmt.Errorf("remove profile temporary directory: %w", cleanupErr),
+			)
+		}
 	}()
 	result.Status = statusPassed
 	if profileName == "release" {
@@ -463,6 +493,14 @@ func checkPrerequisite(repoRoot string, prerequisite Prerequisite) prerequisiteS
 		case "executable":
 			if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 				return prerequisiteState{detail: "not an executable regular file"}
+			}
+		case "readable":
+			file, openErr := os.Open(prerequisite.Name) //nolint:gosec // fixed manifest-owned non-secret system path
+			if openErr != nil {
+				return prerequisiteState{detail: openErr.Error()}
+			}
+			if closeErr := file.Close(); closeErr != nil {
+				return prerequisiteState{detail: closeErr.Error()}
 			}
 		default:
 			return prerequisiteState{detail: "unknown system-path requirement " + prerequisite.Version}
@@ -607,14 +645,42 @@ func toolVersion(name string) (string, error) {
 }
 
 func repositorySnapshot(repoRoot string) ([]byte, error) {
+	snapshot, _, err := captureRepositorySnapshot(repoRoot)
+	return snapshot, err
+}
+
+func captureRepositorySnapshot(repoRoot string) ([]byte, []byte, error) {
 	digest := sha256.New()
 	gitParts := []struct {
 		name string
 		args []string
 	}{
 		{
+			name: "head",
+			args: []string{"rev-parse", "--verify", "HEAD"},
+		},
+		{
+			name: "head-name",
+			args: []string{"rev-parse", "--symbolic-full-name", "HEAD"},
+		},
+		{
+			name: "refs",
+			args: []string{
+				"for-each-ref",
+				"--sort=refname",
+				"--format=%(refname)%00%(objectname)%00%(symref)%00",
+				"refs/heads",
+				"refs/tags",
+				"refs/remotes",
+			},
+		},
+		{
 			name: "index",
 			args: []string{"ls-files", "--stage", "-z"},
+		},
+		{
+			name: "index-flags",
+			args: []string{"ls-files", "-v", "-z"},
 		},
 		{
 			name: "index-diff",
@@ -635,7 +701,7 @@ func repositorySnapshot(repoRoot string) ([]byte, error) {
 		command := exec.Command("git", append([]string{"-C", repoRoot}, part.args...)...) //nolint:gosec // fixed read-only Git argv
 		output, err := command.Output()
 		if err != nil {
-			return nil, fmt.Errorf("snapshot repository %s: %w", part.name, err)
+			return nil, nil, fmt.Errorf("snapshot repository %s: %w", part.name, err)
 		}
 		_, _ = fmt.Fprintf(digest, "%s\x00%d\x00", part.name, len(output))
 		_, _ = digest.Write(output)
@@ -643,47 +709,15 @@ func repositorySnapshot(repoRoot string) ([]byte, error) {
 			untracked = output
 		}
 	}
-
-	for _, name := range bytes.Split(untracked, []byte{0}) {
-		if len(name) == 0 {
-			continue
-		}
-		slashPath := string(name)
-		path := joinedPath(repoRoot, slashPath)
-		info, err := os.Lstat(path)
-		if err != nil {
-			return nil, fmt.Errorf("snapshot untracked file %s: %w", slashPath, err)
-		}
-		_, _ = fmt.Fprintf(digest, "untracked-file\x00%s\x00%s\x00%d\x00", slashPath, info.Mode(), info.Size())
-		if info.Mode()&os.ModeSymlink != 0 {
-			target, err := os.Readlink(path)
-			if err != nil {
-				return nil, fmt.Errorf("snapshot untracked symlink %s: %w", slashPath, err)
-			}
-			_, _ = digest.Write([]byte(target))
-			continue
-		}
-		if !info.Mode().IsRegular() {
-			continue
-		}
-		file, err := os.Open(path) //nolint:gosec // Git supplied a path within the caller-selected repository
-		if err != nil {
-			return nil, fmt.Errorf("snapshot untracked file %s: %w", slashPath, err)
-		}
-		_, copyErr := io.Copy(digest, file)
-		closeErr := file.Close()
-		if copyErr != nil {
-			return nil, fmt.Errorf("snapshot untracked file %s: %w", slashPath, copyErr)
-		}
-		if closeErr != nil {
-			return nil, fmt.Errorf("close untracked file %s: %w", slashPath, closeErr)
-		}
-	}
-	return digest.Sum(nil), nil
+	return digest.Sum(nil), untracked, nil
 }
 
 func executableSuffix() string {
-	if runtime.GOOS == "windows" {
+	return executableSuffixFor(runtime.GOOS)
+}
+
+func executableSuffixFor(goos string) string {
+	if goos == "windows" {
 		return ".exe"
 	}
 	return ""

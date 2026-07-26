@@ -51,11 +51,11 @@ jobs:
           command -v grep >/dev/null
           command -v head >/dev/null
           command -v id >/dev/null
-          command -v jq >/dev/null
           command -v ln >/dev/null
           command -v mkdir >/dev/null
           command -v mktemp >/dev/null
           command -v nohup >/dev/null
+          command -v printenv >/dev/null
           command -v rm >/dev/null
           command -v script >/dev/null
           command -v sed >/dev/null
@@ -68,6 +68,8 @@ jobs:
           command -v sshd >/dev/null
           command -v tr >/dev/null
           command -v wc >/dev/null
+          test -r /dev/null
+          test -r /dev/zero
           test -d /run/sshd
           test -x /usr/sbin/sshd
           test -x /usr/lib/openssh/sftp-server

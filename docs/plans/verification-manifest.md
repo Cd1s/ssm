@@ -15,8 +15,16 @@ The output is deterministic JSON and is snapshot-tested in full. Commands are
 represented as executable and argument arrays, with separate environment
 entries. `{temp}`, `{exe}`, `{goroot}`, and `{version}` are explicit
 cross-platform substitutions; commands are not joined into a host shell
-string. Validation compares every action with its exact reviewed definition, so
-extra `go test`, `go vet`, output, or other flags are rejected.
+string. Linux, macOS, and Windows path semantics are table-tested without
+pretending to execute a foreign operating-system binary.
+
+Runtime authority comes from the separate, manually reviewed policy in
+`cmd/verify/security_policy.go`. It duplicates the exact allowed builtin names,
+executables, argument vectors, environment, and output expectations; it is
+deliberately not generated from the manifest constructors. Changing a
+constructor and the JSON golden together therefore does not authorize a new
+tag, publish, upload, release, install, repository-output, mutating Go, or
+arbitrary command.
 
 ## BC-10 old-to-new membership
 
@@ -115,7 +123,7 @@ outside this verification driver.
 
 Required prerequisites are listed in the manifest:
 
-- a Git worktree;
+- a Git worktree with no non-ignored untracked paths when execution starts;
 - Go 1.25.12 and the gofmt executable from that same resolved toolchain;
 - the official golangci-lint 2.11.4 prebuilt;
 - `jq` and `bash`;
@@ -123,20 +131,52 @@ Required prerequisites are listed in the manifest:
   Go module cache.
 
 Files declared `tracked` are verified through Git, not merely by filesystem
-presence. Verification snapshots the index, tracked worktree content, and the
-names, types, and content of untracked files before and after every profile, so
-it also detects further edits in an already-dirty file.
+presence. Before running any action, verification uses Git name/status metadata
+to reject every non-ignored untracked path. It never opens, follows, or hashes
+untracked or ignored file contents. Ignored files such as
+`master.pass`, `cloud.json`, tokens, and private keys remain untouched and
+unread.
 
-The live SSH matrix is conditional locally on Linux, `bash`, `ssh`,
-`ssh-keygen`, `sshd`, `script`, `jq`, `sha256sum`, and its declared system
-paths. It uses only a temporary test home, temporary keys, a temporary OpenSSH
-server, and a temporary binary. It does not read the user's vault, master
-password, sync configuration, tokens, private keys, or decrypted inventory.
+The before/after snapshot covers the HEAD object and symbolic name; all local
+heads, tags, and remote refs; index entries, flags, and staged diff; tracked
+worktree content diff; and non-ignored untracked names. This detects allow-empty
+commits, ref/tag changes, index changes, further edits to already-dirty tracked
+files, and created or removed non-ignored untracked names without reading their
+contents.
+
+The live SSH matrix is conditional locally on Linux and its complete audited
+external-tool list: `awk`, `bash`, `cat`, `chmod`, `cp`, `dd`, `dirname`,
+`find`, `go`, `grep`, `head`, `id`, `ln`, `mkdir`, `mktemp`, `nohup`,
+`printenv`, `rm`, `script`, `sed`, `seq`, `sh`, `sha256sum`, `sleep`, `ssh`,
+`ssh-keygen`, `sshd`, `tr`, and `wc`. `jq` is a JSON-artifact prerequisite,
+not an SSH-matrix prerequisite. Bash builtins such as `cd`, `command`, `echo`,
+`kill`, `printf`, `pwd`, `set`, `test`, `trap`, and `true` are not
+misrepresented as external tools. The manifest and official Linux CI also
+assert readable `/dev/null` and `/dev/zero`, `/run/sshd`, the server binary,
+and the SFTP subsystem path. Tests keep the script declarations, manifest, and
+workflow assertions in exact parity.
+
+The matrix uses only a temporary test home, temporary keys, a temporary
+OpenSSH server, and a temporary binary. It does not read the user's vault,
+master password, sync configuration, tokens, private keys, or decrypted
+inventory. Failure to remove any profile temporary directory makes the profile
+failed and nonzero.
 
 The supported six-platform release target table is owned by
 `internal/releaseasset`. Manifest asset builds, checksum verification, and the
 production updater selector consume that same table/name function; a direct
 parity test also compares every manifest output with the updater selector.
+
+Focused tests execute representative production actions without recursively
+running a full profile inside the verifier's own test suite. The CI
+representative runs real format, temporary build, and unit command paths in a
+test-owned Git repository. The release representative runs the real source
+version and release-note builtins, all six shared-name cross-builds, and the
+checksum builtin in another test-owned repository; foreign binaries are built
+but never executed. Repository snapshot enforcement surrounds both. The real
+top-level `ci` and `release` executions remain the coverage for lint,
+vulnerability, race, JSON, shell, live SSH, updater selection, and updater
+failure-path actions.
 
 Expected runtime depends on caches and host speed:
 
