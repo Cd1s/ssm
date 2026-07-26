@@ -215,7 +215,9 @@ notes, and the automatic-update controls in Decision 11.
   recovery.
 - **BC-10 — `make check` becomes non-mutating and CI-equivalent.**
   Characterize the old mutating subset; document prerequisites, runtime
-  expectations, and any later faster development profile.
+  expectations, and any later faster development profile. The reviewed
+  old-to-new membership and operating notes are recorded in the
+  [verification manifest migration](./verification-manifest.md).
 
 No other behavior change is implied by adopting the three modules. Newly named
 stable error values, field additions, omissions, exit changes, or on-disk
