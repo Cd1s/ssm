@@ -1,18 +1,17 @@
 package main
 
 import (
+	"archive/tar"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -20,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -178,13 +178,16 @@ type compiledSSHFixture struct {
 
 	connections atomic.Int64
 	sessions    atomic.Int64
+
+	serveDone chan struct{}
+	activeMu  sync.Mutex
+	active    map[net.Conn]struct{}
+	connWG    sync.WaitGroup
+	closeOnce sync.Once
 }
 
 func newCompiledSSHFixture(t *testing.T, options compiledSSHFixtureOptions) *compiledSSHFixture {
 	t.Helper()
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Fatal("sh is required for the compiled CLI SSH fixture")
-	}
 	_, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("generate compiled CLI fixture host key: %v", err)
@@ -206,8 +209,14 @@ func newCompiledSSHFixture(t *testing.T, options compiledSSHFixtureOptions) *com
 	if err != nil {
 		t.Fatalf("listen for compiled CLI SSH fixture: %v", err)
 	}
-	fixture := &compiledSSHFixture{listener: listener, signer: signer, options: options}
-	t.Cleanup(func() { _ = listener.Close() })
+	fixture := &compiledSSHFixture{
+		listener:  listener,
+		signer:    signer,
+		options:   options,
+		serveDone: make(chan struct{}),
+		active:    map[net.Conn]struct{}{},
+	}
+	t.Cleanup(func() { fixture.Close(t) })
 	go fixture.serve(serverConfig)
 	return fixture
 }
@@ -230,13 +239,55 @@ func (f *compiledSSHFixture) SessionCount() int64 {
 	return f.sessions.Load()
 }
 
+func (f *compiledSSHFixture) Close(t *testing.T) {
+	t.Helper()
+	f.closeOnce.Do(func() {
+		_ = f.listener.Close()
+		select {
+		case <-f.serveDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("compiled CLI SSH fixture accept loop did not stop")
+		}
+
+		f.activeMu.Lock()
+		for connection := range f.active {
+			_ = connection.Close()
+		}
+		f.activeMu.Unlock()
+
+		closed := make(chan struct{})
+		go func() {
+			f.connWG.Wait()
+			close(closed)
+		}()
+		select {
+		case <-closed:
+		case <-time.After(5 * time.Second):
+			t.Fatal("compiled CLI SSH fixture connection goroutines did not stop")
+		}
+	})
+}
+
 func (f *compiledSSHFixture) serve(serverConfig *gossh.ServerConfig) {
+	defer close(f.serveDone)
 	for {
 		raw, err := f.listener.Accept()
 		if err != nil {
 			return
 		}
-		go f.serveConnection(raw, serverConfig)
+		f.activeMu.Lock()
+		f.active[raw] = struct{}{}
+		f.activeMu.Unlock()
+		f.connWG.Add(1)
+		go func() {
+			defer f.connWG.Done()
+			defer func() {
+				f.activeMu.Lock()
+				delete(f.active, raw)
+				f.activeMu.Unlock()
+			}()
+			f.serveConnection(raw, serverConfig)
+		}()
 	}
 }
 
@@ -247,8 +298,11 @@ func (f *compiledSSHFixture) serveConnection(raw net.Conn, serverConfig *gossh.S
 		return
 	}
 	f.connections.Add(1)
-	defer func() { _ = serverConn.Close() }()
-	go gossh.DiscardRequests(requests)
+	requestsDone := make(chan struct{})
+	go func() {
+		gossh.DiscardRequests(requests)
+		close(requestsDone)
+	}()
 	for newChannel := range channels {
 		if newChannel.ChannelType() != "session" {
 			_ = newChannel.Reject(gossh.UnknownChannelType, "session only")
@@ -263,8 +317,10 @@ func (f *compiledSSHFixture) serveConnection(raw net.Conn, serverConfig *gossh.S
 			continue
 		}
 		f.sessions.Add(1)
-		go serveCompiledSSHSession(channel, channelRequests)
+		serveCompiledSSHSession(channel, channelRequests)
 	}
+	_ = serverConn.Close()
+	<-requestsDone
 }
 
 func serveCompiledSSHSession(channel gossh.Channel, requests <-chan *gossh.Request) {
@@ -280,21 +336,247 @@ func serveCompiledSSHSession(channel gossh.Channel, requests <-chan *gossh.Reque
 			return
 		}
 		_ = request.Reply(true, nil)
-		command := exec.Command("sh", "-c", payload.Command) //nolint:gosec // deliberate test-owned SSH execution fixture
-		command.Stdin = channel
-		command.Stdout = channel
-		command.Stderr = channel.Stderr()
-		status := 0
-		if err := command.Run(); err != nil {
-			status = 255
-			var exitErr *exec.ExitError
-			if errors.As(err, &exitErr) {
-				status = exitErr.ExitCode()
-			}
-		}
+		status := executeCompiledSSHCommand(channel, channel.Stderr(), payload.Command)
 		_, _ = channel.SendRequest("exit-status", false, gossh.Marshal(struct{ Status uint32 }{uint32(status)}))
 		return
 	}
+}
+
+func executeCompiledSSHCommand(stdinStdout io.ReadWriter, stderr io.Writer, command string) int {
+	switch {
+	case strings.Contains(command, "printf 'SSM_RESUME %s %s\\n'"):
+		emptyDigest := sha256.Sum256(nil)
+		_, _ = fmt.Fprintf(stdinStdout, "SSM_RESUME 0 %x\n", emptyDigest)
+		return 0
+	case strings.Contains(command, "cat >>") && strings.Contains(command, "printf 'SSM_TRANSFER %s %s\\n'"):
+		paths := compiledShellQuotedWords(command[strings.LastIndex(command, "mv -f -- "):])
+		if len(paths) < 2 {
+			return compiledSSHFixtureCommandError(stderr)
+		}
+		return receiveCompiledSSHFile(stdinStdout, stderr, paths[1])
+	case strings.Contains(command, "cat > \"$tmp\"") && strings.Contains(command, "printf 'SSM_TRANSFER %s %s\\n'"):
+		paths := compiledShellQuotedWords(command[strings.LastIndex(command, "mv -f -- "):])
+		if len(paths) < 1 {
+			return compiledSSHFixtureCommandError(stderr)
+		}
+		return receiveCompiledSSHFile(stdinStdout, stderr, paths[0])
+	case strings.Contains(command, "tar -C ") && strings.Contains(command, " -xf -"):
+		path, ok := compiledShellQuotedWordAfter(command, "tar -C ")
+		if !ok {
+			return compiledSSHFixtureCommandError(stderr)
+		}
+		return receiveCompiledSSHTar(stdinStdout, stderr, path)
+	case strings.Contains(command, "tar -C ") && strings.Contains(command, " -cf - ."):
+		path, ok := compiledShellQuotedWordAfter(command, "tar -C ")
+		if !ok {
+			return compiledSSHFixtureCommandError(stderr)
+		}
+		return sendCompiledSSHTar(stdinStdout, stderr, path)
+	case strings.HasPrefix(command, "if [ -d "):
+		path, ok := compiledShellQuotedWordAfter(command, "if [ -d ")
+		if !ok {
+			return compiledSSHFixtureCommandError(stderr)
+		}
+		info, err := os.Stat(path)
+		switch {
+		case err != nil:
+			_, _ = io.WriteString(stdinStdout, "MISSING\n")
+		case info.IsDir():
+			_, _ = io.WriteString(stdinStdout, "DIR\n")
+		default:
+			_, _ = io.WriteString(stdinStdout, "FILE\n")
+		}
+		return 0
+	case strings.HasPrefix(command, "cat -- "):
+		path, ok := compiledShellQuotedWordAfter(command, "cat -- ")
+		if !ok {
+			return compiledSSHFixtureCommandError(stderr)
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			_, _ = io.WriteString(stderr, "compiled fixture remote file unavailable\n")
+			return 1
+		}
+		defer func() { _ = file.Close() }()
+		if _, err := io.Copy(stdinStdout, file); err != nil {
+			return 1
+		}
+		return 0
+	}
+
+	argv := compiledShellQuotedWords(command)
+	if len(argv) == 1 && argv[0] == "true" {
+		return 0
+	}
+	if len(argv) == 3 && argv[0] == "sh" && argv[1] == "-c" && argv[2] == "exit 255" {
+		return 255
+	}
+	return compiledSSHFixtureCommandError(stderr)
+}
+
+func receiveCompiledSSHFile(source io.ReadWriter, stderr io.Writer, path string) int {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		_, _ = io.Copy(io.Discard, source)
+		_, _ = io.WriteString(stderr, "compiled fixture remote parent unavailable\n")
+		return 1
+	}
+	file, err := os.CreateTemp(filepath.Dir(path), ".compiled-ssh-upload-*")
+	if err != nil {
+		_, _ = io.Copy(io.Discard, source)
+		_, _ = io.WriteString(stderr, "compiled fixture remote temporary file unavailable\n")
+		return 1
+	}
+	tempPath := file.Name()
+	defer func() { _ = os.Remove(tempPath) }()
+	hash := sha256.New()
+	size, copyErr := io.Copy(io.MultiWriter(file, hash), source)
+	closeErr := file.Close()
+	if copyErr != nil || closeErr != nil {
+		_, _ = io.WriteString(stderr, "compiled fixture remote write failed\n")
+		return 1
+	}
+	if err := os.Chmod(tempPath, 0o600); err != nil {
+		return 1
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		_, _ = io.WriteString(stderr, "compiled fixture remote publish failed\n")
+		return 1
+	}
+	_, _ = fmt.Fprintf(source, "SSM_TRANSFER %d %x\n", size, hash.Sum(nil))
+	return 0
+}
+
+func receiveCompiledSSHTar(source io.Reader, stderr io.Writer, root string) int {
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		_, _ = io.WriteString(stderr, "compiled fixture remote directory unavailable\n")
+		return 1
+	}
+	reader := tar.NewReader(source)
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			// Native tar writers may pad the archive beyond the two zero
+			// blocks that archive/tar treats as EOF. Drain through SSH EOF so
+			// the producer never sees a premature channel close.
+			_, _ = io.Copy(io.Discard, source)
+			return 0
+		}
+		if err != nil {
+			_, _ = io.WriteString(stderr, "compiled fixture tar stream invalid\n")
+			return 1
+		}
+		relative := filepath.Clean(filepath.FromSlash(header.Name))
+		if relative == "." {
+			continue
+		}
+		if filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			_, _ = io.WriteString(stderr, "compiled fixture tar path rejected\n")
+			return 1
+		}
+		destination := filepath.Join(root, relative)
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(destination, 0o700); err != nil {
+				return 1
+			}
+		case tar.TypeReg, tar.TypeRegA:
+			if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+				return 1
+			}
+			file, err := os.OpenFile(destination, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+			if err != nil {
+				return 1
+			}
+			_, copyErr := io.Copy(file, reader)
+			closeErr := file.Close()
+			if copyErr != nil || closeErr != nil {
+				return 1
+			}
+		}
+	}
+}
+
+func sendCompiledSSHTar(destination io.Writer, stderr io.Writer, root string) int {
+	writer := tar.NewWriter(destination)
+	err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		name := "."
+		if relative != "." {
+			name = "./" + filepath.ToSlash(relative)
+		}
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		header.Name = name
+		header.ModTime = time.Unix(info.ModTime().Unix()-1, 0)
+		header.AccessTime = time.Time{}
+		header.ChangeTime = time.Time{}
+		if err := writer.WriteHeader(header); err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(writer, file)
+		closeErr := file.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
+	})
+	closeErr := writer.Close()
+	if err != nil || closeErr != nil {
+		_, _ = io.WriteString(stderr, "compiled fixture tar creation failed\n")
+		return 1
+	}
+	return 0
+}
+
+func compiledShellQuotedWordAfter(command, marker string) (string, bool) {
+	index := strings.Index(command, marker)
+	if index < 0 {
+		return "", false
+	}
+	words := compiledShellQuotedWords(command[index+len(marker):])
+	if len(words) == 0 {
+		return "", false
+	}
+	return words[0], true
+}
+
+func compiledShellQuotedWords(command string) []string {
+	var words []string
+	for offset := 0; offset < len(command); {
+		start := strings.IndexByte(command[offset:], '\'')
+		if start < 0 {
+			break
+		}
+		start += offset
+		end := strings.IndexByte(command[start+1:], '\'')
+		if end < 0 {
+			break
+		}
+		end += start + 1
+		words = append(words, command[start+1:end])
+		offset = end + 1
+	}
+	return words
+}
+
+func compiledSSHFixtureCommandError(stderr io.Writer) int {
+	_, _ = io.WriteString(stderr, "unsupported compiled SSH fixture command\n")
+	return 127
 }
 
 func (h *compiledCLIHarness) TrustSSHHost(t *testing.T, server *compiledSSHFixture) {
@@ -318,26 +600,23 @@ func (h *compiledCLIHarness) TrustSSHHost(t *testing.T, server *compiledSSHFixtu
 	}
 }
 
-func closedCompiledTCPPort(t *testing.T) (string, int) {
+type compiledRefusedTCPPort struct {
+	host string
+	port int
+}
+
+func newCompiledRefusedTCPPort(t *testing.T) compiledRefusedTCPPort {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	host, port, closeSocket, err := reserveCompiledRefusedTCPPort()
 	if err != nil {
-		t.Fatalf("reserve compiled CLI closed TCP port: %v", err)
+		t.Fatalf("reserve deterministic compiled CLI refused TCP port: %v", err)
 	}
-	host, portText, err := net.SplitHostPort(listener.Addr().String())
-	if err != nil {
-		_ = listener.Close()
-		t.Fatalf("split compiled CLI closed TCP address: %v", err)
-	}
-	port, err := strconv.Atoi(portText)
-	if err != nil {
-		_ = listener.Close()
-		t.Fatalf("parse compiled CLI closed TCP port: %v", err)
-	}
-	if err := listener.Close(); err != nil {
-		t.Fatalf("close compiled CLI reserved TCP port: %v", err)
-	}
-	return host, port
+	t.Cleanup(func() {
+		if err := closeSocket(); err != nil {
+			t.Errorf("close deterministic compiled CLI refused TCP port: %v", err)
+		}
+	})
+	return compiledRefusedTCPPort{host: host, port: port}
 }
 
 type compiledUpdateFixture struct {

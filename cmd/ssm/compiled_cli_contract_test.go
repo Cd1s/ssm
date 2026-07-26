@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -15,12 +16,16 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"ssm/internal/config"
 	securevault "ssm/internal/vault"
 )
 
 var compiledCLIPaths map[string]string
+
+const compiledCLISubprocessTimeout = 15 * time.Second
+const compiledCLIBuildTimeout = 2 * time.Minute
 
 type compiledCLIResult struct {
 	ProcessExit int
@@ -31,6 +36,8 @@ type compiledCLIResult struct {
 type compiledMachineContract struct {
 	Name            string   `json:"name"`
 	Command         string   `json:"command"`
+	Executable      string   `json:"executable"`
+	Args            []string `json:"args"`
 	OK              bool     `json:"ok"`
 	Error           string   `json:"error"`
 	Stage           string   `json:"stage,omitempty"`
@@ -54,12 +61,21 @@ type compiledCLIHarness struct {
 }
 
 func TestMain(m *testing.M) {
+	os.Exit(runCompiledCLITestMain(m))
+}
+
+func runCompiledCLITestMain(m *testing.M) (exitCode int) {
 	buildDir, err := os.MkdirTemp("", "ssm-compiled-contracts-")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create compiled CLI build directory: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
-	defer os.RemoveAll(buildDir)
+	defer func() {
+		if err := os.RemoveAll(buildDir); err != nil {
+			fmt.Fprintf(os.Stderr, "remove compiled CLI build directory: %v\n", err)
+			exitCode = 1
+		}
+	}()
 	compiledUpdateServer = newCompiledUpdateFixture()
 	defer compiledUpdateServer.Close()
 
@@ -72,31 +88,37 @@ func TestMain(m *testing.M) {
 		"-X=ssm/internal/update.apiBaseURL=%s -X=ssm/internal/update.downloadBaseURL=%s",
 		compiledUpdateServer.URL(), compiledUpdateServer.URL(),
 	)
-	build := exec.Command("go", "build", "-ldflags", updateLDFlags, "-o", ssmPath, ".")
+	ctx, cancel := context.WithTimeout(context.Background(), compiledCLIBuildTimeout)
+	defer cancel()
+	build := exec.CommandContext(ctx, "go", "build", "-ldflags", updateLDFlags, "-o", ssmPath, ".")
 	if output, buildErr := build.CombinedOutput(); buildErr != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			fmt.Fprintf(os.Stderr, "build compiled CLI exceeded deadline %s\n", compiledCLIBuildTimeout)
+			return 1
+		}
 		fmt.Fprintf(os.Stderr, "build compiled CLI: %v\n%s", buildErr, output)
-		os.Exit(1)
+		return 1
 	}
 	sshctlPath := filepath.Join(buildDir, "sshctl"+extension)
 	if linkErr := os.Link(ssmPath, sshctlPath); linkErr != nil {
 		data, readErr := os.ReadFile(ssmPath)
 		if readErr != nil {
 			fmt.Fprintf(os.Stderr, "read compiled CLI for sshctl alias: %v\n", readErr)
-			os.Exit(1)
+			return 1
 		}
 		info, statErr := os.Stat(ssmPath)
 		if statErr != nil {
 			fmt.Fprintf(os.Stderr, "stat compiled CLI for sshctl alias: %v\n", statErr)
-			os.Exit(1)
+			return 1
 		}
 		if writeErr := os.WriteFile(sshctlPath, data, info.Mode()); writeErr != nil {
 			fmt.Fprintf(os.Stderr, "write compiled CLI sshctl alias: %v\n", writeErr)
-			os.Exit(1)
+			return 1
 		}
 	}
 	compiledCLIPaths = map[string]string{"ssm": ssmPath, "sshctl": sshctlPath}
 
-	os.Exit(m.Run())
+	return m.Run()
 }
 
 func newCompiledCLIHarness(t *testing.T) *compiledCLIHarness {
@@ -159,21 +181,96 @@ func (h *compiledCLIHarness) RunWithEnv(t *testing.T, executable string, stdin [
 	return h.run(t, executable, stdin, overrides, args...)
 }
 
-func (h *compiledCLIHarness) run(t *testing.T, executable string, stdin []byte, env map[string]string, args ...string) compiledCLIResult {
+func (h *compiledCLIHarness) RunWithHeldOpenStdin(t *testing.T, executable string, args ...string) compiledCLIResult {
+	t.Helper()
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create held-open compiled CLI stdin pipe: %v", err)
+	}
+	defer func() {
+		_ = reader.Close()
+		_ = writer.Close()
+	}()
+	return h.runWithStdin(t, executable, reader, map[string]string{"SSM_MASTER_PASS_FILE": h.passPath}, args...)
+}
+
+func (h *compiledCLIHarness) RunReviewed(
+	t *testing.T,
+	contract compiledMachineContract,
+	stdin []byte,
+	replacements map[string]string,
+) compiledCLIResult {
+	t.Helper()
+	args := append([]string(nil), contract.Args...)
+	for index, arg := range args {
+		if replacement, ok := replacements[arg]; ok {
+			args[index] = replacement
+		}
+	}
+	return h.Run(t, contract.Executable, stdin, args...)
+}
+
+func (h *compiledCLIHarness) RunReviewedWithoutMasterPass(t *testing.T, contract compiledMachineContract) compiledCLIResult {
+	t.Helper()
+	return h.RunWithoutMasterPass(t, contract.Executable, nil, contract.Args...)
+}
+
+func (h *compiledCLIHarness) RunWithPhysicalBasename(t *testing.T, executable string, args ...string) compiledCLIResult {
 	t.Helper()
 	path, ok := h.paths[executable]
 	if !ok {
 		t.Fatalf("unknown compiled CLI executable name %q", executable)
 	}
-	cmd := exec.Command(path, args...) //nolint:gosec // executable is selected from test-owned fixed paths
+	return h.runWithStdinAndArgv0(
+		t,
+		executable,
+		filepath.Base(path),
+		bytes.NewReader(nil),
+		map[string]string{"SSM_MASTER_PASS_FILE": h.passPath},
+		args...,
+	)
+}
+
+func (h *compiledCLIHarness) run(t *testing.T, executable string, stdin []byte, env map[string]string, args ...string) compiledCLIResult {
+	t.Helper()
+	return h.runWithStdin(t, executable, bytes.NewReader(stdin), env, args...)
+}
+
+func (h *compiledCLIHarness) runWithStdin(t *testing.T, executable string, stdin io.Reader, env map[string]string, args ...string) compiledCLIResult {
+	t.Helper()
+	return h.runWithStdinAndArgv0(t, executable, executable, stdin, env, args...)
+}
+
+func (h *compiledCLIHarness) runWithStdinAndArgv0(
+	t *testing.T,
+	executable, argv0 string,
+	stdin io.Reader,
+	env map[string]string,
+	args ...string,
+) compiledCLIResult {
+	t.Helper()
+	path, ok := h.paths[executable]
+	if !ok {
+		t.Fatalf("unknown compiled CLI executable name %q", executable)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), compiledCLISubprocessTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, args...) //nolint:gosec // executable is selected from test-owned fixed paths
+	cmd.Args[0] = argv0
 	cmd.Env = isolatedCompiledCLIEnvironmentWith(h.home, h.temp, env)
-	cmd.Stdin = bytes.NewReader(stdin)
+	cmd.Stdin = stdin
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	processExit := 0
 	if err := cmd.Run(); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			t.Fatalf(
+				"compiled %s exceeded subprocess deadline %s; output=%s",
+				executable, compiledCLISubprocessTimeout, compiledOutputIdentity(compiledCLIResult{Stdout: stdout.String(), Stderr: stderr.String()}),
+			)
+		}
 		var exitErr *exec.ExitError
 		if !errors.As(err, &exitErr) {
 			t.Fatalf("run compiled %s: %v", executable, err)
@@ -319,9 +416,13 @@ func reviewedCompiledMachineContracts(t *testing.T) map[string]compiledMachineCo
 		if row.Name == "" {
 			t.Fatal("reviewed compiled CLI contract matrix contains an unnamed row")
 		}
-		if row.Command == "" || row.StdoutPlacement != "stdout" || row.StderrPlacement != "empty" ||
+		if row.Command == "" || row.Executable == "" || row.Args == nil ||
+			row.StdoutPlacement != "stdout" || row.StderrPlacement != "empty" ||
 			(row.Cardinality != "one_value" && row.Cardinality != "one_line") {
 			t.Fatalf("reviewed compiled CLI contract %q has incomplete tuple metadata", row.Name)
+		}
+		if got := renderCompiledInvocation(row.Executable, row.Args); got != row.Command {
+			t.Fatalf("reviewed compiled CLI contract %q command drifted from executable+args", row.Name)
 		}
 		if _, duplicate := contracts[row.Name]; duplicate {
 			t.Fatalf("reviewed compiled CLI contract matrix duplicates safe name %q", row.Name)
@@ -338,6 +439,19 @@ func reviewedCompiledMachineContract(t *testing.T, name string) compiledMachineC
 		t.Fatalf("reviewed compiled CLI contract %q is missing", name)
 	}
 	return contract
+}
+
+func renderCompiledInvocation(executable string, args []string) string {
+	words := make([]string, 0, len(args)+1)
+	words = append(words, executable)
+	for _, arg := range args {
+		if arg != "" && !strings.ContainsAny(arg, " \t\r\n'") {
+			words = append(words, arg)
+			continue
+		}
+		words = append(words, "'"+strings.ReplaceAll(arg, "'", "'\"'\"'")+"'")
+	}
+	return strings.Join(words, " ")
 }
 
 func assertCompiledStringField(t *testing.T, value map[string]any, field, want string, result compiledCLIResult) {
@@ -443,51 +557,52 @@ func assertCompiledNDJSONResults(t *testing.T, result compiledCLIResult, wantLin
 	return values
 }
 
-type compiledPutContract struct {
-	Integrity string
-	Atomic    bool
-	Resume    string
-	BytesSent int
-	Present   []string
-	Absent    []string
-}
-
-func assertCompiledPutContract(t *testing.T, result compiledCLIResult, want compiledPutContract) map[string]any {
+func assertCompiledTransferSnapshot(t *testing.T, result compiledCLIResult, want map[string]any) {
 	t.Helper()
-	value := assertCompiledJSONSuccess(t, result)
-	assertCompiledStringField(t, value, "action", "put", result)
-	assertCompiledStringField(t, value, "stage", "complete", result)
-	assertCompiledStringField(t, value, "integrity", want.Integrity, result)
-	assertCompiledStringField(t, value, "resume", want.Resume, result)
-	if got, ok := value["atomic"].(bool); !ok || got != want.Atomic {
-		t.Fatalf("atomic = %v, want %t; output=%s", value["atomic"], want.Atomic, compiledOutputIdentity(result))
-	}
-	if got, ok := value["bytes_sent"].(float64); !ok || int(got) != want.BytesSent {
-		t.Fatalf("bytes_sent = %v, want %d; output=%s", value["bytes_sent"], want.BytesSent, compiledOutputIdentity(result))
-	}
-	for _, field := range want.Present {
-		if _, ok := value[field]; !ok {
-			t.Fatalf("field %q unexpectedly absent; output=%s", field, compiledOutputIdentity(result))
+	wantExit := 0
+	if rawExit, ok := want["exit"]; ok {
+		switch value := rawExit.(type) {
+		case int:
+			wantExit = value
+		case float64:
+			wantExit = int(value)
+		default:
+			t.Fatalf("compiled transfer snapshot has unsupported exit type %T", rawExit)
 		}
 	}
-	for _, field := range want.Absent {
-		if _, ok := value[field]; ok {
-			t.Fatalf("field %q unexpectedly present; output=%s", field, compiledOutputIdentity(result))
-		}
+	if result.ProcessExit != wantExit || result.Stderr != "" {
+		t.Fatalf(
+			"compiled transfer process exit=%d stderr_bytes=%d, want exit=%d stderr empty; output=%s",
+			result.ProcessExit, len(result.Stderr), wantExit,
+			compiledOutputIdentity(result),
+		)
 	}
-	return value
-}
-
-func assertCompiledGetContract(t *testing.T, result compiledCLIResult) map[string]any {
-	t.Helper()
-	value := assertCompiledJSONSuccess(t, result)
-	assertCompiledStringField(t, value, "action", "get", result)
-	for _, field := range []string{"direction", "kind", "stage", "bytes_sent", "integrity", "atomic", "resume", "local_sha256", "remote_sha256", "bytes_reused"} {
-		if _, ok := value[field]; ok {
-			t.Fatalf("get field %q unexpectedly present; output=%s", field, compiledOutputIdentity(result))
-		}
+	got := decodeExactlyOneJSONObject(t, result.Stdout)
+	encodedWant, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("marshal compiled transfer snapshot: %v", err)
 	}
-	return value
+	var normalizedWant map[string]any
+	if err := json.Unmarshal(encodedWant, &normalizedWant); err != nil {
+		t.Fatalf("normalize compiled transfer snapshot: %v", err)
+	}
+	if reflect.DeepEqual(got, normalizedWant) {
+		return
+	}
+	gotFields := make([]string, 0, len(got))
+	for field := range got {
+		gotFields = append(gotFields, field)
+	}
+	wantFields := make([]string, 0, len(normalizedWant))
+	for field := range normalizedWant {
+		wantFields = append(wantFields, field)
+	}
+	sort.Strings(gotFields)
+	sort.Strings(wantFields)
+	t.Fatalf(
+		"compiled transfer snapshot mismatch; fields=%v want=%v; output=%s",
+		gotFields, wantFields, compiledOutputIdentity(result),
+	)
 }
 
 func assertCompiledFileDigest(t *testing.T, path string, want []byte) {
@@ -517,6 +632,90 @@ func assertCompiledUpdateRequests(t *testing.T, got []string, version string) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("update request count = %d, want %d", len(got), len(want))
 	}
+}
+
+type compiledMakeRule struct {
+	dependencies []string
+	commands     []string
+}
+
+func compiledMakeTargetCommands(makefile []byte, target string) ([]string, error) {
+	variables := map[string]string{}
+	rules := map[string]compiledMakeRule{}
+	currentTarget := ""
+	for lineNumber, rawLine := range strings.Split(string(makefile), "\n") {
+		if strings.HasPrefix(rawLine, "\t") {
+			if currentTarget == "" {
+				return nil, fmt.Errorf("recipe without target at line %d", lineNumber+1)
+			}
+			rule := rules[currentTarget]
+			rule.commands = append(rule.commands, expandCompiledMakeVariables(strings.TrimSpace(rawLine), variables))
+			rules[currentTarget] = rule
+			continue
+		}
+		currentTarget = ""
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if key, value, ok := strings.Cut(line, "?="); ok {
+			key = strings.TrimSpace(key)
+			if _, exists := variables[key]; !exists {
+				variables[key] = strings.TrimSpace(value)
+			}
+			continue
+		}
+		targets, dependencies, ok := strings.Cut(line, ":")
+		if !ok || strings.Contains(targets, "=") {
+			continue
+		}
+		targetNames := strings.Fields(targets)
+		if len(targetNames) != 1 {
+			return nil, fmt.Errorf("unsupported target declaration at line %d", lineNumber+1)
+		}
+		currentTarget = targetNames[0]
+		rule := rules[currentTarget]
+		rule.dependencies = append(rule.dependencies, strings.Fields(dependencies)...)
+		rules[currentTarget] = rule
+	}
+
+	var commands []string
+	visiting := map[string]bool{}
+	visited := map[string]bool{}
+	var collect func(string) error
+	collect = func(name string) error {
+		if visiting[name] {
+			return fmt.Errorf("cyclic Makefile dependency at %q", name)
+		}
+		if visited[name] {
+			return nil
+		}
+		rule, ok := rules[name]
+		if !ok {
+			return fmt.Errorf("Makefile target %q is missing", name)
+		}
+		visiting[name] = true
+		for _, dependency := range rule.dependencies {
+			if err := collect(dependency); err != nil {
+				return err
+			}
+		}
+		visiting[name] = false
+		visited[name] = true
+		commands = append(commands, rule.commands...)
+		return nil
+	}
+	if err := collect(target); err != nil {
+		return nil, err
+	}
+	return commands, nil
+}
+
+func expandCompiledMakeVariables(command string, variables map[string]string) string {
+	for key, value := range variables {
+		command = strings.ReplaceAll(command, "$("+key+")", value)
+	}
+	return command
 }
 
 func compiledTransactionID(t *testing.T, value map[string]any, result compiledCLIResult) string {
@@ -613,6 +812,34 @@ func assertCompiledVaultSummary(t *testing.T, got compiledVaultSummary, aliases,
 	}
 }
 
+func assertCompiledEncryptedPublication(
+	t *testing.T,
+	encrypted []byte,
+	passphrase string,
+	plaintextCanaries map[string]string,
+	aliases, keyNames, transactions []string,
+) {
+	t.Helper()
+	if len(encrypted) == 0 {
+		t.Fatal("captured compiled CLI publication body is empty")
+	}
+	for label, canary := range plaintextCanaries {
+		if canary != "" && bytes.Contains(encrypted, []byte(canary)) {
+			t.Fatalf(
+				"captured compiled CLI publication contains plaintext canary %q; encrypted_bytes=%d sha256=%x",
+				label, len(encrypted), sha256.Sum256(encrypted),
+			)
+		}
+	}
+	assertCompiledVaultSummary(
+		t,
+		decodeCompiledVaultSummary(t, encrypted, passphrase),
+		aliases,
+		keyNames,
+		transactions,
+	)
+}
+
 func equalCompiledStrings(left, right []string) bool {
 	if len(left) != len(right) {
 		return false
@@ -635,10 +862,60 @@ func assertNoCompiledCanaryLeak(t *testing.T, result compiledCLIResult, canaries
 	}
 }
 
+func mergeCompiledCanaries(base map[string]string, label, canary string) map[string]string {
+	merged := make(map[string]string, len(base)+1)
+	for key, value := range base {
+		merged[key] = value
+	}
+	merged[label] = canary
+	return merged
+}
+
+func assertCompiledKnownHostsFileAbsent(t *testing.T, cli *compiledCLIHarness) {
+	t.Helper()
+	path := filepath.Join(cli.home, ".ssh", "known_hosts")
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err != nil {
+		t.Fatalf("inspect compiled CLI known_hosts after rejected fingerprint: %v", err)
+	}
+	t.Fatalf("rejected fingerprint installed a known_hosts file with %d bytes", info.Size())
+}
+
 func compiledOutputIdentity(result compiledCLIResult) string {
 	stdoutDigest := sha256.Sum256([]byte(result.Stdout))
 	stderrDigest := sha256.Sum256([]byte(result.Stderr))
 	return fmt.Sprintf("stdout_bytes=%d stdout_sha256=%x stderr_bytes=%d stderr_sha256=%x", len(result.Stdout), stdoutDigest, len(result.Stderr), stderrDigest)
+}
+
+func TestCompiledCLIHarnessCrossPlatformDesign(t *testing.T) {
+	for _, path := range []string{"compiled_cli_contract_test.go", "compiled_cli_fixtures_test.go"} {
+		source, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read compiled CLI harness source %s: %v", path, err)
+		}
+		for _, forbidden := range []string{
+			"exec." + "LookPath(\"sh\")",
+			"exec." + "Command(\"sh\"",
+			"exec." + "Command(\"make\"",
+		} {
+			if bytes.Contains(source, []byte(forbidden)) {
+				t.Fatalf("compiled CLI harness source %s retains native dependency %q", path, forbidden)
+			}
+		}
+	}
+
+	extension := ""
+	if runtime.GOOS == "windows" {
+		extension = ".exe"
+	}
+	for _, executable := range []string{"ssm", "sshctl"} {
+		if got, want := filepath.Base(compiledCLIPaths[executable]), executable+extension; got != want {
+			t.Fatalf("compiled %s fixture basename = %q, want %q", executable, got, want)
+		}
+	}
 }
 
 func TestCompiledCLIContractMatrix(t *testing.T) {
@@ -646,7 +923,7 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 	reviewedNames := []string{
 		"unknown_sshctl", "unknown_ssm", "invalid_request_unknown_field", "unlock_file_required",
 		"exact_alias_miss", "sync_etag_conflict", "transfer_local_read", "host_key_unknown",
-		"dial_refused", "auth_failed", "session_failed", "remote_exit_255", "stream_refresh_failed",
+		"dial_refused", "dial_refused_windows", "auth_failed", "session_failed", "remote_exit_255", "stream_refresh_failed",
 	}
 	if len(reviewed) != len(reviewedNames) {
 		t.Fatalf("reviewed compiled CLI matrix rows = %d, want %d", len(reviewed), len(reviewedNames))
@@ -660,36 +937,46 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 	cli := newCompiledCLIHarness(t)
 	for _, test := range []struct {
 		name         string
-		executable   string
 		contractName string
 	}{
 		{
 			name:         "sshctl dispatch",
-			executable:   "sshctl",
 			contractName: "unknown_sshctl",
 		},
 		{
 			name:         "ssm dispatch",
-			executable:   "ssm",
 			contractName: "unknown_ssm",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			result := cli.Run(t, test.executable, nil, "--json", "not-a-command")
-			assertCompiledMachineContract(t, result, reviewedCompiledMachineContract(t, test.contractName))
+			contract := reviewedCompiledMachineContract(t, test.contractName)
+			result := cli.RunReviewed(t, contract, nil, nil)
+			assertCompiledMachineContract(t, result, contract)
 		})
 	}
 
+	t.Run("physical sshctl basename freezes the Windows extension discrepancy", func(t *testing.T) {
+		invocation := reviewedCompiledMachineContract(t, "unknown_sshctl")
+		want := invocation
+		if runtime.GOOS == "windows" {
+			want = reviewedCompiledMachineContract(t, "unknown_ssm")
+		}
+		result := cli.RunWithPhysicalBasename(t, "sshctl", invocation.Args...)
+		assertCompiledMachineContract(t, result, want)
+	})
+
 	t.Run("strict request schema rejects unknown fields", func(t *testing.T) {
 		requestCanary := "ISSUE17_REQUEST_BODY_CANARY"
-		result := cli.Run(t, "sshctl", []byte(`{"version":1,"op":"run","alias":"prod","argv":["true"],"unexpected":"`+requestCanary+`"}`), "request", "-")
+		contract := reviewedCompiledMachineContract(t, "invalid_request_unknown_field")
+		result := cli.RunReviewed(t, contract, []byte(`{"version":1,"op":"run","alias":"prod","argv":["true"],"unexpected":"`+requestCanary+`"}`), nil)
 		assertNoCompiledCanaryLeak(t, result, map[string]string{"request_body": requestCanary})
-		assertCompiledMachineContract(t, result, reviewedCompiledMachineContract(t, "invalid_request_unknown_field"))
+		assertCompiledMachineContract(t, result, contract)
 	})
 
 	t.Run("missing non-interactive unlock file", func(t *testing.T) {
-		result := cli.RunWithoutMasterPass(t, "ssm", nil, "--json", "list")
-		assertCompiledMachineContract(t, result, reviewedCompiledMachineContract(t, "unlock_file_required"))
+		contract := reviewedCompiledMachineContract(t, "unlock_file_required")
+		result := cli.RunReviewedWithoutMasterPass(t, contract)
+		assertCompiledMachineContract(t, result, contract)
 	})
 
 	t.Run("exact alias miss returns candidates without selecting", func(t *testing.T) {
@@ -697,12 +984,13 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 			{Name: "prod-one", Host: "192.0.2.10", Port: 22, User: "runner", Password: "ISSUE17_PASSWORD_CANARY"},
 			{Name: "prod-two", Host: "192.0.2.11", Port: 22, User: "runner", Password: "ISSUE17_SECOND_PASSWORD_CANARY"},
 		}})
-		result := cli.Run(t, "sshctl", nil, "--offline", "--json", "run", "prod", "--argv", "true")
+		contract := reviewedCompiledMachineContract(t, "exact_alias_miss")
+		result := cli.RunReviewed(t, contract, nil, nil)
 		assertNoCompiledCanaryLeak(t, result, map[string]string{
 			"password_one": "ISSUE17_PASSWORD_CANARY",
 			"password_two": "ISSUE17_SECOND_PASSWORD_CANARY",
 		})
-		assertCompiledMachineContract(t, result, reviewedCompiledMachineContract(t, "exact_alias_miss"))
+		assertCompiledMachineContract(t, result, contract)
 	})
 
 	t.Run("two-sided ETag conflict preserves classified sync failure", func(t *testing.T) {
@@ -714,12 +1002,13 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		cli.SaveCloud(t, sync.URL(), "ISSUE17_SYNC_TOKEN_CANARY")
 		cli.SaveRemoteETag(t, "cached-baseline")
 
-		result := cli.Run(t, "sshctl", nil, "--json", "list")
+		contract := reviewedCompiledMachineContract(t, "sync_etag_conflict")
+		result := cli.RunReviewed(t, contract, nil, nil)
 		assertNoCompiledCanaryLeak(t, result, map[string]string{
 			"password": "ISSUE17_SYNC_PASSWORD_CANARY",
 			"token":    "ISSUE17_SYNC_TOKEN_CANARY",
 		})
-		assertCompiledMachineContract(t, result, reviewedCompiledMachineContract(t, "sync_etag_conflict"))
+		assertCompiledMachineContract(t, result, contract)
 		if got := sync.MethodCount("GET"); got != 0 {
 			t.Fatalf("sync GET count = %d, want 0 after conflict preflight", got)
 		}
@@ -730,21 +1019,43 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 			Name: "transfer", Host: "192.0.2.30", Port: 22, User: "runner", Password: "ISSUE17_TRANSFER_PASSWORD_CANARY",
 		}}})
 		missing := filepath.Join(cli.home, "missing-artifact")
-		result := cli.Run(t, "sshctl", nil, "--offline", "--json", "put", "transfer", missing, "/srv/artifact")
+		contract := reviewedCompiledMachineContract(t, "transfer_local_read")
+		result := cli.RunReviewed(t, contract, nil, map[string]string{"<missing>": missing})
 		assertNoCompiledCanaryLeak(t, result, map[string]string{"password": "ISSUE17_TRANSFER_PASSWORD_CANARY"})
-		assertCompiledMachineContract(t, result, reviewedCompiledMachineContract(t, "transfer_local_read"))
+		assertCompiledMachineContract(t, result, contract)
 	})
 
 	t.Run("host key is inspected and accepted only by exact fingerprint", func(t *testing.T) {
 		password := "ISSUE17_HOST_KEY_PASSWORD_CANARY"
 		server := newCompiledSSHFixture(t, compiledSSHFixtureOptions{Password: password})
-		cli.SaveVault(t, &config.Vault{Connections: []config.Connection{server.Connection("host-key", password)}})
+		privateKey := "ISSUE17_HOST_KEY_PRIVATE_KEY_CANARY"
+		token := "ISSUE17_HOST_KEY_TOKEN_CANARY"
+		configCanary := "ISSUE17_HOST_KEY_CONFIG_CANARY"
+		inventoryCanary := "ISSUE17_HOST_KEY_DECRYPTED_INVENTORY_CANARY"
+		cli.SaveVault(t, &config.Vault{
+			Connections: []config.Connection{
+				server.Connection("host-key", password),
+				{Name: inventoryCanary, Host: "192.0.2.55", Port: 22, User: "runner", Password: "ISSUE17_HOST_KEY_UNRELATED_PASSWORD_CANARY"},
+			},
+			Keys: []config.SSHKey{{Name: "host-key-unrelated", PrivateKey: privateKey}},
+		})
+		cli.writeConfigFile(t, "cloud.json", []byte(`{"server":"https://`+configCanary+`.invalid","token":"`+token+`"`))
+		canaries := map[string]string{
+			"password":            password,
+			"private_key":         privateKey,
+			"token":               token,
+			"configuration":       configCanary,
+			"decrypted_inventory": inventoryCanary,
+			"passphrase":          cli.passphrase,
+		}
 
-		unknown := cli.Run(t, "sshctl", nil, "--offline", "--json", "run", "host-key", "--argv", "true")
-		assertNoCompiledCanaryLeak(t, unknown, map[string]string{"password": password})
-		assertCompiledMachineContract(t, unknown, reviewedCompiledMachineContract(t, "host_key_unknown"))
+		hostKeyUnknownContract := reviewedCompiledMachineContract(t, "host_key_unknown")
+		unknown := cli.RunReviewed(t, hostKeyUnknownContract, nil, nil)
+		assertNoCompiledCanaryLeak(t, unknown, canaries)
+		assertCompiledMachineContract(t, unknown, hostKeyUnknownContract)
 
 		inspection := cli.Run(t, "sshctl", nil, "--offline", "--json", "host-key", "inspect", "host-key")
+		assertNoCompiledCanaryLeak(t, inspection, canaries)
 		inspectionValue := assertCompiledJSONSuccess(t, inspection)
 		assertCompiledStringField(t, inspectionValue, "status", "new", inspection)
 		fingerprint, ok := inspectionValue["observed_fingerprint"].(string)
@@ -752,22 +1063,51 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 			t.Fatalf("inspection fingerprint contract failed; output=%s", compiledOutputIdentity(inspection))
 		}
 
+		rejected := cli.Run(
+			t,
+			"sshctl",
+			nil,
+			"--offline", "--json", "host-key", "accept", "host-key",
+			"--fingerprint", "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "--yes",
+		)
+		assertNoCompiledCanaryLeak(t, rejected, canaries)
+		assertCompiledMachineContract(t, rejected, compiledMachineContract{
+			OK: false, Error: "fingerprint_mismatch", Stage: "host_key", JSONExit: 1, ProcessExit: 1,
+			Hint:   "compare the fingerprint through a trusted channel; do not accept an unexpected key",
+			Absent: []string{"alias", "candidates"},
+		})
+		assertCompiledKnownHostsFileAbsent(t, cli)
+
+		stillUnknown := cli.RunReviewed(t, hostKeyUnknownContract, nil, nil)
+		assertNoCompiledCanaryLeak(t, stillUnknown, canaries)
+		assertCompiledMachineContract(t, stillUnknown, hostKeyUnknownContract)
+
 		accepted := cli.Run(t, "sshctl", nil, "--offline", "--json", "host-key", "accept", "host-key", "--fingerprint", fingerprint, "--yes")
+		assertNoCompiledCanaryLeak(t, accepted, canaries)
 		acceptedValue := assertCompiledJSONSuccess(t, accepted)
 		assertCompiledStringField(t, acceptedValue, "status", "trusted", accepted)
 		if value, ok := acceptedValue["accepted"].(bool); !ok || !value {
 			t.Fatalf("accepted = %v, want true; output=%s", acceptedValue["accepted"], compiledOutputIdentity(accepted))
 		}
+
+		trustedRun := cli.Run(t, "sshctl", nil, "--offline", "--json", "run", "host-key", "--argv", "true")
+		assertNoCompiledCanaryLeak(t, trustedRun, canaries)
+		assertCompiledJSONSuccess(t, trustedRun)
 	})
 
 	t.Run("dial refusal is distinct from remote exit", func(t *testing.T) {
-		host, port := closedCompiledTCPPort(t)
+		refused := newCompiledRefusedTCPPort(t)
 		cli.SaveVault(t, &config.Vault{Connections: []config.Connection{{
-			Name: "refused", Host: host, Port: port, User: "runner", Password: "ISSUE17_DIAL_PASSWORD_CANARY",
+			Name: "refused", Host: refused.host, Port: refused.port, User: "runner", Password: "ISSUE17_DIAL_PASSWORD_CANARY",
 		}}})
-		result := cli.Run(t, "sshctl", nil, "--offline", "--json", "run", "refused", "--argv", "true")
+		contractName := "dial_refused"
+		if runtime.GOOS == "windows" {
+			contractName = "dial_refused_windows"
+		}
+		contract := reviewedCompiledMachineContract(t, contractName)
+		result := cli.RunReviewed(t, contract, nil, nil)
 		assertNoCompiledCanaryLeak(t, result, map[string]string{"password": "ISSUE17_DIAL_PASSWORD_CANARY"})
-		assertCompiledMachineContract(t, result, reviewedCompiledMachineContract(t, "dial_refused"))
+		assertCompiledMachineContract(t, result, contract)
 	})
 
 	t.Run("authentication failure remains classified at dial stage", func(t *testing.T) {
@@ -776,12 +1116,13 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		cli.SaveVault(t, &config.Vault{Connections: []config.Connection{
 			server.Connection("auth", "ISSUE17_REJECTED_AUTH_CANARY"),
 		}})
-		result := cli.Run(t, "sshctl", nil, "--offline", "--json", "run", "auth", "--argv", "true")
+		contract := reviewedCompiledMachineContract(t, "auth_failed")
+		result := cli.RunReviewed(t, contract, nil, nil)
 		assertNoCompiledCanaryLeak(t, result, map[string]string{
 			"expected_password": "ISSUE17_EXPECTED_AUTH_CANARY",
 			"rejected_password": "ISSUE17_REJECTED_AUTH_CANARY",
 		})
-		assertCompiledMachineContract(t, result, reviewedCompiledMachineContract(t, "auth_failed"))
+		assertCompiledMachineContract(t, result, contract)
 	})
 
 	t.Run("session failure retains its own class", func(t *testing.T) {
@@ -789,9 +1130,10 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		server := newCompiledSSHFixture(t, compiledSSHFixtureOptions{Password: password, RejectSessions: true})
 		cli.TrustSSHHost(t, server)
 		cli.SaveVault(t, &config.Vault{Connections: []config.Connection{server.Connection("session", password)}})
-		result := cli.Run(t, "sshctl", nil, "--offline", "--json", "run", "session", "--argv", "true")
+		contract := reviewedCompiledMachineContract(t, "session_failed")
+		result := cli.RunReviewed(t, contract, nil, nil)
 		assertNoCompiledCanaryLeak(t, result, map[string]string{"password": password})
-		assertCompiledMachineContract(t, result, reviewedCompiledMachineContract(t, "session_failed"))
+		assertCompiledMachineContract(t, result, contract)
 	})
 
 	t.Run("remote process exit 255 is not a connection failure", func(t *testing.T) {
@@ -799,9 +1141,10 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		server := newCompiledSSHFixture(t, compiledSSHFixtureOptions{Password: password})
 		cli.TrustSSHHost(t, server)
 		cli.SaveVault(t, &config.Vault{Connections: []config.Connection{server.Connection("remote-255", password)}})
-		result := cli.Run(t, "sshctl", nil, "--offline", "--json", "run", "remote-255", "--argv", "sh", "-c", "exit 255")
+		contract := reviewedCompiledMachineContract(t, "remote_exit_255")
+		result := cli.RunReviewed(t, contract, nil, nil)
 		assertNoCompiledCanaryLeak(t, result, map[string]string{"password": password})
-		assertCompiledMachineContract(t, result, reviewedCompiledMachineContract(t, "remote_exit_255"))
+		assertCompiledMachineContract(t, result, contract)
 	})
 
 	t.Run("stream decode preserves one compact result per non-empty line", func(t *testing.T) {
@@ -845,9 +1188,10 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		streamCLI.SaveVault(t, &config.Vault{})
 		streamCLI.SaveCloud(t, sync.URL(), "ISSUE17_STREAM_REFRESH_TOKEN_CANARY")
 		streamCLI.SaveRemoteETag(t, "stream-current")
-		result := streamCLI.Run(t, "sshctl", []byte("[\"true\"]\n[\"true\"]\n"), "--json", "run", "unused", "--stream", "--refresh=1ns")
+		contract := reviewedCompiledMachineContract(t, "stream_refresh_failed")
+		result := streamCLI.RunReviewed(t, contract, []byte("[\"true\"]\n[\"true\"]\n"), nil)
 		assertNoCompiledCanaryLeak(t, result, map[string]string{"token": "ISSUE17_STREAM_REFRESH_TOKEN_CANARY"})
-		assertCompiledMachineContract(t, result, reviewedCompiledMachineContract(t, "stream_refresh_failed"))
+		assertCompiledMachineContract(t, result, contract)
 		if lines := nonEmptyCompiledLines(result.Stdout); len(lines) != 1 {
 			t.Fatalf("stream refresh line count = %d, want 1; output=%s", len(lines), compiledOutputIdentity(result))
 		}
@@ -868,9 +1212,17 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 			t.Fatalf("write beta password fixture: %v", err)
 		}
 		alpha := mutationCLI.Run(t, "sshctl", nil, "--json", "host", "add", "alpha", "--host", "192.0.2.70", "--user", "runner", "--password-file", alphaPassword, "--offline")
+		assertNoCompiledCanaryLeak(t, alpha, map[string]string{
+			"password":   "ISSUE17_ALPHA_PASSWORD_CANARY",
+			"passphrase": mutationCLI.passphrase,
+		})
 		alphaValue := assertCompiledJSONSuccess(t, alpha)
 		alphaID := compiledTransactionID(t, alphaValue, alpha)
 		beta := mutationCLI.Run(t, "sshctl", nil, "--json", "host", "add", "beta", "--host", "192.0.2.71", "--user", "runner", "--password-file", betaPassword, "--offline")
+		assertNoCompiledCanaryLeak(t, beta, map[string]string{
+			"password":   "ISSUE17_BETA_PASSWORD_CANARY",
+			"passphrase": mutationCLI.passphrase,
+		})
 		betaValue := assertCompiledJSONSuccess(t, beta)
 		betaID := compiledTransactionID(t, betaValue, beta)
 		if alphaID == betaID {
@@ -1018,11 +1370,9 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		sync.SetStatus(t, "HEAD", 500)
 		cli.SaveVault(t, &config.Vault{})
 		cli.SaveCloud(t, sync.URL(), "ISSUE17_STREAM_TOKEN_CANARY")
-		inputCanary := "ISSUE17_STREAM_INPUT_CANARY"
-		result := cli.Run(t, "sshctl", []byte(inputCanary+"\n"), "--json", "run", "missing", "--stream", "--refresh=0")
+		result := cli.RunWithHeldOpenStdin(t, "sshctl", "--json", "run", "missing", "--stream", "--refresh=0")
 		assertNoCompiledCanaryLeak(t, result, map[string]string{
 			"token":               "ISSUE17_STREAM_TOKEN_CANARY",
-			"input":               inputCanary,
 			"passphrase":          cli.passphrase,
 			"passphrase_fragment": "MASTER_PASSPHRASE",
 		})
@@ -1041,40 +1391,68 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 			cli := newCompiledCLIHarness(t)
 			sync := newCompiledSyncFixture(t)
 			sync.SetRemote(t, nil, "legacy-remove")
-			cli.SaveVault(t, &config.Vault{Connections: []config.Connection{{
-				Name: "legacy-remove", Host: "192.0.2.50", Port: 22, User: "runner", Password: "ISSUE17_LEGACY_REMOVE_PASSWORD_CANARY",
-			}}})
+			removedPassword := "ISSUE17_LEGACY_REMOVE_PASSWORD_CANARY"
+			preservedPassword := "ISSUE17_LEGACY_PRESERVED_PASSWORD_CANARY"
+			cli.SaveVault(t, &config.Vault{
+				Connections: []config.Connection{
+					{Name: "legacy-remove", Host: "192.0.2.50", Port: 22, User: "runner", Password: removedPassword},
+					{Name: "legacy-preserved", Host: "192.0.2.51", Port: 22, User: "runner", Password: preservedPassword},
+				},
+				Keys: []config.SSHKey{{Name: "preserved-key", PrivateKey: "ISSUE17_LEGACY_PRESERVED_PRIVATE_KEY_CANARY"}},
+			})
 			cli.SaveCloud(t, sync.URL(), "ISSUE17_LEGACY_REMOVE_TOKEN_CANARY")
 			result := cli.Run(t, "ssm", nil, "remove", "legacy-remove")
 			assertCompiledHumanSuccess(t, result, "legacy-remove")
 			assertNoCompiledCanaryLeak(t, result, map[string]string{
-				"password": "ISSUE17_LEGACY_REMOVE_PASSWORD_CANARY",
-				"token":    "ISSUE17_LEGACY_REMOVE_TOKEN_CANARY",
+				"removed_password":   removedPassword,
+				"preserved_password": preservedPassword,
+				"private_key":        "ISSUE17_LEGACY_PRESERVED_PRIVATE_KEY_CANARY",
+				"token":              "ISSUE17_LEGACY_REMOVE_TOKEN_CANARY",
 			})
 			if got := sync.MethodCount("PUT"); got != 1 {
 				t.Fatalf("legacy remove PUT count = %d, want 1", got)
 			}
-			assertCompiledVaultSummary(t, cli.LoadVaultSummary(t), nil, nil, nil)
+			assertCompiledEncryptedPublication(t, sync.UploadedBlob(), cli.passphrase, map[string]string{
+				"removed_password":   removedPassword,
+				"preserved_password": preservedPassword,
+				"private_key":        "ISSUE17_LEGACY_PRESERVED_PRIVATE_KEY_CANARY",
+			}, []string{"legacy-preserved"}, []string{"preserved-key"}, nil)
+			assertCompiledVaultSummary(t, cli.LoadVaultSummary(t), []string{"legacy-preserved"}, []string{"preserved-key"}, nil)
 		})
 
 		t.Run("legacy key remove auto-pushes without a transaction", func(t *testing.T) {
 			cli := newCompiledCLIHarness(t)
 			sync := newCompiledSyncFixture(t)
 			sync.SetRemote(t, nil, "legacy-key-remove")
-			cli.SaveVault(t, &config.Vault{Keys: []config.SSHKey{{
-				Name: "legacy-key", PrivateKey: "ISSUE17_LEGACY_PRIVATE_KEY_CANARY",
-			}}})
+			removedKey := "ISSUE17_LEGACY_PRIVATE_KEY_CANARY"
+			preservedKey := "ISSUE17_LEGACY_UNRELATED_PRIVATE_KEY_CANARY"
+			cli.SaveVault(t, &config.Vault{
+				Connections: []config.Connection{{
+					Name: "legacy-unrelated", Host: "192.0.2.52", Port: 22, User: "runner", Password: "ISSUE17_LEGACY_UNRELATED_PASSWORD_CANARY",
+				}},
+				Keys: []config.SSHKey{
+					{Name: "legacy-key", PrivateKey: removedKey},
+					{Name: "unrelated-key", PrivateKey: preservedKey},
+				},
+			})
 			cli.SaveCloud(t, sync.URL(), "ISSUE17_LEGACY_KEY_TOKEN_CANARY")
 			result := cli.Run(t, "ssm", nil, "keys", "remove", "legacy-key")
 			assertCompiledHumanSuccess(t, result, "legacy-key")
 			assertNoCompiledCanaryLeak(t, result, map[string]string{
-				"private_key": "ISSUE17_LEGACY_PRIVATE_KEY_CANARY",
-				"token":       "ISSUE17_LEGACY_KEY_TOKEN_CANARY",
+				"removed_private_key":   removedKey,
+				"preserved_private_key": preservedKey,
+				"password":              "ISSUE17_LEGACY_UNRELATED_PASSWORD_CANARY",
+				"token":                 "ISSUE17_LEGACY_KEY_TOKEN_CANARY",
 			})
 			if got := sync.MethodCount("PUT"); got != 1 {
 				t.Fatalf("legacy key remove PUT count = %d, want 1", got)
 			}
-			assertCompiledVaultSummary(t, cli.LoadVaultSummary(t), nil, nil, nil)
+			assertCompiledEncryptedPublication(t, sync.UploadedBlob(), cli.passphrase, map[string]string{
+				"removed_private_key":   removedKey,
+				"preserved_private_key": preservedKey,
+				"password":              "ISSUE17_LEGACY_UNRELATED_PASSWORD_CANARY",
+			}, []string{"legacy-unrelated"}, []string{"unrelated-key"}, nil)
+			assertCompiledVaultSummary(t, cli.LoadVaultSummary(t), []string{"legacy-unrelated"}, []string{"unrelated-key"}, nil)
 		})
 
 		for _, mode := range []string{"merge", "replace"} {
@@ -1116,15 +1494,30 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 				cli := newCompiledCLIHarness(t)
 				sync := newCompiledSyncFixture(t)
 				sync.SetRemote(t, nil, "empty-ledger")
-				cli.SaveVault(t, &config.Vault{})
+				password := "ISSUE17_EMPTY_LEDGER_PASSWORD_CANARY"
+				privateKey := "ISSUE17_EMPTY_LEDGER_PRIVATE_KEY_CANARY"
+				cli.SaveVault(t, &config.Vault{
+					Connections: []config.Connection{{
+						Name: "empty-ledger-host", Host: "192.0.2.53", Port: 22, User: "runner", Password: password,
+					}},
+					Keys: []config.SSHKey{{Name: "empty-ledger-key", PrivateKey: privateKey}},
+				})
 				cli.SaveCloud(t, sync.URL(), "ISSUE17_EMPTY_LEDGER_TOKEN_CANARY")
 				result := cli.Run(t, "sshctl", nil, args...)
 				value := assertCompiledJSONSuccess(t, result)
 				assertCompiledStringField(t, value, "scope", "all", result)
-				assertNoCompiledCanaryLeak(t, result, map[string]string{"token": "ISSUE17_EMPTY_LEDGER_TOKEN_CANARY"})
+				assertNoCompiledCanaryLeak(t, result, map[string]string{
+					"password":    password,
+					"private_key": privateKey,
+					"token":       "ISSUE17_EMPTY_LEDGER_TOKEN_CANARY",
+				})
 				if got := sync.MethodCount("PUT"); got != 1 {
 					t.Fatalf("%s push PUT count = %d, want 1", name, got)
 				}
+				assertCompiledEncryptedPublication(t, sync.UploadedBlob(), cli.passphrase, map[string]string{
+					"password":    password,
+					"private_key": privateKey,
+				}, []string{"empty-ledger-host"}, []string{"empty-ledger-key"}, nil)
 			})
 		}
 	})
@@ -1158,7 +1551,27 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		password := "ISSUE17_TRANSFER_LIVE_PASSWORD_CANARY"
 		server := newCompiledSSHFixture(t, compiledSSHFixtureOptions{Password: password})
 		cli.TrustSSHHost(t, server)
-		cli.SaveVault(t, &config.Vault{Connections: []config.Connection{server.Connection("transfer-live", password)}})
+		privateKey := "ISSUE17_TRANSFER_PRIVATE_KEY_CANARY"
+		inventoryCanary := "ISSUE17_DECRYPTED_INVENTORY_CANARY"
+		configCanary := "ISSUE17_TRANSFER_CONFIG_CANARY"
+		tokenCanary := "ISSUE17_TRANSFER_TOKEN_CANARY"
+		cli.SaveVault(t, &config.Vault{
+			Connections: []config.Connection{
+				server.Connection("transfer-live", password),
+				{Name: inventoryCanary, Host: "192.0.2.54", Port: 22, User: "runner", Password: "ISSUE17_UNRELATED_INVENTORY_PASSWORD_CANARY"},
+			},
+			Keys: []config.SSHKey{{Name: "unrelated-key", PrivateKey: privateKey}},
+		})
+		cli.writeConfigFile(t, "cloud.json", []byte(`{"server":"https://`+configCanary+`.invalid","token":"`+tokenCanary+`"`))
+		secretCanaries := map[string]string{
+			"password":            password,
+			"private_key":         privateKey,
+			"file_content":        "ISSUE17_TRANSFER_FILE_CONTENT_CANARY",
+			"directory_content":   "ISSUE17_TRANSFER_DIRECTORY_CONTENT_CANARY",
+			"token":               tokenCanary,
+			"configuration":       configCanary,
+			"decrypted_inventory": inventoryCanary,
+		}
 
 		localFile := filepath.Join(cli.temp, "artifact.bin")
 		fileBody := []byte("ISSUE17_TRANSFER_FILE_CONTENT_CANARY\n")
@@ -1168,11 +1581,14 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		remoteRoot := t.TempDir()
 		remoteFile := filepath.Join(remoteRoot, "direct-file.bin")
 		directFile := cli.Run(t, "sshctl", nil, "--offline", "--json", "put", "transfer-live", localFile, remoteFile, "--resume=v1", "--sha256")
-		assertCompiledPutContract(t, directFile, compiledPutContract{
-			Integrity: "sha256_verified", Atomic: true, Resume: "started", BytesSent: len(fileBody),
-			Present: []string{"local_sha256", "remote_sha256"},
-			Absent:  []string{"direction", "kind"},
+		assertCompiledTransferSnapshot(t, directFile, map[string]any{
+			"action": "put", "alias": "transfer-live", "local": localFile, "remote": remoteFile,
+			"ok": true, "stage": "complete", "bytes_sent": len(fileBody),
+			"integrity": "sha256_verified", "local_sha256": "3d8d6a88369017fda7fd16f16b3536c0c583cd040f9b6b865c0de9eaa5e021e0",
+			"remote_sha256": "3d8d6a88369017fda7fd16f16b3536c0c583cd040f9b6b865c0de9eaa5e021e0",
+			"atomic":        true, "resume": "started",
 		})
+		assertNoCompiledCanaryLeak(t, directFile, secretCanaries)
 
 		requestRemoteFile := filepath.Join(remoteRoot, "request-file.bin")
 		requestBody, err := json.Marshal(map[string]any{
@@ -1184,25 +1600,31 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 			t.Fatalf("marshal file transfer request fixture: %v", err)
 		}
 		requestFile := cli.Run(t, "sshctl", requestBody, "request", "-")
-		assertCompiledPutContract(t, requestFile, compiledPutContract{
-			Integrity: "sha256_verified", Atomic: true, Resume: "started", BytesSent: len(fileBody),
-			Present: []string{"local_sha256", "remote_sha256"},
-			Absent:  []string{"direction", "kind"},
+		assertCompiledTransferSnapshot(t, requestFile, map[string]any{
+			"action": "put", "alias": "transfer-live", "local": localFile, "remote": requestRemoteFile,
+			"ok": true, "stage": "complete", "bytes_sent": len(fileBody),
+			"integrity": "sha256_verified", "local_sha256": "3d8d6a88369017fda7fd16f16b3536c0c583cd040f9b6b865c0de9eaa5e021e0",
+			"remote_sha256": "3d8d6a88369017fda7fd16f16b3536c0c583cd040f9b6b865c0de9eaa5e021e0",
+			"atomic":        true, "resume": "started",
 		})
+		assertNoCompiledCanaryLeak(t, requestFile, mergeCompiledCanaries(secretCanaries, "request", string(requestBody)))
 
 		localDirectory := filepath.Join(cli.temp, "directory")
 		if err := os.Mkdir(localDirectory, 0o700); err != nil {
 			t.Fatalf("create directory transfer fixture: %v", err)
 		}
-		if err := os.WriteFile(filepath.Join(localDirectory, "item.txt"), []byte("directory fixture\n"), 0o600); err != nil {
+		directoryBody := []byte("ISSUE17_TRANSFER_DIRECTORY_CONTENT_CANARY\n")
+		if err := os.WriteFile(filepath.Join(localDirectory, "item.txt"), directoryBody, 0o600); err != nil {
 			t.Fatalf("write directory transfer fixture: %v", err)
 		}
 		remoteDirectory := filepath.Join(remoteRoot, "direct-directory")
 		directDirectory := cli.Run(t, "sshctl", nil, "--offline", "--json", "put", "transfer-live", localDirectory, remoteDirectory)
-		assertCompiledPutContract(t, directDirectory, compiledPutContract{
-			Integrity: "not_available", Atomic: false, Resume: "unsupported", BytesSent: 0,
-			Absent: []string{"direction", "kind", "local_sha256", "remote_sha256", "bytes_reused"},
+		assertCompiledTransferSnapshot(t, directDirectory, map[string]any{
+			"action": "put", "alias": "transfer-live", "local": localDirectory, "remote": remoteDirectory,
+			"ok": true, "stage": "complete", "bytes_sent": 0,
+			"integrity": "not_available", "atomic": false, "resume": "unsupported",
 		})
+		assertNoCompiledCanaryLeak(t, directDirectory, secretCanaries)
 
 		requestRemoteDirectory := filepath.Join(remoteRoot, "request-directory")
 		requestBody, err = json.Marshal(map[string]any{
@@ -1213,15 +1635,52 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 			t.Fatalf("marshal directory transfer request fixture: %v", err)
 		}
 		requestDirectory := cli.Run(t, "sshctl", requestBody, "request", "-")
-		assertCompiledPutContract(t, requestDirectory, compiledPutContract{
-			Integrity: "not_available", Atomic: false, Resume: "unsupported", BytesSent: 0,
-			Absent: []string{"direction", "kind", "local_sha256", "remote_sha256", "bytes_reused"},
+		assertCompiledTransferSnapshot(t, requestDirectory, map[string]any{
+			"action": "put", "alias": "transfer-live", "local": localDirectory, "remote": requestRemoteDirectory,
+			"ok": true, "stage": "complete", "bytes_sent": 0,
+			"integrity": "not_available", "atomic": false, "resume": "unsupported",
 		})
+		assertNoCompiledCanaryLeak(t, requestDirectory, mergeCompiledCanaries(secretCanaries, "request", string(requestBody)))
 
-		getFile := cli.Run(t, "sshctl", nil, "--offline", "--json", "get", "transfer-live", remoteFile, filepath.Join(cli.temp, "downloaded-file.bin"))
-		assertCompiledGetContract(t, getFile)
-		getDirectory := cli.Run(t, "sshctl", nil, "--offline", "--json", "get", "transfer-live", remoteDirectory, filepath.Join(cli.temp, "downloaded-directory"))
-		assertCompiledGetContract(t, getDirectory)
+		downloadedFile := filepath.Join(cli.temp, "downloaded-file.bin")
+		getFile := cli.Run(t, "sshctl", nil, "--offline", "--json", "get", "transfer-live", remoteFile, downloadedFile)
+		assertCompiledTransferSnapshot(t, getFile, map[string]any{
+			"ok": true, "action": "get", "alias": "transfer-live", "remote": remoteFile, "local": downloadedFile,
+		})
+		assertNoCompiledCanaryLeak(t, getFile, secretCanaries)
+
+		downloadedDirectory := filepath.Join(cli.temp, "downloaded-directory")
+		getDirectory := cli.Run(t, "sshctl", nil, "--offline", "--json", "get", "transfer-live", remoteDirectory, downloadedDirectory)
+		assertCompiledTransferSnapshot(t, getDirectory, map[string]any{
+			"ok": true, "action": "get", "alias": "transfer-live", "remote": remoteDirectory, "local": downloadedDirectory,
+		})
+		assertNoCompiledCanaryLeak(t, getDirectory, secretCanaries)
+
+		for _, requestGet := range []struct {
+			name       string
+			remotePath string
+			localPath  string
+		}{
+			{name: "file", remotePath: requestRemoteFile, localPath: filepath.Join(cli.temp, "request-downloaded-file.bin")},
+			{name: "directory", remotePath: requestRemoteDirectory, localPath: filepath.Join(cli.temp, "request-downloaded-directory")},
+		} {
+			t.Run("request-v1 get "+requestGet.name+" remains unsupported", func(t *testing.T) {
+				body, err := json.Marshal(map[string]any{
+					"version": 1, "op": "get", "alias": "transfer-live",
+					"remote_path": requestGet.remotePath, "local_path": requestGet.localPath,
+				})
+				if err != nil {
+					t.Fatalf("marshal request-v1 get fixture: %v", err)
+				}
+				result := cli.Run(t, "sshctl", body, "request", "-")
+				assertCompiledTransferSnapshot(t, result, map[string]any{
+					"ok": false, "error": "invalid_request", "message": `unsupported request op "get"`,
+					"hint": "use run, plan, check, doctor, put, or host.list/search/show/add/update/upsert/remove",
+					"exit": 2, "alias": "transfer-live",
+				})
+				assertNoCompiledCanaryLeak(t, result, mergeCompiledCanaries(secretCanaries, "request", string(body)))
+			})
+		}
 
 		blocker := filepath.Join(remoteRoot, "blocked-parent")
 		if err := os.WriteFile(blocker, []byte("preserve\n"), 0o600); err != nil {
@@ -1242,9 +1701,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 			t.Fatal("failed transfer published a final path")
 		}
 
-		assertNoCompiledCanaryLeak(t, directFile, map[string]string{"password": password, "file_body": string(fileBody)})
-		assertNoCompiledCanaryLeak(t, requestFile, map[string]string{"password": password, "file_body": string(fileBody)})
-		assertNoCompiledCanaryLeak(t, failed, map[string]string{"password": password, "file_body": string(fileBody)})
+		assertNoCompiledCanaryLeak(t, failed, secretCanaries)
 	})
 
 	t.Run("BC-8 latest automatic replacement crosses the current major", func(t *testing.T) {
@@ -1271,13 +1728,14 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 	})
 
 	t.Run("BC-10 make check is a mutating format-lint-build subset", func(t *testing.T) {
-		command := exec.Command("make", "-n", "check")
-		command.Dir = filepath.Join("..", "..")
-		output, err := command.Output()
+		makefile, err := os.ReadFile(filepath.Join("..", "..", "Makefile"))
+		if err != nil {
+			t.Fatalf("read Makefile for check membership: %v", err)
+		}
+		lines, err := compiledMakeTargetCommands(makefile, "check")
 		if err != nil {
 			t.Fatalf("inspect make check membership: %v", err)
 		}
-		lines := nonEmptyCompiledLines(string(output))
 		want := []string{
 			"gofmt -w .",
 			"golangci-lint run ./...",
@@ -1287,28 +1745,25 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 			t.Fatalf("make check command count = %d, want %d", len(lines), len(want))
 		}
 		for _, forbidden := range []string{"go test", "go vet", "-race", "govulncheck"} {
-			if strings.Contains(string(output), forbidden) {
+			if strings.Contains(strings.Join(lines, "\n"), forbidden) {
 				t.Fatalf("make check unexpectedly includes %q", forbidden)
 			}
 		}
 
 		scratch := t.TempDir()
-		makefile, err := os.ReadFile(filepath.Join("..", "..", "Makefile"))
-		if err != nil {
-			t.Fatalf("read Makefile for isolated mutation proof: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(scratch, "Makefile"), makefile, 0o600); err != nil {
-			t.Fatalf("write isolated Makefile fixture: %v", err)
-		}
 		unformatted := []byte("package fixture\nfunc value( )int{return 1}\n")
 		sourcePath := filepath.Join(scratch, "fixture.go")
 		if err := os.WriteFile(sourcePath, unformatted, 0o600); err != nil {
 			t.Fatalf("write unformatted Go fixture: %v", err)
 		}
-		format := exec.Command("make", "fmt")
-		format.Dir = scratch
+		ctx, cancel := context.WithTimeout(context.Background(), compiledCLISubprocessTimeout)
+		defer cancel()
+		format := exec.CommandContext(ctx, "gofmt", "-w", sourcePath)
 		if output, err := format.CombinedOutput(); err != nil {
-			t.Fatalf("run isolated make fmt: %v; bytes=%d sha256=%x", err, len(output), sha256.Sum256(output))
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				t.Fatalf("isolated gofmt exceeded subprocess deadline %s", compiledCLISubprocessTimeout)
+			}
+			t.Fatalf("run isolated gofmt: %v; bytes=%d sha256=%x", err, len(output), sha256.Sum256(output))
 		}
 		formatted, err := os.ReadFile(sourcePath)
 		if err != nil {

@@ -2,6 +2,8 @@
   {
     "name": "unknown_sshctl",
     "command": "sshctl --json not-a-command",
+    "executable": "sshctl",
+    "args": ["--json", "not-a-command"],
     "ok": false,
     "error": "unknown_command",
     "json_exit": 2,
@@ -15,6 +17,8 @@
   {
     "name": "unknown_ssm",
     "command": "ssm --json not-a-command",
+    "executable": "ssm",
+    "args": ["--json", "not-a-command"],
     "ok": false,
     "error": "unknown_command",
     "json_exit": 2,
@@ -28,6 +32,8 @@
   {
     "name": "invalid_request_unknown_field",
     "command": "sshctl request -",
+    "executable": "sshctl",
+    "args": ["request", "-"],
     "ok": false,
     "error": "invalid_request",
     "json_exit": 2,
@@ -41,6 +47,8 @@
   {
     "name": "unlock_file_required",
     "command": "ssm --json list",
+    "executable": "ssm",
+    "args": ["--json", "list"],
     "ok": false,
     "error": "master_pass_file_required",
     "json_exit": 2,
@@ -54,6 +62,8 @@
   {
     "name": "exact_alias_miss",
     "command": "sshctl --offline --json run prod --argv true",
+    "executable": "sshctl",
+    "args": ["--offline", "--json", "run", "prod", "--argv", "true"],
     "ok": false,
     "error": "alias_not_found",
     "json_exit": 255,
@@ -69,6 +79,8 @@
   {
     "name": "sync_etag_conflict",
     "command": "sshctl --json list",
+    "executable": "sshctl",
+    "args": ["--json", "list"],
     "ok": false,
     "error": "sync_conflict",
     "stage": "sync_compare",
@@ -83,6 +95,8 @@
   {
     "name": "transfer_local_read",
     "command": "sshctl --offline --json put transfer <missing> /srv/artifact",
+    "executable": "sshctl",
+    "args": ["--offline", "--json", "put", "transfer", "<missing>", "/srv/artifact"],
     "ok": false,
     "error": "local_read_failed",
     "stage": "local_read",
@@ -98,6 +112,8 @@
   {
     "name": "host_key_unknown",
     "command": "sshctl --offline --json run host-key --argv true",
+    "executable": "sshctl",
+    "args": ["--offline", "--json", "run", "host-key", "--argv", "true"],
     "ok": false,
     "error": "host_key_unknown",
     "stage": "dial",
@@ -113,6 +129,8 @@
   {
     "name": "dial_refused",
     "command": "sshctl --offline --json run refused --argv true",
+    "executable": "sshctl",
+    "args": ["--offline", "--json", "run", "refused", "--argv", "true"],
     "ok": false,
     "error": "dial_refused",
     "stage": "dial",
@@ -126,8 +144,26 @@
     "cardinality": "one_value"
   },
   {
+    "name": "dial_refused_windows",
+    "command": "sshctl --offline --json run refused --argv true",
+    "executable": "sshctl",
+    "args": ["--offline", "--json", "run", "refused", "--argv", "true"],
+    "ok": false,
+    "error": "internal",
+    "stage": "dial",
+    "json_exit": 255,
+    "process_exit": 255,
+    "alias": "refused",
+    "absent": ["candidates", "hint"],
+    "stdout_placement": "stdout",
+    "stderr_placement": "empty",
+    "cardinality": "one_value"
+  },
+  {
     "name": "auth_failed",
     "command": "sshctl --offline --json run auth --argv true",
+    "executable": "sshctl",
+    "args": ["--offline", "--json", "run", "auth", "--argv", "true"],
     "ok": false,
     "error": "auth_failed",
     "stage": "dial",
@@ -143,6 +179,8 @@
   {
     "name": "session_failed",
     "command": "sshctl --offline --json run session --argv true",
+    "executable": "sshctl",
+    "args": ["--offline", "--json", "run", "session", "--argv", "true"],
     "ok": false,
     "error": "session_failed",
     "stage": "session",
@@ -158,6 +196,8 @@
   {
     "name": "remote_exit_255",
     "command": "sshctl --offline --json run remote-255 --argv sh -c 'exit 255'",
+    "executable": "sshctl",
+    "args": ["--offline", "--json", "run", "remote-255", "--argv", "sh", "-c", "exit 255"],
     "ok": false,
     "error": "remote_failed",
     "stage": "remote_execution",
@@ -173,6 +213,8 @@
   {
     "name": "stream_refresh_failed",
     "command": "sshctl --json run unused --stream --refresh=1ns",
+    "executable": "sshctl",
+    "args": ["--json", "run", "unused", "--stream", "--refresh=1ns"],
     "ok": false,
     "error": "sync_pull_failed",
     "stage": "sync_pull",
