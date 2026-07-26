@@ -605,16 +605,33 @@ func assertCompiledTransferSnapshot(t *testing.T, result compiledCLIResult, want
 	)
 }
 
-func assertCompiledFileDigest(t *testing.T, path string, want []byte) {
+type compiledFileIdentity struct {
+	ByteLength int
+	Digest     [sha256.Size]byte
+}
+
+func loadCompiledFileIdentity(t *testing.T, path string) compiledFileIdentity {
 	t.Helper()
-	got, err := os.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read replaced compiled CLI fixture: %v", err)
+		t.Fatalf("read compiled CLI fixture identity: %v", err)
 	}
-	gotDigest := sha256.Sum256(got)
-	wantDigest := sha256.Sum256(want)
-	if gotDigest != wantDigest {
-		t.Fatalf("compiled CLI replacement digest = %x, want %x", gotDigest, wantDigest)
+	return compiledFileIdentity{ByteLength: len(data), Digest: sha256.Sum256(data)}
+}
+
+func assertCompiledFileMatches(t *testing.T, path string, want []byte) {
+	t.Helper()
+	got := loadCompiledFileIdentity(t, path)
+	wantIdentity := compiledFileIdentity{ByteLength: len(want), Digest: sha256.Sum256(want)}
+	if got != wantIdentity {
+		t.Fatal("compiled CLI executable does not match the downloaded replacement fixture")
+	}
+}
+
+func assertCompiledFileUnchanged(t *testing.T, path string, before compiledFileIdentity) {
+	t.Helper()
+	if got := loadCompiledFileIdentity(t, path); got != before {
+		t.Fatal("compiled CLI executable changed after the characterized replacement failure")
 	}
 }
 
@@ -732,83 +749,380 @@ func compiledTransactionID(t *testing.T, value map[string]any, result compiledCL
 	return id
 }
 
-func compiledPendingTransactionIDs(t *testing.T, value map[string]any, result compiledCLIResult) []string {
+func compiledPendingTransactionViews(t *testing.T, value map[string]any, result compiledCLIResult) []pendingMutationView {
 	t.Helper()
 	raw, ok := value["pending_mutations"].([]any)
 	if !ok {
 		t.Fatalf("pending_mutations has unexpected type; output=%s", compiledOutputIdentity(result))
 	}
-	ids := make([]string, len(raw))
+	transactions := make([]pendingMutationView, len(raw))
 	for i, item := range raw {
 		mutation, ok := item.(map[string]any)
 		if !ok {
 			t.Fatalf("pending mutation %d has unexpected type; output=%s", i, compiledOutputIdentity(result))
 		}
-		ids[i], ok = mutation["id"].(string)
-		if !ok {
-			t.Fatalf("pending mutation %d ID has unexpected type; output=%s", i, compiledOutputIdentity(result))
+		for field, destination := range map[string]*string{
+			"id": &transactions[i].ID, "alias": &transactions[i].Alias,
+			"operation": &transactions[i].Operation, "created_at": &transactions[i].CreatedAt,
+		} {
+			*destination, ok = mutation[field].(string)
+			if !ok {
+				t.Fatalf("pending mutation %d field %q has unexpected type; output=%s", i, field, compiledOutputIdentity(result))
+			}
 		}
 	}
-	return ids
+	return transactions
 }
 
-type compiledVaultSummary struct {
-	Aliases      []string
-	KeyNames     []string
-	Transactions []string
+type compiledSecretIdentity struct {
+	Present    bool
+	ByteLength int
+	Digest     [sha256.Size]byte
 }
 
-func decodeCompiledVaultSummary(t *testing.T, encrypted []byte, passphrase string) compiledVaultSummary {
+type compiledConnectionIdentity struct {
+	Name     string                 `safe:"name"`
+	Host     string                 `safe:"host"`
+	Port     int                    `safe:"port"`
+	User     string                 `safe:"user"`
+	Password compiledSecretIdentity `safe:"password"`
+	KeyName  string                 `safe:"key_name"`
+	Group    string                 `safe:"group"`
+}
+
+type compiledKeyIdentity struct {
+	Name       string                 `safe:"name"`
+	PrivateKey compiledSecretIdentity `safe:"private_key"`
+}
+
+type compiledInventoryIdentity struct {
+	Connections []compiledConnectionIdentity `safe:"connections"`
+	Keys        []compiledKeyIdentity        `safe:"keys"`
+}
+
+type compiledMutationIdentity struct {
+	ID         string                      `safe:"id"`
+	Alias      string                      `safe:"alias"`
+	Operation  string                      `safe:"operation"`
+	CreatedAt  string                      `safe:"created_at"`
+	Before     *compiledConnectionIdentity `safe:"before"`
+	After      *compiledConnectionIdentity `safe:"after"`
+	KeysBefore []compiledKeyIdentity       `safe:"keys_before"`
+	KeysAfter  []compiledKeyIdentity       `safe:"keys_after"`
+}
+
+type compiledVaultIdentity struct {
+	Connections      []compiledConnectionIdentity `safe:"connections"`
+	Keys             []compiledKeyIdentity        `safe:"keys"`
+	PendingBase      *compiledInventoryIdentity   `safe:"pending_base"`
+	PendingMutations []compiledMutationIdentity   `safe:"pending_mutations"`
+}
+
+func decodeCompiledVaultIdentity(t *testing.T, encrypted []byte, passphrase string) compiledVaultIdentity {
 	t.Helper()
 	plaintext, err := securevault.Decrypt(encrypted, passphrase)
 	if err != nil {
 		t.Fatalf("decrypt compiled CLI fixture blob: %v; encrypted_bytes=%d sha256=%x", err, len(encrypted), sha256.Sum256(encrypted))
 	}
+	defer func() {
+		for i := range plaintext {
+			plaintext[i] = 0
+		}
+	}()
 	var value config.Vault
 	if err := json.Unmarshal(plaintext, &value); err != nil {
 		t.Fatalf("decode compiled CLI fixture vault: %v; encrypted_bytes=%d sha256=%x", err, len(encrypted), sha256.Sum256(encrypted))
 	}
-	summary := compiledVaultSummary{}
-	for _, connection := range value.Connections {
-		summary.Aliases = append(summary.Aliases, connection.Name)
-	}
-	for _, key := range value.Keys {
-		summary.KeyNames = append(summary.KeyNames, key.Name)
-	}
-	for _, transaction := range value.PendingMutations {
-		summary.Transactions = append(summary.Transactions, transaction.ID)
-	}
-	sort.Strings(summary.Aliases)
-	sort.Strings(summary.KeyNames)
-	sort.Strings(summary.Transactions)
-	return summary
+	return compiledVaultSafeIdentity(&value)
 }
 
-func (h *compiledCLIHarness) LoadVaultSummary(t *testing.T) compiledVaultSummary {
+func TestCompiledVaultPublicationIdentityCoversPersistedFields(t *testing.T) {
+	assertCompiledPersistedFields(t, reflect.TypeOf(config.Vault{}), []string{
+		"Connections", "Keys", "PendingBase", "PendingMutations",
+	})
+	assertCompiledPersistedFields(t, reflect.TypeOf(config.Connection{}), []string{
+		"Name", "Host", "Port", "User", "Password", "KeyName", "Group",
+	})
+	assertCompiledPersistedFields(t, reflect.TypeOf(config.SSHKey{}), []string{
+		"Name", "PrivateKey",
+	})
+	assertCompiledPersistedFields(t, reflect.TypeOf(config.InventorySnapshot{}), []string{
+		"Connections", "Keys",
+	})
+	assertCompiledPersistedFields(t, reflect.TypeOf(config.PendingMutation{}), []string{
+		"ID", "Alias", "Operation", "CreatedAt", "Before", "After", "KeysBefore", "KeysAfter",
+	})
+
+	passphrase := "ISSUE17_NORMALIZATION_PASSPHRASE_CANARY"
+	identity := func(value *config.Vault) compiledVaultIdentity {
+		t.Helper()
+		encrypted, err := config.EncryptVault(value, passphrase)
+		if err != nil {
+			t.Fatalf("encrypt compiled vault normalization fixture: %v", err)
+		}
+		return decodeCompiledVaultIdentity(t, encrypted, passphrase)
+	}
+	fixture := func() *config.Vault {
+		before := config.Connection{
+			Name: "before", Host: "192.0.2.80", Port: 2200, User: "before-user",
+			Password: "ISSUE17_NORMALIZATION_BEFORE_PASSWORD_CANARY", KeyName: "before-key", Group: "before-group",
+		}
+		after := config.Connection{
+			Name: "after", Host: "192.0.2.81", Port: 2201, User: "after-user",
+			Password: "ISSUE17_NORMALIZATION_AFTER_PASSWORD_CANARY", KeyName: "after-key", Group: "after-group",
+		}
+		beforeKey := config.SSHKey{Name: "before-key", PrivateKey: "ISSUE17_NORMALIZATION_BEFORE_PRIVATE_KEY_CANARY"}
+		afterKey := config.SSHKey{Name: "after-key", PrivateKey: "ISSUE17_NORMALIZATION_AFTER_PRIVATE_KEY_CANARY"}
+		return &config.Vault{
+			Connections: []config.Connection{before, after},
+			Keys:        []config.SSHKey{beforeKey, afterKey},
+			PendingBase: &config.InventorySnapshot{
+				Connections: []config.Connection{before},
+				Keys:        []config.SSHKey{beforeKey},
+			},
+			PendingMutations: []config.PendingMutation{{
+				ID: "tx_normalized", Alias: after.Name, Operation: "updated", CreatedAt: "2026-01-02T03:04:05Z",
+				Before: &before, After: &after, KeysBefore: []config.SSHKey{beforeKey}, KeysAfter: []config.SSHKey{afterKey},
+			}},
+		}
+	}
+	tests := []struct {
+		path   string
+		mutate func(*config.Vault)
+	}{
+		{path: "connections order", mutate: func(v *config.Vault) { v.Connections[0], v.Connections[1] = v.Connections[1], v.Connections[0] }},
+		{path: "connections presence", mutate: func(v *config.Vault) { v.Connections = nil }},
+		{path: "connection name", mutate: func(v *config.Vault) { v.Connections[0].Name = "changed" }},
+		{path: "connection host", mutate: func(v *config.Vault) { v.Connections[0].Host = "192.0.2.82" }},
+		{path: "connection port", mutate: func(v *config.Vault) { v.Connections[0].Port++ }},
+		{path: "connection user", mutate: func(v *config.Vault) { v.Connections[0].User = "changed" }},
+		{path: "connection password value", mutate: func(v *config.Vault) { v.Connections[0].Password = "ISSUE17_NORMALIZATION_CHANGED_PASSWORD_CANARY" }},
+		{path: "connection password presence", mutate: func(v *config.Vault) { v.Connections[0].Password = "" }},
+		{path: "connection key reference", mutate: func(v *config.Vault) { v.Connections[0].KeyName = "changed" }},
+		{path: "connection group", mutate: func(v *config.Vault) { v.Connections[0].Group = "changed" }},
+		{path: "keys order", mutate: func(v *config.Vault) { v.Keys[0], v.Keys[1] = v.Keys[1], v.Keys[0] }},
+		{path: "keys presence", mutate: func(v *config.Vault) { v.Keys = nil }},
+		{path: "key name", mutate: func(v *config.Vault) { v.Keys[0].Name = "changed" }},
+		{path: "private key value", mutate: func(v *config.Vault) { v.Keys[0].PrivateKey = "ISSUE17_NORMALIZATION_CHANGED_PRIVATE_KEY_CANARY" }},
+		{path: "private key length", mutate: func(v *config.Vault) { v.Keys[0].PrivateKey += "x" }},
+		{path: "pending base presence", mutate: func(v *config.Vault) { v.PendingBase = nil }},
+		{path: "pending base inventory", mutate: func(v *config.Vault) { v.PendingBase.Connections[0].Host = "192.0.2.83" }},
+		{path: "pending base keys", mutate: func(v *config.Vault) { v.PendingBase.Keys[0].Name = "changed" }},
+		{path: "pending mutation order", mutate: func(v *config.Vault) { v.PendingMutations = append(v.PendingMutations, v.PendingMutations[0]) }},
+		{path: "pending mutation id", mutate: func(v *config.Vault) { v.PendingMutations[0].ID = "tx_changed" }},
+		{path: "pending mutation alias", mutate: func(v *config.Vault) { v.PendingMutations[0].Alias = "changed" }},
+		{path: "pending mutation operation", mutate: func(v *config.Vault) { v.PendingMutations[0].Operation = "changed" }},
+		{path: "pending mutation state", mutate: func(v *config.Vault) { v.PendingMutations[0].CreatedAt = "2026-02-03T04:05:06Z" }},
+		{path: "pending mutation before presence", mutate: func(v *config.Vault) { v.PendingMutations[0].Before = nil }},
+		{path: "pending mutation before", mutate: func(v *config.Vault) { v.PendingMutations[0].Before.User = "changed" }},
+		{path: "pending mutation after presence", mutate: func(v *config.Vault) { v.PendingMutations[0].After = nil }},
+		{path: "pending mutation after", mutate: func(v *config.Vault) { v.PendingMutations[0].After.Group = "changed" }},
+		{path: "pending mutation keys before", mutate: func(v *config.Vault) { v.PendingMutations[0].KeysBefore[0].Name = "changed" }},
+		{path: "pending mutation keys after", mutate: func(v *config.Vault) { v.PendingMutations[0].KeysAfter[0].Name = "changed" }},
+	}
+	baseline := identity(fixture())
+	for _, test := range tests {
+		t.Run(test.path, func(t *testing.T) {
+			changed := fixture()
+			test.mutate(changed)
+			if reflect.DeepEqual(baseline, identity(changed)) {
+				t.Fatalf("safe vault publication identity ignored %s", test.path)
+			}
+		})
+	}
+
+	t.Run("mismatch rendering reports only safe path and category", func(t *testing.T) {
+		left := fixture()
+		right := fixture()
+		right.Connections[0].Password = "ISSUE17_NORMALIZATION_BEFORE_PASSW0RD_CANARY"
+		leftIdentity := identity(left)
+		rightIdentity := identity(right)
+		path, category, mismatch := compiledVaultIdentityMismatch(
+			reflect.ValueOf(leftIdentity), reflect.ValueOf(rightIdentity), "vault",
+		)
+		if !mismatch {
+			t.Fatal("safe vault comparison accepted a changed secret identity")
+		}
+		report := compiledVaultMismatchReport(path, category)
+		if report != "safe normalized vault mismatch at vault.connections[0].password (secret identity mismatch)" {
+			t.Fatal("safe vault mismatch report included more than its field path and mismatch category")
+		}
+	})
+}
+
+func assertCompiledPersistedFields(t *testing.T, valueType reflect.Type, want []string) {
+	t.Helper()
+	got := make([]string, valueType.NumField())
+	for i := 0; i < valueType.NumField(); i++ {
+		got[i] = valueType.Field(i).Name
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("persisted field coverage for %s changed", valueType.Name())
+	}
+}
+
+func compiledVaultSafeIdentity(value *config.Vault) compiledVaultIdentity {
+	identity := compiledVaultIdentity{
+		Connections: compiledConnectionIdentities(value.Connections),
+		Keys:        compiledKeyIdentities(value.Keys),
+	}
+	if value.PendingBase != nil {
+		identity.PendingBase = &compiledInventoryIdentity{
+			Connections: compiledConnectionIdentities(value.PendingBase.Connections),
+			Keys:        compiledKeyIdentities(value.PendingBase.Keys),
+		}
+	}
+	if value.PendingMutations != nil {
+		identity.PendingMutations = make([]compiledMutationIdentity, len(value.PendingMutations))
+		for i, mutation := range value.PendingMutations {
+			identity.PendingMutations[i] = compiledMutationIdentity{
+				ID:         mutation.ID,
+				Alias:      mutation.Alias,
+				Operation:  mutation.Operation,
+				CreatedAt:  mutation.CreatedAt,
+				Before:     compiledOptionalConnectionIdentity(mutation.Before),
+				After:      compiledOptionalConnectionIdentity(mutation.After),
+				KeysBefore: compiledKeyIdentities(mutation.KeysBefore),
+				KeysAfter:  compiledKeyIdentities(mutation.KeysAfter),
+			}
+		}
+	}
+	return identity
+}
+
+func compiledConnectionIdentities(values []config.Connection) []compiledConnectionIdentity {
+	if values == nil {
+		return nil
+	}
+	identities := make([]compiledConnectionIdentity, len(values))
+	for i := range values {
+		identities[i] = *compiledOptionalConnectionIdentity(&values[i])
+	}
+	return identities
+}
+
+func compiledOptionalConnectionIdentity(value *config.Connection) *compiledConnectionIdentity {
+	if value == nil {
+		return nil
+	}
+	return &compiledConnectionIdentity{
+		Name:     value.Name,
+		Host:     value.Host,
+		Port:     value.Port,
+		User:     value.User,
+		Password: compiledSensitiveIdentity(value.Password, value.Password != ""),
+		KeyName:  value.KeyName,
+		Group:    value.Group,
+	}
+}
+
+func compiledKeyIdentities(values []config.SSHKey) []compiledKeyIdentity {
+	if values == nil {
+		return nil
+	}
+	identities := make([]compiledKeyIdentity, len(values))
+	for i, value := range values {
+		identities[i] = compiledKeyIdentity{
+			Name:       value.Name,
+			PrivateKey: compiledSensitiveIdentity(value.PrivateKey, true),
+		}
+	}
+	return identities
+}
+
+func compiledSensitiveIdentity(value string, present bool) compiledSecretIdentity {
+	identity := compiledSecretIdentity{Present: present}
+	if !present {
+		return identity
+	}
+	identity.ByteLength = len(value)
+	identity.Digest = sha256.Sum256([]byte(value))
+	return identity
+}
+
+func (h *compiledCLIHarness) LoadVaultIdentity(t *testing.T) compiledVaultIdentity {
 	t.Helper()
 	path := filepath.Join(h.home, ".config", "ssm", "connections.enc")
 	encrypted, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read compiled CLI fixture vault: %v", err)
 	}
-	return decodeCompiledVaultSummary(t, encrypted, h.passphrase)
+	return decodeCompiledVaultIdentity(t, encrypted, h.passphrase)
 }
 
-func assertCompiledVaultSummary(t *testing.T, got compiledVaultSummary, aliases, keyNames, transactions []string) {
+func assertCompiledVaultIdentity(t *testing.T, got compiledVaultIdentity, want *config.Vault) {
 	t.Helper()
-	aliases = append([]string(nil), aliases...)
-	keyNames = append([]string(nil), keyNames...)
-	transactions = append([]string(nil), transactions...)
-	sort.Strings(aliases)
-	sort.Strings(keyNames)
-	sort.Strings(transactions)
-	if !equalCompiledStrings(got.Aliases, aliases) ||
-		!equalCompiledStrings(got.KeyNames, keyNames) ||
-		!equalCompiledStrings(got.Transactions, transactions) {
-		t.Fatalf(
-			"vault safe summary counts aliases=%d keys=%d transactions=%d, want aliases=%d keys=%d transactions=%d",
-			len(got.Aliases), len(got.KeyNames), len(got.Transactions), len(aliases), len(keyNames), len(transactions),
-		)
+	path, category, mismatch := compiledVaultIdentityMismatch(reflect.ValueOf(got), reflect.ValueOf(compiledVaultSafeIdentity(want)), "vault")
+	if mismatch {
+		t.Fatal(compiledVaultMismatchReport(path, category))
+	}
+}
+
+var compiledSecretIdentityType = reflect.TypeOf(compiledSecretIdentity{})
+
+func compiledVaultMismatchReport(path, category string) string {
+	return fmt.Sprintf("safe normalized vault mismatch at %s (%s mismatch)", path, category)
+}
+
+func compiledVaultIdentityMismatch(got, want reflect.Value, path string) (string, string, bool) {
+	if got.Type() != want.Type() {
+		return path, "type", true
+	}
+	if got.Type() == compiledSecretIdentityType {
+		switch {
+		case got.FieldByName("Present").Bool() != want.FieldByName("Present").Bool():
+			return path, "presence", true
+		case got.FieldByName("ByteLength").Int() != want.FieldByName("ByteLength").Int():
+			return path, "length", true
+		case !reflect.DeepEqual(got.FieldByName("Digest").Interface(), want.FieldByName("Digest").Interface()):
+			return path, "secret identity", true
+		default:
+			return "", "", false
+		}
+	}
+	switch got.Kind() {
+	case reflect.Pointer:
+		if got.IsNil() != want.IsNil() {
+			return path, "presence", true
+		}
+		if got.IsNil() {
+			return "", "", false
+		}
+		return compiledVaultIdentityMismatch(got.Elem(), want.Elem(), path)
+	case reflect.Slice:
+		if got.IsNil() != want.IsNil() {
+			return path, "presence", true
+		}
+		if got.Len() != want.Len() {
+			return path, "count", true
+		}
+		for i := 0; i < got.Len(); i++ {
+			if mismatchPath, category, mismatch := compiledVaultIdentityMismatch(
+				got.Index(i), want.Index(i), fmt.Sprintf("%s[%d]", path, i),
+			); mismatch {
+				return mismatchPath, category, true
+			}
+		}
+		return "", "", false
+	case reflect.Struct:
+		for i := 0; i < got.NumField(); i++ {
+			field := got.Type().Field(i)
+			name := field.Tag.Get("safe")
+			if name == "" {
+				name = field.Name
+			}
+			if mismatchPath, category, mismatch := compiledVaultIdentityMismatch(
+				got.Field(i), want.Field(i), path+"."+name,
+			); mismatch {
+				return mismatchPath, category, true
+			}
+		}
+		return "", "", false
+	default:
+		if !reflect.DeepEqual(got.Interface(), want.Interface()) {
+			return path, "value", true
+		}
+		return "", "", false
 	}
 }
 
@@ -817,7 +1131,7 @@ func assertCompiledEncryptedPublication(
 	encrypted []byte,
 	passphrase string,
 	plaintextCanaries map[string]string,
-	aliases, keyNames, transactions []string,
+	want *config.Vault,
 ) {
 	t.Helper()
 	if len(encrypted) == 0 {
@@ -831,25 +1145,7 @@ func assertCompiledEncryptedPublication(
 			)
 		}
 	}
-	assertCompiledVaultSummary(
-		t,
-		decodeCompiledVaultSummary(t, encrypted, passphrase),
-		aliases,
-		keyNames,
-		transactions,
-	)
-}
-
-func equalCompiledStrings(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
+	assertCompiledVaultIdentity(t, decodeCompiledVaultIdentity(t, encrypted, passphrase), want)
 }
 
 func assertNoCompiledCanaryLeak(t *testing.T, result compiledCLIResult, canaries map[string]string) {
@@ -1229,11 +1525,19 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 			t.Fatal("compiled host mutations reused a transaction ID")
 		}
 
+		var pendingTransactions []pendingMutationView
 		for i := 0; i < 2; i++ {
 			status := mutationCLI.Run(t, "sshctl", nil, "--offline", "--json", "status")
 			value := assertCompiledJSONSuccess(t, status)
-			if got := compiledPendingTransactionIDs(t, value, status); !reflect.DeepEqual(got, []string{alphaID, betaID}) {
-				t.Fatalf("pending transaction count = %d, want 2 stable IDs", len(got))
+			got := compiledPendingTransactionViews(t, value, status)
+			if i == 0 {
+				pendingTransactions = got
+			}
+			if !reflect.DeepEqual(got, pendingTransactions) ||
+				len(got) != 2 ||
+				got[0].ID != alphaID || got[0].Alias != "alpha" || got[0].Operation != "created" ||
+				got[1].ID != betaID || got[1].Alias != "beta" || got[1].Operation != "created" {
+				t.Fatalf("pending transaction public views do not retain two stable ordered mutations")
 			}
 		}
 
@@ -1248,8 +1552,28 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 			"beta_password":  "ISSUE17_BETA_PASSWORD_CANARY",
 			"token":          "ISSUE17_SCOPED_PUSH_TOKEN_CANARY",
 		})
-		assertCompiledVaultSummary(t, decodeCompiledVaultSummary(t, sync.UploadedBlob(), mutationCLI.passphrase), []string{"beta"}, nil, nil)
-		assertCompiledVaultSummary(t, mutationCLI.LoadVaultSummary(t), []string{"alpha", "beta"}, nil, []string{alphaID})
+		alphaConnection := config.Connection{
+			Name: "alpha", Host: "192.0.2.70", Port: 22, User: "runner", Password: "ISSUE17_ALPHA_PASSWORD_CANARY",
+		}
+		betaConnection := config.Connection{
+			Name: "beta", Host: "192.0.2.71", Port: 22, User: "runner", Password: "ISSUE17_BETA_PASSWORD_CANARY",
+		}
+		assertCompiledVaultIdentity(
+			t,
+			decodeCompiledVaultIdentity(t, sync.UploadedBlob(), mutationCLI.passphrase),
+			&config.Vault{Connections: []config.Connection{betaConnection}},
+		)
+		assertCompiledVaultIdentity(t, mutationCLI.LoadVaultIdentity(t), &config.Vault{
+			Connections: []config.Connection{alphaConnection, betaConnection},
+			PendingBase: &config.InventorySnapshot{
+				Connections: []config.Connection{betaConnection},
+			},
+			PendingMutations: []config.PendingMutation{{
+				ID: pendingTransactions[0].ID, Alias: pendingTransactions[0].Alias,
+				Operation: pendingTransactions[0].Operation, CreatedAt: pendingTransactions[0].CreatedAt,
+				After: &alphaConnection,
+			}},
+		})
 	})
 }
 
@@ -1330,10 +1654,20 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		if got := sync.MethodCount("PUT"); got != 1 {
 			t.Fatalf("sync PUT count = %d, want 1", got)
 		}
-		published := decodeCompiledVaultSummary(t, sync.UploadedBlob(), cli.passphrase)
-		assertCompiledVaultSummary(t, published, []string{"beta"}, nil, nil)
-		local := cli.LoadVaultSummary(t)
-		assertCompiledVaultSummary(t, local, []string{"alpha", "beta"}, []string{"shared-key"}, []string{"tx_alpha"})
+		assertCompiledVaultIdentity(
+			t,
+			decodeCompiledVaultIdentity(t, sync.UploadedBlob(), cli.passphrase),
+			&config.Vault{Connections: []config.Connection{beta}},
+		)
+		assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), &config.Vault{
+			Connections: []config.Connection{alpha, beta},
+			Keys:        []config.SSHKey{key},
+			PendingBase: &config.InventorySnapshot{Connections: []config.Connection{beta}},
+			PendingMutations: []config.PendingMutation{{
+				ID: "tx_alpha", Alias: alpha.Name, Operation: "created", CreatedAt: "2026-01-01T00:00:00Z",
+				After: &alpha, KeysAfter: []config.SSHKey{key},
+			}},
+		})
 
 		sameAliasCLI := newCompiledCLIHarness(t)
 		sameAliasSync := newCompiledSyncFixture(t)
@@ -1393,12 +1727,27 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 			sync.SetRemote(t, nil, "legacy-remove")
 			removedPassword := "ISSUE17_LEGACY_REMOVE_PASSWORD_CANARY"
 			preservedPassword := "ISSUE17_LEGACY_PRESERVED_PASSWORD_CANARY"
+			preservedPrivateKey := "ISSUE17_LEGACY_PRESERVED_PRIVATE_KEY_CANARY"
+			removedConnection := config.Connection{
+				Name: "legacy-remove", Host: "192.0.2.50", Port: 2200, User: "removed-user",
+				Password: removedPassword, Group: "removed-group",
+			}
+			preservedConnection := config.Connection{
+				Name: "legacy-preserved", Host: "192.0.2.51", Port: 2201, User: "preserved-user",
+				Password: preservedPassword, Group: "preserved-group",
+			}
+			preservedKeyConnection := config.Connection{
+				Name: "legacy-key-reference", Host: "192.0.2.52", Port: 2202, User: "key-user",
+				KeyName: "preserved-key", Group: "key-group",
+			}
+			preservedKey := config.SSHKey{Name: "preserved-key", PrivateKey: preservedPrivateKey}
+			want := &config.Vault{
+				Connections: []config.Connection{preservedConnection, preservedKeyConnection},
+				Keys:        []config.SSHKey{preservedKey},
+			}
 			cli.SaveVault(t, &config.Vault{
-				Connections: []config.Connection{
-					{Name: "legacy-remove", Host: "192.0.2.50", Port: 22, User: "runner", Password: removedPassword},
-					{Name: "legacy-preserved", Host: "192.0.2.51", Port: 22, User: "runner", Password: preservedPassword},
-				},
-				Keys: []config.SSHKey{{Name: "preserved-key", PrivateKey: "ISSUE17_LEGACY_PRESERVED_PRIVATE_KEY_CANARY"}},
+				Connections: []config.Connection{removedConnection, preservedConnection, preservedKeyConnection},
+				Keys:        []config.SSHKey{preservedKey},
 			})
 			cli.SaveCloud(t, sync.URL(), "ISSUE17_LEGACY_REMOVE_TOKEN_CANARY")
 			result := cli.Run(t, "ssm", nil, "remove", "legacy-remove")
@@ -1415,9 +1764,9 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 			assertCompiledEncryptedPublication(t, sync.UploadedBlob(), cli.passphrase, map[string]string{
 				"removed_password":   removedPassword,
 				"preserved_password": preservedPassword,
-				"private_key":        "ISSUE17_LEGACY_PRESERVED_PRIVATE_KEY_CANARY",
-			}, []string{"legacy-preserved"}, []string{"preserved-key"}, nil)
-			assertCompiledVaultSummary(t, cli.LoadVaultSummary(t), []string{"legacy-preserved"}, []string{"preserved-key"}, nil)
+				"private_key":        preservedPrivateKey,
+			}, want)
+			assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), want)
 		})
 
 		t.Run("legacy key remove auto-pushes without a transaction", func(t *testing.T) {
@@ -1426,13 +1775,21 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 			sync.SetRemote(t, nil, "legacy-key-remove")
 			removedKey := "ISSUE17_LEGACY_PRIVATE_KEY_CANARY"
 			preservedKey := "ISSUE17_LEGACY_UNRELATED_PRIVATE_KEY_CANARY"
+			password := "ISSUE17_LEGACY_UNRELATED_PASSWORD_CANARY"
+			connection := config.Connection{
+				Name: "legacy-unrelated", Host: "192.0.2.53", Port: 2203, User: "unrelated-user",
+				Password: password, KeyName: "unrelated-key", Group: "unrelated-group",
+			}
+			unrelatedKey := config.SSHKey{Name: "unrelated-key", PrivateKey: preservedKey}
+			want := &config.Vault{
+				Connections: []config.Connection{connection},
+				Keys:        []config.SSHKey{unrelatedKey},
+			}
 			cli.SaveVault(t, &config.Vault{
-				Connections: []config.Connection{{
-					Name: "legacy-unrelated", Host: "192.0.2.52", Port: 22, User: "runner", Password: "ISSUE17_LEGACY_UNRELATED_PASSWORD_CANARY",
-				}},
+				Connections: []config.Connection{connection},
 				Keys: []config.SSHKey{
 					{Name: "legacy-key", PrivateKey: removedKey},
-					{Name: "unrelated-key", PrivateKey: preservedKey},
+					unrelatedKey,
 				},
 			})
 			cli.SaveCloud(t, sync.URL(), "ISSUE17_LEGACY_KEY_TOKEN_CANARY")
@@ -1450,9 +1807,9 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 			assertCompiledEncryptedPublication(t, sync.UploadedBlob(), cli.passphrase, map[string]string{
 				"removed_private_key":   removedKey,
 				"preserved_private_key": preservedKey,
-				"password":              "ISSUE17_LEGACY_UNRELATED_PASSWORD_CANARY",
-			}, []string{"legacy-unrelated"}, []string{"unrelated-key"}, nil)
-			assertCompiledVaultSummary(t, cli.LoadVaultSummary(t), []string{"legacy-unrelated"}, []string{"unrelated-key"}, nil)
+				"password":              password,
+			}, want)
+			assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), want)
 		})
 
 		for _, mode := range []string{"merge", "replace"} {
@@ -1479,7 +1836,12 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 				if got := sync.MethodCount("PUT"); got != 0 {
 					t.Fatalf("legacy import %s PUT count = %d, want 0", mode, got)
 				}
-				assertCompiledVaultSummary(t, cli.LoadVaultSummary(t), []string{"imported-" + mode}, nil, nil)
+				assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), &config.Vault{
+					Connections: []config.Connection{{
+						Name: "imported-" + mode, Host: "192.0.2.60", Port: 22, User: "runner",
+						Password: "ISSUE17_IMPORT_PASSWORD_CANARY", Group: "imported",
+					}},
+				})
 			})
 		}
 	})
@@ -1496,12 +1858,20 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 				sync.SetRemote(t, nil, "empty-ledger")
 				password := "ISSUE17_EMPTY_LEDGER_PASSWORD_CANARY"
 				privateKey := "ISSUE17_EMPTY_LEDGER_PRIVATE_KEY_CANARY"
-				cli.SaveVault(t, &config.Vault{
-					Connections: []config.Connection{{
-						Name: "empty-ledger-host", Host: "192.0.2.53", Port: 22, User: "runner", Password: password,
-					}},
+				want := &config.Vault{
+					Connections: []config.Connection{
+						{
+							Name: "empty-ledger-password", Host: "192.0.2.54", Port: 2204, User: "password-user",
+							Password: password, Group: "password-group",
+						},
+						{
+							Name: "empty-ledger-key-reference", Host: "192.0.2.55", Port: 2205, User: "key-user",
+							KeyName: "empty-ledger-key", Group: "key-group",
+						},
+					},
 					Keys: []config.SSHKey{{Name: "empty-ledger-key", PrivateKey: privateKey}},
-				})
+				}
+				cli.SaveVault(t, want)
 				cli.SaveCloud(t, sync.URL(), "ISSUE17_EMPTY_LEDGER_TOKEN_CANARY")
 				result := cli.Run(t, "sshctl", nil, args...)
 				value := assertCompiledJSONSuccess(t, result)
@@ -1517,7 +1887,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 				assertCompiledEncryptedPublication(t, sync.UploadedBlob(), cli.passphrase, map[string]string{
 					"password":    password,
 					"private_key": privateKey,
-				}, []string{"empty-ledger-host"}, []string{"empty-ledger-key"}, nil)
+				}, want)
 			})
 		}
 	})
@@ -1709,10 +2079,11 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		cli.SaveVault(t, &config.Vault{})
 		replacement := []byte("ISSUE17_CROSS_MAJOR_REPLACEMENT_FIXTURE\n")
 		compiledUpdateServer.ConfigureRelease("v2.0.0", replacement)
+		before := loadCompiledFileIdentity(t, cli.paths["ssm"])
 		result := cli.RunWithEnv(t, "ssm", nil, map[string]string{"SSM_UPDATE_REPO": "fixture/repo"}, "list", "--json")
-		assertCompiledJSONArraySuccess(t, result, 0)
 		assertNoCompiledCanaryLeak(t, result, map[string]string{"replacement": string(replacement)})
-		assertCompiledFileDigest(t, cli.paths["ssm"], replacement)
+		assertCompiledAutomaticUpdateOutcome(t, result, cli.paths["ssm"], before, replacement)
+		assertCompiledUpdateRequests(t, compiledUpdateServer.RequestPaths(), "v2.0.0")
 	})
 
 	t.Run("BC-9 an adjacent checksum alone authorizes replacement", func(t *testing.T) {
@@ -1720,9 +2091,11 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		cli.SaveVault(t, &config.Vault{})
 		replacement := []byte("ISSUE17_CHECKSUM_ONLY_REPLACEMENT_FIXTURE\n")
 		compiledUpdateServer.ConfigureRelease("v1.5.0", replacement)
-		result := cli.RunWithEnv(t, "ssm", nil, map[string]string{"SSM_UPDATE_REPO": "fixture/repo"}, "list", "--json")
-		assertCompiledJSONArraySuccess(t, result, 0)
-		assertCompiledFileDigest(t, cli.paths["ssm"], replacement)
+		cli.writeConfigFile(t, ".update-available", []byte("-\n"+fmt.Sprint(time.Now().Unix())))
+		before := loadCompiledFileIdentity(t, cli.paths["ssm"])
+		result := cli.RunWithEnv(t, "ssm", nil, map[string]string{"SSM_UPDATE_REPO": "fixture/repo"}, "update")
+		assertNoCompiledCanaryLeak(t, result, map[string]string{"replacement": string(replacement)})
+		assertCompiledExplicitUpdateOutcome(t, result, cli.paths["ssm"], before, replacement, "v1.5.0")
 		paths := compiledUpdateServer.RequestPaths()
 		assertCompiledUpdateRequests(t, paths, "v1.5.0")
 	})
