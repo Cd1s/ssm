@@ -62,7 +62,28 @@ type compiledCLIHarness struct {
 }
 
 func TestMain(m *testing.M) {
+	if os.Getenv("SSM_TEST_PUSH_HELPER") == "1" {
+		os.Exit(m.Run())
+	}
 	os.Exit(runCompiledCLITestMain(m))
+}
+
+func TestCompiledCLITestMainPushHelperBypassesBuild(t *testing.T) {
+	if os.Getenv("SSM_TEST_PUSH_HELPER") == "1" {
+		if compiledCLIPaths != nil {
+			t.Fatal("push helper initialized compiled CLI paths")
+		}
+		return
+	}
+	if len(compiledCLIPaths) != 2 {
+		t.Fatalf("normal TestMain compiled CLI path count = %d, want 2", len(compiledCLIPaths))
+	}
+
+	t.Setenv("SSM_TEST_PUSH_HELPER", "1")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCompiledCLITestMainPushHelperBypassesBuild$", "-test.count=1") //nolint:gosec // executes this test binary with a fixed test selector
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("run push helper TestMain probe: %v: %s", err, output)
+	}
 }
 
 func runCompiledCLITestMain(m *testing.M) (exitCode int) {
