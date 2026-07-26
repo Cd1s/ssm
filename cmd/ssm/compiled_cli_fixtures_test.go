@@ -337,12 +337,12 @@ func serveCompiledSSHSession(channel gossh.Channel, requests <-chan *gossh.Reque
 		}
 		_ = request.Reply(true, nil)
 		status := executeCompiledSSHCommand(channel, channel.Stderr(), payload.Command)
-		_, _ = channel.SendRequest("exit-status", false, gossh.Marshal(struct{ Status uint32 }{uint32(status)}))
+		_, _ = channel.SendRequest("exit-status", false, gossh.Marshal(struct{ Status uint32 }{status}))
 		return
 	}
 }
 
-func executeCompiledSSHCommand(stdinStdout io.ReadWriter, stderr io.Writer, command string) int {
+func executeCompiledSSHCommand(stdinStdout io.ReadWriter, stderr io.Writer, command string) uint32 {
 	switch {
 	case strings.Contains(command, "printf 'SSM_RESUME %s %s\\n'"):
 		emptyDigest := sha256.Sum256(nil)
@@ -392,7 +392,7 @@ func executeCompiledSSHCommand(stdinStdout io.ReadWriter, stderr io.Writer, comm
 		if !ok {
 			return compiledSSHFixtureCommandError(stderr)
 		}
-		file, err := os.Open(path)
+		file, err := os.Open(path) //nolint:gosec // path is parsed from a compiled CLI command using only test-owned remote fixture paths
 		if err != nil {
 			_, _ = io.WriteString(stderr, "compiled fixture remote file unavailable\n")
 			return 1
@@ -414,7 +414,7 @@ func executeCompiledSSHCommand(stdinStdout io.ReadWriter, stderr io.Writer, comm
 	return compiledSSHFixtureCommandError(stderr)
 }
 
-func receiveCompiledSSHFile(source io.ReadWriter, stderr io.Writer, path string) int {
+func receiveCompiledSSHFile(source io.ReadWriter, stderr io.Writer, path string) uint32 {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		_, _ = io.Copy(io.Discard, source)
 		_, _ = io.WriteString(stderr, "compiled fixture remote parent unavailable\n")
@@ -446,7 +446,7 @@ func receiveCompiledSSHFile(source io.ReadWriter, stderr io.Writer, path string)
 	return 0
 }
 
-func receiveCompiledSSHTar(source io.Reader, stderr io.Writer, root string) int {
+func receiveCompiledSSHTar(source io.Reader, stderr io.Writer, root string) uint32 {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		_, _ = io.WriteString(stderr, "compiled fixture remote directory unavailable\n")
 		return 1
@@ -479,15 +479,15 @@ func receiveCompiledSSHTar(source io.Reader, stderr io.Writer, root string) int 
 			if err := os.MkdirAll(destination, 0o700); err != nil {
 				return 1
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg, 0: // POSIX permits a NUL alternate marker for regular files.
 			if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
 				return 1
 			}
-			file, err := os.OpenFile(destination, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+			file, err := os.OpenFile(destination, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600) //nolint:gosec // destination joins a test-owned root with a validated relative tar path
 			if err != nil {
 				return 1
 			}
-			_, copyErr := io.Copy(file, reader)
+			_, copyErr := io.CopyN(file, reader, header.Size)
 			closeErr := file.Close()
 			if copyErr != nil || closeErr != nil {
 				return 1
@@ -496,7 +496,7 @@ func receiveCompiledSSHTar(source io.Reader, stderr io.Writer, root string) int 
 	}
 }
 
-func sendCompiledSSHTar(destination io.Writer, stderr io.Writer, root string) int {
+func sendCompiledSSHTar(destination io.Writer, stderr io.Writer, root string) uint32 {
 	writer := tar.NewWriter(destination)
 	err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
@@ -524,7 +524,7 @@ func sendCompiledSSHTar(destination io.Writer, stderr io.Writer, root string) in
 		if !info.Mode().IsRegular() {
 			return nil
 		}
-		file, err := os.Open(path)
+		file, err := os.Open(path) //nolint:gosec // filepath.Walk yields paths constrained beneath the test-owned remote root
 		if err != nil {
 			return err
 		}
@@ -574,7 +574,7 @@ func compiledShellQuotedWords(command string) []string {
 	return words
 }
 
-func compiledSSHFixtureCommandError(stderr io.Writer) int {
+func compiledSSHFixtureCommandError(stderr io.Writer) uint32 {
 	_, _ = io.WriteString(stderr, "unsupported compiled SSH fixture command\n")
 	return 127
 }
@@ -587,7 +587,7 @@ func (h *compiledCLIHarness) TrustSSHHost(t *testing.T, server *compiledSSHFixtu
 	}
 	path := filepath.Join(directory, "known_hosts")
 	line := knownhosts.Line([]string{knownhosts.Normalize(server.Address())}, server.signer.PublicKey()) + "\n"
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // path is fixed beneath the harness's isolated t.TempDir home
 	if err != nil {
 		t.Fatalf("open compiled CLI known_hosts fixture: %v", err)
 	}
