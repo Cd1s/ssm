@@ -13,6 +13,12 @@ import (
 	"ssm/internal/privatepath"
 )
 
+func setTestHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+}
+
 func TestNewerVersion(t *testing.T) {
 	cases := []struct {
 		latest  string
@@ -44,7 +50,7 @@ func TestReleaseRepoCanBeDisabledByEnvironment(t *testing.T) {
 
 func TestAutoDisabledDoesNotWriteCooldownFlag(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	t.Setenv("SSM_UPDATE_REPO", "off")
 
 	if err := Auto("1.0.0"); err != nil {
@@ -57,7 +63,7 @@ func TestAutoDisabledDoesNotWriteCooldownFlag(t *testing.T) {
 
 func TestMarkCheckedWritesPrivateCooldownFlag(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	markChecked("v9.9.9")
 
@@ -121,7 +127,7 @@ func TestCopyAndVerifyRejectsChecksumMismatch(t *testing.T) {
 func TestDownloadVersionVerifiesChecksumBeforeReplace(t *testing.T) {
 	restoreUpdateTestHooks(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
 
 	exe := filepath.Join(t.TempDir(), "ssm")
@@ -161,7 +167,7 @@ func TestDownloadVersionVerifiesChecksumBeforeReplace(t *testing.T) {
 func TestDownloadVersionReplacesAfterChecksumMatch(t *testing.T) {
 	restoreUpdateTestHooks(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
 
 	exe := filepath.Join(t.TempDir(), "ssm")

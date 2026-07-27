@@ -37,7 +37,7 @@ func TestDoctorSuggestsButNeverSelectsAmbiguousAlias(t *testing.T) {
 }
 
 func TestDoctorReportsPersistedMergeConflictWithoutSecrets(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	report := config.MergeReport{Conflicts: []config.MergeConflict{{Name: "prod", Kind: "alias", Winner: "remote"}}}
 	if err := config.SaveMergeReport(report); err != nil {
 		t.Fatal(err)

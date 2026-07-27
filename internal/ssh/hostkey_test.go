@@ -9,10 +9,16 @@ import (
 	"testing"
 )
 
+func setTestHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+}
+
 func TestInspectAndAcceptHostKeyRequiresExactFingerprint(t *testing.T) {
 	conn, _ := startRunTestSSHServer(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	inspection, err := InspectHostKey(conn)
 	if err != nil {
@@ -50,7 +56,7 @@ func TestAcceptHostKeyAtomicallyReplacesMismatch(t *testing.T) {
 	}
 	conn, _ := startRunTestSSHServer(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	path := filepath.Join(home, ".ssh", "known_hosts")
 	if err := saveHostKey(path, knownHostToken(conn), testPublicKey(t)); err != nil {
 		t.Fatal(err)

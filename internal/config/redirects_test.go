@@ -8,7 +8,7 @@ import (
 
 func TestResolveAliasRedirect(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setTestHome(t, dir)
 	// Dir() uses home/.config/ssm
 	if err := os.MkdirAll(filepath.Join(dir, ".config", "ssm"), 0700); err != nil {
 		t.Fatal(err)
@@ -28,7 +28,7 @@ func TestResolveAliasRedirect(t *testing.T) {
 
 func TestResolveAliasCycle(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	setTestHome(t, dir)
 	_ = os.MkdirAll(filepath.Join(dir, ".config", "ssm"), 0700)
 	_ = SaveRedirects(Redirects{"a": "b", "b": "a"})
 	v := &Vault{Connections: []Connection{{Name: "a", Host: "h", User: "u"}}}

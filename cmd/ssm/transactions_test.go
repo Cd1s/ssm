@@ -18,7 +18,7 @@ import (
 
 func TestPushCommandLoadsMasterPassFile(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	pass := "push-command-test-pass" //nolint:gosec // test-only vault passphrase
 	if err := config.Save(&config.Vault{}, pass); err != nil {
 		t.Fatal(err)
@@ -41,7 +41,7 @@ func TestPushCommandLoadsMasterPassFile(t *testing.T) {
 	}
 
 	cmd := exec.Command(os.Args[0], "-test.run=TestPushCommandHelper") //nolint:gosec // executes this test binary with fixed arguments
-	cmd.Env = append(os.Environ(), "HOME="+home, "SSM_TEST_PUSH_HELPER=1")
+	cmd.Env = append(os.Environ(), "HOME="+home, "USERPROFILE="+home, "SSM_TEST_PUSH_HELPER=1")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("push command failed: %v: %s", err, output)
@@ -60,7 +60,7 @@ func TestPushCommandHelper(t *testing.T) {
 }
 
 func TestScopedPushDoesNotPublishUnrelatedPendingMutation(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	previousPass := masterPass
 	masterPass = "transaction-test-pass"
 	t.Cleanup(func() { masterPass = previousPass })

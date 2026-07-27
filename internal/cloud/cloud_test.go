@@ -14,9 +14,15 @@ import (
 	"ssm/internal/privatepath"
 )
 
+func setTestHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+}
+
 func TestSaveCloudCreatesConfigDir(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	cfg := &CloudConfig{Server: "https://sync.example.test", Token: "token", Email: "agent@example.test"}
 	if err := SaveCloud(cfg); err != nil {
@@ -34,7 +40,7 @@ func TestSaveCloudCreatesConfigDir(t *testing.T) {
 
 func TestPullWritesVaultAndRemoteETagPrivately(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	blob := []byte("opaque encrypted bytes")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -64,7 +70,7 @@ func TestPullWritesVaultAndRemoteETagPrivately(t *testing.T) {
 
 func TestLocalAndCachedETagExposeOnlyBlobIdentity(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	blob := []byte("opaque encrypted bytes")
 	if err := config.WritePrivateFile(config.Path(), blob); err != nil {
 		t.Fatal(err)
@@ -83,7 +89,7 @@ func TestLocalAndCachedETagExposeOnlyBlobIdentity(t *testing.T) {
 
 func TestPullIfChangedStopsOnDivergedLocalAndRemoteVaults(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	localBlob := []byte("locally changed encrypted blob")
 	if err := config.WritePrivateFile(config.Path(), localBlob); err != nil {
 		t.Fatal(err)
@@ -122,7 +128,7 @@ func TestPullIfChangedStopsOnDivergedLocalAndRemoteVaults(t *testing.T) {
 
 func TestPullRejectsEmptyBlobWithoutOverwritingVault(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	existing := []byte("existing encrypted bytes")
 	vaultPath := filepath.Join(home, ".config", "ssm", "connections.enc")
 	if err := os.MkdirAll(filepath.Dir(vaultPath), 0700); err != nil {
@@ -159,7 +165,7 @@ func TestPullRejectsOversizedBlobWithoutWritingVault(t *testing.T) {
 	t.Cleanup(func() { maxPullBlobBytes = oldMax })
 
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("too many bytes"))
 	}))

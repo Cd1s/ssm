@@ -5,6 +5,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,6 +55,13 @@ func openRegularFileNoFollow(root, slashPath string) (*os.File, error) {
 		0,
 	)
 	if err != nil {
+		if errors.Is(err, windows.STATUS_OBJECT_NAME_NOT_FOUND) ||
+			errors.Is(err, windows.STATUS_OBJECT_PATH_NOT_FOUND) {
+			return nil, errors.Join(
+				fs.ErrNotExist,
+				fmt.Errorf("open path without traversing reparse points: %w", err),
+			)
+		}
 		return nil, fmt.Errorf("open path without traversing reparse points: %w", err)
 	}
 	file := os.NewFile(uintptr(handle), fullPath)

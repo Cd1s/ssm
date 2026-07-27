@@ -3,11 +3,20 @@
 package main
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestWindowsNoFollowClassifiesMissingPath(t *testing.T) {
+	_, err := openRegularFileNoFollow(t.TempDir(), "missing.txt")
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("missing path error = %v, want fs.ErrNotExist", err)
+	}
+}
 
 func TestWindowsNoFollowReadsNormalFileAndReleasesHandle(t *testing.T) {
 	root := t.TempDir()

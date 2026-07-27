@@ -14,7 +14,7 @@ import (
 
 func TestRunTransportsScriptOverSSHStdin(t *testing.T) {
 	conn, vault := startRunTestSSHServer(t)
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	trustRunTestHost(t, conn)
 
 	body := `printf 'arg=<%s>\n' "$1"
@@ -54,7 +54,7 @@ printf 'quote=<%s>\n' "single' and \"double\""
 
 func TestRunClassifiesRemoteScriptExit(t *testing.T) {
 	conn, vault := startRunTestSSHServer(t)
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	trustRunTestHost(t, conn)
 	script, err := PrepareScript("failure.sh", []byte("printf failure >&2\nexit 9\n"), "sh", nil)
 	if err != nil {
@@ -77,7 +77,7 @@ func TestRunClassifiesRemoteScriptExit(t *testing.T) {
 
 func TestRunScriptPreflightRejectsSyntaxWithoutExecuting(t *testing.T) {
 	conn, vault := startRunTestSSHServer(t)
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	trustRunTestHost(t, conn)
 	marker := filepath.Join(t.TempDir(), "must-not-exist")
 	body := "printf touched > " + ShellQuote(marker) + "\nif then\n"
@@ -101,7 +101,7 @@ func TestRunReusesConnectionWithoutProbeSession(t *testing.T) {
 	ClosePool()
 	t.Cleanup(ClosePool)
 	conn, vault, stats := startTrackedRunTestSSHServer(t)
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	trustRunTestHost(t, conn)
 	stats.connections.Store(0)
 	stats.sessions.Store(0)

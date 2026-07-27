@@ -11,6 +11,30 @@ import (
 	"ssm/internal/config"
 )
 
+func setTestHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+}
+
+func TestSSHCTLInvocationNameIsPortable(t *testing.T) {
+	for _, test := range []struct {
+		path string
+		want bool
+	}{
+		{path: "sshctl", want: true},
+		{path: "/usr/local/bin/SSHCTL", want: true},
+		{path: `C:	ools\sshctl.exe`, want: true},
+		{path: `C:	ools\SSHCTL.EXE`, want: true},
+		{path: "ssm", want: false},
+		{path: "sshctl.test", want: false},
+	} {
+		if got := isSSHCTLInvocation(test.path); got != test.want {
+			t.Errorf("isSSHCTLInvocation(%q) = %t, want %t", test.path, got, test.want)
+		}
+	}
+}
+
 func TestMachineErrorContractHasStableFields(t *testing.T) {
 	value := machineErrorOutput{OK: false, Error: "alias_not_found", Message: "missing", Hint: "list aliases", Exit: 255, Stage: "lookup"}
 	encoded, err := json.Marshal(value)
@@ -159,7 +183,7 @@ func TestRedactErrorCoversSecretBearingPaths(t *testing.T) {
 }
 
 func TestLoadVaultConsumesUnlockedSnapshotThenReadsLaterSave(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	oldPass, oldPassFile, oldVault := masterPass, masterPassFile, unlockedVault
 	t.Cleanup(func() {
 		masterPass, masterPassFile, unlockedVault = oldPass, oldPassFile, oldVault

@@ -257,6 +257,9 @@ func TestPrerequisitesReportAvailabilityAndVersion(t *testing.T) {
 }
 
 func TestSSHMatrixIsRequiredInOfficialLinuxCI(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires a native Linux host to exercise official Linux prerequisite enforcement")
+	}
 	manifest := verificationManifest()
 	ci, ok := findProfile(manifest, "ci")
 	if !ok {
@@ -1994,7 +1997,11 @@ func TestRepositoryModulePrerequisitePopulatesCacheForOfflineReuse(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	proxyURL := (&url.URL{Scheme: "file", Path: filepath.ToSlash(proxy)}).String()
+	proxyPath := filepath.ToSlash(proxy)
+	if filepath.VolumeName(proxy) != "" {
+		proxyPath = "/" + proxyPath
+	}
+	proxyURL := (&url.URL{Scheme: "file", Path: proxyPath}).String()
 	environment = replaceEnvironmentValue(environment, "GOPROXY", proxyURL)
 	environment = replaceEnvironmentValue(environment, "GOSUMDB", "off")
 	prerequisite := repositoryModulesPrerequisite()

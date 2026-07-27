@@ -6,37 +6,37 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"ssm/internal/privatepath"
 )
+
+func setTestHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+}
 
 func TestSaveWritesVaultAtomicallyWithPrivatePermissions(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	v := &Vault{Connections: []Connection{{Name: "local", Host: "127.0.0.1", User: "root", Port: 22}}}
 	if err := Save(v, "master-pass"); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
-	dirInfo, err := os.Stat(Dir())
-	if err != nil {
-		t.Fatalf("stat config dir: %v", err)
+	if err := privatepath.VerifyDirectory(Dir()); err != nil {
+		t.Fatalf("config dir is not private: %v", err)
 	}
-	if dirInfo.Mode().Perm() != 0700 {
-		t.Fatalf("config dir mode = %o, want 700", dirInfo.Mode().Perm())
-	}
-	info, err := os.Stat(Path())
-	if err != nil {
-		t.Fatalf("stat vault: %v", err)
-	}
-	if info.Mode().Perm() != 0600 {
-		t.Fatalf("vault mode = %o, want 600", info.Mode().Perm())
+	if err := privatepath.VerifyFile(Path()); err != nil {
+		t.Fatalf("vault is not private: %v", err)
 	}
 	assertNoPrivateTempFiles(t, Dir())
 }
 
 func TestSettingsAndPasswordCacheUsePrivateFiles(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	t.Setenv("TMPDIR", t.TempDir())
 
 	if err := SaveSettings(DefaultSettings()); err != nil {
@@ -48,26 +48,18 @@ func TestSettingsAndPasswordCacheUsePrivateFiles(t *testing.T) {
 	}
 
 	for _, path := range []string{settingsPath(), cachePath()} {
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatalf("stat %s: %v", path, err)
-		}
-		if info.Mode().Perm() != 0600 {
-			t.Fatalf("%s mode = %o, want 600", path, info.Mode().Perm())
+		if err := privatepath.VerifyFile(path); err != nil {
+			t.Fatalf("%s is not private: %v", path, err)
 		}
 	}
-	cacheDirInfo, err := os.Stat(filepath.Dir(cachePath()))
-	if err != nil {
-		t.Fatalf("stat cache dir: %v", err)
-	}
-	if cacheDirInfo.Mode().Perm() != 0700 {
-		t.Fatalf("cache dir mode = %o, want 700", cacheDirInfo.Mode().Perm())
+	if err := privatepath.VerifyDirectory(filepath.Dir(cachePath())); err != nil {
+		t.Fatalf("cache directory is not private: %v", err)
 	}
 }
 
 func TestLoadSettingsDefaultsMissingBooleansToEnabled(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	if err := WritePrivateFile(settingsPath(), []byte(`{"password_cache":"session"}`)); err != nil {
 		t.Fatalf("write settings: %v", err)
 	}
@@ -90,7 +82,7 @@ func TestLoadSettingsDefaultsMissingBooleansToEnabled(t *testing.T) {
 
 func TestLoadSettingsPreservesExplicitFalseBooleans(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	if err := WritePrivateFile(settingsPath(), []byte(`{"vim_keys":false,"auto_update":false,"auto_sync":false}`)); err != nil {
 		t.Fatalf("write settings: %v", err)
 	}

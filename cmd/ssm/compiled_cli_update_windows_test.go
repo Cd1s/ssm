@@ -3,6 +3,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -36,7 +37,8 @@ func assertCompiledExplicitUpdateOutcome(
 ) {
 	t.Helper()
 	stderrHasRenameFailure := strings.HasPrefix(result.Stderr, "Error: rename ") &&
-		strings.Contains(result.Stderr, ".new "+executablePath+": ") &&
+		strings.Contains(result.Stderr, ".new ") &&
+		strings.Contains(result.Stderr, filepath.Base(executablePath)+": ") &&
 		strings.HasSuffix(result.Stderr, "\n") &&
 		strings.Count(result.Stderr, "\n") == 1
 	if result.ProcessExit != 1 ||
