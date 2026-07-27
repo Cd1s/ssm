@@ -68,6 +68,22 @@ func TestMain(m *testing.M) {
 	os.Exit(runCompiledCLITestMain(m))
 }
 
+func TestCompiledCLIBuildArgs(t *testing.T) {
+	updateLDFlags := "-X=example.test=value"
+	outputPath := filepath.Join("test-output", "ssm")
+	want := []string{
+		"build",
+		"-buildvcs=false",
+		"-ldflags", updateLDFlags,
+		"-o", outputPath,
+		".",
+	}
+
+	if got := compiledCLIBuildArgs(updateLDFlags, outputPath); !reflect.DeepEqual(got, want) {
+		t.Fatalf("compiled CLI build args = %q, want %q", got, want)
+	}
+}
+
 func TestCompiledCLITestMainPushHelperBypassesBuild(t *testing.T) {
 	if os.Getenv("SSM_TEST_PUSH_HELPER") == "1" {
 		if compiledCLIPaths != nil {
@@ -84,6 +100,10 @@ func TestCompiledCLITestMainPushHelperBypassesBuild(t *testing.T) {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("run push helper TestMain probe: %v: %s", err, output)
 	}
+}
+
+func compiledCLIBuildArgs(updateLDFlags, outputPath string) []string {
+	return []string{"build", "-buildvcs=false", "-ldflags", updateLDFlags, "-o", outputPath, "."}
 }
 
 func runCompiledCLITestMain(m *testing.M) (exitCode int) {
@@ -112,7 +132,7 @@ func runCompiledCLITestMain(m *testing.M) (exitCode int) {
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), compiledCLIBuildTimeout)
 	defer cancel()
-	build := exec.CommandContext(ctx, "go", "build", "-ldflags", updateLDFlags, "-o", ssmPath, ".") //nolint:gosec // fixed Go tool receives only loopback fixture URLs and a test-owned temporary output path
+	build := exec.CommandContext(ctx, "go", compiledCLIBuildArgs(updateLDFlags, ssmPath)...) //nolint:gosec // fixed Go tool receives only loopback fixture URLs and a test-owned temporary output path
 	if output, buildErr := build.CombinedOutput(); buildErr != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			fmt.Fprintf(os.Stderr, "build compiled CLI exceeded deadline %s\n", compiledCLIBuildTimeout)
