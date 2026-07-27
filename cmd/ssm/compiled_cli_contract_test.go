@@ -2397,7 +2397,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		assertCompiledUpdateRequests(t, paths, "v1.5.0")
 	})
 
-	t.Run("BC-10 make check is a mutating format-lint-build subset", func(t *testing.T) {
+	t.Run("BC-10 make check is a single non-mutating verification-manifest adapter", func(t *testing.T) {
 		makefile, err := os.ReadFile(filepath.Join("..", "..", "Makefile"))
 		if err != nil {
 			t.Fatalf("read Makefile for check membership: %v", err)
@@ -2406,41 +2406,23 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		if err != nil {
 			t.Fatalf("inspect make check membership: %v", err)
 		}
-		want := []string{
-			"gofmt -w .",
-			"golangci-lint run ./...",
-			`go build -ldflags="-s -w -X main.version=dev" -o ssm ./cmd/ssm`,
+		want := []string{"go run ./cmd/verify ci"}
+		recipe := strings.Join(lines, "\n")
+		for _, forbidden := range []string{
+			"gofmt -w",
+			"golangci-lint run",
+			"go build",
+			"go test",
+			"go vet",
+			"-race",
+			"govulncheck",
+		} {
+			if strings.Contains(recipe, forbidden) {
+				t.Fatalf("make check adapter unexpectedly contains legacy direct/mutating recipe fragment %q", forbidden)
+			}
 		}
 		if !reflect.DeepEqual(lines, want) {
-			t.Fatalf("make check command count = %d, want %d", len(lines), len(want))
-		}
-		for _, forbidden := range []string{"go test", "go vet", "-race", "govulncheck"} {
-			if strings.Contains(strings.Join(lines, "\n"), forbidden) {
-				t.Fatalf("make check unexpectedly includes %q", forbidden)
-			}
-		}
-
-		scratch := t.TempDir()
-		unformatted := []byte("package fixture\nfunc value( )int{return 1}\n")
-		sourcePath := filepath.Join(scratch, "fixture.go")
-		if err := os.WriteFile(sourcePath, unformatted, 0o600); err != nil {
-			t.Fatalf("write unformatted Go fixture: %v", err)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), compiledCLISubprocessTimeout)
-		defer cancel()
-		format := exec.CommandContext(ctx, "gofmt", "-w", sourcePath) //nolint:gosec // fixed gofmt tool receives only a source path inside this test's t.TempDir
-		if output, err := format.CombinedOutput(); err != nil {
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				t.Fatalf("isolated gofmt exceeded subprocess deadline %s", compiledCLISubprocessTimeout)
-			}
-			t.Fatalf("run isolated gofmt: %v; bytes=%d sha256=%x", err, len(output), sha256.Sum256(output))
-		}
-		formatted, err := os.ReadFile(sourcePath) //nolint:gosec // source path is fixed beneath the isolated scratch t.TempDir
-		if err != nil {
-			t.Fatalf("read formatted Go fixture: %v", err)
-		}
-		if bytes.Equal(formatted, unformatted) {
-			t.Fatal("make fmt did not mutate the isolated tracked-file analogue")
+			t.Fatalf("make check commands = %q, want single non-mutating verification-manifest adapter %q", lines, want)
 		}
 	})
 }
