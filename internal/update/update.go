@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"ssm/internal/config"
+	"ssm/internal/releaseasset"
 )
 
 const (
@@ -147,11 +148,12 @@ func DownloadVersion(version string, verbose bool) error {
 }
 
 func assetName() string {
-	name := fmt.Sprintf("ssm-%s-%s", runtime.GOOS, runtime.GOARCH)
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	return name
+	return AssetNameFor(runtime.GOOS, runtime.GOARCH)
+}
+
+// AssetNameFor exposes the production updater selector to release verification.
+func AssetNameFor(goos, goarch string) string {
+	return releaseasset.Name(goos, goarch)
 }
 
 func getReleaseAsset(repo, version, asset string) (*http.Response, error) {

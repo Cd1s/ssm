@@ -10,7 +10,7 @@ import (
 )
 
 func TestRefreshVaultFailureNeverSilentlyEnablesOffline(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	server := httptest.NewServer(nil)
 	url := server.URL
 	server.Close()
@@ -33,7 +33,7 @@ func TestRefreshVaultFailureNeverSilentlyEnablesOffline(t *testing.T) {
 }
 
 func TestRefreshVaultExplicitOfflineSkipsNetwork(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	if err := cloud.SaveCloud(&cloud.CloudConfig{Server: "http://127.0.0.1:1", Token: "test-token"}); err != nil {
 		t.Fatal(err)
 	}

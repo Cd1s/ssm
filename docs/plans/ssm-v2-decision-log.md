@@ -158,10 +158,18 @@ release-pipeline tests are in v2 scope and block the initial release.
 
 ### 13. One manifest defines verification
 
-One checked-in, non-mutating verification manifest owns the required commands
-and named profiles. `make check` and CI execute the same `verify ci` profile.
-`verify release` is a strict superset that covers cross-platform
-assets/updater behavior, signing and provenance identities, and failure paths.
+One checked-in, non-mutating verification manifest owns the required commands,
+preparation actions, prerequisites, and named profiles. `make check` and CI
+execute the same `verify ci` profile. `verify release` is a strict superset.
+Its Issue #18 executable preflight covers current cross-platform asset/updater
+behavior and failure paths, while named metadata reserves the migration,
+signing, and provenance extension points.
+
+Issue #18 establishes the executable preflight and records not-yet-implemented
+migration and provenance gates as named extension metadata required before the
+initial v2 release. A passing Issue #18 preflight is not initial-v2 release
+readiness. The owning later tickets must promote those extensions to required
+executable checks; Decision 12 remains the release blocker throughout.
 
 Required public-seam scenarios, rather than a global coverage percentage, block
 merge and release. Coverage remains an observed report.
@@ -215,7 +223,9 @@ notes, and the automatic-update controls in Decision 11.
   recovery.
 - **BC-10 — `make check` becomes non-mutating and CI-equivalent.**
   Characterize the old mutating subset; document prerequisites, runtime
-  expectations, and any later faster development profile.
+  expectations, and any later faster development profile. The reviewed
+  old-to-new membership and operating notes are recorded in the
+  [verification manifest migration](./verification-manifest.md).
 
 No other behavior change is implied by adopting the three modules. Newly named
 stable error values, field additions, omissions, exit changes, or on-disk

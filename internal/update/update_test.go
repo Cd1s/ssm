@@ -9,7 +9,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"ssm/internal/privatepath"
 )
+
+func setTestHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+}
 
 func TestNewerVersion(t *testing.T) {
 	cases := []struct {
@@ -42,7 +50,7 @@ func TestReleaseRepoCanBeDisabledByEnvironment(t *testing.T) {
 
 func TestAutoDisabledDoesNotWriteCooldownFlag(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	t.Setenv("SSM_UPDATE_REPO", "off")
 
 	if err := Auto("1.0.0"); err != nil {
@@ -55,24 +63,16 @@ func TestAutoDisabledDoesNotWriteCooldownFlag(t *testing.T) {
 
 func TestMarkCheckedWritesPrivateCooldownFlag(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	markChecked("v9.9.9")
 
 	path := filepath.Join(home, ".config", "ssm", ".update-available")
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat update flag: %v", err)
+	if err := privatepath.VerifyFile(path); err != nil {
+		t.Fatalf("update flag is not private: %v", err)
 	}
-	if info.Mode().Perm() != 0600 {
-		t.Fatalf("update flag mode = %o, want 600", info.Mode().Perm())
-	}
-	dirInfo, err := os.Stat(filepath.Dir(path))
-	if err != nil {
-		t.Fatalf("stat update flag dir: %v", err)
-	}
-	if dirInfo.Mode().Perm() != 0700 {
-		t.Fatalf("update flag dir mode = %o, want 700", dirInfo.Mode().Perm())
+	if err := privatepath.VerifyDirectory(filepath.Dir(path)); err != nil {
+		t.Fatalf("update flag directory is not private: %v", err)
 	}
 }
 
@@ -85,6 +85,27 @@ func TestChecksumForAsset(t *testing.T) {
 	}
 	if got != strings.Repeat("a", sha256.Size*2) {
 		t.Fatalf("checksum = %q", got)
+	}
+}
+
+func TestAssetNameForSupportedPlatforms(t *testing.T) {
+	for _, test := range []struct {
+		goos   string
+		goarch string
+		want   string
+	}{
+		{goos: "linux", goarch: "amd64", want: "ssm-linux-amd64"},
+		{goos: "linux", goarch: "arm64", want: "ssm-linux-arm64"},
+		{goos: "darwin", goarch: "amd64", want: "ssm-darwin-amd64"},
+		{goos: "darwin", goarch: "arm64", want: "ssm-darwin-arm64"},
+		{goos: "windows", goarch: "amd64", want: "ssm-windows-amd64.exe"},
+		{goos: "windows", goarch: "arm64", want: "ssm-windows-arm64.exe"},
+	} {
+		t.Run(test.goos+"-"+test.goarch, func(t *testing.T) {
+			if got := AssetNameFor(test.goos, test.goarch); got != test.want {
+				t.Fatalf("AssetNameFor(%q, %q) = %q, want %q", test.goos, test.goarch, got, test.want)
+			}
+		})
 	}
 }
 
@@ -106,7 +127,7 @@ func TestCopyAndVerifyRejectsChecksumMismatch(t *testing.T) {
 func TestDownloadVersionVerifiesChecksumBeforeReplace(t *testing.T) {
 	restoreUpdateTestHooks(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
 
 	exe := filepath.Join(t.TempDir(), "ssm")
@@ -146,7 +167,7 @@ func TestDownloadVersionVerifiesChecksumBeforeReplace(t *testing.T) {
 func TestDownloadVersionReplacesAfterChecksumMatch(t *testing.T) {
 	restoreUpdateTestHooks(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
 
 	exe := filepath.Join(t.TempDir(), "ssm")

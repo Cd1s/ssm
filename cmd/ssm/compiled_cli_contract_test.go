@@ -68,6 +68,22 @@ func TestMain(m *testing.M) {
 	os.Exit(runCompiledCLITestMain(m))
 }
 
+func TestCompiledCLIBuildArgs(t *testing.T) {
+	updateLDFlags := "-X=example.test=value"
+	outputPath := filepath.Join("test-output", "ssm")
+	want := []string{
+		"build",
+		"-buildvcs=false",
+		"-ldflags", updateLDFlags,
+		"-o", outputPath,
+		".",
+	}
+
+	if got := compiledCLIBuildArgs(updateLDFlags, outputPath); !reflect.DeepEqual(got, want) {
+		t.Fatalf("compiled CLI build args = %q, want %q", got, want)
+	}
+}
+
 func TestCompiledCLITestMainPushHelperBypassesBuild(t *testing.T) {
 	if os.Getenv("SSM_TEST_PUSH_HELPER") == "1" {
 		if compiledCLIPaths != nil {
@@ -84,6 +100,10 @@ func TestCompiledCLITestMainPushHelperBypassesBuild(t *testing.T) {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("run push helper TestMain probe: %v: %s", err, output)
 	}
+}
+
+func compiledCLIBuildArgs(updateLDFlags, outputPath string) []string {
+	return []string{"build", "-buildvcs=false", "-ldflags", updateLDFlags, "-o", outputPath, "."}
 }
 
 func runCompiledCLITestMain(m *testing.M) (exitCode int) {
@@ -112,7 +132,7 @@ func runCompiledCLITestMain(m *testing.M) (exitCode int) {
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), compiledCLIBuildTimeout)
 	defer cancel()
-	build := exec.CommandContext(ctx, "go", "build", "-ldflags", updateLDFlags, "-o", ssmPath, ".") //nolint:gosec // fixed Go tool receives only loopback fixture URLs and a test-owned temporary output path
+	build := exec.CommandContext(ctx, "go", compiledCLIBuildArgs(updateLDFlags, ssmPath)...) //nolint:gosec // fixed Go tool receives only loopback fixture URLs and a test-owned temporary output path
 	if output, buildErr := build.CombinedOutput(); buildErr != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			fmt.Fprintf(os.Stderr, "build compiled CLI exceeded deadline %s\n", compiledCLIBuildTimeout)
@@ -365,10 +385,24 @@ func isolatedCompiledCLIEnvironmentWith(home, temp string, overrides map[string]
 	return env
 }
 
+func compiledSafeMachineFields(stdout string) string {
+	var value map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &value); err != nil {
+		return "unavailable"
+	}
+	return fmt.Sprintf("error=%q stage=%q", value["error"], value["stage"])
+}
+
 func assertCompiledMachineContract(t *testing.T, result compiledCLIResult, want compiledMachineContract) {
 	t.Helper()
 	if result.ProcessExit != want.ProcessExit {
-		t.Fatalf("process exit = %d, want %d; output=%s", result.ProcessExit, want.ProcessExit, compiledOutputIdentity(result))
+		t.Fatalf(
+			"process exit = %d, want %d; fields=%s output=%s",
+			result.ProcessExit,
+			want.ProcessExit,
+			compiledSafeMachineFields(result.Stdout),
+			compiledOutputIdentity(result),
+		)
 	}
 	if result.Stderr != "" {
 		t.Fatalf("machine stderr bytes = %d, want 0; output=%s", len(result.Stderr), compiledOutputIdentity(result))
@@ -1419,14 +1453,10 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		})
 	}
 
-	t.Run("physical sshctl basename freezes the Windows extension discrepancy", func(t *testing.T) {
+	t.Run("physical sshctl basename dispatches portably", func(t *testing.T) {
 		invocation := reviewedCompiledMachineContract(t, "unknown_sshctl")
-		want := invocation
-		if runtime.GOOS == "windows" {
-			want = reviewedCompiledMachineContract(t, "unknown_ssm")
-		}
 		result := cli.RunWithPhysicalBasename(t, "sshctl", invocation.Args...)
-		assertCompiledMachineContract(t, result, want)
+		assertCompiledMachineContract(t, result, invocation)
 	})
 
 	t.Run("strict request schema rejects unknown fields", func(t *testing.T) {
@@ -1658,7 +1688,19 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		streamCLI.SaveCloud(t, sync.URL(), "ISSUE17_STREAM_REFRESH_TOKEN_CANARY")
 		streamCLI.SaveRemoteETag(t, "stream-current")
 		contract := reviewedCompiledMachineContract(t, "stream_refresh_failed")
-		result := streamCLI.RunReviewed(t, contract, []byte("[\"true\"]\n[\"true\"]\n"), nil)
+		input, writer := io.Pipe()
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			_, _ = io.WriteString(writer, "[\"true\"]\n[\"true\"]\n")
+			_ = writer.Close()
+		}()
+		result := streamCLI.runWithStdin(
+			t,
+			contract.Executable,
+			input,
+			map[string]string{"SSM_MASTER_PASS_FILE": streamCLI.passPath},
+			contract.Args...,
+		)
 		assertNoCompiledCanaryLeak(t, result, map[string]string{"token": "ISSUE17_STREAM_REFRESH_TOKEN_CANARY"})
 		assertCompiledMachineContract(t, result, contract)
 		if lines := nonEmptyCompiledLines(result.Stdout); len(lines) != 1 {
@@ -2377,7 +2419,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		assertCompiledUpdateRequests(t, paths, "v1.5.0")
 	})
 
-	t.Run("BC-10 make check is a mutating format-lint-build subset", func(t *testing.T) {
+	t.Run("BC-10 make check is a single non-mutating verification-manifest adapter", func(t *testing.T) {
 		makefile, err := os.ReadFile(filepath.Join("..", "..", "Makefile"))
 		if err != nil {
 			t.Fatalf("read Makefile for check membership: %v", err)
@@ -2386,41 +2428,23 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		if err != nil {
 			t.Fatalf("inspect make check membership: %v", err)
 		}
-		want := []string{
-			"gofmt -w .",
-			"golangci-lint run ./...",
-			`go build -ldflags="-s -w -X main.version=dev" -o ssm ./cmd/ssm`,
+		want := []string{"go run ./cmd/verify ci"}
+		recipe := strings.Join(lines, "\n")
+		for _, forbidden := range []string{
+			"gofmt -w",
+			"golangci-lint run",
+			"go build",
+			"go test",
+			"go vet",
+			"-race",
+			"govulncheck",
+		} {
+			if strings.Contains(recipe, forbidden) {
+				t.Fatalf("make check adapter unexpectedly contains legacy direct/mutating recipe fragment %q", forbidden)
+			}
 		}
 		if !reflect.DeepEqual(lines, want) {
-			t.Fatalf("make check command count = %d, want %d", len(lines), len(want))
-		}
-		for _, forbidden := range []string{"go test", "go vet", "-race", "govulncheck"} {
-			if strings.Contains(strings.Join(lines, "\n"), forbidden) {
-				t.Fatalf("make check unexpectedly includes %q", forbidden)
-			}
-		}
-
-		scratch := t.TempDir()
-		unformatted := []byte("package fixture\nfunc value( )int{return 1}\n")
-		sourcePath := filepath.Join(scratch, "fixture.go")
-		if err := os.WriteFile(sourcePath, unformatted, 0o600); err != nil {
-			t.Fatalf("write unformatted Go fixture: %v", err)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), compiledCLISubprocessTimeout)
-		defer cancel()
-		format := exec.CommandContext(ctx, "gofmt", "-w", sourcePath) //nolint:gosec // fixed gofmt tool receives only a source path inside this test's t.TempDir
-		if output, err := format.CombinedOutput(); err != nil {
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				t.Fatalf("isolated gofmt exceeded subprocess deadline %s", compiledCLISubprocessTimeout)
-			}
-			t.Fatalf("run isolated gofmt: %v; bytes=%d sha256=%x", err, len(output), sha256.Sum256(output))
-		}
-		formatted, err := os.ReadFile(sourcePath) //nolint:gosec // source path is fixed beneath the isolated scratch t.TempDir
-		if err != nil {
-			t.Fatalf("read formatted Go fixture: %v", err)
-		}
-		if bytes.Equal(formatted, unformatted) {
-			t.Fatal("make fmt did not mutate the isolated tracked-file analogue")
+			t.Fatalf("make check commands = %q, want single non-mutating verification-manifest adapter %q", lines, want)
 		}
 	})
 }

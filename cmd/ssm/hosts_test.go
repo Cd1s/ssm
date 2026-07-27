@@ -326,7 +326,7 @@ func TestMutateHostRejectsUnsafeNewAliasAndHost(t *testing.T) {
 
 func TestRefreshHostVaultRejectsBrokenCloudUnlessOffline(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	dir := filepath.Join(home, ".config", "ssm")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)

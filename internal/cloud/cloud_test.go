@@ -11,11 +11,18 @@ import (
 	"testing"
 
 	"ssm/internal/config"
+	"ssm/internal/privatepath"
 )
+
+func setTestHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+}
 
 func TestSaveCloudCreatesConfigDir(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	cfg := &CloudConfig{Server: "https://sync.example.test", Token: "token", Email: "agent@example.test"}
 	if err := SaveCloud(cfg); err != nil {
@@ -23,25 +30,17 @@ func TestSaveCloudCreatesConfigDir(t *testing.T) {
 	}
 
 	path := filepath.Join(home, ".config", "ssm", "cloud.json")
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat cloud config: %v", err)
+	if err := privatepath.VerifyFile(path); err != nil {
+		t.Fatalf("cloud config is not private: %v", err)
 	}
-	if info.Mode().Perm() != 0600 {
-		t.Fatalf("cloud config mode = %o, want 600", info.Mode().Perm())
-	}
-	dirInfo, err := os.Stat(filepath.Dir(path))
-	if err != nil {
-		t.Fatalf("stat cloud config dir: %v", err)
-	}
-	if dirInfo.Mode().Perm() != 0700 {
-		t.Fatalf("cloud config dir mode = %o, want 700", dirInfo.Mode().Perm())
+	if err := privatepath.VerifyDirectory(filepath.Dir(path)); err != nil {
+		t.Fatalf("cloud config directory is not private: %v", err)
 	}
 }
 
 func TestPullWritesVaultAndRemoteETagPrivately(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	blob := []byte("opaque encrypted bytes")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -63,19 +62,15 @@ func TestPullWritesVaultAndRemoteETagPrivately(t *testing.T) {
 		filepath.Join(home, ".config", "ssm", "connections.enc"),
 		filepath.Join(home, ".config", "ssm", "remote.etag"),
 	} {
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatalf("stat %s: %v", path, err)
-		}
-		if info.Mode().Perm() != 0600 {
-			t.Fatalf("%s mode = %o, want 600", path, info.Mode().Perm())
+		if err := privatepath.VerifyFile(path); err != nil {
+			t.Fatalf("%s is not private: %v", path, err)
 		}
 	}
 }
 
 func TestLocalAndCachedETagExposeOnlyBlobIdentity(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	blob := []byte("opaque encrypted bytes")
 	if err := config.WritePrivateFile(config.Path(), blob); err != nil {
 		t.Fatal(err)
@@ -94,7 +89,7 @@ func TestLocalAndCachedETagExposeOnlyBlobIdentity(t *testing.T) {
 
 func TestPullIfChangedStopsOnDivergedLocalAndRemoteVaults(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	localBlob := []byte("locally changed encrypted blob")
 	if err := config.WritePrivateFile(config.Path(), localBlob); err != nil {
 		t.Fatal(err)
@@ -133,7 +128,7 @@ func TestPullIfChangedStopsOnDivergedLocalAndRemoteVaults(t *testing.T) {
 
 func TestPullRejectsEmptyBlobWithoutOverwritingVault(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	existing := []byte("existing encrypted bytes")
 	vaultPath := filepath.Join(home, ".config", "ssm", "connections.enc")
 	if err := os.MkdirAll(filepath.Dir(vaultPath), 0700); err != nil {
@@ -170,7 +165,7 @@ func TestPullRejectsOversizedBlobWithoutWritingVault(t *testing.T) {
 	t.Cleanup(func() { maxPullBlobBytes = oldMax })
 
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("too many bytes"))
 	}))

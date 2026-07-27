@@ -1,0 +1,2 @@
+# Verification and shell tooling require deterministic LF worktrees on every platform.
+* text=auto eol=lf

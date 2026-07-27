@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -18,7 +19,7 @@ func TestLoadServerImportPreservesManifestAliases(t *testing.T) {
 	}
 	if err := os.WriteFile(serversPath, []byte(`[
 		{"name":"Password Host","host":"192.0.2.1","port":22,"user":"root","auth_type":"password","password":"secret"},
-		{"name":"Key Host","host":"192.0.2.2","port":2222,"user":"admin","auth_type":"key","private_key_path":"`+keyPath+`"}
+		{"name":"Key Host","host":"192.0.2.2","port":2222,"user":"admin","auth_type":"key","private_key_path":`+strconv.Quote(keyPath)+`}
 	]`), 0600); err != nil {
 		t.Fatal(err)
 	}

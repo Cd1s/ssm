@@ -19,6 +19,14 @@ var (
 	version        = "1.4.3"
 )
 
+func isSSHCTLInvocation(path string) bool {
+	base := filepath.Base(strings.ReplaceAll(path, `\`, "/"))
+	if strings.EqualFold(filepath.Ext(base), ".exe") {
+		base = strings.TrimSuffix(base, filepath.Ext(base))
+	}
+	return strings.EqualFold(base, "sshctl")
+}
+
 func main() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -45,7 +53,7 @@ func main() {
 		checkUpdate()
 	}
 
-	if strings.EqualFold(filepath.Base(os.Args[0]), "sshctl") {
+	if isSSHCTLInvocation(os.Args[0]) {
 		runSSHCTL(os.Args[1:])
 		return
 	}
