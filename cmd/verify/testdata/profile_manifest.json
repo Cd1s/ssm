@@ -485,9 +485,26 @@
               "version": "any"
             },
             {
-              "kind": "tool",
+              "kind": "executable_alternatives",
               "name": "sshd",
-              "version": "any"
+              "version": "SSHD-then-PATH-then-/usr/sbin/sshd",
+              "alternatives": [
+                {
+                  "kind": "environment_executable",
+                  "name": "SSHD",
+                  "version": "if-set-required"
+                },
+                {
+                  "kind": "path_executable",
+                  "name": "sshd",
+                  "version": "fallback"
+                },
+                {
+                  "kind": "system_path",
+                  "name": "/usr/sbin/sshd",
+                  "version": "executable-fallback"
+                }
+              ]
             },
             {
               "kind": "tool",
@@ -513,11 +530,6 @@
               "kind": "system_path",
               "name": "/run/sshd",
               "version": "directory"
-            },
-            {
-              "kind": "system_path",
-              "name": "/usr/sbin/sshd",
-              "version": "executable"
             },
             {
               "kind": "system_path",
@@ -924,9 +936,26 @@
               "version": "any"
             },
             {
-              "kind": "tool",
+              "kind": "executable_alternatives",
               "name": "sshd",
-              "version": "any"
+              "version": "SSHD-then-PATH-then-/usr/sbin/sshd",
+              "alternatives": [
+                {
+                  "kind": "environment_executable",
+                  "name": "SSHD",
+                  "version": "if-set-required"
+                },
+                {
+                  "kind": "path_executable",
+                  "name": "sshd",
+                  "version": "fallback"
+                },
+                {
+                  "kind": "system_path",
+                  "name": "/usr/sbin/sshd",
+                  "version": "executable-fallback"
+                }
+              ]
             },
             {
               "kind": "tool",
@@ -952,11 +981,6 @@
               "kind": "system_path",
               "name": "/run/sshd",
               "version": "directory"
-            },
-            {
-              "kind": "system_path",
-              "name": "/usr/sbin/sshd",
-              "version": "executable"
             },
             {
               "kind": "system_path",

@@ -57,9 +57,10 @@ type Command struct {
 }
 
 type Prerequisite struct {
-	Kind    string `json:"kind"`
-	Name    string `json:"name"`
-	Version string `json:"version"`
+	Kind         string         `json:"kind"`
+	Name         string         `json:"name"`
+	Version      string         `json:"version"`
+	Alternatives []Prerequisite `json:"alternatives,omitempty"`
 }
 
 func verificationManifest() Manifest {
@@ -363,13 +364,21 @@ func sshMatrixCheck() Check {
 			{Kind: "tool", Name: "sleep", Version: "any"},
 			{Kind: "tool", Name: "ssh", Version: "any"},
 			{Kind: "tool", Name: "ssh-keygen", Version: "any"},
-			{Kind: "tool", Name: "sshd", Version: "any"},
+			{
+				Kind:    "executable_alternatives",
+				Name:    "sshd",
+				Version: "SSHD-then-PATH-then-/usr/sbin/sshd",
+				Alternatives: []Prerequisite{
+					{Kind: "environment_executable", Name: "SSHD", Version: "if-set-required"},
+					{Kind: "path_executable", Name: "sshd", Version: "fallback"},
+					{Kind: "system_path", Name: "/usr/sbin/sshd", Version: "executable-fallback"},
+				},
+			},
 			{Kind: "tool", Name: "tr", Version: "any"},
 			{Kind: "tool", Name: "wc", Version: "any"},
 			{Kind: "system_path", Name: "/dev/null", Version: "readable"},
 			{Kind: "system_path", Name: "/dev/zero", Version: "readable"},
 			{Kind: "system_path", Name: "/run/sshd", Version: "directory"},
-			{Kind: "system_path", Name: "/usr/sbin/sshd", Version: "executable"},
 			{Kind: "system_path", Name: "/usr/lib/openssh/sftp-server", Version: "executable"},
 		},
 	}

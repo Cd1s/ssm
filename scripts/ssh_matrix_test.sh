@@ -1,6 +1,43 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+select_sshd() {
+  local selected
+  if [ "${SSHD+x}" = x ]; then
+    selected=$SSHD
+    if [ ! -f "$selected" ] || [ ! -x "$selected" ]; then
+      echo "invalid SSHD override: $selected is not an executable regular file" >&2
+      return 2
+    fi
+    printf '%s\n' "$selected"
+    return
+  fi
+
+  selected=$(command -v sshd 2>/dev/null || true)
+  if [ -n "$selected" ]; then
+    if [ ! -f "$selected" ] || [ ! -x "$selected" ]; then
+      echo "invalid PATH sshd: $selected is not an executable regular file" >&2
+      return 2
+    fi
+    printf '%s\n' "$selected"
+    return
+  fi
+  if [ -f /usr/sbin/sshd ] && [ -x /usr/sbin/sshd ]; then
+    printf '%s\n' /usr/sbin/sshd
+    return
+  fi
+
+  echo "missing sshd: set SSHD to an executable file, add sshd to PATH, or provide /usr/sbin/sshd" >&2
+  return 2
+}
+
+SSHD=$(select_sshd)
+export SSHD
+if [ "${1:-}" = "--select-sshd" ]; then
+  printf '%s\n' "$SSHD"
+  exit 0
+fi
+
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TMP=$(mktemp -d)
 BIN="$TMP/ssm-it"
@@ -46,18 +83,8 @@ require sha256sum
 require sleep
 require ssh
 require ssh-keygen
-require sshd
 require tr
 require wc
-
-SSHD=${SSHD:-$(command -v sshd 2>/dev/null || true)}
-if [ -z "$SSHD" ] && [ -x /usr/sbin/sshd ]; then
-  SSHD=/usr/sbin/sshd
-fi
-if [ -z "$SSHD" ]; then
-  echo "missing required command: sshd" >&2
-  exit 2
-fi
 
 go build -buildvcs=false -o "$BIN" ./cmd/ssm
 

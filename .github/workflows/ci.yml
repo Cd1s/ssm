@@ -65,14 +65,23 @@ jobs:
           command -v sleep >/dev/null
           command -v ssh >/dev/null
           command -v ssh-keygen >/dev/null
-          command -v sshd >/dev/null
           command -v tr >/dev/null
           command -v wc >/dev/null
           test -r /dev/null
           test -r /dev/zero
           test -d /run/sshd
-          test -x /usr/sbin/sshd
           test -x /usr/lib/openssh/sftp-server
+          selected_sshd="$(command -v sshd 2>/dev/null || true)"
+          if [ -z "$selected_sshd" ] && [ -f /usr/sbin/sshd ] && [ -x /usr/sbin/sshd ]; then
+            selected_sshd=/usr/sbin/sshd
+          fi
+          if [ -z "$selected_sshd" ]; then
+            echo "no executable sshd alternative is available" >&2
+            exit 1
+          fi
+          test -f "$selected_sshd"
+          test -x "$selected_sshd"
+          echo "SSHD=$selected_sshd" >> "$GITHUB_ENV"
 
       - name: Install official golangci-lint prebuilt
         env:

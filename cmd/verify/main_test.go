@@ -64,7 +64,7 @@ func TestFailuresNeverReportPassed(t *testing.T) {
 			profile:  "fast",
 			deps: func(t *testing.T) runtimeDependencies {
 				deps := passingTestDependencies(t, newCleanTestRepository(t))
-				deps.prerequisites = func(Prerequisite) prerequisiteState {
+				deps.prerequisites = func(Prerequisite, []string) prerequisiteState {
 					return prerequisiteState{detail: "not available"}
 				}
 				return deps
@@ -129,6 +129,7 @@ func TestProfileCleanupFailureIsFatal(t *testing.T) {
 func TestPrerequisitesReportAvailabilityAndVersion(t *testing.T) {
 	repo := newCleanTestRepository(t)
 	writeTestFile(t, filepath.Join(repo, "untracked.txt"), "fixture\n")
+	environment := newTestProcessEnvironment(t)
 
 	for _, test := range []struct {
 		name         string
@@ -167,7 +168,7 @@ func TestPrerequisitesReportAvailabilityAndVersion(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got := checkPrerequisite(repo, test.prerequisite)
+			got := checkPrerequisite(repo, test.prerequisite, environment)
 			if got.available != test.want {
 				t.Fatalf("available = %t (%s), want %t", got.available, got.detail, test.want)
 			}
@@ -200,7 +201,11 @@ func TestPrerequisitesReportAvailabilityAndVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	state := checkPrerequisite(repo, Prerequisite{Kind: "tool", Name: "gofmt", Version: "go1.25.12"})
+	state := checkPrerequisite(
+		repo,
+		Prerequisite{Kind: "tool", Name: "gofmt", Version: "go1.25.12"},
+		newTestProcessEnvironment(t),
+	)
 	if !state.available {
 		t.Fatalf("pinned gofmt unavailable: %s", state.detail)
 	}
@@ -229,6 +234,16 @@ func TestSSHMatrixIsRequiredInOfficialLinuxCI(t *testing.T) {
 	if got, want := sshMatrix.RequiredContexts, []string{"github_actions_linux"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh-matrix required contexts = %v, want %v", got, want)
 	}
+	var sshdAlternatives Prerequisite
+	for _, prerequisite := range sshMatrix.Prerequisites {
+		if prerequisite.Kind == "executable_alternatives" && prerequisite.Name == "sshd" {
+			sshdAlternatives = prerequisite
+			break
+		}
+	}
+	if sshdAlternatives.Kind == "" {
+		t.Fatal("ssh-matrix has no SSHD executable alternatives prerequisite")
+	}
 
 	run := func(t *testing.T, officialCI bool, missing Prerequisite) (profileResult, error) {
 		t.Helper()
@@ -239,8 +254,8 @@ func TestSSHMatrixIsRequiredInOfficialLinuxCI(t *testing.T) {
 			t.Setenv("RUNNER_OS", "Linux")
 		}
 		deps := passingTestDependencies(t, newCleanTestRepository(t))
-		deps.prerequisites = func(prerequisite Prerequisite) prerequisiteState {
-			if prerequisite == missing {
+		deps.prerequisites = func(prerequisite Prerequisite, _ []string) prerequisiteState {
+			if reflect.DeepEqual(prerequisite, missing) {
 				return prerequisiteState{detail: "not found in test context"}
 			}
 			return prerequisiteState{available: true}
@@ -249,7 +264,7 @@ func TestSSHMatrixIsRequiredInOfficialLinuxCI(t *testing.T) {
 	}
 
 	t.Run("local remains conditional", func(t *testing.T) {
-		result, err := run(t, false, Prerequisite{Kind: "tool", Name: "sshd", Version: "any"})
+		result, err := run(t, false, sshdAlternatives)
 		if err != nil {
 			t.Fatalf("local ci: %v", err)
 		}
@@ -279,10 +294,11 @@ func TestFormatCheckDetectsDriftWithoutRewriting(t *testing.T) {
 	}
 
 	result := executeAction(context.Background(), formatCheck().Action, actionContext{
-		RepoRoot: repo,
-		TempDir:  t.TempDir(),
-		Stdout:   io.Discard,
-		Stderr:   io.Discard,
+		RepoRoot:    repo,
+		TempDir:     t.TempDir(),
+		Environment: newTestProcessEnvironment(t),
+		Stdout:      io.Discard,
+		Stderr:      io.Discard,
 	})
 	if result.Status != statusFailed {
 		t.Fatalf("format status = %q, want %q", result.Status, statusFailed)
@@ -338,6 +354,43 @@ func TestReleaseMetadataActions(t *testing.T) {
 	)
 	if result.Status != statusFailed {
 		t.Fatalf("stale release notes status = %q, want failed", result.Status)
+	}
+}
+
+func TestSourceVersionMatchesReleaseWorkflowGrammar(t *testing.T) {
+	tests := []struct {
+		name    string
+		version string
+		want    string
+	}{
+		{name: "ASCII digits", version: "1.2.3", want: statusPassed},
+		{name: "leading zeroes", version: "01.002.0003", want: statusPassed},
+		{name: "negative sign", version: "-1.2.3", want: statusFailed},
+		{name: "positive sign", version: "+1.2.3", want: statusFailed},
+		{name: "v prefix", version: "v1.2.3", want: statusFailed},
+		{name: "letter suffix", version: "1.2.3x", want: statusFailed},
+		{name: "leading whitespace", version: " 1.2.3", want: statusFailed},
+		{name: "trailing whitespace", version: "1.2.3 ", want: statusFailed},
+		{name: "prerelease", version: "1.2.3-rc.1", want: statusFailed},
+		{name: "extra component", version: "1.2.3.4", want: statusFailed},
+		{name: "non-ASCII digits", version: "１.２.３", want: statusFailed},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repo := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(repo, "cmd", "ssm"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			writeTestFile(
+				t,
+				filepath.Join(repo, "cmd", "ssm", "main.go"),
+				fmt.Sprintf("package main\n\nvar version = %q\n", test.version),
+			)
+			result := executeBuiltin("source-version", actionContext{RepoRoot: repo})
+			if result.Status != test.want {
+				t.Fatalf("version %q status = %q (%s), want %q", test.version, result.Status, result.Detail, test.want)
+			}
+		})
 	}
 }
 
@@ -552,12 +605,27 @@ func TestOfficialCIInstallsAndAssertsSSHPrerequisites(t *testing.T) {
 		"test -r /dev/null",
 		"test -r /dev/zero",
 		"test -d /run/sshd",
-		"test -x /usr/sbin/sshd",
 		"test -x /usr/lib/openssh/sftp-server",
 	} {
 		if !strings.Contains(workflow, assertion) {
 			t.Errorf("workflow does not assert system path with %q", assertion)
 		}
+	}
+	for _, assertion := range []string{
+		`selected_sshd="$(command -v sshd 2>/dev/null || true)"`,
+		`echo "SSHD=$selected_sshd" >> "$GITHUB_ENV"`,
+		`test -f "$selected_sshd"`,
+		`test -x "$selected_sshd"`,
+	} {
+		if !strings.Contains(workflow, assertion) {
+			t.Errorf("workflow does not select and assert SSHD with %q", assertion)
+		}
+	}
+	if strings.Contains(workflow, "command -v sshd >/dev/null") {
+		t.Fatal("workflow still requires PATH sshd conjunctively")
+	}
+	if strings.Contains(workflow, "test -x /usr/sbin/sshd") {
+		t.Fatal("workflow still requires fallback sshd conjunctively")
 	}
 }
 
@@ -576,12 +644,17 @@ func TestSSHMatrixPrerequisitesMatchScriptAndOfficialCI(t *testing.T) {
 	}
 	var manifestTools []string
 	var manifestPaths []string
+	var sshdAlternatives []Prerequisite
 	for _, prerequisite := range matrix.Prerequisites {
 		switch prerequisite.Kind {
 		case "tool":
 			manifestTools = append(manifestTools, prerequisite.Name)
 		case "system_path":
 			manifestPaths = append(manifestPaths, prerequisite.Name+"="+prerequisite.Version)
+		case "executable_alternatives":
+			if prerequisite.Name == "sshd" {
+				sshdAlternatives = append(sshdAlternatives, prerequisite)
+			}
 		}
 	}
 
@@ -608,11 +681,31 @@ func TestSSHMatrixPrerequisitesMatchScriptAndOfficialCI(t *testing.T) {
 		"/dev/null=readable",
 		"/dev/zero=readable",
 		"/run/sshd=directory",
-		"/usr/sbin/sshd=executable",
 		"/usr/lib/openssh/sftp-server=executable",
 	}
 	if !reflect.DeepEqual(manifestPaths, wantPaths) {
 		t.Fatalf("manifest SSH system paths = %v, want %v", manifestPaths, wantPaths)
+	}
+	if len(sshdAlternatives) != 1 {
+		t.Fatalf("manifest SSHD alternative prerequisites = %v, want exactly one", sshdAlternatives)
+	}
+	rendered, err := renderManifest(manifest)
+	if err != nil {
+		t.Fatalf("render manifest: %v", err)
+	}
+	for _, alternative := range []string{
+		`"kind": "environment_executable"`,
+		`"name": "SSHD"`,
+		`"kind": "path_executable"`,
+		`"name": "sshd"`,
+		`"name": "/usr/sbin/sshd"`,
+	} {
+		if !bytes.Contains(rendered, []byte(alternative)) {
+			t.Errorf("manifest does not expose SSHD alternative %s", alternative)
+		}
+	}
+	if strings.Contains(string(scriptData), "require sshd") {
+		t.Fatal("SSH matrix still requires PATH sshd before alternative selection")
 	}
 	for _, builtin := range []string{
 		"cd",
@@ -663,10 +756,107 @@ func expectedSSHMatrixTools() []string {
 		"sleep",
 		"ssh",
 		"ssh-keygen",
-		"sshd",
 		"tr",
 		"wc",
 	}
+}
+
+func TestSSHDExecutableAlternativeSelection(t *testing.T) {
+	prerequisite := Prerequisite{
+		Kind:    "executable_alternatives",
+		Name:    "sshd",
+		Version: "SSHD-then-PATH-then-/usr/sbin/sshd",
+	}
+
+	t.Run("explicit override", func(t *testing.T) {
+		t.Setenv("SSHD", "/bin/true")
+		t.Setenv("PATH", "/usr/bin:/bin")
+		state := checkPrerequisite(".", prerequisite, newTestProcessEnvironment(t))
+		if !state.available || state.detail != "/bin/true (SSHD override)" {
+			t.Fatalf("state = %+v, want selected explicit override", state)
+		}
+
+		command := exec.Command("bash", "scripts/ssh_matrix_test.sh", "--select-sshd")
+		command.Dir = filepath.Join("..", "..")
+		command.Env = []string{"PATH=/usr/bin:/bin", "SSHD=/bin/true"}
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("script rejected executable override: %v\n%s", err, output)
+		}
+		if got, want := strings.TrimSpace(string(output)), "/bin/true"; got != want {
+			t.Fatalf("selected SSHD = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("invalid explicit override does not fall back", func(t *testing.T) {
+		t.Setenv("SSHD", filepath.Join(t.TempDir(), "missing-sshd"))
+		t.Setenv("PATH", "/usr/sbin:/usr/bin:/bin")
+		state := checkPrerequisite(".", prerequisite, newTestProcessEnvironment(t))
+		if state.available || !strings.Contains(state.detail, "invalid SSHD override") {
+			t.Fatalf("state = %+v, want clear invalid-override failure", state)
+		}
+
+		command := exec.Command("bash", "scripts/ssh_matrix_test.sh", "--select-sshd")
+		command.Dir = filepath.Join("..", "..")
+		command.Env = []string{
+			"PATH=/usr/sbin:/usr/bin:/bin",
+			"SSHD=" + filepath.Join(t.TempDir(), "missing-sshd"),
+		}
+		output, err := command.CombinedOutput()
+		if err == nil {
+			t.Fatalf("script accepted invalid explicit override: %s", output)
+		}
+		if !strings.Contains(string(output), "invalid SSHD override") {
+			t.Fatalf("script failure was not explicit:\n%s", output)
+		}
+	})
+
+	t.Run("PATH candidate", func(t *testing.T) {
+		bin := t.TempDir()
+		candidate := filepath.Join(bin, "sshd")
+		if err := os.Symlink("/bin/true", candidate); err != nil {
+			t.Fatalf("create PATH sshd fixture: %v", err)
+		}
+		t.Setenv("SSHD", "")
+		if err := os.Unsetenv("SSHD"); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", bin)
+		state := checkPrerequisite(".", prerequisite, newTestProcessEnvironment(t))
+		if !state.available || state.detail != candidate+" (PATH)" {
+			t.Fatalf("state = %+v, want selected PATH candidate", state)
+		}
+	})
+
+	t.Run("/usr/sbin fallback", func(t *testing.T) {
+		if err := validateExecutableRegularFile("/usr/sbin/sshd"); err != nil {
+			t.Skipf("fixed SSHD fallback is unavailable on this host: %v", err)
+		}
+		bash, err := exec.LookPath("bash")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("SSHD", "")
+		if err := os.Unsetenv("SSHD"); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", t.TempDir())
+		state := checkPrerequisite(".", prerequisite, newTestProcessEnvironment(t))
+		if !state.available || state.detail != "/usr/sbin/sshd (/usr/sbin fallback)" {
+			t.Fatalf("state = %+v, want selected /usr/sbin fallback", state)
+		}
+
+		command := exec.Command(bash, "scripts/ssh_matrix_test.sh", "--select-sshd") //nolint:gosec // bash is resolved from the test process PATH and argv is fixed
+		command.Dir = filepath.Join("..", "..")
+		command.Env = []string{"PATH=" + t.TempDir()}
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("script rejected /usr/sbin fallback: %v\n%s", err, output)
+		}
+		if got, want := strings.TrimSpace(string(output)), "/usr/sbin/sshd"; got != want {
+			t.Fatalf("selected SSHD = %q, want %q", got, want)
+		}
+	})
 }
 
 func requiredToolsFromScript(script string) []string {
@@ -784,7 +974,7 @@ func TestProfilesAreNonMutating(t *testing.T) {
 				repoRoot: repo,
 				stdout:   io.Discard,
 				stderr:   io.Discard,
-				prerequisites: func(Prerequisite) prerequisiteState {
+				prerequisites: func(Prerequisite, []string) prerequisiteState {
 					return prerequisiteState{available: true}
 				},
 				actions: func(_ context.Context, action Action, _ actionContext) checkResult {
@@ -818,7 +1008,7 @@ func TestProfilesAreNonMutating(t *testing.T) {
 			repoRoot: repo,
 			stdout:   io.Discard,
 			stderr:   io.Discard,
-			prerequisites: func(Prerequisite) prerequisiteState {
+			prerequisites: func(Prerequisite, []string) prerequisiteState {
 				return prerequisiteState{available: true}
 			},
 			actions: func(_ context.Context, _ Action, _ actionContext) checkResult {
@@ -844,7 +1034,7 @@ func TestProfilesAreNonMutating(t *testing.T) {
 			repoRoot: repo,
 			stdout:   io.Discard,
 			stderr:   io.Discard,
-			prerequisites: func(Prerequisite) prerequisiteState {
+			prerequisites: func(Prerequisite, []string) prerequisiteState {
 				return prerequisiteState{available: true}
 			},
 			actions: executeAction,
@@ -881,6 +1071,163 @@ func TestCanonicalConstructorsMatchReviewedActionPolicy(t *testing.T) {
 	}
 }
 
+func TestManifestEnvironmentRejectsCredentialAndUnreviewedKeys(t *testing.T) {
+	for _, key := range []string{
+		"GH_TOKEN",
+		"GITHUB_TOKEN",
+		"AWS_ACCESS_KEY_ID",
+		"AZURE_CLIENT_SECRET",
+		"GOOGLE_APPLICATION_CREDENTIALS",
+		"SSH_AUTH_SOCK",
+		"NPM_TOKEN",
+		"COOKIE_JAR",
+		"TOTALLY_UNKNOWN_SECRET_NAME",
+	} {
+		t.Run(key, func(t *testing.T) {
+			manifest := verificationManifest()
+			command := manifest.Profiles[1].Checks[0].Action.Command
+			if command == nil {
+				t.Fatal("format action has no command")
+			}
+			command.Env = append(command.Env, key+"=credential-canary")
+			err := validateNonMutating(manifest)
+			if err == nil || !strings.Contains(err.Error(), "credential-like environment key") {
+				t.Fatalf("error = %v, want credential-like environment rejection", err)
+			}
+		})
+	}
+
+	manifest := verificationManifest()
+	command := manifest.Profiles[1].Checks[0].Action.Command
+	if command == nil {
+		t.Fatal("format action has no command")
+	}
+	command.Env = append(command.Env, "TOTALLY_UNRELATED_SETTING=value")
+	err := validateNonMutating(manifest)
+	if err == nil || !strings.Contains(err.Error(), "unreviewed manifest environment key") {
+		t.Fatalf("error = %v, want unreviewed environment rejection", err)
+	}
+}
+
+func TestIsolatedEnvironmentPreservesReviewedPlatformRuntime(t *testing.T) {
+	tests := []struct {
+		name        string
+		goos        string
+		tempDir     string
+		inherited   map[string]string
+		wantHome    string
+		wantTemp    string
+		wantGoCache string
+	}{
+		{
+			name:    "linux",
+			goos:    "linux",
+			tempDir: "/tmp/verify-profile",
+			inherited: map[string]string{ //nolint:gosec // fake credential names and canaries verify that secrets are not inherited
+				"PATH":     "/usr/local/bin:/usr/bin:/bin",
+				"LANG":     "C.UTF-8",
+				"GH_TOKEN": "credential-canary",
+			},
+			wantHome:    "/tmp/verify-profile/home",
+			wantTemp:    "/tmp/verify-profile/tmp",
+			wantGoCache: "/tmp/verify-profile/go-build",
+		},
+		{
+			name:    "macos",
+			goos:    "darwin",
+			tempDir: "/private/tmp/verify-profile",
+			inherited: map[string]string{ //nolint:gosec // fake canary verifies macOS isolation semantics
+				"PATH":                     "/opt/homebrew/bin:/usr/bin:/bin",
+				"SSL_CERT_FILE":            "/etc/ssl/cert.pem",
+				"TOTALLY_UNRELATED_CANARY": "credential-canary",
+			},
+			wantHome:    "/private/tmp/verify-profile/home",
+			wantTemp:    "/private/tmp/verify-profile/tmp",
+			wantGoCache: "/private/tmp/verify-profile/go-build",
+		},
+		{
+			name:    "windows",
+			goos:    "windows",
+			tempDir: `C:\verify-profile`,
+			inherited: map[string]string{ //nolint:gosec // fake credential name and canary verify Windows isolation semantics
+				"PATH":         `C:\Go\bin;C:\Windows\System32`,
+				"SystemRoot":   `C:\Windows`,
+				"WINDIR":       `C:\Windows`,
+				"ComSpec":      `C:\Windows\System32\cmd.exe`,
+				"PATHEXT":      `.COM;.EXE;.BAT;.CMD`,
+				"GITHUB_TOKEN": "credential-canary",
+			},
+			wantHome:    `C:\verify-profile\home`,
+			wantTemp:    `C:\verify-profile\tmp`,
+			wantGoCache: `C:\verify-profile\go-build`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			lookup := func(name string) (string, bool) {
+				value, ok := test.inherited[name]
+				return value, ok
+			}
+			environment, err := isolatedEnvironmentForOS(test.tempDir, test.goos, lookup)
+			if err != nil {
+				t.Fatalf("build isolated environment: %v", err)
+			}
+			values := environmentMap(t, environment)
+			for key, want := range map[string]string{
+				"PATH":       test.inherited["PATH"],
+				"HOME":       test.wantHome,
+				"TMPDIR":     test.wantTemp,
+				"TEMP":       test.wantTemp,
+				"TMP":        test.wantTemp,
+				"GOCACHE":    test.wantGoCache,
+				"GOMODCACHE": environmentPath(test.tempDir, test.goos, "go-mod"),
+				"GOPATH":     environmentPath(test.tempDir, test.goos, "gopath"),
+				"GOENV":      "off",
+			} {
+				if got := values[key]; got != want {
+					t.Errorf("%s = %q, want %q", key, got, want)
+				}
+			}
+			for _, key := range []string{
+				"GH_TOKEN",
+				"GITHUB_TOKEN",
+				"TOTALLY_UNRELATED_CANARY",
+				"SSH_AUTH_SOCK",
+			} {
+				if _, ok := values[key]; ok {
+					t.Errorf("isolated environment inherited %s", key)
+				}
+			}
+			if test.goos == "windows" {
+				for _, key := range []string{"SystemRoot", "WINDIR", "ComSpec", "PATHEXT"} {
+					if got := values[key]; got != test.inherited[key] {
+						t.Errorf("%s = %q, want %q", key, got, test.inherited[key])
+					}
+				}
+				if got := values["USERPROFILE"]; got != test.wantHome {
+					t.Errorf("USERPROFILE = %q, want %q", got, test.wantHome)
+				}
+			}
+		})
+	}
+
+	t.Run("authenticated Go proxy rejected", func(t *testing.T) {
+		_, err := isolatedEnvironmentForOS("/tmp/verify-profile", "linux", func(name string) (string, bool) {
+			switch name {
+			case "PATH":
+				return "/usr/bin:/bin", true
+			case "GOPROXY":
+				return "https://publisher-token@example.invalid/proxy", true
+			default:
+				return "", false
+			}
+		})
+		if err == nil || !strings.Contains(err.Error(), "authentication material") {
+			t.Fatalf("error = %v, want authenticated GOPROXY rejection", err)
+		}
+	})
+}
+
 func TestRepresentativeRealCIActionsAreNonMutating(t *testing.T) {
 	repo := newRepresentativeProfileRepository(t)
 	manifest := verificationManifest()
@@ -898,7 +1245,7 @@ func TestRepresentativeRealCIActionsAreNonMutating(t *testing.T) {
 		repoRoot: repo,
 		stdout:   io.Discard,
 		stderr:   io.Discard,
-		prerequisites: func(Prerequisite) prerequisiteState {
+		prerequisites: func(Prerequisite, []string) prerequisiteState {
 			return prerequisiteState{available: true}
 		},
 		actions: executeAction,
@@ -918,6 +1265,165 @@ func TestRepresentativeRealCIActionsAreNonMutating(t *testing.T) {
 	}
 }
 
+func TestVerificationChildrenHaveNoInheritedPublicationAuthority(t *testing.T) {
+	repo := newRepresentativeProfileRepository(t)
+	fakeHome := t.TempDir()
+	for path, contents := range map[string]string{
+		".gitconfig": "[credential]\n\thelper = store\n",
+		".netrc":     "machine example.invalid login test password credential-canary\n",
+		filepath.Join(".config", "gh", "hosts.yml"):          "oauth_token: credential-canary\n",
+		filepath.Join(".ssh", "config"):                      "IdentityFile external-private-key\n",
+		filepath.Join(".aws", "credentials"):                 "[default]\naws_secret_access_key=credential-canary\n",
+		filepath.Join(".config", "gcloud", "credentials.db"): "credential-canary\n",
+		filepath.Join(".docker", "config.json"):              "{\"auths\":{\"example.invalid\":{\"auth\":\"credential-canary\"}}}\n",
+	} {
+		fullPath := filepath.Join(fakeHome, path)
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, fullPath, contents)
+	}
+	fakeSocket := filepath.Join(fakeHome, "agent.sock")
+	fakeCloudCredentials := filepath.Join(fakeHome, "cloud-credentials.json")
+	writeTestFile(t, fakeCloudCredentials, "{\"credential\":\"credential-canary\"}\n")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	realGo, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shimDirectory := t.TempDir()
+	for name, target := range map[string]string{"git": realGit, "go": realGo} {
+		script := fmt.Sprintf(`#!/bin/sh
+for key in GH_TOKEN GITHUB_TOKEN AWS_SECRET_ACCESS_KEY SSH_AUTH_SOCK TOTALLY_UNRELATED_CANARY; do
+  eval 'present=${'${key}'+set}'
+  if [ "${present:-}" = set ]; then
+    echo "verification helper inherited $key" >&2
+    exit 91
+  fi
+done
+case "${HOME:-}" in
+  */ssm-verify-*/home) ;;
+  *) echo "verification helper received uncontrolled HOME: ${HOME:-}" >&2; exit 92 ;;
+esac
+exec "%s" "$@"
+`, target)
+		path := filepath.Join(shimDirectory, name)
+		writeTestFile(t, path, script)
+		if err := os.Chmod(path, 0o700); err != nil { //nolint:gosec // test-owned command shims must be executable
+			t.Fatalf("make %s verification shim executable: %v", name, err)
+		}
+	}
+
+	childTest := `package main
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestChildEnvironmentIsIsolated(t *testing.T) {
+	for _, key := range []string{
+		"GH_TOKEN",
+		"GITHUB_TOKEN",
+		"AWS_ACCESS_KEY_ID",
+		"AWS_SECRET_ACCESS_KEY",
+		"AZURE_CLIENT_SECRET",
+		"GOOGLE_APPLICATION_CREDENTIALS",
+		"SSH_AUTH_SOCK",
+		"NETRC",
+		"NPM_TOKEN",
+		"REGISTRY_AUTH_FILE",
+		"COOKIE_JAR",
+		"TOTALLY_UNRELATED_CANARY",
+	} {
+		if value, ok := os.LookupEnv(key); ok {
+			t.Fatalf("child inherited %s=%q", key, value)
+		}
+	}
+	home := os.Getenv("HOME")
+	if home == "" || !strings.Contains(filepath.Base(filepath.Dir(home)), "ssm-verify-ci-") {
+		t.Fatalf("HOME is not profile-owned: %q", home)
+	}
+	for _, path := range []string{
+		filepath.Join(home, ".gitconfig"),
+		filepath.Join(home, ".netrc"),
+		filepath.Join(home, ".config", "gh", "hosts.yml"),
+		filepath.Join(home, ".ssh", "config"),
+		filepath.Join(home, ".aws", "credentials"),
+		filepath.Join(home, ".docker", "config.json"),
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("credential path is visible through isolated HOME: %s (%v)", path, err)
+		}
+	}
+	if os.Getenv("GIT_CONFIG_NOSYSTEM") != "1" {
+		t.Fatalf("GIT_CONFIG_NOSYSTEM = %q, want 1", os.Getenv("GIT_CONFIG_NOSYSTEM"))
+	}
+	global := os.Getenv("GIT_CONFIG_GLOBAL")
+	if global == "" || !strings.HasPrefix(global, filepath.Dir(home)+string(filepath.Separator)) {
+		t.Fatalf("GIT_CONFIG_GLOBAL is not profile-owned: %q", global)
+	}
+	if os.Getenv("GOENV") != "off" {
+		t.Fatalf("GOENV = %q, want off", os.Getenv("GOENV"))
+	}
+	command := exec.Command("git", "config", "--global", "--get", "credential.helper")
+	output, err := command.CombinedOutput()
+	if err == nil || len(output) != 0 {
+		t.Fatalf("child Git observed a global credential helper: err=%v output=%q", err, output)
+	}
+}
+`
+	writeTestFile(t, filepath.Join(repo, "environment_test.go"), childTest)
+	gitOutput(t, repo, "add", "environment_test.go")
+	gitOutput(t, repo, "commit", "--quiet", "-m", "add environment isolation assertion")
+
+	for key, value := range map[string]string{ //nolint:gosec // adversarial fake credentials prove child-process isolation
+		"HOME":                           fakeHome,
+		"XDG_CONFIG_HOME":                filepath.Join(fakeHome, ".config"),
+		"XDG_CACHE_HOME":                 filepath.Join(fakeHome, ".cache"),
+		"GIT_CONFIG_GLOBAL":              filepath.Join(fakeHome, ".gitconfig"),
+		"GH_TOKEN":                       "credential-canary",
+		"GITHUB_TOKEN":                   "credential-canary",
+		"AWS_ACCESS_KEY_ID":              "credential-canary",
+		"AWS_SECRET_ACCESS_KEY":          "credential-canary",
+		"AZURE_CLIENT_SECRET":            "credential-canary",
+		"GOOGLE_APPLICATION_CREDENTIALS": fakeCloudCredentials,
+		"SSH_AUTH_SOCK":                  fakeSocket,
+		"NETRC":                          filepath.Join(fakeHome, ".netrc"),
+		"NPM_TOKEN":                      "credential-canary",
+		"REGISTRY_AUTH_FILE":             filepath.Join(fakeHome, ".docker", "config.json"),
+		"COOKIE_JAR":                     filepath.Join(fakeHome, "cookies.txt"),
+		"TOTALLY_UNRELATED_CANARY":       "credential-canary",
+	} {
+		t.Setenv(key, value)
+	}
+	t.Setenv("PATH", shimDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	manifest := verificationManifest()
+	setProfileChecks(t, &manifest, "ci", []Check{unitCheck()})
+	result, err := executeProfile(context.Background(), manifest, "ci", runtimeDependencies{
+		repoRoot: repo,
+		stdout:   io.Discard,
+		stderr:   io.Discard,
+		prerequisites: func(Prerequisite, []string) prerequisiteState {
+			return prerequisiteState{available: true}
+		},
+		actions: executeAction,
+	})
+	if err != nil {
+		t.Fatalf("isolated child action failed: %v (result=%+v)", err, result)
+	}
+	if result.Status != statusPassed {
+		t.Fatalf("status = %q, want %q", result.Status, statusPassed)
+	}
+}
+
 func TestRepresentativeRealReleaseActionsAreNonMutating(t *testing.T) {
 	repo := newRepresentativeProfileRepository(t)
 	manifest := verificationManifest()
@@ -934,7 +1440,7 @@ func TestRepresentativeRealReleaseActionsAreNonMutating(t *testing.T) {
 		repoRoot: repo,
 		stdout:   io.Discard,
 		stderr:   io.Discard,
-		prerequisites: func(Prerequisite) prerequisiteState {
+		prerequisites: func(Prerequisite, []string) prerequisiteState {
 			return prerequisiteState{available: true}
 		},
 		actions: executeAction,
@@ -1083,6 +1589,24 @@ func TestRepositorySnapshotDetectsEveryMutationClass(t *testing.T) {
 				gitOutput(t, repo, "update-ref", "refs/remotes/origin/snapshot-mutation", "HEAD")
 			},
 		},
+		{
+			name: "notes ref",
+			mutate: func(t *testing.T, repo string) {
+				gitOutput(t, repo, "update-ref", "refs/notes/snapshot-mutation", "HEAD")
+			},
+		},
+		{
+			name: "stash ref",
+			mutate: func(t *testing.T, repo string) {
+				gitOutput(t, repo, "update-ref", "refs/stash", "HEAD")
+			},
+		},
+		{
+			name: "custom ref",
+			mutate: func(t *testing.T, repo string) {
+				gitOutput(t, repo, "update-ref", "refs/verification/snapshot-mutation", "HEAD")
+			},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1106,7 +1630,7 @@ func TestRepositorySnapshotDetectsEveryMutationClass(t *testing.T) {
 	}
 }
 
-func TestProfileDetectsHEADTagAndRemoteRefMutations(t *testing.T) {
+func TestProfileDetectsAllRefMutations(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		mutate func(*testing.T, string)
@@ -1127,6 +1651,24 @@ func TestProfileDetectsHEADTagAndRemoteRefMutations(t *testing.T) {
 			name: "remote ref",
 			mutate: func(t *testing.T, repo string) {
 				gitOutput(t, repo, "update-ref", "refs/remotes/origin/profile-mutation", "HEAD")
+			},
+		},
+		{
+			name: "notes ref",
+			mutate: func(t *testing.T, repo string) {
+				gitOutput(t, repo, "update-ref", "refs/notes/profile-mutation", "HEAD")
+			},
+		},
+		{
+			name: "stash ref",
+			mutate: func(t *testing.T, repo string) {
+				gitOutput(t, repo, "update-ref", "refs/stash", "HEAD")
+			},
+		},
+		{
+			name: "custom ref",
+			mutate: func(t *testing.T, repo string) {
+				gitOutput(t, repo, "update-ref", "refs/verification/profile-mutation", "HEAD")
 			},
 		},
 	} {
@@ -1307,13 +1849,38 @@ func passingTestDependencies(t *testing.T, repo string) runtimeDependencies {
 		repoRoot: repo,
 		stdout:   io.Discard,
 		stderr:   io.Discard,
-		prerequisites: func(Prerequisite) prerequisiteState {
+		prerequisites: func(Prerequisite, []string) prerequisiteState {
 			return prerequisiteState{available: true}
 		},
 		actions: func(context.Context, Action, actionContext) checkResult {
 			return checkResult{Status: statusPassed}
 		},
 	}
+}
+
+func newTestProcessEnvironment(t *testing.T) []string {
+	t.Helper()
+	environment, err := newIsolatedProcessEnvironment(t.TempDir())
+	if err != nil {
+		t.Fatalf("create isolated test process environment: %v", err)
+	}
+	return environment
+}
+
+func environmentMap(t *testing.T, environment []string) map[string]string {
+	t.Helper()
+	values := make(map[string]string, len(environment))
+	for _, entry := range environment {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			t.Fatalf("invalid environment entry %q", entry)
+		}
+		if _, duplicate := values[key]; duplicate {
+			t.Fatalf("duplicate environment key %q", key)
+		}
+		values[key] = value
+	}
+	return values
 }
 
 func writeTestFile(t *testing.T, path, contents string) {
@@ -1336,7 +1903,7 @@ func commandArgumentAfter(t *testing.T, args []string, flag string) string {
 
 func containsPrerequisite(prerequisites []Prerequisite, want Prerequisite) bool {
 	for _, prerequisite := range prerequisites {
-		if prerequisite == want {
+		if reflect.DeepEqual(prerequisite, want) {
 			return true
 		}
 	}

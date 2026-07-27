@@ -17,8 +17,8 @@ func main() {
 		repoRoot: repoRoot,
 		stdout:   os.Stdout,
 		stderr:   os.Stderr,
-		prerequisites: func(prerequisite Prerequisite) prerequisiteState {
-			return checkPrerequisite(repoRoot, prerequisite)
+		prerequisites: func(prerequisite Prerequisite, environment []string) prerequisiteState {
+			return checkPrerequisite(repoRoot, prerequisite, environment)
 		},
 		actions:   executeAction,
 		removeAll: os.RemoveAll,

@@ -24,7 +24,9 @@ executables, argument vectors, environment, and output expectations; it is
 deliberately not generated from the manifest constructors. Changing a
 constructor and the JSON golden together therefore does not authorize a new
 tag, publish, upload, release, install, repository-output, mutating Go, or
-arbitrary command.
+arbitrary command. A second independent guard permits manifest action
+environment additions only for the reviewed `GOOS` and `GOARCH` release
+matrix; credential-like and otherwise unreviewed keys are rejected.
 
 ## BC-10 old-to-new membership
 
@@ -76,16 +78,22 @@ It is deliberately not merge-equivalent and not release-equivalent.
 `ci` is the ordered 11-check profile in the table above. `ssh-matrix` is
 conditional locally and explicitly required in the `github_actions_linux`
 context. Official GitHub CI prepares and asserts every live-matrix
-prerequisite, including `/run/sshd`, `/usr/sbin/sshd`, and the SFTP subsystem
-path. Absence of any declared prerequisite there fails the profile. A local
-non-Linux machine, or a local machine missing a declared live-matrix
-prerequisite, reports `ssh-matrix` as `unavailable` and the profile as
+prerequisite, including `/run/sshd`, one selected SSHD executable, and the SFTP
+subsystem path. SSHD selection is an ordered alternative: an explicitly set
+`SSHD` must be an executable regular file; otherwise an executable PATH
+`sshd` is selected; otherwise executable regular file `/usr/sbin/sshd` is the
+fallback. Any one is sufficient, and an invalid explicit override fails
+without falling through. Official Linux CI selects, asserts, and exports that
+same executable before running the profile. A local non-Linux machine, or a
+local machine missing a declared live-matrix prerequisite, reports
+`ssh-matrix` as `unavailable` and the profile as
 `completed_with_unavailable`; neither is represented as passed.
 
 The executable `release` check list begins with the exact `ci` sequence and
 then adds, in order:
 
-1. source release-version validation;
+1. source release-version validation using the release workflow's exact
+   ASCII-digit `X.Y.Z` grammar;
 2. temporary builds named `ssm-linux-amd64`, `ssm-linux-arm64`,
    `ssm-darwin-amd64`, `ssm-darwin-arm64`, `ssm-windows-amd64.exe`, and
    `ssm-windows-arm64.exe`;
@@ -114,10 +122,12 @@ equivalence explicitly say that this is not a claim of initial-v2 release
 readiness. When later tickets implement either extension, they must promote it
 from metadata into a required executable check before the initial v2 release.
 
-No profile merges, tags, installs, replaces an executable, calls a publication
-API, creates or uploads a release, or writes release artifacts into the
-repository. GitHub release publication remains explicit in `release.yml` and
-outside this verification driver.
+No approved top-level action merges, tags, installs, replaces an executable,
+creates or uploads a release, or writes release artifacts into the repository.
+Verification children receive no inherited publication credentials or user
+configuration that could supply publication authority. GitHub release
+publication remains explicit in `release.yml` and outside this verification
+driver.
 
 ## Prerequisites and runtime
 
@@ -127,34 +137,63 @@ Required prerequisites are listed in the manifest:
 - Go 1.25.12 and the gofmt executable from that same resolved toolchain;
 - the official golangci-lint 2.11.4 prebuilt;
 - `jq` and `bash`;
-- a cold-cache network path for the pinned govulncheck module, or a populated
-  Go module cache.
+- an unauthenticated network path for required Go modules on first use in a
+  profile, or the profile-owned module cache populated by an earlier check.
 
 Files declared `tracked` are verified through Git, not merely by filesystem
-presence. Before running any action, verification uses Git name/status metadata
-to reject every non-ignored untracked path. It never opens, follows, or hashes
-untracked or ignored file contents. Ignored files such as
-`master.pass`, `cloud.json`, tokens, and private keys remain untouched and
-unread.
+presence. Before running any action, verification enumerates every tracked
+worktree path from Git metadata and safely opens its identity without reading
+content. A symlink or reparse point in any tracked path component, or a tracked
+leaf that is missing or not a regular file, fails the profile. Unix uses
+descriptor-relative `openat` with `O_NOFOLLOW` and nonblocking leaf opens;
+Windows uses `NtCreateFile` with `OBJ_DONT_REPARSE`; other targets without a
+truthful no-follow primitive fail closed. The source-version, release-note, and
+checksum readers use the same no-follow regular-file handles instead of a
+check-then-open sequence.
 
-The before/after snapshot covers the HEAD object and symbolic name; all local
-heads, tags, and remote refs; index entries, flags, and staged diff; tracked
+Verification separately uses Git name/status metadata to reject every
+non-ignored untracked path. It never opens, follows, or hashes untracked or
+ignored file contents. Ignored files such as `master.pass`, `cloud.json`,
+tokens, and private keys remain untouched and unread.
+
+The before/after snapshot covers the HEAD object and symbolic name; every ref
+returned by unrestricted `git for-each-ref --sort=refname`, including notes,
+stash, and custom namespaces; index entries, flags, and staged diff; tracked
 worktree content diff; and non-ignored untracked names. This detects allow-empty
-commits, ref/tag changes, index changes, further edits to already-dirty tracked
+commits, any ref change, index changes, further edits to already-dirty tracked
 files, and created or removed non-ignored untracked names without reading their
 contents.
+
+Every verification subprocess, including Git metadata and prerequisite probes,
+receives a minimal explicit environment rather than the caller's environment.
+Each profile owns temporary HOME, XDG config/data/state/cache, temp, Go
+build/module/GOPATH, and linter cache directories. Git system/global config and
+credential prompts are disabled; `GOENV` is disabled. The reviewed inherited
+set is limited to PATH, necessary Windows runtime values, locale/timezone,
+certificate paths, the validated SSHD override, and unauthenticated Go module
+resolution settings. Variables such as GitHub/GH tokens, Git credential
+injection, SSH agent sockets, cloud credentials, netrc, registry credentials,
+cookies, API keys, and unknown caller variables are not inherited.
+
+This is a no-inherited-publication-authority boundary, not a universal network
+or filesystem sandbox. Unauthenticated network reads needed for Go modules and
+govulncheck, plus the loopback live SSH matrix, remain permitted. Repository
+tests still execute as trusted checked-in verification code, but receive
+neither caller credentials nor caller user configuration.
 
 The live SSH matrix is conditional locally on Linux and its complete audited
 external-tool list: `awk`, `bash`, `cat`, `chmod`, `cp`, `dd`, `dirname`,
 `find`, `go`, `grep`, `head`, `id`, `ln`, `mkdir`, `mktemp`, `nohup`,
 `printenv`, `rm`, `script`, `sed`, `seq`, `sh`, `sha256sum`, `sleep`, `ssh`,
-`ssh-keygen`, `sshd`, `tr`, and `wc`. `jq` is a JSON-artifact prerequisite,
-not an SSH-matrix prerequisite. Bash builtins such as `cd`, `command`, `echo`,
-`kill`, `printf`, `pwd`, `set`, `test`, `trap`, and `true` are not
-misrepresented as external tools. The manifest and official Linux CI also
-assert readable `/dev/null` and `/dev/zero`, `/run/sshd`, the server binary,
-and the SFTP subsystem path. Tests keep the script declarations, manifest, and
-workflow assertions in exact parity.
+`ssh-keygen`, `tr`, and `wc`. The selected SSHD executable is represented by
+the alternatives prerequisite rather than falsely appearing as a conjunctive
+PATH tool. `jq` is a JSON-artifact prerequisite, not an SSH-matrix
+prerequisite. Bash builtins such as `cd`, `command`, `echo`, `kill`, `printf`,
+`pwd`, `set`, `test`, `trap`, and `true` are not misrepresented as external
+tools. The manifest and official Linux CI also assert readable `/dev/null` and
+`/dev/zero`, `/run/sshd`, the selected server executable, and the SFTP
+subsystem path. Tests keep the script declarations, manifest alternatives,
+and workflow selection in exact parity.
 
 The matrix uses only a temporary test home, temporary keys, a temporary
 OpenSSH server, and a temporary binary. It does not read the user's vault,
