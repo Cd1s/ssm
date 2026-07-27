@@ -526,8 +526,11 @@ func executeProfile(ctx context.Context, manifest Manifest, profileName string, 
 		if err != nil {
 			return fmt.Errorf("validate action workspace state: %w", err)
 		}
-		if !bytes.Equal(workspaceBefore, workspaceNow) {
-			return errors.New("verification changed action workspace state")
+		if !bytes.Equal(workspaceBefore.Digest, workspaceNow.Digest) {
+			return fmt.Errorf(
+				"verification changed action workspace state: %s",
+				describeActionWorkspaceDifference(workspaceBefore, workspaceNow),
+			)
 		}
 		return nil
 	}

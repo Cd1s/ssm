@@ -18,6 +18,21 @@ type trackedWorktreeFile struct {
 	Mode string
 }
 
+type actionWorkspaceEntry struct {
+	Path          string
+	Type          string
+	Mode          fs.FileMode
+	ModTime       int64
+	Tracked       bool
+	ContentSize   int
+	ContentDigest [sha256.Size]byte
+}
+
+type actionWorkspaceState struct {
+	Digest  []byte
+	Entries []actionWorkspaceEntry
+}
+
 func validateTrackedWorktreePaths(ctx context.Context, repoRoot string, environment []string) error {
 	_, err := inspectTrackedWorktreeLayout(ctx, repoRoot, environment)
 	return err
@@ -193,8 +208,10 @@ func copyTrackedFile(repoRoot, workspaceRoot string, tracked trackedWorktreeFile
 	return nil
 }
 
-func actionWorkspaceSnapshot(workspaceRoot string, tracked []trackedWorktreeFile) ([]byte, error) {
+func actionWorkspaceSnapshot(workspaceRoot string, tracked []trackedWorktreeFile) (actionWorkspaceState, error) {
 	digest := sha256.New()
+	entries := make([]actionWorkspaceEntry, 0, len(tracked))
+	entryIndex := make(map[string]int, len(tracked))
 	//nolint:gosec // workspaceRoot is the verifier-created private action workspace
 	err := filepath.WalkDir(workspaceRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -207,14 +224,22 @@ func actionWorkspaceSnapshot(workspaceRoot string, tracked []trackedWorktreeFile
 		if relative == "." {
 			relative = ""
 		}
+		relative = filepath.ToSlash(relative)
 		info, err := entry.Info()
 		if err != nil {
 			return err
 		}
+		entryIndex[relative] = len(entries)
+		entries = append(entries, actionWorkspaceEntry{
+			Path:    relative,
+			Type:    info.Mode().Type().String(),
+			Mode:    info.Mode().Perm(),
+			ModTime: info.ModTime().UnixNano(),
+		})
 		_, _ = fmt.Fprintf(
 			digest,
 			"path\x00%s\x00type\x00%s\x00mode\x00%o\x00mtime\x00%d\x00",
-			filepath.ToSlash(relative),
+			relative,
 			info.Mode().Type().String(),
 			info.Mode().Perm(),
 			info.ModTime().UnixNano(),
@@ -222,17 +247,62 @@ func actionWorkspaceSnapshot(workspaceRoot string, tracked []trackedWorktreeFile
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("enumerate action workspace: %w", err)
+		return actionWorkspaceState{}, fmt.Errorf("enumerate action workspace: %w", err)
 	}
 	for _, file := range tracked {
 		data, err := readRegularFileNoFollow(workspaceRoot, file.Path)
 		if err != nil {
-			return nil, fmt.Errorf("snapshot action workspace tracked path %q: %w", file.Path, err)
+			return actionWorkspaceState{}, fmt.Errorf("snapshot action workspace tracked path %q: %w", file.Path, err)
 		}
+		path := filepath.ToSlash(file.Path)
+		index, ok := entryIndex[path]
+		if !ok {
+			return actionWorkspaceState{}, fmt.Errorf("tracked action workspace path %q was not enumerated", file.Path)
+		}
+		entries[index].Tracked = true
+		entries[index].ContentSize = len(data)
+		entries[index].ContentDigest = sha256.Sum256(data)
 		_, _ = fmt.Fprintf(digest, "tracked\x00%s\x00%d\x00", file.Path, len(data))
 		_, _ = digest.Write(data)
 	}
-	return digest.Sum(nil), nil
+	return actionWorkspaceState{Digest: digest.Sum(nil), Entries: entries}, nil
+}
+
+func describeActionWorkspaceDifference(before, after actionWorkspaceState) string {
+	beforeByPath := make(map[string]actionWorkspaceEntry, len(before.Entries))
+	for _, entry := range before.Entries {
+		beforeByPath[entry.Path] = entry
+	}
+	for _, current := range after.Entries {
+		original, ok := beforeByPath[current.Path]
+		if !ok {
+			return fmt.Sprintf("path %q was added", current.Path)
+		}
+		delete(beforeByPath, current.Path)
+		switch {
+		case original.Type != current.Type:
+			return fmt.Sprintf("path %q type changed from %q to %q", current.Path, original.Type, current.Type)
+		case original.Mode != current.Mode:
+			return fmt.Sprintf("path %q mode changed from %o to %o", current.Path, original.Mode, current.Mode)
+		case original.ModTime != current.ModTime:
+			return fmt.Sprintf("path %q mtime changed from %d to %d", current.Path, original.ModTime, current.ModTime)
+		case original.Tracked != current.Tracked:
+			return fmt.Sprintf("path %q tracked snapshot membership changed", current.Path)
+		case original.ContentSize != current.ContentSize:
+			return fmt.Sprintf(
+				"path %q content size changed from %d to %d",
+				current.Path,
+				original.ContentSize,
+				current.ContentSize,
+			)
+		case original.ContentDigest != current.ContentDigest:
+			return fmt.Sprintf("path %q content changed", current.Path)
+		}
+	}
+	for path := range beforeByPath {
+		return fmt.Sprintf("path %q was removed", path)
+	}
+	return "snapshot digest changed without an entry-level difference"
 }
 
 func wrapError(operation string, err error) error {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
 	"os/exec"
@@ -1355,6 +1356,45 @@ func TestProfileStopsAfterActionTouchesActionWorkspace(t *testing.T) {
 	}
 	if actionCalls != 1 {
 		t.Fatalf("action calls = %d, want one", actionCalls)
+	}
+}
+
+func TestActionWorkspaceSnapshotDescribesMetadataAndContentChanges(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "sentinel.txt")
+	writeTestFile(t, path, "before\n")
+	tracked := []trackedWorktreeFile{{Path: "sentinel.txt", Mode: "100644"}}
+
+	before, err := actionWorkspaceSnapshot(workspace, tracked)
+	if err != nil {
+		t.Fatalf("snapshot before: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := info.ModTime().Add(time.Hour)
+	if err := os.Chtimes(path, changed, changed); err != nil {
+		t.Fatal(err)
+	}
+	afterMetadata, err := actionWorkspaceSnapshot(workspace, tracked)
+	if err != nil {
+		t.Fatalf("snapshot after metadata change: %v", err)
+	}
+	if detail := describeActionWorkspaceDifference(before, afterMetadata); !strings.Contains(detail, `path "sentinel.txt" mtime changed`) {
+		t.Fatalf("metadata difference = %q, want sentinel mtime", detail)
+	}
+
+	writeTestFile(t, path, "after!\n")
+	if err := os.Chtimes(path, changed, changed); err != nil {
+		t.Fatal(err)
+	}
+	afterContent, err := actionWorkspaceSnapshot(workspace, tracked)
+	if err != nil {
+		t.Fatalf("snapshot after content change: %v", err)
+	}
+	if detail := describeActionWorkspaceDifference(afterMetadata, afterContent); detail != `path "sentinel.txt" content changed` {
+		t.Fatalf("content difference = %q, want tracked content change", detail)
 	}
 }
 
@@ -2840,19 +2880,67 @@ func newRetryCleanupTempDir(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		var cleanupErr error
-		for range 20 {
-			cleanupErr = os.RemoveAll(directory)
-			if cleanupErr == nil {
-				if _, statErr := os.Lstat(directory); os.IsNotExist(statErr) {
-					return
-				}
-			}
-			time.Sleep(10 * time.Millisecond)
+		if cleanupErr := removeTestCacheDirectory(directory); cleanupErr != nil {
+			t.Errorf("remove test cache directory: %v", cleanupErr)
 		}
-		t.Errorf("remove test cache directory: %v", cleanupErr)
 	})
 	return directory
+}
+
+func removeTestCacheDirectory(directory string) error {
+	var cleanupErr error
+	for range 20 {
+		repairErr := filepath.WalkDir(directory, func(path string, entry fs.DirEntry, walkErr error) error { //nolint:gosec // directory is an exclusive test-owned MkdirTemp tree; symlinks are not followed
+			if os.IsNotExist(walkErr) {
+				return nil
+			}
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.Type()&os.ModeSymlink != 0 {
+				return nil
+			}
+			mode := os.FileMode(0o600)
+			if entry.IsDir() {
+				mode = 0o700
+			}
+			return os.Chmod(path, mode) //nolint:gosec // path is supplied by WalkDir beneath the exclusive test-owned tree
+		})
+		removeErr := os.RemoveAll(directory) //nolint:gosec // directory is created by newRetryCleanupTempDir for this test cleanup
+		if repairErr == nil && removeErr == nil {
+			if _, statErr := os.Lstat(directory); os.IsNotExist(statErr) { //nolint:gosec // directory is the test-owned cleanup root
+				return nil
+			}
+		}
+		cleanupErr = errors.Join(repairErr, removeErr)
+		time.Sleep(10 * time.Millisecond)
+	}
+	return cleanupErr
+}
+
+func TestRemoveTestCacheDirectoryRepairsReadOnlyModuleTree(t *testing.T) {
+	directory, err := os.MkdirTemp("", "ssm-verify-readonly-cache-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(directory, "cache", "go-mod", "example.invalid", "dependency@v1.0.0")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(nested, "dependency.go")
+	writeTestFile(t, file, "package dependency\n")
+	if err := os.Chmod(file, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(nested, 0o500); err != nil { //nolint:gosec // read-only directory mode is the adversarial test fixture
+		t.Fatal(err)
+	}
+	if err := removeTestCacheDirectory(directory); err != nil {
+		t.Fatalf("remove read-only module cache tree: %v", err)
+	}
+	if _, err := os.Lstat(directory); !os.IsNotExist(err) {
+		t.Fatalf("cache directory still exists: %v", err)
+	}
 }
 
 func writeTestFile(t *testing.T, path, contents string) {
