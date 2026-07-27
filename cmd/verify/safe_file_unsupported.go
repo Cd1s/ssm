@@ -14,3 +14,7 @@ func openRegularFileNoFollow(_, slashPath string) (*os.File, error) {
 func workspaceFileMode(os.FileMode) os.FileMode {
 	return 0o600
 }
+
+func workspaceGitMode(indexMode string, _ os.FileMode) string {
+	return indexMode
+}

@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"ssm/internal/privatepath"
 )
 
 func TestRegisterLoginPushPullRoundTrip(t *testing.T) {
@@ -152,14 +150,16 @@ func TestServerStoresPrivateFiles(t *testing.T) {
 
 	for _, path := range []string{
 		dir,
+		filepath.Join(dir, "users.json"),
 		filepath.Join(dir, "vaults"),
 	} {
-		if err := privatepath.VerifyDirectory(path); err != nil {
-			t.Fatalf("%s is not a private directory: %v", path, err)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", path, err)
 		}
-	}
-	if err := privatepath.VerifyFile(filepath.Join(dir, "users.json")); err != nil {
-		t.Fatalf("users file is not private: %v", err)
+		if info.Mode().Perm()&0077 != 0 {
+			t.Fatalf("%s mode = %o, want no group/other bits", path, info.Mode().Perm())
+		}
 	}
 
 	entries, err := os.ReadDir(filepath.Join(dir, "vaults"))
@@ -169,8 +169,12 @@ func TestServerStoresPrivateFiles(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("vault count = %d", len(entries))
 	}
-	if err := privatepath.VerifyFile(filepath.Join(dir, "vaults", entries[0].Name())); err != nil {
-		t.Fatalf("vault is not private: %v", err)
+	info, err := entries[0].Info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("vault mode = %o, want 600", info.Mode().Perm())
 	}
 	for _, root := range []string{dir, filepath.Join(dir, "vaults")} {
 		entries, err := os.ReadDir(root)

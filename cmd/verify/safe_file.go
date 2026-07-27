@@ -2,13 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -18,28 +18,32 @@ type trackedWorktreeFile struct {
 	Mode string
 }
 
-func validateTrackedWorktreePaths(repoRoot string, environment []string) error {
-	_, err := inspectTrackedWorktreeLayout(repoRoot, environment)
+func validateTrackedWorktreePaths(ctx context.Context, repoRoot string, environment []string) error {
+	_, err := inspectTrackedWorktreeLayout(ctx, repoRoot, environment)
 	return err
 }
 
-func inspectTrackedWorktreeLayout(repoRoot string, environment []string) ([]trackedWorktreeFile, error) {
+func inspectTrackedWorktreeLayout(
+	ctx context.Context,
+	repoRoot string,
+	environment []string,
+) ([]trackedWorktreeFile, error) {
+	git, err := newSourceGit(ctx, repoRoot, environment)
+	if err != nil {
+		return nil, err
+	}
 	for _, key := range []string{"core.sparseCheckout", "index.sparse"} {
-		command := exec.Command("git", "-C", repoRoot, "config", "--bool", "--get", key) //nolint:gosec // fixed read-only Git metadata argv
-		command.Env = environment
-		output, err := command.Output()
+		output, err := git.output("config", "--no-includes", "--bool", "--get", key)
 		if err == nil && strings.TrimSpace(string(output)) == "true" {
 			return nil, fmt.Errorf("unsupported sparse checkout/index layout: %s is enabled", key)
 		}
-		var exitErr *exec.ExitError
+		var exitErr interface{ ExitCode() int }
 		if err != nil && (!errors.As(err, &exitErr) || exitErr.ExitCode() != 1) {
 			return nil, fmt.Errorf("inspect sparse checkout/index setting %s: %w", key, err)
 		}
 	}
 
-	flagsCommand := exec.Command("git", "-C", repoRoot, "ls-files", "-v", "-z", "--") //nolint:gosec // fixed read-only Git metadata argv
-	flagsCommand.Env = environment
-	flags, err := flagsCommand.Output()
+	flags, err := git.output("ls-files", "-v", "-z", "--")
 	if err != nil {
 		return nil, fmt.Errorf("enumerate tracked index flags: %w", err)
 	}
@@ -58,9 +62,7 @@ func inspectTrackedWorktreeLayout(repoRoot string, environment []string) ([]trac
 		}
 	}
 
-	command := exec.Command("git", "-C", repoRoot, "ls-files", "--stage", "-z", "--") //nolint:gosec // fixed read-only Git metadata argv
-	command.Env = environment
-	output, err := command.Output()
+	output, err := git.output("ls-files", "--stage", "-z", "--")
 	if err != nil {
 		return nil, fmt.Errorf("enumerate tracked worktree index entries: %w", err)
 	}
@@ -123,11 +125,12 @@ func inspectTrackedWorktreeLayout(repoRoot string, environment []string) ([]trac
 }
 
 func materializeActionWorkspace(
+	ctx context.Context,
 	repoRoot string,
 	workspaceRoot string,
 	environment []string,
 ) ([]trackedWorktreeFile, error) {
-	files, err := inspectTrackedWorktreeLayout(repoRoot, environment)
+	files, err := inspectTrackedWorktreeLayout(ctx, repoRoot, environment)
 	if err != nil {
 		return nil, err
 	}

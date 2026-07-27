@@ -21,10 +21,12 @@ pretending to execute a foreign operating-system binary.
 
 The lint entry also owns its preparation as manifest data: the source
 repository working directory, `{temp}/lint.patch` output, required
-`v1.2.0` commit-resolving tag/ref, and exact
-`git diff --no-ext-diff --no-textconv --binary --full-index v1.2.0 --`
-argument vector. Missing or non-commit baselines fail as a prerequisite before
-lint executes.
+`v1.2.0` commit-resolving tag/ref, and the reviewed `lint-patch` builtin.
+That builtin builds verifier-controlled temporary object and index views,
+hashes safely opened tracked worktree files with `hash-object --no-filters`,
+and diffs two temporary trees. It never asks source-worktree clean/process
+filters to produce the lint patch. Missing or non-commit baselines fail as a
+prerequisite before lint executes.
 
 Runtime authority comes from the separate, manually reviewed policy in
 `cmd/verify/security_policy.go`. It duplicates the exact allowed builtin names,
@@ -162,7 +164,13 @@ creates or uploads a release, or writes release artifacts into the repository.
 Verification children receive no inherited publication credentials or user
 configuration that could supply publication authority. GitHub release
 publication remains explicit in `release.yml` and outside this verification
-driver.
+driver. That workflow defaults to `contents: read`; its credential-free
+preflight checkout runs the actual `go run ./cmd/verify release` profile.
+Builds depend on that preflight and use the same six exact names and
+`-buildvcs=false` flags. Only the final `publish` job has `contents: write`,
+and it depends on both preflight and build. Exact checksum inputs, release-note
+extraction, published files, permissions, and job dependencies are covered by
+semantic tests and a complete workflow golden.
 
 ## Prerequisites and runtime
 
@@ -173,8 +181,10 @@ Required prerequisites are listed in the manifest:
   `100644` or `100755` tracked files (tracked symlinks, gitlinks, unmerged
   stages, sparse `skip-worktree` state, missing paths, and nonregular paths
   fail with distinct layout diagnostics);
-- no sensitive repository-local Git credential, extra-header, SSH-command,
-  URL-rewrite, or push-URL key names;
+- source local/worktree Git configuration with no includes or executable
+  command authority: fsmonitor, clean/process/smudge filters, external
+  diff/textconv/merge commands, hooks paths, credential helpers/askpass,
+  SSH/proxy commands, extra headers, URL rewrites, and push URLs fail closed;
 - Go 1.25.12 and the gofmt executable from that same resolved toolchain;
 - the official golangci-lint 2.11.4 prebuilt;
 - the `v1.2.0` lint baseline tag/ref resolving to a commit for profiles that
@@ -195,7 +205,12 @@ would silently substitute index or HEAD content. The action workspace
 contains no `.git` entry, non-ignored untracked paths are rejected before
 copying, and ignored local files are never copied. Every command and builtin
 executes from that workspace, so repository-local checkout credentials and
-Git config are not visible to actions.
+Git config are not visible to actions. The created profile root is resolved,
+privacy-restricted, and rejected (with cleanup) if it is inside or aliases the
+source repository, including through symlinks or Windows reparse points.
+Action and action-prerequisite environments set an explicit Git discovery
+ceiling at the private profile root, so a workspace cannot discover any parent
+repository.
 
 A symlink or reparse point in any tracked path component, or a tracked leaf
 that is missing or not a regular file, fails the profile. Unix uses
@@ -233,6 +248,11 @@ non-ignored untracked names without reading their contents.
 
 Every verification subprocess, including Git metadata and prerequisite probes,
 receives a minimal explicit environment rather than the caller's environment.
+Every source-repository Git command goes through one hardened boundary. Before
+each capable operation it inspects common and linked-worktree configuration
+with `--no-includes`, rejects command-bearing authority, isolates system/global
+configuration, and disables optional locks, fsmonitor, hooks, credential
+prompting, and helpers as applicable.
 Each profile owns temporary HOME, XDG config/data/state/cache, temp, and linter
 cache directories. A dedicated reusable verifier-owned Go build/module/GOPATH
 cache lives outside the repository. Unix cache components are restricted and
@@ -289,12 +309,19 @@ deadlines with payloads larger than SSH channel buffering, rather than
 scheduler-sensitive 1–2 ms timing. It does not read the user's vault, master
 password, sync configuration, tokens, private keys, or decrypted inventory.
 Failure to remove any profile temporary directory makes the profile failed and
-nonzero.
+nonzero. The CLI derives its context from interrupt/termination signals and
+threads it through actions, prerequisites, Git probes, and snapshots. Each
+subprocess owns only its descendants: an isolated Unix process group or a
+Windows kill-on-close Job Object assigned before the suspended process is
+resumed. Cancellation and command completion terminate and wait for the owned
+tree before the final bounded repository/workspace snapshot and temporary
+directory cleanup.
 
 The supported six-platform release target table is owned by
 `internal/releaseasset`. Manifest asset builds, checksum verification, and the
-production updater selector consume that same table/name function; a direct
-parity test also compares every manifest output with the updater selector.
+production updater selector consume that same table/name function; direct
+parity tests compare every manifest output and release-workflow matrix,
+checksum list, and publication input with the updater selector.
 
 Focused tests execute representative production actions without recursively
 running a full profile inside the verifier's own test suite. The CI

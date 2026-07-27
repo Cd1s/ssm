@@ -137,8 +137,8 @@ func profilePrerequisites() []Prerequisite {
 		},
 		{
 			Kind:    "repository",
-			Name:    "no-sensitive-local-git-config",
-			Version: "credential-key-names",
+			Name:    "safe-local-git-configuration",
+			Version: "no-includes-or-executable-command-authority",
 		},
 		{
 			Kind:    "repository",
@@ -254,12 +254,10 @@ func lintCheck() Check {
 		Preparations: []Preparation{
 			{
 				ID:               "lint-patch",
-				Description:      "Prepare the tracked v1.2.0-to-worktree patch consumed by lint.",
+				Description:      "Prepare a no-filter v1.2.0-to-tracked-worktree patch consumed by lint.",
 				WorkingDirectory: "source_repository",
 				Output:           "{temp}/lint.patch",
-				Action: commandAction("git", []string{
-					"diff", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "v1.2.0", "--",
-				}, nil, ""),
+				Action:           Action{Kind: actionBuiltin, Name: "lint-patch"},
 			},
 		},
 		Action: commandAction("golangci-lint", []string{

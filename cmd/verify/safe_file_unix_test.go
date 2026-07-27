@@ -87,6 +87,7 @@ func TestTrackedFilePrerequisiteRejectsExternalSymlink(t *testing.T) {
 	replaceWithSymlink(t, filepath.Join(repo, "install.sh"), external)
 
 	state := checkPrerequisite(
+		context.Background(),
 		repo,
 		Prerequisite{Kind: "file", Name: "install.sh", Version: "tracked"},
 		newTestProcessEnvironment(t),
@@ -275,7 +276,12 @@ func TestActionWorkspacePreservesDirtyUnixExecutableBits(t *testing.T) {
 			}
 
 			workspace := filepath.Join(t.TempDir(), "action-workspace")
-			if _, err := materializeActionWorkspace(repo, workspace, newTestProcessEnvironment(t)); err != nil {
+			if _, err := materializeActionWorkspace(
+				context.Background(),
+				repo,
+				workspace,
+				newTestProcessEnvironment(t),
+			); err != nil {
 				t.Fatalf("materialize action workspace: %v", err)
 			}
 			info, err := os.Stat(filepath.Join(workspace, "sentinel.txt"))

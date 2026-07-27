@@ -172,17 +172,10 @@ func reviewedPreparationPolicy() map[string]Preparation {
 	return map[string]Preparation{
 		"lint-patch": {
 			ID:               "lint-patch",
-			Description:      "Prepare the tracked v1.2.0-to-worktree patch consumed by lint.",
+			Description:      "Prepare a no-filter v1.2.0-to-tracked-worktree patch consumed by lint.",
 			WorkingDirectory: "source_repository",
 			Output:           "{temp}/lint.patch",
-			Action: reviewedCommand(
-				"git",
-				[]string{
-					"diff", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "v1.2.0", "--",
-				},
-				nil,
-				"",
-			),
+			Action:           Action{Kind: actionBuiltin, Name: "lint-patch"},
 		},
 	}
 }

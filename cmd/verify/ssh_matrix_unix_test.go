@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,7 +21,7 @@ func TestSSHDExecutableAlternativeSelection(t *testing.T) {
 	t.Run("explicit override", func(t *testing.T) {
 		t.Setenv("SSHD", "/bin/true")
 		t.Setenv("PATH", "/usr/bin:/bin")
-		state := checkPrerequisite(".", prerequisite, newTestProcessEnvironment(t))
+		state := checkPrerequisite(context.Background(), ".", prerequisite, newTestProcessEnvironment(t))
 		if !state.available || state.detail != "/bin/true (SSHD override)" {
 			t.Fatalf("state = %+v, want selected explicit override", state)
 		}
@@ -40,7 +41,7 @@ func TestSSHDExecutableAlternativeSelection(t *testing.T) {
 	t.Run("invalid explicit override does not fall back", func(t *testing.T) {
 		t.Setenv("SSHD", filepath.Join(t.TempDir(), "missing-sshd"))
 		t.Setenv("PATH", "/usr/sbin:/usr/bin:/bin")
-		state := checkPrerequisite(".", prerequisite, newTestProcessEnvironment(t))
+		state := checkPrerequisite(context.Background(), ".", prerequisite, newTestProcessEnvironment(t))
 		if state.available || !strings.Contains(state.detail, "invalid SSHD override") {
 			t.Fatalf("state = %+v, want clear invalid-override failure", state)
 		}
@@ -71,7 +72,7 @@ func TestSSHDExecutableAlternativeSelection(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Setenv("PATH", bin)
-		state := checkPrerequisite(".", prerequisite, newTestProcessEnvironment(t))
+		state := checkPrerequisite(context.Background(), ".", prerequisite, newTestProcessEnvironment(t))
 		if !state.available || state.detail != candidate+" (PATH)" {
 			t.Fatalf("state = %+v, want selected PATH candidate", state)
 		}
@@ -90,7 +91,7 @@ func TestSSHDExecutableAlternativeSelection(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Setenv("PATH", t.TempDir())
-		state := checkPrerequisite(".", prerequisite, newTestProcessEnvironment(t))
+		state := checkPrerequisite(context.Background(), ".", prerequisite, newTestProcessEnvironment(t))
 		if !state.available || state.detail != "/usr/sbin/sshd (/usr/sbin fallback)" {
 			t.Fatalf("state = %+v, want selected /usr/sbin fallback", state)
 		}

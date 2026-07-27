@@ -25,8 +25,8 @@
         },
         {
           "kind": "repository",
-          "name": "no-sensitive-local-git-config",
-          "version": "credential-key-names"
+          "name": "safe-local-git-configuration",
+          "version": "no-includes-or-executable-command-authority"
         },
         {
           "kind": "repository",
@@ -131,8 +131,8 @@
         },
         {
           "kind": "repository",
-          "name": "no-sensitive-local-git-config",
-          "version": "credential-key-names"
+          "name": "safe-local-git-configuration",
+          "version": "no-includes-or-executable-command-authority"
         },
         {
           "kind": "repository",
@@ -171,23 +171,12 @@
           "preparations": [
             {
               "id": "lint-patch",
-              "description": "Prepare the tracked v1.2.0-to-worktree patch consumed by lint.",
+              "description": "Prepare a no-filter v1.2.0-to-tracked-worktree patch consumed by lint.",
               "working_directory": "source_repository",
               "output": "{temp}/lint.patch",
               "action": {
-                "kind": "command",
-                "command": {
-                  "executable": "git",
-                  "args": [
-                    "diff",
-                    "--no-ext-diff",
-                    "--no-textconv",
-                    "--binary",
-                    "--full-index",
-                    "v1.2.0",
-                    "--"
-                  ]
-                }
+                "kind": "builtin",
+                "name": "lint-patch"
               }
             }
           ],
@@ -675,8 +664,8 @@
         },
         {
           "kind": "repository",
-          "name": "no-sensitive-local-git-config",
-          "version": "credential-key-names"
+          "name": "safe-local-git-configuration",
+          "version": "no-includes-or-executable-command-authority"
         },
         {
           "kind": "repository",
@@ -715,23 +704,12 @@
           "preparations": [
             {
               "id": "lint-patch",
-              "description": "Prepare the tracked v1.2.0-to-worktree patch consumed by lint.",
+              "description": "Prepare a no-filter v1.2.0-to-tracked-worktree patch consumed by lint.",
               "working_directory": "source_repository",
               "output": "{temp}/lint.patch",
               "action": {
-                "kind": "command",
-                "command": {
-                  "executable": "git",
-                  "args": [
-                    "diff",
-                    "--no-ext-diff",
-                    "--no-textconv",
-                    "--binary",
-                    "--full-index",
-                    "v1.2.0",
-                    "--"
-                  ]
-                }
+                "kind": "builtin",
+                "name": "lint-patch"
               }
             }
           ],

@@ -5,9 +5,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 )
 
 func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	repoRoot, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "verify: determine repository root: %v\n", err)
@@ -21,7 +26,7 @@ func main() {
 		actions:       executeAction,
 		removeAll:     os.RemoveAll,
 	}
-	if err := runCLI(context.Background(), os.Args[1:], os.Stdout, os.Stderr, deps); err != nil {
+	if err := runCLI(ctx, os.Args[1:], os.Stdout, os.Stderr, deps); err != nil {
 		fmt.Fprintf(os.Stderr, "verify: %v\n", err)
 		os.Exit(1)
 	}

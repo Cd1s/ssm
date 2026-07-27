@@ -70,3 +70,10 @@ func workspaceFileMode(sourceMode os.FileMode) os.FileMode {
 	}
 	return 0o600
 }
+
+func workspaceGitMode(_ string, sourceMode os.FileMode) string {
+	if sourceMode.Perm()&0o111 != 0 {
+		return "100755"
+	}
+	return "100644"
+}

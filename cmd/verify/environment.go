@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -191,6 +192,68 @@ func prepareVerifierCache(repoRoot, requestedRoot string) (verifierCache, error)
 		}
 	}
 	return cache, nil
+}
+
+func createPrivateProfileTempDirectory(
+	repoRoot string,
+	pattern string,
+	removeAll func(string) error,
+) (directory string, returnErr error) {
+	directory, err := os.MkdirTemp("", pattern)
+	if err != nil {
+		return "", fmt.Errorf("create profile temporary directory: %w", err)
+	}
+	createdDirectory := directory
+	accepted := false
+	defer func() {
+		if accepted {
+			return
+		}
+		if cleanupErr := removeAll(createdDirectory); cleanupErr != nil {
+			returnErr = errors.Join(returnErr, fmt.Errorf("remove rejected profile temporary directory: %w", cleanupErr))
+		}
+		directory = ""
+	}()
+
+	if err := privatepath.RestrictDirectory(directory); err != nil {
+		return "", fmt.Errorf("restrict profile temporary directory: %w", err)
+	}
+	if err := privatepath.VerifyDirectory(directory); err != nil {
+		return "", fmt.Errorf("verify profile temporary directory privacy: %w", err)
+	}
+	repository, err := filepath.Abs(repoRoot)
+	if err != nil {
+		return "", fmt.Errorf("make source repository path absolute: %w", err)
+	}
+	repository, err = filepath.EvalSymlinks(repository)
+	if err != nil {
+		return "", fmt.Errorf("resolve source repository path: %w", err)
+	}
+	resolvedDirectory, err := filepath.EvalSymlinks(directory)
+	if err != nil {
+		return "", fmt.Errorf("resolve profile temporary directory: %w", err)
+	}
+	inside, err := pathInsideOrEqual(repository, resolvedDirectory)
+	if err != nil {
+		return "", fmt.Errorf("compare source repository and profile temporary directory: %w", err)
+	}
+	if inside {
+		return "", fmt.Errorf("profile temporary directory must be outside source repository")
+	}
+	accepted = true
+	return directory, nil
+}
+
+func pathInsideOrEqual(parent, candidate string) (bool, error) {
+	if !samePathVolume(filepath.VolumeName(parent), filepath.VolumeName(candidate)) {
+		return false, nil
+	}
+	relative, err := filepath.Rel(parent, candidate)
+	if err != nil {
+		return false, err
+	}
+	return relative == "." ||
+		(relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))), nil
 }
 
 func samePathVolume(left, right string) bool {

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"ssm/internal/privatepath"
+	"ssm/internal/releaseasset"
 	"ssm/internal/update"
 )
 
@@ -94,7 +95,7 @@ func TestFailuresNeverReportPassed(t *testing.T) {
 			profile:  "fast",
 			deps: func(t *testing.T) runtimeDependencies {
 				deps := passingTestDependencies(t, newCleanTestRepository(t))
-				deps.prerequisites = func(string, Prerequisite, []string) prerequisiteState {
+				deps.prerequisites = func(context.Context, string, Prerequisite, []string) prerequisiteState {
 					return prerequisiteState{detail: "not available"}
 				}
 				return deps
@@ -198,7 +199,7 @@ func TestPrerequisitesReportAvailabilityAndVersion(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got := checkPrerequisite(repo, test.prerequisite, environment)
+			got := checkPrerequisite(context.Background(), repo, test.prerequisite, environment)
 			if got.available != test.want {
 				t.Fatalf("available = %t (%s), want %t", got.available, got.detail, test.want)
 			}
@@ -238,6 +239,7 @@ func TestPrerequisitesReportAvailabilityAndVersion(t *testing.T) {
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	state := checkPrerequisite(
+		context.Background(),
 		repo,
 		Prerequisite{Kind: "tool", Name: "gofmt", Version: "go1.25.12"},
 		newTestProcessEnvironment(t),
@@ -289,7 +291,7 @@ func TestSSHMatrixIsRequiredInOfficialLinuxCI(t *testing.T) {
 			t.Setenv("RUNNER_OS", "Linux")
 		}
 		deps := passingTestDependencies(t, newCleanTestRepository(t))
-		deps.prerequisites = func(_ string, prerequisite Prerequisite, _ []string) prerequisiteState {
+		deps.prerequisites = func(_ context.Context, _ string, prerequisite Prerequisite, _ []string) prerequisiteState {
 			if reflect.DeepEqual(prerequisite, missing) {
 				return prerequisiteState{detail: "not found in test context"}
 			}
@@ -358,7 +360,7 @@ func TestRaceActivationIsTruthfulByNativeHost(t *testing.T) {
 		})
 	}
 
-	unsupported := raceCapabilityForHost("windows", "arm64", newTestProcessEnvironment(t))
+	unsupported := raceCapabilityForHost(context.Background(), "windows", "arm64", newTestProcessEnvironment(t))
 	if unsupported.available || !strings.Contains(unsupported.detail, "unsupported") {
 		t.Fatalf("windows/arm64 race state = %+v, want truthful unsupported result", unsupported)
 	}
@@ -709,6 +711,79 @@ func TestCIWorkflowMatchesReviewedGoldenAndHasReadOnlyCredentialFreeJobs(t *test
 	}
 }
 
+func TestReleaseWorkflowUsesCredentialFreeVerifierPreflightAndManifestParity(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(data)
+	for description, required := range map[string]string{
+		"read-only workflow default": "permissions:\n  contents: read\n",
+		"read-only preflight job":    "  preflight:\n    permissions:\n      contents: read\n",
+		"credential-free checkout":   "          persist-credentials: false\n",
+		"complete history":           "          fetch-depth: 0\n",
+		"pinned Go toolchain":        "          go-version: \"1.25.12\"\n",
+		"actual release preflight":   "        run: go run ./cmd/verify release\n",
+		"build preflight dependency": "  build:\n    needs: preflight\n",
+		"isolated publication job":   "  publish:\n    permissions:\n      contents: write\n    needs: [preflight, build]\n",
+		"no-filter release build":    `go build -buildvcs=false -ldflags="-s -w -X main.version=$VERSION"`,
+		"nonblank release notes":     "grep -q '[^[:space:]]' release-body.md",
+	} {
+		if !strings.Contains(workflow, required) {
+			t.Errorf("release workflow lacks %s surface %q", description, required)
+		}
+	}
+	if got := strings.Count(workflow, "contents: write"); got != 1 {
+		t.Errorf("write-authorized permission count = %d, want one explicit publication job", got)
+	}
+	if got := strings.Count(workflow, "persist-credentials: false"); got != 3 {
+		t.Errorf("credential-free checkout count = %d, want preflight, build, and publish", got)
+	}
+
+	var gotAssets []string
+	for _, line := range strings.Split(workflow, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "asset: ") {
+			gotAssets = append(gotAssets, strings.TrimPrefix(line, "asset: "))
+		}
+	}
+	var wantAssets []string
+	for _, target := range releaseasset.SupportedTargets() {
+		wantAssets = append(wantAssets, releaseasset.Name(target.GOOS, target.GOARCH))
+	}
+	if !reflect.DeepEqual(gotAssets, wantAssets) {
+		t.Errorf("release workflow assets = %v, want manifest/updater assets %v", gotAssets, wantAssets)
+	}
+	checksumCommand := "sha256sum " + strings.Join(append(append([]string(nil), wantAssets...), "install.sh"), " ") + " > checksums.txt"
+	if !strings.Contains(workflow, checksumCommand) {
+		t.Errorf("release checksum inputs do not exactly match manifest assets and installer: want %q", checksumCommand)
+	}
+	for _, asset := range wantAssets {
+		if got := strings.Count(workflow, "\n            "+asset+"\n"); got != 1 {
+			t.Errorf("published files entry count for %s = %d, want 1", asset, got)
+		}
+	}
+	for _, wildcard := range []string{"ssm-linux-*", "ssm-darwin-*", "ssm-windows-*"} {
+		if strings.Contains(workflow, wildcard) {
+			t.Errorf("release workflow retains drift-prone wildcard %q", wildcard)
+		}
+	}
+}
+
+func TestReleaseWorkflowMatchesReviewedCompleteGolden(t *testing.T) {
+	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	golden, err := os.ReadFile(filepath.Join("testdata", "release.yml"))
+	if err != nil {
+		t.Fatalf("read checked-in release workflow golden: %v", err)
+	}
+	if !bytes.Equal(workflow, golden) {
+		t.Fatal("release workflow differs from the reviewed complete golden")
+	}
+}
+
 func TestOfficialCIInstallsAndAssertsSSHPrerequisites(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
 	if err != nil {
@@ -1042,12 +1117,10 @@ func TestManifestOwnsCleanTreeAndLintPreparation(t *testing.T) {
 	}
 	wantPreparation := Preparation{
 		ID:               "lint-patch",
-		Description:      "Prepare the tracked v1.2.0-to-worktree patch consumed by lint.",
+		Description:      "Prepare a no-filter v1.2.0-to-tracked-worktree patch consumed by lint.",
 		WorkingDirectory: "source_repository",
 		Output:           "{temp}/lint.patch",
-		Action: commandAction("git", []string{
-			"diff", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "v1.2.0", "--",
-		}, nil, ""),
+		Action:           Action{Kind: actionBuiltin, Name: "lint-patch"},
 	}
 	if got := lint.Preparations; !reflect.DeepEqual(got, []Preparation{wantPreparation}) {
 		t.Fatalf("lint preparations = %#v, want %#v", got, []Preparation{wantPreparation})
@@ -1058,7 +1131,7 @@ func TestLintBaselineRefPrerequisiteFailsClosedPrecisely(t *testing.T) {
 	repo := newCleanTestRepository(t)
 	gitOutput(t, repo, "tag", "-d", "v1.2.0")
 	prerequisite := Prerequisite{Kind: "git_ref", Name: "v1.2.0", Version: "commit"}
-	state := checkPrerequisite(repo, prerequisite, newTestProcessEnvironment(t))
+	state := checkPrerequisite(context.Background(), repo, prerequisite, newTestProcessEnvironment(t))
 	if state.available {
 		t.Fatalf("missing lint baseline unexpectedly available: %+v", state)
 	}
@@ -1335,7 +1408,7 @@ func TestProfilesAreNonMutating(t *testing.T) {
 				repoRoot: repo,
 				stdout:   io.Discard,
 				stderr:   io.Discard,
-				prerequisites: func(string, Prerequisite, []string) prerequisiteState {
+				prerequisites: func(context.Context, string, Prerequisite, []string) prerequisiteState {
 					return prerequisiteState{available: true}
 				},
 				actions: func(_ context.Context, action Action, _ actionContext) checkResult {
@@ -1369,7 +1442,7 @@ func TestProfilesAreNonMutating(t *testing.T) {
 			repoRoot: repo,
 			stdout:   io.Discard,
 			stderr:   io.Discard,
-			prerequisites: func(string, Prerequisite, []string) prerequisiteState {
+			prerequisites: func(context.Context, string, Prerequisite, []string) prerequisiteState {
 				return prerequisiteState{available: true}
 			},
 			actions: func(_ context.Context, _ Action, _ actionContext) checkResult {
@@ -1387,7 +1460,7 @@ func TestProfilesAreNonMutating(t *testing.T) {
 
 	t.Run("representative real actions", func(t *testing.T) {
 		repo := newGoTestRepository(t)
-		before, err := repositorySnapshot(repo)
+		before, err := repositorySnapshot(context.Background(), repo)
 		if err != nil {
 			t.Fatalf("snapshot before: %v", err)
 		}
@@ -1395,7 +1468,7 @@ func TestProfilesAreNonMutating(t *testing.T) {
 			repoRoot: repo,
 			stdout:   io.Discard,
 			stderr:   io.Discard,
-			prerequisites: func(string, Prerequisite, []string) prerequisiteState {
+			prerequisites: func(context.Context, string, Prerequisite, []string) prerequisiteState {
 				return prerequisiteState{available: true}
 			},
 			actions: executeAction,
@@ -1407,7 +1480,7 @@ func TestProfilesAreNonMutating(t *testing.T) {
 		if result.Status != statusPassed {
 			t.Fatalf("real fast status = %q, want %q", result.Status, statusPassed)
 		}
-		after, err := repositorySnapshot(repo)
+		after, err := repositorySnapshot(context.Background(), repo)
 		if err != nil {
 			t.Fatalf("snapshot after: %v", err)
 		}
@@ -1764,12 +1837,12 @@ func TestRepositoryModulePrerequisitePopulatesCacheForOfflineReuse(t *testing.T)
 	environment = replaceEnvironmentValue(environment, "GOPROXY", proxyURL)
 	environment = replaceEnvironmentValue(environment, "GOSUMDB", "off")
 	prerequisite := repositoryModulesPrerequisite()
-	if state := checkPrerequisite(repo, prerequisite, environment); !state.available {
+	if state := checkPrerequisite(context.Background(), repo, prerequisite, environment); !state.available {
 		t.Fatalf("populate repository module cache: %s", state.detail)
 	}
 
 	offlineEnvironment := replaceEnvironmentValue(environment, "GOPROXY", "off")
-	if state := checkPrerequisite(repo, prerequisite, offlineEnvironment); !state.available {
+	if state := checkPrerequisite(context.Background(), repo, prerequisite, offlineEnvironment); !state.available {
 		t.Fatalf("warm repository module cache failed offline: %s", state.detail)
 	}
 
@@ -1783,7 +1856,7 @@ func TestRepositoryModulePrerequisitePopulatesCacheForOfflineReuse(t *testing.T)
 	}
 	coldEnvironment = replaceEnvironmentValue(coldEnvironment, "GOPROXY", "off")
 	coldEnvironment = replaceEnvironmentValue(coldEnvironment, "GOSUMDB", "off")
-	if state := checkPrerequisite(repo, prerequisite, coldEnvironment); state.available ||
+	if state := checkPrerequisite(context.Background(), repo, prerequisite, coldEnvironment); state.available ||
 		!strings.Contains(state.detail, "go mod download failed") {
 		t.Fatalf("cold offline module state = %+v, want prerequisite failure", state)
 	}
@@ -1884,7 +1957,7 @@ func TestRepresentativeRealCIActionsAreNonMutating(t *testing.T) {
 		unitCheck(),
 	})
 
-	before, err := repositorySnapshot(repo)
+	before, err := repositorySnapshot(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("snapshot before representative CI actions: %v", err)
 	}
@@ -1892,7 +1965,7 @@ func TestRepresentativeRealCIActionsAreNonMutating(t *testing.T) {
 		repoRoot: repo,
 		stdout:   io.Discard,
 		stderr:   io.Discard,
-		prerequisites: func(string, Prerequisite, []string) prerequisiteState {
+		prerequisites: func(context.Context, string, Prerequisite, []string) prerequisiteState {
 			return prerequisiteState{available: true}
 		},
 		actions: executeAction,
@@ -1903,7 +1976,7 @@ func TestRepresentativeRealCIActionsAreNonMutating(t *testing.T) {
 	if result.Status != statusPassed {
 		t.Fatalf("representative CI status = %q, want %q", result.Status, statusPassed)
 	}
-	after, err := repositorySnapshot(repo)
+	after, err := repositorySnapshot(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("snapshot after representative CI actions: %v", err)
 	}
@@ -2040,7 +2113,7 @@ func TestChildEnvironmentIsIsolated(t *testing.T) {
 		repoRoot: repo,
 		stdout:   io.Discard,
 		stderr:   io.Discard,
-		prerequisites: func(string, Prerequisite, []string) prerequisiteState {
+		prerequisites: func(context.Context, string, Prerequisite, []string) prerequisiteState {
 			return prerequisiteState{available: true}
 		},
 		actions: executeAction,
@@ -2128,7 +2201,7 @@ func TestRepresentativeRealReleaseActionsAreNonMutating(t *testing.T) {
 	}
 	setProfileChecks(t, &manifest, "release", representative)
 
-	before, err := repositorySnapshot(repo)
+	before, err := repositorySnapshot(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("snapshot before representative release actions: %v", err)
 	}
@@ -2136,7 +2209,7 @@ func TestRepresentativeRealReleaseActionsAreNonMutating(t *testing.T) {
 		repoRoot: repo,
 		stdout:   io.Discard,
 		stderr:   io.Discard,
-		prerequisites: func(string, Prerequisite, []string) prerequisiteState {
+		prerequisites: func(context.Context, string, Prerequisite, []string) prerequisiteState {
 			return prerequisiteState{available: true}
 		},
 		actions: executeAction,
@@ -2147,7 +2220,7 @@ func TestRepresentativeRealReleaseActionsAreNonMutating(t *testing.T) {
 	if result.Status != statusPreflightPassed {
 		t.Fatalf("representative release status = %q, want %q", result.Status, statusPreflightPassed)
 	}
-	after, err := repositorySnapshot(repo)
+	after, err := repositorySnapshot(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("snapshot after representative release actions: %v", err)
 	}
@@ -2182,12 +2255,12 @@ func TestRepositorySnapshotUsesUntrackedNamesOnly(t *testing.T) {
 	repo := newCleanTestRepository(t)
 	path := filepath.Join(repo, "untracked.txt")
 	writeTestFile(t, path, "first secret value\n")
-	before, err := repositorySnapshot(repo)
+	before, err := repositorySnapshot(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("snapshot before: %v", err)
 	}
 	writeTestFile(t, path, "different secret value with the same path\n")
-	after, err := repositorySnapshot(repo)
+	after, err := repositorySnapshot(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("snapshot after: %v", err)
 	}
@@ -2210,7 +2283,7 @@ func TestRepositorySnapshotIgnoresUnreadableSecretLikeFiles(t *testing.T) {
 	}
 	t.Cleanup(restore)
 
-	if _, err := repositorySnapshot(repo); err != nil {
+	if _, err := repositorySnapshot(context.Background(), repo); err != nil {
 		t.Fatalf("snapshot opened or otherwise depended on ignored secret-like file: %v", err)
 	}
 }
@@ -2309,12 +2382,12 @@ func TestRepositorySnapshotDetectsEveryMutationClass(t *testing.T) {
 			if test.before != nil {
 				test.before(t, repo)
 			}
-			before, err := repositorySnapshot(repo)
+			before, err := repositorySnapshot(context.Background(), repo)
 			if err != nil {
 				t.Fatalf("snapshot before: %v", err)
 			}
 			test.mutate(t, repo)
-			after, err := repositorySnapshot(repo)
+			after, err := repositorySnapshot(context.Background(), repo)
 			if err != nil {
 				t.Fatalf("snapshot after: %v", err)
 			}
@@ -2327,7 +2400,7 @@ func TestRepositorySnapshotDetectsEveryMutationClass(t *testing.T) {
 
 func TestRepositorySnapshotDetectsFsmonitorCleanState(t *testing.T) {
 	repo := newCleanTestRepository(t)
-	before, err := repositorySnapshot(repo)
+	before, err := repositorySnapshot(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("snapshot before: %v", err)
 	}
@@ -2340,7 +2413,7 @@ func TestRepositorySnapshotDetectsFsmonitorCleanState(t *testing.T) {
 	if !strings.HasPrefix(flagged, "h ") {
 		t.Skipf("Git did not retain fsmonitor-valid state: %q", flagged)
 	}
-	after, err := repositorySnapshot(repo)
+	after, err := repositorySnapshot(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("snapshot after: %v", err)
 	}
@@ -2355,7 +2428,7 @@ func TestRepositorySnapshotDetectsResolveUndoState(t *testing.T) {
 	gitOutput(t, repo, "add", "sentinel.txt")
 	gitOutput(t, repo, "commit", "--quiet", "-m", "resolved baseline")
 
-	before, err := repositorySnapshot(repo)
+	before, err := repositorySnapshot(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("snapshot before: %v", err)
 	}
@@ -2394,7 +2467,7 @@ func TestRepositorySnapshotDetectsResolveUndoState(t *testing.T) {
 		t.Fatalf("resolve-undo fixture changed canonical stage-0 content: %q", got)
 	}
 
-	after, err := repositorySnapshot(repo)
+	after, err := repositorySnapshot(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("snapshot after: %v", err)
 	}
@@ -2624,7 +2697,7 @@ func passingTestDependencies(t *testing.T, repo string) runtimeDependencies {
 		repoRoot: repo,
 		stdout:   io.Discard,
 		stderr:   io.Discard,
-		prerequisites: func(string, Prerequisite, []string) prerequisiteState {
+		prerequisites: func(context.Context, string, Prerequisite, []string) prerequisiteState {
 			return prerequisiteState{available: true}
 		},
 		actions: func(context.Context, Action, actionContext) checkResult {

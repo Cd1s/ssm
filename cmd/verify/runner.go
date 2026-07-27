@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"ssm/internal/releaseasset"
 )
@@ -48,6 +49,7 @@ type checkResult struct {
 	ID     string `json:"id,omitempty"`
 	Status string `json:"status"`
 	Detail string `json:"detail,omitempty"`
+	Err    error  `json:"-"`
 }
 
 type profileResult struct {
@@ -82,14 +84,14 @@ type runtimeDependencies struct {
 	cacheRoot     string
 	stdout        io.Writer
 	stderr        io.Writer
-	prerequisites func(string, Prerequisite, []string) prerequisiteState
+	prerequisites func(context.Context, string, Prerequisite, []string) prerequisiteState
 	actions       func(context.Context, Action, actionContext) checkResult
 	removeAll     func(string) error
 }
 
 func executeCommand(ctx context.Context, specification Command, actionCtx actionContext) checkResult {
 	if strings.Contains(specification.Executable, "{goroot}") && actionCtx.GoRoot == "" {
-		goRoot, err := goToolchainRoot(actionCtx.Environment)
+		goRoot, err := goToolchainRoot(ctx, actionCtx.Environment)
 		if err != nil {
 			return checkResult{Status: statusFailed, Detail: err.Error()}
 		}
@@ -103,7 +105,7 @@ func executeCommand(ctx context.Context, specification Command, actionCtx action
 	if len(actionCtx.Environment) == 0 {
 		return checkResult{Status: statusFailed, Detail: "isolated child environment is required"}
 	}
-	command := exec.CommandContext(ctx, executable, args...) //nolint:gosec // executable and argv come only from the validated checked-in manifest
+	command := exec.Command(executable, args...) //nolint:gosec // executable and argv come only from the validated checked-in manifest
 	command.Dir = actionCtx.RepoRoot
 	command.Env = append([]string(nil), actionCtx.Environment...)
 	for _, environment := range specification.Env {
@@ -121,8 +123,8 @@ func executeCommand(ctx context.Context, specification Command, actionCtx action
 	var stdout bytes.Buffer
 	command.Stdout = io.MultiWriter(stdoutWriter, &stdout)
 	command.Stderr = stderrWriter
-	if err := command.Run(); err != nil {
-		return checkResult{Status: statusFailed, Detail: err.Error()}
+	if err := runOwnedCommand(ctx, command); err != nil {
+		return checkResult{Status: statusFailed, Detail: err.Error(), Err: err}
 	}
 	if specification.Expect == "stdout_empty" && strings.TrimSpace(stdout.String()) != "" {
 		return checkResult{Status: statusFailed, Detail: "command produced output; repository is not formatted"}
@@ -431,13 +433,17 @@ func executeProfile(ctx context.Context, manifest Manifest, profileName string, 
 		return result, errors.New("action executor is required")
 	}
 
-	tempDir, err := os.MkdirTemp("", "ssm-verify-"+profileName+"-*")
-	if err != nil {
-		return result, fmt.Errorf("create profile temporary directory: %w", err)
-	}
 	removeAll := deps.removeAll
 	if removeAll == nil {
 		removeAll = os.RemoveAll
+	}
+	tempDir, err := createPrivateProfileTempDirectory(
+		deps.repoRoot,
+		"ssm-verify-"+profileName+"-*",
+		removeAll,
+	)
+	if err != nil {
+		return result, err
 	}
 	defer func() {
 		if cleanupErr := removeAll(tempDir); cleanupErr != nil {
@@ -463,7 +469,7 @@ func executeProfile(ctx context.Context, manifest Manifest, profileName string, 
 		if state, ok := prerequisiteResults[key]; ok {
 			return state
 		}
-		state := deps.prerequisites(root, prerequisite, processEnvironment)
+		state := deps.prerequisites(ctx, root, prerequisite, processEnvironment)
 		prerequisiteResults[key] = state
 		return state
 	}
@@ -474,10 +480,10 @@ func executeProfile(ctx context.Context, manifest Manifest, profileName string, 
 		}
 	}
 
-	if err := validateTrackedWorktreePaths(deps.repoRoot, processEnvironment); err != nil {
+	if err := validateTrackedWorktreePaths(ctx, deps.repoRoot, processEnvironment); err != nil {
 		return result, err
 	}
-	before, untracked, err := captureRepositorySnapshot(deps.repoRoot, processEnvironment)
+	before, untracked, err := captureRepositorySnapshot(ctx, deps.repoRoot, processEnvironment)
 	if err != nil {
 		return result, err
 	}
@@ -488,7 +494,7 @@ func executeProfile(ctx context.Context, manifest Manifest, profileName string, 
 		)
 	}
 	workspaceRoot := filepath.Join(tempDir, "action-workspace")
-	trackedFiles, err := materializeActionWorkspace(deps.repoRoot, workspaceRoot, processEnvironment)
+	trackedFiles, err := materializeActionWorkspace(ctx, deps.repoRoot, workspaceRoot, processEnvironment)
 	if err != nil {
 		return result, fmt.Errorf("materialize private action workspace: %w", err)
 	}
@@ -496,11 +502,20 @@ func executeProfile(ctx context.Context, manifest Manifest, profileName string, 
 	if err != nil {
 		return result, err
 	}
-	validateGuardedState := func() error {
-		if _, err := inspectTrackedWorktreeLayout(deps.repoRoot, processEnvironment); err != nil {
+	actionEnvironment := append(
+		append([]string(nil), processEnvironment...),
+		"GIT_CEILING_DIRECTORIES="+tempDir,
+		"GIT_DISCOVERY_ACROSS_FILESYSTEM=0",
+	)
+	validateGuardedState := func(validationContext context.Context) error {
+		if _, err := inspectTrackedWorktreeLayout(validationContext, deps.repoRoot, processEnvironment); err != nil {
 			return err
 		}
-		originalNow, err := repositorySnapshotWithEnvironment(deps.repoRoot, processEnvironment)
+		originalNow, err := repositorySnapshotWithEnvironment(
+			validationContext,
+			deps.repoRoot,
+			processEnvironment,
+		)
 		if err != nil {
 			return err
 		}
@@ -517,7 +532,9 @@ func executeProfile(ctx context.Context, manifest Manifest, profileName string, 
 		return nil
 	}
 	defer func() {
-		if stateErr := validateGuardedState(); stateErr != nil {
+		cleanupContext, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		defer cancelCleanup()
+		if stateErr := validateGuardedState(cleanupContext); stateErr != nil {
 			result.Status = statusFailed
 			returnErr = errors.Join(returnErr, stateErr)
 		}
@@ -529,16 +546,24 @@ func executeProfile(ctx context.Context, manifest Manifest, profileName string, 
 
 	version := ""
 	for _, check := range profile.Checks {
-		if err := validateGuardedState(); err != nil {
+		if err := validateGuardedState(ctx); err != nil {
 			result.Status = statusFailed
 			return result, err
 		}
 		missing := unavailablePrerequisites(check.Prerequisites, func(prerequisite Prerequisite) prerequisiteState {
 			root := workspaceRoot
+			environment := actionEnvironment
 			if prerequisite.Kind == "file" || prerequisite.Kind == "git_ref" {
 				root = deps.repoRoot
+				environment = processEnvironment
 			}
-			return checkPrerequisiteOnce(root, prerequisite)
+			key := root + "\x00" + fmt.Sprintf("%#v", prerequisite)
+			if state, ok := prerequisiteResults[key]; ok {
+				return state
+			}
+			state := deps.prerequisites(ctx, root, prerequisite, environment)
+			prerequisiteResults[key] = state
+			return state
 		})
 		if len(missing) > 0 {
 			detail := "missing prerequisites: " + strings.Join(missing, ", ")
@@ -551,7 +576,7 @@ func executeProfile(ctx context.Context, manifest Manifest, profileName string, 
 			result.Status = statusCompletedUnavailable
 			continue
 		}
-		if err := validateGuardedState(); err != nil {
+		if err := validateGuardedState(ctx); err != nil {
 			result.Status = statusFailed
 			return result, err
 		}
@@ -560,14 +585,16 @@ func executeProfile(ctx context.Context, manifest Manifest, profileName string, 
 				ctx,
 				preparation,
 				deps.repoRoot,
+				workspaceRoot,
 				tempDir,
+				trackedFiles,
 				processEnvironment,
 				deps.stderr,
 			); err != nil {
 				result.Status = statusFailed
 				return result, fmt.Errorf("prepare check %s with %s: %w", check.ID, preparation.ID, err)
 			}
-			if err := validateGuardedState(); err != nil {
+			if err := validateGuardedState(ctx); err != nil {
 				result.Status = statusFailed
 				return result, err
 			}
@@ -577,13 +604,13 @@ func executeProfile(ctx context.Context, manifest Manifest, profileName string, 
 			RepoRoot:    workspaceRoot,
 			TempDir:     tempDir,
 			Version:     version,
-			Environment: processEnvironment,
+			Environment: actionEnvironment,
 			Stdout:      deps.stdout,
 			Stderr:      deps.stderr,
 		})
 		checkResult.ID = check.ID
 		result.Checks = append(result.Checks, checkResult)
-		if err := validateGuardedState(); err != nil {
+		if err := validateGuardedState(ctx); err != nil {
 			result.Status = statusFailed
 			return result, err
 		}
@@ -604,6 +631,9 @@ func executeProfile(ctx context.Context, manifest Manifest, profileName string, 
 			result.Status = statusCompletedUnavailable
 		default:
 			result.Status = statusFailed
+			if checkResult.Err != nil {
+				return result, fmt.Errorf("check %s failed: %w", check.ID, checkResult.Err)
+			}
 			return result, fmt.Errorf("check %s failed: %s", check.ID, checkResult.Detail)
 		}
 	}
@@ -653,25 +683,30 @@ func unavailablePrerequisites(
 	return unavailable
 }
 
-func checkPrerequisite(repoRoot string, prerequisite Prerequisite, environment []string) prerequisiteState {
+func checkPrerequisite(
+	ctx context.Context,
+	repoRoot string,
+	prerequisite Prerequisite,
+	environment []string,
+) prerequisiteState {
 	switch prerequisite.Kind {
 	case "repository":
 		switch {
 		case prerequisite.Name == "fully-populated-regular-tracked-worktree" &&
 			prerequisite.Version == "stage-0-modes-100644-or-100755-no-sparse":
-			if _, err := inspectTrackedWorktreeLayout(repoRoot, environment); err != nil {
+			if _, err := inspectTrackedWorktreeLayout(ctx, repoRoot, environment); err != nil {
 				return prerequisiteState{detail: err.Error()}
 			}
 			return prerequisiteState{available: true, detail: prerequisite.Version}
-		case prerequisite.Name == "no-sensitive-local-git-config" &&
-			prerequisite.Version == "credential-key-names":
-			if err := rejectSensitiveLocalGitConfiguration(repoRoot, environment); err != nil {
+		case prerequisite.Name == "safe-local-git-configuration" &&
+			prerequisite.Version == "no-includes-or-executable-command-authority":
+			if err := rejectSensitiveLocalGitConfiguration(ctx, repoRoot, environment); err != nil {
 				return prerequisiteState{detail: err.Error()}
 			}
 			return prerequisiteState{available: true, detail: prerequisite.Version}
 		case prerequisite.Name == "no-nonignored-untracked-paths" &&
 			prerequisite.Version == "git-ls-files-others-exclude-standard-z":
-			untracked, err := nonIgnoredUntrackedPaths(repoRoot, environment)
+			untracked, err := nonIgnoredUntrackedPaths(ctx, repoRoot, environment)
 			if err != nil {
 				return prerequisiteState{detail: err.Error()}
 			}
@@ -689,14 +724,15 @@ func checkPrerequisite(repoRoot string, prerequisite Prerequisite, environment [
 		if prerequisite.Name != "v1.2.0" || prerequisite.Version != "commit" {
 			return prerequisiteState{detail: "unknown Git reference requirement " + prerequisite.Name}
 		}
-		command := exec.Command( //nolint:gosec // fixed read-only Git argv validates the manifest-owned lint baseline
-			"git", "-C", repoRoot,
+		git, err := newSourceGit(ctx, repoRoot, environment)
+		if err != nil {
+			return prerequisiteState{detail: err.Error()}
+		}
+		if err := git.runWithWriters(
+			io.Discard,
+			io.Discard,
 			"rev-parse", "--verify", "--quiet", "--end-of-options", "refs/tags/v1.2.0^{commit}",
-		)
-		command.Env = environment
-		command.Stdout = io.Discard
-		command.Stderr = io.Discard
-		if err := command.Run(); err != nil {
+		); err != nil {
 			return prerequisiteState{
 				detail: "lint baseline ref v1.2.0 is unavailable or does not resolve to a commit",
 			}
@@ -716,12 +752,14 @@ func checkPrerequisite(repoRoot string, prerequisite Prerequisite, environment [
 			return prerequisiteState{detail: fmt.Sprintf("close prerequisite file: %v", err)}
 		}
 		if prerequisite.Version == "tracked" {
-			command := exec.Command("git", "-C", repoRoot, "ls-files", "--error-unmatch", "--", prerequisite.Name) //nolint:gosec // fixed read-only Git argv
-			command.Env = environment
-			if output, err := command.CombinedOutput(); err != nil {
+			git, gitErr := newSourceGit(ctx, repoRoot, environment)
+			if gitErr != nil {
+				return prerequisiteState{detail: gitErr.Error()}
+			}
+			if output, gitErr := git.combinedOutput("ls-files", "--error-unmatch", "--", prerequisite.Name); gitErr != nil {
 				detail := strings.TrimSpace(string(output))
 				if detail == "" {
-					detail = err.Error()
+					detail = gitErr.Error()
 				}
 				return prerequisiteState{detail: "not tracked by Git: " + detail}
 			}
@@ -757,13 +795,13 @@ func checkPrerequisite(repoRoot string, prerequisite Prerequisite, environment [
 		switch {
 		case prerequisite.Name == "repository-modules" &&
 			prerequisite.Version == "go-mod-download":
-			return goModuleDownloadCapability(repoRoot, environment)
+			return goModuleDownloadCapability(ctx, repoRoot, environment)
 		case prerequisite.Name == "govulncheck-module" &&
 			prerequisite.Version == "network-or-module-cache":
-			return govulncheckModuleCapability(repoRoot, environment)
+			return govulncheckModuleCapability(ctx, repoRoot, environment)
 		case prerequisite.Name == "native-race" &&
 			prerequisite.Version == "supported-host-cgo-c-compiler":
-			return raceCapabilityForHost(runtime.GOOS, runtime.GOARCH, environment)
+			return raceCapabilityForHost(ctx, runtime.GOOS, runtime.GOARCH, environment)
 		default:
 			return prerequisiteState{detail: "unknown capability " + prerequisite.Name}
 		}
@@ -779,7 +817,7 @@ func checkPrerequisite(repoRoot string, prerequisite Prerequisite, environment [
 		return prerequisiteState{available: true, detail: path + " (" + source + ")"}
 	case "tool":
 		if prerequisite.Name == "gofmt" {
-			return pinnedGofmtPrerequisite(prerequisite.Version, environment)
+			return pinnedGofmtPrerequisite(ctx, prerequisite.Version, environment)
 		}
 		path, err := lookPathInEnvironment(prerequisite.Name, environment)
 		if err != nil {
@@ -788,7 +826,7 @@ func checkPrerequisite(repoRoot string, prerequisite Prerequisite, environment [
 		if prerequisite.Version == "" || prerequisite.Version == "any" {
 			return prerequisiteState{available: true, detail: path}
 		}
-		version, err := toolVersion(prerequisite.Name, environment)
+		version, err := toolVersion(ctx, prerequisite.Name, environment)
 		if err != nil {
 			return prerequisiteState{detail: err.Error()}
 		}
@@ -870,8 +908,12 @@ func validateExecutableRegularFile(path string) error {
 	return nil
 }
 
-func pinnedGofmtPrerequisite(wantVersion string, environment []string) prerequisiteState {
-	goRoot, err := goToolchainRoot(environment)
+func pinnedGofmtPrerequisite(
+	ctx context.Context,
+	wantVersion string,
+	environment []string,
+) prerequisiteState {
+	goRoot, err := goToolchainRoot(ctx, environment)
 	if err != nil {
 		return prerequisiteState{detail: err.Error()}
 	}
@@ -883,7 +925,7 @@ func pinnedGofmtPrerequisite(wantVersion string, environment []string) prerequis
 	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0) {
 		return prerequisiteState{detail: path + " is not executable"}
 	}
-	version, err := goBinaryVersion(path, environment)
+	version, err := goBinaryVersion(ctx, path, environment)
 	if err != nil {
 		return prerequisiteState{detail: err.Error()}
 	}
@@ -893,10 +935,10 @@ func pinnedGofmtPrerequisite(wantVersion string, environment []string) prerequis
 	return prerequisiteState{available: true, detail: path + " (" + version + ")"}
 }
 
-func goToolchainRoot(environment []string) (string, error) {
+func goToolchainRoot(ctx context.Context, environment []string) (string, error) {
 	command := exec.Command("go", "env", "GOROOT")
 	command.Env = environment
-	output, err := command.Output()
+	output, err := ownedCommandOutput(ctx, command)
 	if err != nil {
 		return "", fmt.Errorf("resolve pinned Go toolchain root: %w", err)
 	}
@@ -907,10 +949,10 @@ func goToolchainRoot(environment []string) (string, error) {
 	return root, nil
 }
 
-func goBinaryVersion(path string, environment []string) (string, error) {
+func goBinaryVersion(ctx context.Context, path string, environment []string) (string, error) {
 	command := exec.Command("go", "version", "-m", path) //nolint:gosec // path is the validated gofmt inside resolved GOROOT
 	command.Env = environment
-	output, err := command.Output()
+	output, err := ownedCommandOutput(ctx, command)
 	if err != nil {
 		return "", fmt.Errorf("inspect Go binary %s: %w", path, err)
 	}
@@ -922,11 +964,15 @@ func goBinaryVersion(path string, environment []string) (string, error) {
 	return fields[len(fields)-1], nil
 }
 
-func goModuleDownloadCapability(repoRoot string, environment []string) prerequisiteState {
+func goModuleDownloadCapability(
+	ctx context.Context,
+	repoRoot string,
+	environment []string,
+) prerequisiteState {
 	command := exec.Command("go", "mod", "download") //nolint:gosec // fixed non-mutating module availability preflight
 	command.Dir = repoRoot
 	command.Env = environment
-	output, err := command.CombinedOutput()
+	output, err := ownedCommandCombinedOutput(ctx, command)
 	if err != nil {
 		detail := strings.TrimSpace(string(output))
 		if detail == "" {
@@ -937,11 +983,15 @@ func goModuleDownloadCapability(repoRoot string, environment []string) prerequis
 	return prerequisiteState{available: true, detail: "repository modules are available in the verifier cache"}
 }
 
-func govulncheckModuleCapability(repoRoot string, environment []string) prerequisiteState {
+func govulncheckModuleCapability(
+	ctx context.Context,
+	repoRoot string,
+	environment []string,
+) prerequisiteState {
 	command := exec.Command("go", "mod", "download", "golang.org/x/vuln@v1.6.0") //nolint:gosec // fixed reviewed public module and version
 	command.Dir = repoRoot
 	command.Env = environment
-	output, err := command.CombinedOutput()
+	output, err := ownedCommandCombinedOutput(ctx, command)
 	if err != nil {
 		detail := strings.TrimSpace(string(output))
 		if detail == "" {
@@ -970,13 +1020,17 @@ func raceSupportedHost(goos, goarch string) bool {
 	}
 }
 
-func raceCapabilityForHost(goos, goarch string, environment []string) prerequisiteState {
+func raceCapabilityForHost(
+	ctx context.Context,
+	goos, goarch string,
+	environment []string,
+) prerequisiteState {
 	if !raceSupportedHost(goos, goarch) {
 		return prerequisiteState{detail: fmt.Sprintf("race detector is unsupported on native host %s/%s", goos, goarch)}
 	}
 	command := exec.Command("go", "env", "GOOS", "GOARCH", "CGO_ENABLED", "CC")
 	command.Env = environment
-	output, err := command.Output()
+	output, err := ownedCommandOutput(ctx, command)
 	if err != nil {
 		return prerequisiteState{detail: fmt.Sprintf("read native race prerequisites: %v", err)}
 	}
@@ -1012,73 +1066,42 @@ func raceCapabilityForHost(goos, goarch string, environment []string) prerequisi
 	}
 }
 
-func rejectSensitiveLocalGitConfiguration(repoRoot string, environment []string) error {
-	patterns := []string{
-		`^credential\.`,
-		`^http\..*\.extraheader$`,
-		`^http\.extraheader$`,
-		`^core\.(askpass|sshcommand)$`,
-		`^url\..*\.(insteadof|pushinsteadof)$`,
-		`^remote\..*\.pushurl$`,
-	}
-	for _, pattern := range patterns {
-		//nolint:gosec // executable and argv shape are fixed; pattern comes only from the literal reviewed table above
-		command := exec.Command(
-			"git", "-C", repoRoot, "config", "--local", "--name-only", "--get-regexp", pattern,
-		)
-		command.Env = environment
-		command.Stdout = io.Discard
-		command.Stderr = io.Discard
-		err := command.Run()
-		if err == nil {
-			return errors.New("sensitive local Git configuration key is present")
-		}
-		var exitErr *exec.ExitError
-		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
-			return fmt.Errorf("inspect sensitive local Git configuration names: %w", err)
-		}
-	}
-	return nil
+func rejectSensitiveLocalGitConfiguration(
+	ctx context.Context,
+	repoRoot string,
+	environment []string,
+) error {
+	_, err := newSourceGit(ctx, repoRoot, environment)
+	return err
 }
 
 func executePreparation(
 	ctx context.Context,
 	preparation Preparation,
 	repoRoot string,
+	workspaceRoot string,
 	tempDir string,
+	trackedFiles []trackedWorktreeFile,
 	environment []string,
 	stderr io.Writer,
 ) error {
 	if preparation.WorkingDirectory != "source_repository" {
 		return fmt.Errorf("unsupported working directory %q", preparation.WorkingDirectory)
 	}
-	if preparation.Action.Kind != actionCommand || preparation.Action.Command == nil {
-		return errors.New("preparation must be a reviewed command action")
+	if preparation.Action.Kind != actionBuiltin || preparation.Action.Name != "lint-patch" {
+		return errors.New("preparation must be the reviewed no-filter lint-patch builtin")
 	}
-	specification := preparation.Action.Command
 	actionCtx := actionContext{
 		RepoRoot:    repoRoot,
 		TempDir:     tempDir,
 		Environment: environment,
 	}
-	args := make([]string, len(specification.Args))
-	for index, argument := range specification.Args {
-		args[index] = expandActionValue(argument, actionCtx)
-	}
-	executable := expandActionValue(specification.Executable, actionCtx)
-	command := exec.CommandContext(ctx, executable, args...) //nolint:gosec // exact preparation command is independently reviewed
-	command.Dir = repoRoot
-	command.Env = append([]string(nil), environment...)
-	for _, entry := range specification.Env {
-		command.Env = append(command.Env, expandActionValue(entry, actionCtx))
-	}
 	if stderr == nil {
 		stderr = io.Discard
 	}
-	command.Stderr = stderr
-	output, err := command.Output()
+	output, err := prepareLintPatch(ctx, repoRoot, workspaceRoot, tempDir, trackedFiles, environment, stderr)
 	if err != nil {
-		return fmt.Errorf("run reviewed preparation command: %w", err)
+		return err
 	}
 	outputPath := expandActionValue(preparation.Output, actionCtx)
 	relative, err := filepath.Rel(tempDir, outputPath)
@@ -1093,24 +1116,217 @@ func executePreparation(
 	return nil
 }
 
-func nonIgnoredUntrackedPaths(repoRoot string, environment []string) ([]byte, error) {
-	command := exec.Command( //nolint:gosec // fixed read-only Git argv returns path names without opening their contents
-		"git", "-C", repoRoot, "ls-files", "--others", "--exclude-standard", "-z",
+func prepareLintPatch(
+	ctx context.Context,
+	repoRoot string,
+	workspaceRoot string,
+	tempDir string,
+	trackedFiles []trackedWorktreeFile,
+	environment []string,
+	stderr io.Writer,
+) ([]byte, error) {
+	source, err := newSourceGit(ctx, repoRoot, environment)
+	if err != nil {
+		return nil, err
+	}
+	baselineOutput, err := source.output(
+		"rev-parse", "--verify", "--end-of-options", "refs/tags/v1.2.0^{commit}",
 	)
+	if err != nil {
+		return nil, fmt.Errorf("resolve lint baseline commit: %w", err)
+	}
+	baseline := strings.TrimSpace(string(baselineOutput))
+	objectsOutput, err := source.output("rev-parse", "--path-format=absolute", "--git-path", "objects")
+	if err != nil {
+		return nil, fmt.Errorf("resolve source object directory: %w", err)
+	}
+	sourceObjects := strings.TrimSpace(string(objectsOutput))
+	if sourceObjects == "" || !filepath.IsAbs(sourceObjects) {
+		return nil, fmt.Errorf("source object directory is not absolute")
+	}
+	formatOutput, err := source.output("rev-parse", "--show-object-format")
+	if err != nil {
+		return nil, fmt.Errorf("resolve source object format: %w", err)
+	}
+	objectFormat := strings.TrimSpace(string(formatOutput))
+	if objectFormat != "sha1" && objectFormat != "sha256" {
+		return nil, fmt.Errorf("unsupported source object format %q", objectFormat)
+	}
+
+	gitDir := filepath.Join(tempDir, "lint-git")
+	initArgs := []string{"init", "--quiet", "--bare", "--object-format=" + objectFormat, gitDir}
+	if _, err := runVerifierGit(ctx, tempDir, environment, stderr, nil, initArgs...); err != nil {
+		return nil, fmt.Errorf("initialize verifier-controlled lint repository: %w", err)
+	}
+	lintEnvironment := append(
+		isolatedSourceGitEnvironment(environment),
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES="+sourceObjects,
+		"GIT_DIR="+gitDir,
+	)
+
+	baselineIndex := filepath.Join(tempDir, "lint-baseline.index")
+	baselineTree, err := buildLintBaselineTree(ctx, baseline, baselineIndex, lintEnvironment, stderr)
+	if err != nil {
+		return nil, err
+	}
+	worktreeIndex := filepath.Join(tempDir, "lint-worktree.index")
+	worktreeTree, err := buildLintWorktreeTree(
+		ctx,
+		workspaceRoot,
+		trackedFiles,
+		worktreeIndex,
+		lintEnvironment,
+		stderr,
+	)
+	if err != nil {
+		return nil, err
+	}
+	output, err := runVerifierGit(
+		ctx,
+		tempDir,
+		append(lintEnvironment, "GIT_INDEX_FILE="+worktreeIndex),
+		stderr,
+		nil,
+		"diff", "--no-ext-diff", "--no-textconv", "--binary", "--full-index",
+		baselineTree, worktreeTree, "--",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("generate verifier-controlled lint patch: %w", err)
+	}
+	return output, nil
+}
+
+func buildLintBaselineTree(
+	ctx context.Context,
+	baseline string,
+	indexPath string,
+	environment []string,
+	stderr io.Writer,
+) (string, error) {
+	indexEnvironment := append([]string(nil), environment...)
+	indexEnvironment = append(indexEnvironment, "GIT_INDEX_FILE="+indexPath)
+	if _, err := runVerifierGit(ctx, "", indexEnvironment, stderr, nil, "read-tree", baseline); err != nil {
+		return "", fmt.Errorf("materialize lint baseline index: %w", err)
+	}
+	output, err := runVerifierGit(ctx, "", indexEnvironment, stderr, nil, "write-tree")
+	if err != nil {
+		return "", fmt.Errorf("write lint baseline tree: %w", err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func buildLintWorktreeTree(
+	ctx context.Context,
+	workspaceRoot string,
+	trackedFiles []trackedWorktreeFile,
+	indexPath string,
+	environment []string,
+	stderr io.Writer,
+) (string, error) {
+	indexEnvironment := append([]string(nil), environment...)
+	indexEnvironment = append(indexEnvironment, "GIT_INDEX_FILE="+indexPath)
+	if _, err := runVerifierGit(ctx, "", indexEnvironment, stderr, nil, "read-tree", "--empty"); err != nil {
+		return "", fmt.Errorf("initialize lint worktree index: %w", err)
+	}
+	for _, tracked := range trackedFiles {
+		file, err := openRegularFileNoFollow(workspaceRoot, tracked.Path)
+		if err != nil {
+			return "", fmt.Errorf("open lint worktree path %q: %w", tracked.Path, err)
+		}
+		info, statErr := file.Stat()
+		if statErr != nil {
+			return "", errors.Join(
+				fmt.Errorf("inspect lint worktree path %q: %w", tracked.Path, statErr),
+				wrapCloseError("close lint worktree path "+tracked.Path, file.Close()),
+			)
+		}
+		hashOutput, hashErr := runVerifierGit(
+			ctx,
+			"",
+			indexEnvironment,
+			stderr,
+			file,
+			"hash-object", "--no-filters", "-w", "--stdin",
+		)
+		closeErr := file.Close()
+		if hashErr != nil || closeErr != nil {
+			return "", errors.Join(
+				wrapError("hash lint worktree path "+tracked.Path, hashErr),
+				wrapCloseError("close lint worktree path "+tracked.Path, closeErr),
+			)
+		}
+		objectID := strings.TrimSpace(string(hashOutput))
+		cacheInfo := workspaceGitMode(tracked.Mode, info.Mode()) + "," + objectID + "," + tracked.Path
+		if _, err := runVerifierGit(
+			ctx,
+			"",
+			indexEnvironment,
+			stderr,
+			nil,
+			"update-index", "--add", "--cacheinfo", cacheInfo,
+		); err != nil {
+			return "", fmt.Errorf("index lint worktree path %q: %w", tracked.Path, err)
+		}
+	}
+	output, err := runVerifierGit(ctx, "", indexEnvironment, stderr, nil, "write-tree")
+	if err != nil {
+		return "", fmt.Errorf("write lint worktree tree: %w", err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func runVerifierGit(
+	ctx context.Context,
+	directory string,
+	environment []string,
+	stderr io.Writer,
+	stdin io.Reader,
+	args ...string,
+) ([]byte, error) {
+	hooksPath, err := disabledGitHooksPath(environment)
+	if err != nil {
+		return nil, err
+	}
+	hardened := append(
+		[]string{
+			"-c", "core.fsmonitor=false",
+			"-c", "core.hooksPath=" + hooksPath,
+			"-c", "core.untrackedCache=false",
+			"-c", "core.preloadIndex=false",
+			"-c", "credential.helper=",
+		},
+		args...,
+	)
+	command := exec.Command("git", hardened...) //nolint:gosec // args are fixed verifier-controlled temporary-repository operations
+	command.Dir = directory
 	command.Env = environment
-	output, err := command.Output()
+	command.Stdin = stdin
+	command.Stderr = stderr
+	return ownedCommandOutput(ctx, command)
+}
+
+func nonIgnoredUntrackedPaths(
+	ctx context.Context,
+	repoRoot string,
+	environment []string,
+) ([]byte, error) {
+	git, err := newSourceGit(ctx, repoRoot, environment)
+	if err != nil {
+		return nil, err
+	}
+	output, err := git.output("ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("enumerate non-ignored untracked paths: %w", err)
 	}
 	return output, nil
 }
 
-func toolVersion(name string, environment []string) (string, error) {
+func toolVersion(ctx context.Context, name string, environment []string) (string, error) {
 	switch name {
 	case "go":
 		command := exec.Command("go", "version")
 		command.Env = environment
-		output, err := command.Output()
+		output, err := ownedCommandOutput(ctx, command)
 		if err != nil {
 			return "", fmt.Errorf("read Go version: %w", err)
 		}
@@ -1124,7 +1340,7 @@ func toolVersion(name string, environment []string) (string, error) {
 	case "golangci-lint":
 		command := exec.Command(name, "version")
 		command.Env = environment
-		output, err := command.Output()
+		output, err := ownedCommandOutput(ctx, command)
 		if err != nil {
 			return "", fmt.Errorf("read golangci-lint version: %w", err)
 		}
@@ -1140,7 +1356,7 @@ func toolVersion(name string, environment []string) (string, error) {
 	}
 }
 
-func repositorySnapshot(repoRoot string) (snapshot []byte, returnErr error) {
+func repositorySnapshot(ctx context.Context, repoRoot string) (snapshot []byte, returnErr error) {
 	tempDir, err := os.MkdirTemp("", "ssm-verify-snapshot-*")
 	if err != nil {
 		return nil, fmt.Errorf("create snapshot environment: %w", err)
@@ -1154,15 +1370,27 @@ func repositorySnapshot(repoRoot string) (snapshot []byte, returnErr error) {
 	if err != nil {
 		return nil, err
 	}
-	return repositorySnapshotWithEnvironment(repoRoot, environment)
+	return repositorySnapshotWithEnvironment(ctx, repoRoot, environment)
 }
 
-func repositorySnapshotWithEnvironment(repoRoot string, environment []string) ([]byte, error) {
-	snapshot, _, err := captureRepositorySnapshot(repoRoot, environment)
+func repositorySnapshotWithEnvironment(
+	ctx context.Context,
+	repoRoot string,
+	environment []string,
+) ([]byte, error) {
+	snapshot, _, err := captureRepositorySnapshot(ctx, repoRoot, environment)
 	return snapshot, err
 }
 
-func captureRepositorySnapshot(repoRoot string, environment []string) ([]byte, []byte, error) {
+func captureRepositorySnapshot(
+	ctx context.Context,
+	repoRoot string,
+	environment []string,
+) ([]byte, []byte, error) {
+	git, err := newSourceGit(ctx, repoRoot, environment)
+	if err != nil {
+		return nil, nil, err
+	}
 	digest := sha256.New()
 	gitParts := []struct {
 		name string
@@ -1216,9 +1444,7 @@ func captureRepositorySnapshot(repoRoot string, environment []string) ([]byte, [
 
 	var untracked []byte
 	for _, part := range gitParts {
-		command := exec.Command("git", append([]string{"-C", repoRoot}, part.args...)...) //nolint:gosec // fixed read-only Git argv
-		command.Env = environment
-		output, err := command.Output()
+		output, err := git.output(part.args...)
 		if err != nil {
 			return nil, nil, fmt.Errorf("snapshot repository %s: %w", part.name, err)
 		}
@@ -1228,7 +1454,7 @@ func captureRepositorySnapshot(repoRoot string, environment []string) ([]byte, [
 			untracked = output
 		}
 	}
-	rawIndex, err := rawIndexState(repoRoot, environment)
+	rawIndex, err := rawIndexState(git)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1237,7 +1463,7 @@ func captureRepositorySnapshot(repoRoot string, environment []string) ([]byte, [
 	return digest.Sum(nil), untracked, nil
 }
 
-func rawIndexState(repoRoot string, environment []string) ([]byte, error) {
+func rawIndexState(git *sourceGit) ([]byte, error) {
 	var state bytes.Buffer
 	for _, query := range []struct {
 		name string
@@ -1252,9 +1478,7 @@ func rawIndexState(repoRoot string, environment []string) ([]byte, error) {
 			args: []string{"rev-parse", "--path-format=absolute", "--shared-index-path"},
 		},
 	} {
-		command := exec.Command("git", append([]string{"-C", repoRoot}, query.args...)...) //nolint:gosec // fixed read-only Git path query
-		command.Env = environment
-		output, err := command.Output()
+		output, err := git.output(query.args...)
 		if err != nil {
 			return nil, fmt.Errorf("resolve repository %s path: %w", query.name, err)
 		}
@@ -1264,7 +1488,7 @@ func rawIndexState(repoRoot string, environment []string) ([]byte, error) {
 			continue
 		}
 		if !filepath.IsAbs(path) {
-			path = filepath.Join(repoRoot, path)
+			path = filepath.Join(git.repoRoot, path)
 		}
 		data, err := readRegularFileNoFollow(filepath.Dir(path), filepath.ToSlash(filepath.Base(path)))
 		if err != nil {

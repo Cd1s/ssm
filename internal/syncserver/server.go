@@ -17,8 +17,6 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
-
-	"ssm/internal/privatepath"
 )
 
 const maxBlobBytes = 64 << 20
@@ -421,14 +419,21 @@ func appendTokenHash(tokens []string, tokenHash string) []string {
 }
 
 func chmodPrivateDir(path string) error {
-	return privatepath.RestrictDirectory(path)
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", path)
+	}
+	return os.Chmod(path, 0700)
 }
 
 func writePrivateFile(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	if err := privatepath.RestrictDirectory(filepath.Dir(path)); err != nil {
+	if err := os.Chmod(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
@@ -446,7 +451,7 @@ func writePrivateFile(path string, data []byte) error {
 		_ = tmp.Close()
 		return err
 	}
-	if err := privatepath.RestrictFile(tmpPath); err != nil {
+	if err := tmp.Chmod(0600); err != nil {
 		_ = tmp.Close()
 		return err
 	}

@@ -73,3 +73,7 @@ func workspaceFileMode(os.FileMode) os.FileMode {
 	// Windows working-tree files do not expose a Unix executable bit.
 	return 0o600
 }
+
+func workspaceGitMode(indexMode string, _ os.FileMode) string {
+	return indexMode
+}
