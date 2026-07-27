@@ -17,6 +17,16 @@
           "kind": "tool",
           "name": "git",
           "version": "any"
+        },
+        {
+          "kind": "repository",
+          "name": "fully-populated-regular-tracked-worktree",
+          "version": "stage-0-modes-100644-or-100755-no-sparse"
+        },
+        {
+          "kind": "repository",
+          "name": "no-sensitive-local-git-config",
+          "version": "credential-key-names"
         }
       ],
       "checks": [
@@ -62,6 +72,11 @@
               "kind": "tool",
               "name": "go",
               "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
             }
           ]
         },
@@ -84,6 +99,11 @@
               "kind": "tool",
               "name": "go",
               "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
             }
           ]
         }
@@ -98,6 +118,16 @@
           "kind": "tool",
           "name": "git",
           "version": "any"
+        },
+        {
+          "kind": "repository",
+          "name": "fully-populated-regular-tracked-worktree",
+          "version": "stage-0-modes-100644-or-100755-no-sparse"
+        },
+        {
+          "kind": "repository",
+          "name": "no-sensitive-local-git-config",
+          "version": "credential-key-names"
         }
       ],
       "checks": [
@@ -134,7 +164,8 @@
               "executable": "golangci-lint",
               "args": [
                 "run",
-                "--new-from-rev=v1.2.0"
+                "--new-from-patch",
+                "{temp}/lint.patch"
               ]
             }
           },
@@ -143,6 +174,11 @@
               "kind": "tool",
               "name": "golangci-lint",
               "version": "2.11.4"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
             }
           ]
         },
@@ -165,6 +201,11 @@
               "kind": "tool",
               "name": "go",
               "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
             }
           ]
         },
@@ -188,6 +229,11 @@
               "kind": "tool",
               "name": "go",
               "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
             },
             {
               "kind": "capability",
@@ -218,6 +264,11 @@
               "kind": "tool",
               "name": "go",
               "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
             }
           ]
         },
@@ -240,13 +291,22 @@
               "kind": "tool",
               "name": "go",
               "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
             }
           ]
         },
         {
           "id": "race",
-          "description": "Run the complete Go test suite with the race detector.",
-          "requirement": "required",
+          "description": "Run the complete Go test suite with the race detector on a natively supported host.",
+          "requirement": "conditional",
+          "activation": "native_supported_host_with_cgo_and_c_compiler",
+          "required_contexts": [
+            "github_actions_linux"
+          ],
           "action": {
             "kind": "command",
             "command": {
@@ -263,6 +323,16 @@
               "kind": "tool",
               "name": "go",
               "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
+            },
+            {
+              "kind": "capability",
+              "name": "native-race",
+              "version": "supported-host-cgo-c-compiler"
             }
           ]
         },
@@ -400,6 +470,11 @@
               "version": "1.25.12"
             },
             {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
+            },
+            {
               "kind": "tool",
               "name": "grep",
               "version": "any"
@@ -482,6 +557,11 @@
             {
               "kind": "tool",
               "name": "ssh-keygen",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "touch",
               "version": "any"
             },
             {
@@ -549,6 +629,16 @@
           "kind": "tool",
           "name": "git",
           "version": "any"
+        },
+        {
+          "kind": "repository",
+          "name": "fully-populated-regular-tracked-worktree",
+          "version": "stage-0-modes-100644-or-100755-no-sparse"
+        },
+        {
+          "kind": "repository",
+          "name": "no-sensitive-local-git-config",
+          "version": "credential-key-names"
         }
       ],
       "checks": [
@@ -585,7 +675,8 @@
               "executable": "golangci-lint",
               "args": [
                 "run",
-                "--new-from-rev=v1.2.0"
+                "--new-from-patch",
+                "{temp}/lint.patch"
               ]
             }
           },
@@ -594,6 +685,11 @@
               "kind": "tool",
               "name": "golangci-lint",
               "version": "2.11.4"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
             }
           ]
         },
@@ -616,6 +712,11 @@
               "kind": "tool",
               "name": "go",
               "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
             }
           ]
         },
@@ -639,6 +740,11 @@
               "kind": "tool",
               "name": "go",
               "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
             },
             {
               "kind": "capability",
@@ -669,6 +775,11 @@
               "kind": "tool",
               "name": "go",
               "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
             }
           ]
         },
@@ -691,13 +802,22 @@
               "kind": "tool",
               "name": "go",
               "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
             }
           ]
         },
         {
           "id": "race",
-          "description": "Run the complete Go test suite with the race detector.",
-          "requirement": "required",
+          "description": "Run the complete Go test suite with the race detector on a natively supported host.",
+          "requirement": "conditional",
+          "activation": "native_supported_host_with_cgo_and_c_compiler",
+          "required_contexts": [
+            "github_actions_linux"
+          ],
           "action": {
             "kind": "command",
             "command": {
@@ -714,6 +834,16 @@
               "kind": "tool",
               "name": "go",
               "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
+            },
+            {
+              "kind": "capability",
+              "name": "native-race",
+              "version": "supported-host-cgo-c-compiler"
             }
           ]
         },
@@ -851,6 +981,11 @@
               "version": "1.25.12"
             },
             {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
+            },
+            {
               "kind": "tool",
               "name": "grep",
               "version": "any"
@@ -933,6 +1068,11 @@
             {
               "kind": "tool",
               "name": "ssh-keygen",
+              "version": "any"
+            },
+            {
+              "kind": "tool",
+              "name": "touch",
               "version": "any"
             },
             {
@@ -1032,6 +1172,11 @@
               "kind": "tool",
               "name": "go",
               "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
             }
           ]
         },
@@ -1062,6 +1207,11 @@
               "kind": "tool",
               "name": "go",
               "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
             }
           ]
         },
@@ -1092,6 +1242,11 @@
               "kind": "tool",
               "name": "go",
               "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
             }
           ]
         },
@@ -1122,6 +1277,11 @@
               "kind": "tool",
               "name": "go",
               "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
             }
           ]
         },
@@ -1152,6 +1312,11 @@
               "kind": "tool",
               "name": "go",
               "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
             }
           ]
         },
@@ -1182,6 +1347,11 @@
               "kind": "tool",
               "name": "go",
               "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
             }
           ]
         },
@@ -1207,6 +1377,11 @@
               "kind": "tool",
               "name": "go",
               "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
             }
           ]
         },
@@ -1222,6 +1397,33 @@
             {
               "kind": "file",
               "name": "RELEASE_NOTES.md",
+              "version": "tracked"
+            }
+          ]
+        },
+        {
+          "id": "install-shell-syntax",
+          "description": "Parse the published installer without executing it.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "sh",
+              "args": [
+                "-n",
+                "install.sh"
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "sh",
+              "version": "any"
+            },
+            {
+              "kind": "file",
+              "name": "install.sh",
               "version": "tracked"
             }
           ]
@@ -1264,6 +1466,11 @@
               "kind": "tool",
               "name": "go",
               "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
             }
           ]
         }

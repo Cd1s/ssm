@@ -1,11 +1,14 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,9 +16,35 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"ssm/internal/update"
 )
+
+type injectedReadCloser struct {
+	readErr  error
+	closeErr error
+}
+
+func (reader *injectedReadCloser) Read([]byte) (int, error) {
+	return 0, reader.readErr
+}
+
+func (reader *injectedReadCloser) Close() error {
+	return reader.closeErr
+}
+
+func TestSafeReaderJoinsReadAndCleanupFailures(t *testing.T) {
+	readErr := errors.New("injected read failure")
+	closeErr := errors.New("injected close failure")
+	_, err := readAndCloseRegularFile(
+		&injectedReadCloser{readErr: readErr, closeErr: closeErr},
+		"fixture",
+	)
+	if !errors.Is(err, readErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("error = %v, want joined read and close failures", err)
+	}
+}
 
 func TestFailuresNeverReportPassed(t *testing.T) {
 	t.Run("unknown profile", func(t *testing.T) {
@@ -64,7 +93,7 @@ func TestFailuresNeverReportPassed(t *testing.T) {
 			profile:  "fast",
 			deps: func(t *testing.T) runtimeDependencies {
 				deps := passingTestDependencies(t, newCleanTestRepository(t))
-				deps.prerequisites = func(Prerequisite, []string) prerequisiteState {
+				deps.prerequisites = func(string, Prerequisite, []string) prerequisiteState {
 					return prerequisiteState{detail: "not available"}
 				}
 				return deps
@@ -254,7 +283,7 @@ func TestSSHMatrixIsRequiredInOfficialLinuxCI(t *testing.T) {
 			t.Setenv("RUNNER_OS", "Linux")
 		}
 		deps := passingTestDependencies(t, newCleanTestRepository(t))
-		deps.prerequisites = func(prerequisite Prerequisite, _ []string) prerequisiteState {
+		deps.prerequisites = func(_ string, prerequisite Prerequisite, _ []string) prerequisiteState {
 			if reflect.DeepEqual(prerequisite, missing) {
 				return prerequisiteState{detail: "not found in test context"}
 			}
@@ -282,6 +311,67 @@ func TestSSHMatrixIsRequiredInOfficialLinuxCI(t *testing.T) {
 				t.Fatalf("official CI status = %q, want %q", result.Status, statusFailed)
 			}
 		})
+	}
+}
+
+func TestRaceActivationIsTruthfulByNativeHost(t *testing.T) {
+	race := raceCheck()
+	if got, want := race.Requirement, requirementConditional; got != want {
+		t.Fatalf("race requirement = %q, want %q", got, want)
+	}
+	if got, want := race.RequiredContexts, []string{"github_actions_linux"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("race required contexts = %v, want %v", got, want)
+	}
+	if got, want := race.Activation, "native_supported_host_with_cgo_and_c_compiler"; got != want {
+		t.Fatalf("race activation = %q, want %q", got, want)
+	}
+	wantPrerequisite := Prerequisite{
+		Kind:    "capability",
+		Name:    "native-race",
+		Version: "supported-host-cgo-c-compiler",
+	}
+	if !containsPrerequisite(race.Prerequisites, wantPrerequisite) {
+		t.Fatalf("race prerequisites %v do not expose %v", race.Prerequisites, wantPrerequisite)
+	}
+
+	for _, test := range []struct {
+		goos, goarch string
+		want         bool
+	}{
+		{goos: "linux", goarch: "amd64", want: true},
+		{goos: "linux", goarch: "arm64", want: true},
+		{goos: "darwin", goarch: "arm64", want: true},
+		{goos: "windows", goarch: "amd64", want: true},
+		{goos: "windows", goarch: "arm64", want: false},
+		{goos: "linux", goarch: "386", want: false},
+	} {
+		t.Run(test.goos+"-"+test.goarch, func(t *testing.T) {
+			if got := raceSupportedHost(test.goos, test.goarch); got != test.want {
+				t.Fatalf("raceSupportedHost(%q, %q) = %t, want %t", test.goos, test.goarch, got, test.want)
+			}
+		})
+	}
+
+	unsupported := raceCapabilityForHost("windows", "arm64", newTestProcessEnvironment(t))
+	if unsupported.available || !strings.Contains(unsupported.detail, "unsupported") {
+		t.Fatalf("windows/arm64 race state = %+v, want truthful unsupported result", unsupported)
+	}
+
+	if !checkIsRequiredFor(race, executionContext{
+		GOOS:          "linux",
+		GOARCH:        "amd64",
+		GitHubActions: true,
+		RunnerOS:      "Linux",
+	}) {
+		t.Fatal("race is not fail-closed in official Linux merge CI")
+	}
+	if checkIsRequiredFor(race, executionContext{
+		GOOS:          "windows",
+		GOARCH:        "arm64",
+		GitHubActions: true,
+		RunnerOS:      "Windows",
+	}) {
+		t.Fatal("race is falsely required on unsupported Windows/arm64")
 	}
 }
 
@@ -427,6 +517,39 @@ func TestReleaseChecksumAction(t *testing.T) {
 	}
 }
 
+func TestReleaseRunsInstallerSyntaxAsAnAction(t *testing.T) {
+	release, ok := findProfile(verificationManifest(), "release")
+	if !ok {
+		t.Fatal("release profile not found")
+	}
+	var syntax Check
+	for _, check := range release.Checks {
+		if check.ID == "install-shell-syntax" {
+			syntax = check
+			break
+		}
+	}
+	wantAction := commandAction("sh", []string{"-n", "install.sh"}, nil, "")
+	if !reflect.DeepEqual(syntax.Action, wantAction) {
+		t.Fatalf("installer syntax action = %+v, want %+v", syntax.Action, wantAction)
+	}
+	if syntax.Requirement != requirementRequired {
+		t.Fatalf("installer syntax requirement = %q, want required", syntax.Requirement)
+	}
+
+	repo := t.TempDir()
+	writeTestFile(t, filepath.Join(repo, "install.sh"), "#!/bin/sh\nif then\n")
+	result := executeAction(context.Background(), syntax.Action, actionContext{
+		RepoRoot:    repo,
+		Environment: newTestProcessEnvironment(t),
+		Stdout:      io.Discard,
+		Stderr:      io.Discard,
+	})
+	if result.Status != statusFailed {
+		t.Fatalf("malformed installer syntax status = %q, want failed", result.Status)
+	}
+}
+
 func TestReleaseAssetsMatchProductionUpdater(t *testing.T) {
 	release, ok := findProfile(verificationManifest(), "release")
 	if !ok {
@@ -568,6 +691,48 @@ func TestCIAdaptersUseManifestProfile(t *testing.T) {
 	}
 	if !strings.Contains(string(matrix), "go build -buildvcs=false") {
 		t.Fatal("SSH matrix build still depends on ambient VCS stamping")
+	}
+}
+
+func TestCIWorkflowMatchesReviewedGoldenAndHasReadOnlyCredentialFreeJobs(t *testing.T) {
+	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	golden, err := os.ReadFile(filepath.Join("testdata", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read checked-in CI workflow golden: %v", err)
+	}
+	if !bytes.Equal(workflow, golden) {
+		t.Fatal("CI workflow differs from the reviewed complete golden")
+	}
+
+	text := string(workflow)
+	if got, want := strings.Count(text, "    permissions:\n      contents: read\n"), 2; got != want {
+		t.Fatalf("job-level contents: read permissions count = %d, want %d", got, want)
+	}
+	if got, want := strings.Count(text, "      - uses: actions/checkout@v7\n"), 2; got != want {
+		t.Fatalf("checkout step count = %d, want %d", got, want)
+	}
+	if got, want := strings.Count(text, "          persist-credentials: false\n"), 2; got != want {
+		t.Fatalf("persist-credentials: false count = %d, want %d", got, want)
+	}
+	if got, want := strings.Count(text, "        run: go run ./cmd/verify ci\n"), 1; got != want {
+		t.Fatalf("exact Linux ci invocation count = %d, want %d", got, want)
+	}
+	if got, want := strings.Count(text, "        run: go run ./cmd/verify fast\n"), 1; got != want {
+		t.Fatalf("exact Windows fast invocation count = %d, want %d", got, want)
+	}
+	for _, exactUse := range []string{
+		"actions/checkout@v7",
+		"actions/setup-go@v6",
+	} {
+		if got, want := strings.Count(text, "uses: "+exactUse), 2; got != want {
+			t.Fatalf("%s use count = %d, want %d", exactUse, got, want)
+		}
+	}
+	if !strings.Contains(text, "runs-on: windows-latest") {
+		t.Fatal("official native Windows job is absent")
 	}
 }
 
@@ -728,6 +893,36 @@ func TestSSHMatrixPrerequisitesMatchScriptAndOfficialCI(t *testing.T) {
 	}
 }
 
+func TestSSHMatrixRetriesBindCollisionsAndUsesDeterministicThrottle(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "scripts", "ssh_matrix_test.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(data)
+	for _, required := range []string{
+		"start_sshd_with_retry",
+		"candidates=$(seq 22222 22322)",
+		"for candidate in $candidates",
+		"if \"$SSHD\" -f \"$TMP/sshd_config\" -E \"$TMP/sshd.log\"; then",
+		"throttle-bin/cat",
+		"transfer-throttle-enabled",
+		"--timeout 1s",
+	} {
+		if !strings.Contains(script, required) {
+			t.Errorf("SSH matrix lacks deterministic reliability surface %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"--timeout 1ms",
+		"--timeout 2ms",
+		"PORT=${SSM_TEST_SSH_PORT:-$(find_free_port)}",
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Errorf("SSH matrix retains scheduler/port race %q", forbidden)
+		}
+	}
+}
+
 func expectedSSHMatrixTools() []string {
 	return []string{
 		"awk",
@@ -756,6 +951,7 @@ func expectedSSHMatrixTools() []string {
 		"sleep",
 		"ssh",
 		"ssh-keygen",
+		"touch",
 		"tr",
 		"wc",
 	}
@@ -931,6 +1127,242 @@ func TestProfileManifest(t *testing.T) {
 	}
 }
 
+func TestManifestExposesRegularTrackedWorktreePrerequisite(t *testing.T) {
+	want := Prerequisite{
+		Kind:    "repository",
+		Name:    "fully-populated-regular-tracked-worktree",
+		Version: "stage-0-modes-100644-or-100755-no-sparse",
+	}
+	for _, profileName := range []string{"fast", "ci", "release"} {
+		profile, ok := findProfile(verificationManifest(), profileName)
+		if !ok {
+			t.Fatalf("profile %q not found", profileName)
+		}
+		if !containsPrerequisite(profile.Prerequisites, want) {
+			t.Fatalf("%s prerequisites %v do not expose %v", profileName, profile.Prerequisites, want)
+		}
+	}
+}
+
+func TestProfileActionsUseCredentialFreeTrackedWorkspace(t *testing.T) {
+	repo := newCleanTestRepository(t)
+	writeTestFile(t, filepath.Join(repo, ".gitignore"), "ignored-secret\n")
+	gitOutput(t, repo, "add", ".gitignore")
+	gitOutput(t, repo, "commit", "--quiet", "-m", "ignore local secret fixture")
+	writeTestFile(t, filepath.Join(repo, "ignored-secret"), "credential-canary\n")
+	writeTestFile(t, filepath.Join(repo, "sentinel.txt"), "safe tracked working-tree modification\n")
+
+	actionCalls := 0
+	deps := passingTestDependencies(t, repo)
+	deps.actions = func(_ context.Context, _ Action, actionCtx actionContext) checkResult {
+		actionCalls++
+		if actionCtx.RepoRoot == repo {
+			return checkResult{Status: statusFailed, Detail: "action ran in original repository"}
+		}
+		if _, err := os.Lstat(filepath.Join(actionCtx.RepoRoot, ".git")); !os.IsNotExist(err) {
+			return checkResult{Status: statusFailed, Detail: fmt.Sprintf("action workspace exposes .git: %v", err)}
+		}
+		if _, err := os.Lstat(filepath.Join(actionCtx.RepoRoot, "ignored-secret")); !os.IsNotExist(err) {
+			return checkResult{Status: statusFailed, Detail: fmt.Sprintf("action workspace exposes ignored secret: %v", err)}
+		}
+		data, err := os.ReadFile(filepath.Join(actionCtx.RepoRoot, "sentinel.txt")) //nolint:gosec // test-owned action workspace
+		if err != nil {
+			return checkResult{Status: statusFailed, Detail: fmt.Sprintf("read materialized tracked file: %v", err)}
+		}
+		if got, want := string(data), "safe tracked working-tree modification\n"; got != want {
+			return checkResult{Status: statusFailed, Detail: fmt.Sprintf("materialized content = %q, want %q", got, want)}
+		}
+		return checkResult{Status: statusPassed}
+	}
+
+	result, err := executeProfile(context.Background(), verificationManifest(), "fast", deps)
+	if err != nil {
+		t.Fatalf("execute profile: %v (result=%+v)", err, result)
+	}
+	if actionCalls != len(verificationManifest().Profiles[1].Checks) {
+		t.Fatalf("action calls = %d, want %d", actionCalls, len(verificationManifest().Profiles[1].Checks))
+	}
+}
+
+func TestProfileStopsAfterActionMutatesOriginalRepository(t *testing.T) {
+	repo := newCleanTestRepository(t)
+	externalSecret := filepath.Join(t.TempDir(), "external-secret")
+	writeTestFile(t, externalSecret, "credential-canary\n")
+
+	actionCalls := 0
+	secretReaderRan := false
+	deps := passingTestDependencies(t, repo)
+	deps.actions = func(_ context.Context, _ Action, _ actionContext) checkResult {
+		actionCalls++
+		if actionCalls == 1 {
+			writeTestFile(t, filepath.Join(repo, "sentinel.txt"), "mutated by action one\n")
+			return checkResult{Status: statusPassed}
+		}
+		secretReaderRan = true
+		_, _ = os.ReadFile(externalSecret) //nolint:gosec // adversarial test proves this action is never reached
+		return checkResult{Status: statusPassed}
+	}
+
+	result, err := executeProfile(context.Background(), verificationManifest(), "fast", deps)
+	if err == nil || !strings.Contains(err.Error(), "changed repository state") {
+		t.Fatalf("error = %v, want repository-state mutation failure", err)
+	}
+	if result.Status != statusFailed {
+		t.Fatalf("status = %q, want %q", result.Status, statusFailed)
+	}
+	if actionCalls != 1 || secretReaderRan {
+		t.Fatalf("action calls = %d, secret reader ran = %t; action two must not execute", actionCalls, secretReaderRan)
+	}
+}
+
+func TestProfileStopsAfterActionMutatesActionWorkspace(t *testing.T) {
+	repo := newCleanTestRepository(t)
+	actionCalls := 0
+	deps := passingTestDependencies(t, repo)
+	deps.actions = func(_ context.Context, _ Action, actionCtx actionContext) checkResult {
+		actionCalls++
+		if actionCalls == 1 {
+			writeTestFile(t, filepath.Join(actionCtx.RepoRoot, "sentinel.txt"), "mutated action workspace\n")
+		}
+		return checkResult{Status: statusPassed}
+	}
+
+	result, err := executeProfile(context.Background(), verificationManifest(), "fast", deps)
+	if err == nil || !strings.Contains(err.Error(), "changed action workspace state") {
+		t.Fatalf("error = %v, want action-workspace mutation failure", err)
+	}
+	if result.Status != statusFailed {
+		t.Fatalf("status = %q, want %q", result.Status, statusFailed)
+	}
+	if actionCalls != 1 {
+		t.Fatalf("action calls = %d, want one", actionCalls)
+	}
+}
+
+func TestProfileStopsAfterActionTouchesActionWorkspace(t *testing.T) {
+	repo := newCleanTestRepository(t)
+	actionCalls := 0
+	deps := passingTestDependencies(t, repo)
+	deps.actions = func(_ context.Context, _ Action, actionCtx actionContext) checkResult {
+		actionCalls++
+		if actionCalls == 1 {
+			path := filepath.Join(actionCtx.RepoRoot, "sentinel.txt")
+			info, err := os.Stat(path)
+			if err != nil {
+				return checkResult{Status: statusFailed, Detail: err.Error()}
+			}
+			changed := info.ModTime().Add(time.Hour)
+			if err := os.Chtimes(path, changed, changed); err != nil {
+				return checkResult{Status: statusFailed, Detail: err.Error()}
+			}
+		}
+		return checkResult{Status: statusPassed}
+	}
+
+	result, err := executeProfile(context.Background(), verificationManifest(), "fast", deps)
+	if err == nil || !strings.Contains(err.Error(), "changed action workspace state") {
+		t.Fatalf("error = %v, want action-workspace timestamp mutation failure", err)
+	}
+	if result.Status != statusFailed {
+		t.Fatalf("status = %q, want %q", result.Status, statusFailed)
+	}
+	if actionCalls != 1 {
+		t.Fatalf("action calls = %d, want one", actionCalls)
+	}
+}
+
+func TestProfileRejectsUnsupportedTrackedLayoutsPrecisely(t *testing.T) {
+	t.Run("tracked symlink mode", func(t *testing.T) {
+		repo := newCleanTestRepository(t)
+		if err := os.Remove(filepath.Join(repo, "sentinel.txt")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("external", filepath.Join(repo, "sentinel.txt")); err != nil {
+			t.Fatal(err)
+		}
+		gitOutput(t, repo, "add", "sentinel.txt")
+
+		result, err := executeProfile(
+			context.Background(),
+			verificationManifest(),
+			"fast",
+			passingTestDependencies(t, repo),
+		)
+		if err == nil || !strings.Contains(err.Error(), "mode 120000") ||
+			!strings.Contains(err.Error(), "symlink") {
+			t.Fatalf("error = %v, want precise tracked-symlink mode failure", err)
+		}
+		if result.Status != statusFailed {
+			t.Fatalf("status = %q, want %q", result.Status, statusFailed)
+		}
+	})
+
+	t.Run("gitlink mode", func(t *testing.T) {
+		repo := newCleanTestRepository(t)
+		head := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
+		gitOutput(t, repo, "update-index", "--add", "--cacheinfo", "160000,"+head+",nested-module")
+
+		_, err := executeProfile(
+			context.Background(),
+			verificationManifest(),
+			"fast",
+			passingTestDependencies(t, repo),
+		)
+		if err == nil || !strings.Contains(err.Error(), "mode 160000") ||
+			!strings.Contains(err.Error(), "gitlink") {
+			t.Fatalf("error = %v, want precise gitlink mode failure", err)
+		}
+	})
+
+	t.Run("sparse checkout", func(t *testing.T) {
+		repo := newCleanTestRepository(t)
+		gitOutput(t, repo, "config", "core.sparseCheckout", "true")
+
+		_, err := executeProfile(
+			context.Background(),
+			verificationManifest(),
+			"fast",
+			passingTestDependencies(t, repo),
+		)
+		if err == nil || !strings.Contains(err.Error(), "sparse checkout") {
+			t.Fatalf("error = %v, want precise sparse-checkout failure", err)
+		}
+	})
+
+	t.Run("skip-worktree index state", func(t *testing.T) {
+		repo := newCleanTestRepository(t)
+		gitOutput(t, repo, "update-index", "--skip-worktree", "sentinel.txt")
+
+		_, err := executeProfile(
+			context.Background(),
+			verificationManifest(),
+			"fast",
+			passingTestDependencies(t, repo),
+		)
+		if err == nil || !strings.Contains(err.Error(), "skip-worktree") ||
+			!strings.Contains(err.Error(), "sparse") {
+			t.Fatalf("error = %v, want precise skip-worktree sparse-state failure", err)
+		}
+	})
+
+	t.Run("missing tracked path", func(t *testing.T) {
+		repo := newCleanTestRepository(t)
+		if err := os.Remove(filepath.Join(repo, "sentinel.txt")); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := executeProfile(
+			context.Background(),
+			verificationManifest(),
+			"fast",
+			passingTestDependencies(t, repo),
+		)
+		if err == nil || !strings.Contains(err.Error(), "missing tracked path") {
+			t.Fatalf("error = %v, want precise missing-path failure", err)
+		}
+	})
+}
+
 func TestProfilesAreNonMutating(t *testing.T) {
 	manifest := verificationManifest()
 	if err := validateNonMutating(manifest); err != nil {
@@ -974,7 +1406,7 @@ func TestProfilesAreNonMutating(t *testing.T) {
 				repoRoot: repo,
 				stdout:   io.Discard,
 				stderr:   io.Discard,
-				prerequisites: func(Prerequisite, []string) prerequisiteState {
+				prerequisites: func(string, Prerequisite, []string) prerequisiteState {
 					return prerequisiteState{available: true}
 				},
 				actions: func(_ context.Context, action Action, _ actionContext) checkResult {
@@ -1008,7 +1440,7 @@ func TestProfilesAreNonMutating(t *testing.T) {
 			repoRoot: repo,
 			stdout:   io.Discard,
 			stderr:   io.Discard,
-			prerequisites: func(Prerequisite, []string) prerequisiteState {
+			prerequisites: func(string, Prerequisite, []string) prerequisiteState {
 				return prerequisiteState{available: true}
 			},
 			actions: func(_ context.Context, _ Action, _ actionContext) checkResult {
@@ -1034,7 +1466,7 @@ func TestProfilesAreNonMutating(t *testing.T) {
 			repoRoot: repo,
 			stdout:   io.Discard,
 			stderr:   io.Discard,
-			prerequisites: func(Prerequisite, []string) prerequisiteState {
+			prerequisites: func(string, Prerequisite, []string) prerequisiteState {
 				return prerequisiteState{available: true}
 			},
 			actions: executeAction,
@@ -1124,9 +1556,17 @@ func TestIsolatedEnvironmentPreservesReviewedPlatformRuntime(t *testing.T) {
 			goos:    "linux",
 			tempDir: "/tmp/verify-profile",
 			inherited: map[string]string{ //nolint:gosec // fake credential names and canaries verify that secrets are not inherited
-				"PATH":     "/usr/local/bin:/usr/bin:/bin",
-				"LANG":     "C.UTF-8",
-				"GH_TOKEN": "credential-canary",
+				"PATH":        "/usr/local/bin:/usr/bin:/bin",
+				"LANG":        "C.UTF-8",
+				"GH_TOKEN":    "credential-canary",
+				"GOPROXY":     "https://proxy.example.invalid/path-token-canary",
+				"GONOSUMDB":   "private.example.invalid",
+				"GOPRIVATE":   "private.example.invalid",
+				"GONOPROXY":   "private.example.invalid",
+				"GOSUMDB":     "sum.example.invalid",
+				"GOENV":       "/credential/config/goenv",
+				"GOFLAGS":     "-mod=vendor",
+				"GOTOOLCHAIN": "path",
 			},
 			wantHome:    "/tmp/verify-profile/home",
 			wantTemp:    "/tmp/verify-profile/tmp",
@@ -1174,15 +1614,22 @@ func TestIsolatedEnvironmentPreservesReviewedPlatformRuntime(t *testing.T) {
 			}
 			values := environmentMap(t, environment)
 			for key, want := range map[string]string{
-				"PATH":       test.inherited["PATH"],
-				"HOME":       test.wantHome,
-				"TMPDIR":     test.wantTemp,
-				"TEMP":       test.wantTemp,
-				"TMP":        test.wantTemp,
-				"GOCACHE":    test.wantGoCache,
-				"GOMODCACHE": environmentPath(test.tempDir, test.goos, "go-mod"),
-				"GOPATH":     environmentPath(test.tempDir, test.goos, "gopath"),
-				"GOENV":      "off",
+				"PATH":        test.inherited["PATH"],
+				"HOME":        test.wantHome,
+				"TMPDIR":      test.wantTemp,
+				"TEMP":        test.wantTemp,
+				"TMP":         test.wantTemp,
+				"GOCACHE":     test.wantGoCache,
+				"GOMODCACHE":  environmentPath(test.tempDir, test.goos, "go-mod"),
+				"GOPATH":      environmentPath(test.tempDir, test.goos, "gopath"),
+				"GOENV":       "off",
+				"GOPROXY":     "https://proxy.golang.org,direct",
+				"GOSUMDB":     "sum.golang.org",
+				"GONOSUMDB":   "",
+				"GOPRIVATE":   "",
+				"GONOPROXY":   "",
+				"GOFLAGS":     "",
+				"GOTOOLCHAIN": "local",
 			} {
 				if got := values[key]; got != want {
 					t.Errorf("%s = %q, want %q", key, got, want)
@@ -1211,21 +1658,275 @@ func TestIsolatedEnvironmentPreservesReviewedPlatformRuntime(t *testing.T) {
 		})
 	}
 
-	t.Run("authenticated Go proxy rejected", func(t *testing.T) {
-		_, err := isolatedEnvironmentForOS("/tmp/verify-profile", "linux", func(name string) (string, bool) {
-			switch name {
-			case "PATH":
-				return "/usr/bin:/bin", true
-			case "GOPROXY":
-				return "https://publisher-token@example.invalid/proxy", true
-			default:
-				return "", false
+	t.Run("inherited authenticated and path-token Go proxies are ignored", func(t *testing.T) {
+		for _, inheritedProxy := range []string{
+			"https://publisher-token@example.invalid/proxy",
+			"https://proxy.example.invalid/private-token-canary/",
+		} {
+			environment, err := isolatedEnvironmentForOS("/tmp/verify-profile", "linux", func(name string) (string, bool) {
+				switch name {
+				case "PATH":
+					return "/usr/bin:/bin", true
+				case "GOPROXY":
+					return inheritedProxy, true
+				default:
+					return "", false
+				}
+			})
+			if err != nil {
+				t.Fatalf("fixed module environment rejected caller value instead of ignoring it: %v", err)
 			}
-		})
-		if err == nil || !strings.Contains(err.Error(), "authentication material") {
-			t.Fatalf("error = %v, want authenticated GOPROXY rejection", err)
+			values := environmentMap(t, environment)
+			if got, want := values["GOPROXY"], "https://proxy.golang.org,direct"; got != want {
+				t.Fatalf("GOPROXY = %q, want fixed %q", got, want)
+			}
+			if strings.Contains(strings.Join(environment, "\n"), "token") {
+				t.Fatalf("isolated environment retained tokenized proxy: %v", environment)
+			}
 		}
 	})
+}
+
+func TestVerifierGoCacheIsPrivateReusableAndOutsideRepository(t *testing.T) {
+	repo := newCleanTestRepository(t)
+	cacheRoot := filepath.Join(t.TempDir(), "persistent-cache")
+	first, err := prepareVerifierCache(repo, cacheRoot)
+	if err != nil {
+		t.Fatalf("prepare verifier cache: %v", err)
+	}
+	for _, directory := range []string{first.Root, first.GoBuild, first.GoMod, first.GoPath} {
+		info, err := os.Stat(directory)
+		if err != nil {
+			t.Fatalf("stat cache directory %s: %v", directory, err)
+		}
+		if got, want := info.Mode().Perm(), os.FileMode(0o700); got != want {
+			t.Fatalf("cache directory %s mode = %o, want %o", directory, got, want)
+		}
+	}
+	if relative, err := filepath.Rel(repo, first.Root); err == nil &&
+		relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		t.Fatalf("cache root %s is inside repository %s", first.Root, repo)
+	}
+
+	marker := filepath.Join(first.GoMod, "reuse-marker")
+	writeTestFile(t, marker, "warm\n")
+	second, err := prepareVerifierCache(repo, cacheRoot)
+	if err != nil {
+		t.Fatalf("prepare verifier cache again: %v", err)
+	}
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("cache paths changed: first=%+v second=%+v", first, second)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("reusable cache discarded warm marker: %v", err)
+	}
+
+	if _, err := prepareVerifierCache(repo, filepath.Join(repo, "cache")); err == nil ||
+		!strings.Contains(err.Error(), "outside repository") {
+		t.Fatalf("repository-local cache error = %v, want outside-repository rejection", err)
+	}
+
+	aliasParent := t.TempDir()
+	repositoryAlias := filepath.Join(aliasParent, "repository-alias")
+	if err := os.Symlink(repo, repositoryAlias); err != nil {
+		t.Fatalf("create repository-alias cache fixture: %v", err)
+	}
+	aliasedCache := filepath.Join(repositoryAlias, "cache-through-alias")
+	if _, err := prepareVerifierCache(repo, aliasedCache); err == nil ||
+		!strings.Contains(err.Error(), "outside repository") {
+		t.Fatalf("repository-alias cache error = %v, want outside-repository rejection", err)
+	}
+	if _, err := os.Lstat(filepath.Join(repo, "cache-through-alias")); !os.IsNotExist(err) {
+		t.Fatalf("rejected aliased cache mutated repository: %v", err)
+	}
+}
+
+func TestVerifierCacheVolumeComparisonIsWindowsCaseInsensitive(t *testing.T) {
+	if !samePathVolume(`C:`, `c:`) {
+		t.Fatal("same Windows volume with different case was treated as different")
+	}
+	if samePathVolume(`C:`, `D:`) {
+		t.Fatal("different Windows volumes were treated as the same containment domain")
+	}
+	if !samePathVolume("", "") {
+		t.Fatal("empty Unix volume names were treated as different")
+	}
+}
+
+func TestRepositoryModulePrerequisitePopulatesCacheForOfflineReuse(t *testing.T) {
+	const modulePath = "example.invalid/dependency"
+	const moduleVersion = "v1.0.0"
+	proxy := t.TempDir()
+	versionRoot := filepath.Join(proxy, "example.invalid", "dependency", "@v")
+	if err := os.MkdirAll(versionRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(
+		t,
+		filepath.Join(versionRoot, moduleVersion+".mod"),
+		"module "+modulePath+"\n\ngo 1.25.12\n",
+	)
+	writeTestFile(
+		t,
+		filepath.Join(versionRoot, moduleVersion+".info"),
+		"{\"Version\":\"v1.0.0\",\"Time\":\"2020-01-01T00:00:00Z\"}\n",
+	)
+	archive, err := os.Create(filepath.Join(versionRoot, moduleVersion+".zip")) //nolint:gosec // test-owned local Go module proxy
+	if err != nil {
+		t.Fatal(err)
+	}
+	zipWriter := zip.NewWriter(archive)
+	for name, contents := range map[string]string{
+		modulePath + "@" + moduleVersion + "/go.mod":        "module " + modulePath + "\n\ngo 1.25.12\n",
+		modulePath + "@" + moduleVersion + "/dependency.go": "package dependency\n\nconst Value = 18\n",
+	} {
+		entry, err := zipWriter.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(entry, contents); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := t.TempDir()
+	writeTestFile(
+		t,
+		filepath.Join(repo, "go.mod"),
+		"module example.invalid/root\n\ngo 1.25.12\n\nrequire "+modulePath+" "+moduleVersion+"\n",
+	)
+	writeTestFile(
+		t,
+		filepath.Join(repo, "root.go"),
+		"package root\n\nimport \""+modulePath+"\"\n\nconst Value = dependency.Value\n",
+	)
+	cache, err := prepareVerifierCache(repo, filepath.Join(newRetryCleanupTempDir(t), "cache"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment, err := newIsolatedProcessEnvironmentWithCache(newRetryCleanupTempDir(t), cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyURL := (&url.URL{Scheme: "file", Path: filepath.ToSlash(proxy)}).String()
+	environment = replaceEnvironmentValue(environment, "GOPROXY", proxyURL)
+	environment = replaceEnvironmentValue(environment, "GOSUMDB", "off")
+	prerequisite := repositoryModulesPrerequisite()
+	if state := checkPrerequisite(repo, prerequisite, environment); !state.available {
+		t.Fatalf("populate repository module cache: %s", state.detail)
+	}
+
+	offlineEnvironment := replaceEnvironmentValue(environment, "GOPROXY", "off")
+	if state := checkPrerequisite(repo, prerequisite, offlineEnvironment); !state.available {
+		t.Fatalf("warm repository module cache failed offline: %s", state.detail)
+	}
+
+	coldCache, err := prepareVerifierCache(repo, filepath.Join(newRetryCleanupTempDir(t), "cold-cache"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	coldEnvironment, err := newIsolatedProcessEnvironmentWithCache(newRetryCleanupTempDir(t), coldCache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coldEnvironment = replaceEnvironmentValue(coldEnvironment, "GOPROXY", "off")
+	coldEnvironment = replaceEnvironmentValue(coldEnvironment, "GOSUMDB", "off")
+	if state := checkPrerequisite(repo, prerequisite, coldEnvironment); state.available ||
+		!strings.Contains(state.detail, "go mod download failed") {
+		t.Fatalf("cold offline module state = %+v, want prerequisite failure", state)
+	}
+}
+
+func TestEveryGoDependentActionDeclaresRepositoryModules(t *testing.T) {
+	want := Prerequisite{
+		Kind:    "capability",
+		Name:    "repository-modules",
+		Version: "go-mod-download",
+	}
+	for _, profile := range verificationManifest().Profiles {
+		for _, check := range profile.Checks {
+			goDependent := check.Action.Command != nil && check.Action.Command.Executable == "go"
+			if check.ID == "lint" || check.ID == "ssh-matrix" {
+				goDependent = true
+			}
+			if goDependent && !containsPrerequisite(check.Prerequisites, want) {
+				t.Errorf("%s/%s does not declare repository module availability", profile.Name, check.ID)
+			}
+		}
+	}
+}
+
+func TestProfileRejectsSensitiveLocalGitConfigurationWithoutPrintingValues(t *testing.T) {
+	repo := newCleanTestRepository(t)
+	gitOutput(t, repo, "config", "--local", "credential.helper", "credential-canary-value")
+
+	actionCalled := false
+	deps := passingTestDependencies(t, repo)
+	deps.prerequisites = checkPrerequisite
+	deps.actions = func(context.Context, Action, actionContext) checkResult {
+		actionCalled = true
+		return checkResult{Status: statusPassed}
+	}
+	result, err := executeProfile(context.Background(), verificationManifest(), "fast", deps)
+	if err == nil || !strings.Contains(err.Error(), "sensitive local Git configuration") {
+		t.Fatalf("error = %v, want sensitive local Git configuration failure", err)
+	}
+	if strings.Contains(err.Error(), "credential-canary-value") {
+		t.Fatalf("Git credential configuration value leaked in error: %v", err)
+	}
+	if actionCalled {
+		t.Fatal("profile action ran despite sensitive repository-local Git configuration")
+	}
+	if result.Status != statusFailed {
+		t.Fatalf("status = %q, want %q", result.Status, statusFailed)
+	}
+}
+
+func TestLintUsesPrecomputedPatchWithoutGitMetadata(t *testing.T) {
+	repo := newRepresentativeProfileRepository(t)
+	writeTestFile(
+		t,
+		filepath.Join(repo, "cmd", "ssm", "main.go"),
+		"package main\n\nvar version = \"1.2.3\"\n\nfunc main() { println(\"tracked dirty change\") }\n",
+	)
+	manifest := verificationManifest()
+	setProfileChecks(t, &manifest, "ci", []Check{lintCheck()})
+
+	actionCalled := false
+	deps := passingTestDependencies(t, repo)
+	deps.actions = func(_ context.Context, action Action, actionCtx actionContext) checkResult {
+		actionCalled = true
+		if _, err := os.Lstat(filepath.Join(actionCtx.RepoRoot, ".git")); !os.IsNotExist(err) {
+			return checkResult{Status: statusFailed, Detail: ".git is visible to lint"}
+		}
+		if action.Command == nil || !reflect.DeepEqual(
+			action.Command.Args,
+			[]string{"run", "--new-from-patch", "{temp}/lint.patch"},
+		) {
+			return checkResult{Status: statusFailed, Detail: fmt.Sprintf("lint argv = %v", action.Command)}
+		}
+		patch, err := os.ReadFile(filepath.Join(actionCtx.TempDir, "lint.patch")) //nolint:gosec // verifier-owned temporary patch
+		if err != nil {
+			return checkResult{Status: statusFailed, Detail: fmt.Sprintf("read lint patch: %v", err)}
+		}
+		if !bytes.Contains(patch, []byte("tracked dirty change")) {
+			return checkResult{Status: statusFailed, Detail: "lint patch omitted tracked working-tree change"}
+		}
+		return checkResult{Status: statusPassed}
+	}
+	result, err := executeProfile(context.Background(), manifest, "ci", deps)
+	if err != nil {
+		t.Fatalf("execute lint profile: %v (result=%+v)", err, result)
+	}
+	if !actionCalled {
+		t.Fatal("lint action did not run")
+	}
 }
 
 func TestRepresentativeRealCIActionsAreNonMutating(t *testing.T) {
@@ -1245,7 +1946,7 @@ func TestRepresentativeRealCIActionsAreNonMutating(t *testing.T) {
 		repoRoot: repo,
 		stdout:   io.Discard,
 		stderr:   io.Discard,
-		prerequisites: func(Prerequisite, []string) prerequisiteState {
+		prerequisites: func(string, Prerequisite, []string) prerequisiteState {
 			return prerequisiteState{available: true}
 		},
 		actions: executeAction,
@@ -1411,7 +2112,7 @@ func TestChildEnvironmentIsIsolated(t *testing.T) {
 		repoRoot: repo,
 		stdout:   io.Discard,
 		stderr:   io.Discard,
-		prerequisites: func(Prerequisite, []string) prerequisiteState {
+		prerequisites: func(string, Prerequisite, []string) prerequisiteState {
 			return prerequisiteState{available: true}
 		},
 		actions: executeAction,
@@ -1427,9 +2128,24 @@ func TestChildEnvironmentIsIsolated(t *testing.T) {
 func TestRepresentativeRealReleaseActionsAreNonMutating(t *testing.T) {
 	repo := newRepresentativeProfileRepository(t)
 	manifest := verificationManifest()
-	allReleaseChecks := releaseChecks()
-	representative := append([]Check{allReleaseChecks[0]}, allReleaseChecks[1:7]...)
-	representative = append(representative, allReleaseChecks[8], allReleaseChecks[9])
+	wanted := map[string]bool{
+		"source-version":       true,
+		"asset-linux-amd64":    true,
+		"asset-linux-arm64":    true,
+		"asset-darwin-amd64":   true,
+		"asset-darwin-arm64":   true,
+		"asset-windows-amd64":  true,
+		"asset-windows-arm64":  true,
+		"release-notes":        true,
+		"install-shell-syntax": true,
+		"release-checksums":    true,
+	}
+	var representative []Check
+	for _, check := range releaseChecks() {
+		if wanted[check.ID] {
+			representative = append(representative, check)
+		}
+	}
 	setProfileChecks(t, &manifest, "release", representative)
 
 	before, err := repositorySnapshot(repo)
@@ -1440,7 +2156,7 @@ func TestRepresentativeRealReleaseActionsAreNonMutating(t *testing.T) {
 		repoRoot: repo,
 		stdout:   io.Discard,
 		stderr:   io.Discard,
-		prerequisites: func(Prerequisite, []string) prerequisiteState {
+		prerequisites: func(string, Prerequisite, []string) prerequisiteState {
 			return prerequisiteState{available: true}
 		},
 		actions: executeAction,
@@ -1630,6 +2346,84 @@ func TestRepositorySnapshotDetectsEveryMutationClass(t *testing.T) {
 	}
 }
 
+func TestRepositorySnapshotDetectsFsmonitorCleanState(t *testing.T) {
+	repo := newCleanTestRepository(t)
+	before, err := repositorySnapshot(repo)
+	if err != nil {
+		t.Fatalf("snapshot before: %v", err)
+	}
+	command := exec.Command("git", "update-index", "--fsmonitor-valid", "sentinel.txt")
+	command.Dir = repo
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Skipf("Git does not support fsmonitor-valid index state: %v\n%s", err, output)
+	}
+	flagged := gitOutput(t, repo, "ls-files", "-f", "--", "sentinel.txt")
+	if !strings.HasPrefix(flagged, "h ") {
+		t.Skipf("Git did not retain fsmonitor-valid state: %q", flagged)
+	}
+	after, err := repositorySnapshot(repo)
+	if err != nil {
+		t.Fatalf("snapshot after: %v", err)
+	}
+	if bytes.Equal(before, after) {
+		t.Fatal("repository snapshot did not detect fsmonitor-clean index state")
+	}
+}
+
+func TestRepositorySnapshotDetectsResolveUndoState(t *testing.T) {
+	repo := newCleanTestRepository(t)
+	writeTestFile(t, filepath.Join(repo, "sentinel.txt"), "resolved\n")
+	gitOutput(t, repo, "add", "sentinel.txt")
+	gitOutput(t, repo, "commit", "--quiet", "-m", "resolved baseline")
+
+	before, err := repositorySnapshot(repo)
+	if err != nil {
+		t.Fatalf("snapshot before: %v", err)
+	}
+	hashBlob := func(contents string) string {
+		t.Helper()
+		command := exec.Command("git", "hash-object", "-w", "--stdin")
+		command.Dir = repo
+		command.Stdin = strings.NewReader(contents)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("hash conflict blob: %v\n%s", err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	base := hashBlob("base\n")
+	ours := hashBlob("ours\n")
+	theirs := hashBlob("theirs\n")
+	indexInfo := strings.Join([]string{
+		"0 0000000000000000000000000000000000000000\tsentinel.txt",
+		"100644 " + base + " 1\tsentinel.txt",
+		"100644 " + ours + " 2\tsentinel.txt",
+		"100644 " + theirs + " 3\tsentinel.txt",
+		"",
+	}, "\n")
+	command := exec.Command("git", "update-index", "--index-info")
+	command.Dir = repo
+	command.Stdin = strings.NewReader(indexInfo)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("create unmerged index stages: %v\n%s", err, output)
+	}
+	gitOutput(t, repo, "add", "sentinel.txt")
+	if got := gitOutput(t, repo, "ls-files", "--resolve-undo", "--", "sentinel.txt"); got == "" {
+		t.Skip("Git did not retain resolve-undo state")
+	}
+	if got := gitOutput(t, repo, "diff", "--cached", "--name-only", "HEAD", "--"); got != "" {
+		t.Fatalf("resolve-undo fixture changed canonical stage-0 content: %q", got)
+	}
+
+	after, err := repositorySnapshot(repo)
+	if err != nil {
+		t.Fatalf("snapshot after: %v", err)
+	}
+	if bytes.Equal(before, after) {
+		t.Fatal("repository snapshot did not detect resolve-undo index state")
+	}
+}
+
 func TestProfileDetectsAllRefMutations(t *testing.T) {
 	for _, test := range []struct {
 		name   string
@@ -1774,6 +2568,7 @@ func newCleanTestRepository(t *testing.T) string {
 	gitOutput(t, repo, "config", "user.email", "verify@example.invalid")
 	gitOutput(t, repo, "add", "sentinel.txt")
 	gitOutput(t, repo, "commit", "--quiet", "-m", "test fixture")
+	gitOutput(t, repo, "tag", "v1.2.0")
 	return repo
 }
 
@@ -1829,6 +2624,7 @@ func newRepresentativeProfileRepository(t *testing.T) string {
 	gitOutput(t, repo, "config", "user.email", "verify@example.invalid")
 	gitOutput(t, repo, "add", ".")
 	gitOutput(t, repo, "commit", "--quiet", "-m", "representative profile fixture")
+	gitOutput(t, repo, "tag", "v1.2.0")
 	return repo
 }
 
@@ -1849,7 +2645,7 @@ func passingTestDependencies(t *testing.T, repo string) runtimeDependencies {
 		repoRoot: repo,
 		stdout:   io.Discard,
 		stderr:   io.Discard,
-		prerequisites: func(Prerequisite, []string) prerequisiteState {
+		prerequisites: func(string, Prerequisite, []string) prerequisiteState {
 			return prerequisiteState{available: true}
 		},
 		actions: func(context.Context, Action, actionContext) checkResult {
@@ -1860,7 +2656,7 @@ func passingTestDependencies(t *testing.T, repo string) runtimeDependencies {
 
 func newTestProcessEnvironment(t *testing.T) []string {
 	t.Helper()
-	environment, err := newIsolatedProcessEnvironment(t.TempDir())
+	environment, err := newIsolatedProcessEnvironment(newRetryCleanupTempDir(t))
 	if err != nil {
 		t.Fatalf("create isolated test process environment: %v", err)
 	}
@@ -1881,6 +2677,40 @@ func environmentMap(t *testing.T, environment []string) map[string]string {
 		values[key] = value
 	}
 	return values
+}
+
+func replaceEnvironmentValue(environment []string, name, value string) []string {
+	replaced := append([]string(nil), environment...)
+	prefix := name + "="
+	for index, entry := range replaced {
+		if strings.HasPrefix(entry, prefix) {
+			replaced[index] = prefix + value
+			return replaced
+		}
+	}
+	return append(replaced, prefix+value)
+}
+
+func newRetryCleanupTempDir(t *testing.T) string {
+	t.Helper()
+	directory, err := os.MkdirTemp("", "ssm-verify-test-cache-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		var cleanupErr error
+		for range 20 {
+			cleanupErr = os.RemoveAll(directory)
+			if cleanupErr == nil {
+				if _, statErr := os.Lstat(directory); os.IsNotExist(statErr) {
+					return
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Errorf("remove test cache directory: %v", cleanupErr)
+	})
+	return directory
 }
 
 func writeTestFile(t *testing.T, path, contents string) {
@@ -1970,35 +2800,16 @@ func manifestCommandLines(manifest Manifest) []string {
 }
 
 func validateCIAdapters(manifest Manifest, makefile, workflow string) error {
-	const invocation = "go run ./cmd/verify ci"
-	if got := makeTargetRecipe(makefile, "check"); got != invocation {
-		return fmt.Errorf("Makefile check recipe = %q, want %q", got, invocation)
+	const linuxInvocation = "go run ./cmd/verify ci"
+	const windowsInvocation = "go run ./cmd/verify fast"
+	if got := makeTargetRecipe(makefile, "check"); got != linuxInvocation {
+		return fmt.Errorf("Makefile check recipe = %q, want %q", got, linuxInvocation)
 	}
-
-	steps := parseWorkflowSteps(workflow)
-	invocations := 0
-	for _, step := range steps {
-		if step.uses != "" &&
-			!strings.HasPrefix(step.uses, "actions/checkout@") &&
-			!strings.HasPrefix(step.uses, "actions/setup-go@") {
-			return fmt.Errorf("workflow executable action %q is not setup or checkout", step.uses)
-		}
-		if step.run == "" {
-			continue
-		}
-		switch step.name {
-		case "Install workflow prerequisites", "Install official golangci-lint prebuilt":
-		case "Verify CI profile":
-			if strings.TrimSpace(step.run) != invocation {
-				return fmt.Errorf("Verify CI profile runs %q, want %q", strings.TrimSpace(step.run), invocation)
-			}
-			invocations++
-		default:
-			return fmt.Errorf("workflow run step %q is not an approved setup or manifest adapter", step.name)
-		}
+	if got := strings.Count(workflow, "run: "+linuxInvocation); got != 1 {
+		return fmt.Errorf("workflow Linux manifest invocation count = %d, want 1", got)
 	}
-	if invocations != 1 {
-		return fmt.Errorf("workflow manifest invocation count = %d, want 1", invocations)
+	if got := strings.Count(workflow, "run: "+windowsInvocation); got != 1 {
+		return fmt.Errorf("workflow Windows manifest invocation count = %d, want 1", got)
 	}
 
 	for _, command := range manifestCommandLines(manifest) {
@@ -2007,54 +2818,4 @@ func validateCIAdapters(manifest Manifest, makefile, workflow string) error {
 		}
 	}
 	return nil
-}
-
-type workflowStep struct {
-	name string
-	uses string
-	run  string
-}
-
-func parseWorkflowSteps(workflow string) []workflowStep {
-	lines := strings.Split(workflow, "\n")
-	var steps []workflowStep
-	for index := 0; index < len(lines); index++ {
-		line := lines[index]
-		if !strings.HasPrefix(line, "      - ") {
-			continue
-		}
-		step := workflowStep{}
-		item := strings.TrimSpace(strings.TrimPrefix(line, "      - "))
-		switch {
-		case strings.HasPrefix(item, "name: "):
-			step.name = strings.TrimPrefix(item, "name: ")
-		case strings.HasPrefix(item, "uses: "):
-			step.uses = strings.TrimPrefix(item, "uses: ")
-		}
-		for index++; index < len(lines) && !strings.HasPrefix(lines[index], "      - "); index++ {
-			field := lines[index]
-			trimmed := strings.TrimSpace(field)
-			switch {
-			case strings.HasPrefix(trimmed, "name: "):
-				step.name = strings.TrimPrefix(trimmed, "name: ")
-			case strings.HasPrefix(trimmed, "uses: "):
-				step.uses = strings.TrimPrefix(trimmed, "uses: ")
-			case strings.HasPrefix(field, "        run: "):
-				value := strings.TrimPrefix(field, "        run: ")
-				if value != "|" {
-					step.run = value
-					continue
-				}
-				var script []string
-				for index+1 < len(lines) && strings.HasPrefix(lines[index+1], "          ") {
-					index++
-					script = append(script, strings.TrimPrefix(lines[index], "          "))
-				}
-				step.run = strings.Join(script, "\n")
-			}
-		}
-		index--
-		steps = append(steps, step)
-	}
-	return steps
 }

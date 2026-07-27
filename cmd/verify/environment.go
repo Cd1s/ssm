@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,7 +11,24 @@ import (
 
 type environmentLookup func(string) (string, bool)
 
+type verifierCache struct {
+	Root    string
+	GoBuild string
+	GoMod   string
+	GoPath  string
+}
+
 func newIsolatedProcessEnvironment(tempDir string) ([]string, error) {
+	cache := verifierCache{
+		Root:    tempDir,
+		GoBuild: filepath.Join(tempDir, "go-build"),
+		GoMod:   filepath.Join(tempDir, "go-mod"),
+		GoPath:  filepath.Join(tempDir, "gopath"),
+	}
+	return newIsolatedProcessEnvironmentWithCache(tempDir, cache)
+}
+
+func newIsolatedProcessEnvironmentWithCache(tempDir string, cache verifierCache) ([]string, error) {
 	for _, directory := range []string{
 		"home",
 		"xdg-config",
@@ -29,10 +45,25 @@ func newIsolatedProcessEnvironment(tempDir string) ([]string, error) {
 			return nil, fmt.Errorf("create isolated environment directory %s: %w", directory, err)
 		}
 	}
-	return isolatedEnvironmentForOS(tempDir, runtime.GOOS, os.LookupEnv)
+	return isolatedEnvironmentForOSWithCache(tempDir, runtime.GOOS, os.LookupEnv, cache)
 }
 
 func isolatedEnvironmentForOS(tempDir, goos string, lookup environmentLookup) ([]string, error) {
+	cache := verifierCache{
+		Root:    tempDir,
+		GoBuild: environmentPath(tempDir, goos, "go-build"),
+		GoMod:   environmentPath(tempDir, goos, "go-mod"),
+		GoPath:  environmentPath(tempDir, goos, "gopath"),
+	}
+	return isolatedEnvironmentForOSWithCache(tempDir, goos, lookup, cache)
+}
+
+func isolatedEnvironmentForOSWithCache(
+	tempDir string,
+	goos string,
+	lookup environmentLookup,
+	cache verifierCache,
+) ([]string, error) {
 	path, ok := lookup("PATH")
 	if !ok || path == "" {
 		return nil, fmt.Errorf("PATH is required for verification children")
@@ -48,12 +79,17 @@ func isolatedEnvironmentForOS(tempDir, goos string, lookup environmentLookup) ([
 		"TMPDIR":                 environmentPath(tempDir, goos, "tmp"),
 		"TMP":                    environmentPath(tempDir, goos, "tmp"),
 		"TEMP":                   environmentPath(tempDir, goos, "tmp"),
-		"GOCACHE":                environmentPath(tempDir, goos, "go-build"),
-		"GOMODCACHE":             environmentPath(tempDir, goos, "go-mod"),
-		"GOPATH":                 environmentPath(tempDir, goos, "gopath"),
+		"GOCACHE":                cache.GoBuild,
+		"GOMODCACHE":             cache.GoMod,
+		"GOPATH":                 cache.GoPath,
 		"GOLANGCI_LINT_CACHE":    environmentPath(tempDir, goos, "golangci-lint"),
 		"GOENV":                  "off",
 		"GOTOOLCHAIN":            "local",
+		"GOPROXY":                "https://proxy.golang.org,direct",
+		"GOSUMDB":                "sum.golang.org",
+		"GONOSUMDB":              "",
+		"GOPRIVATE":              "",
+		"GONOPROXY":              "",
 		"GIT_CONFIG_NOSYSTEM":    "1",
 		"GIT_CONFIG_GLOBAL":      environmentPath(tempDir, goos, "xdg-config", "gitconfig"),
 		"GIT_TERMINAL_PROMPT":    "0",
@@ -77,18 +113,8 @@ func isolatedEnvironmentForOS(tempDir, goos string, lookup environmentLookup) ([
 		"SSL_CERT_FILE",
 		"SSL_CERT_DIR",
 		"SSHD",
-		"GOPROXY",
-		"GOSUMDB",
-		"GONOSUMDB",
-		"GOPRIVATE",
-		"GONOPROXY",
 	} {
 		if value, present := lookup(name); present {
-			if name == "GOPROXY" {
-				if err := validateUnauthenticatedGoProxy(value); err != nil {
-					return nil, err
-				}
-			}
 			values[name] = value
 		}
 	}
@@ -116,20 +142,102 @@ func isolatedEnvironmentForOS(tempDir, goos string, lookup environmentLookup) ([
 	return environment, nil
 }
 
-func validateUnauthenticatedGoProxy(value string) error {
-	for _, entry := range strings.FieldsFunc(value, func(character rune) bool {
-		return character == ',' || character == '|'
-	}) {
-		if entry == "" || entry == "direct" || entry == "off" {
-			continue
-		}
-		parsed, err := url.Parse(entry)
+func prepareVerifierCache(repoRoot, requestedRoot string) (verifierCache, error) {
+	root := requestedRoot
+	if root == "" {
+		base, err := os.UserCacheDir()
 		if err != nil {
-			return fmt.Errorf("GOPROXY entry %q is invalid: %w", entry, err)
+			return verifierCache{}, fmt.Errorf("resolve user cache directory: %w", err)
 		}
-		if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-			return fmt.Errorf("GOPROXY entry %q may contain authentication material", entry)
+		root = filepath.Join(base, "ssm", "verify", "go1.25.12")
+	}
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return verifierCache{}, fmt.Errorf("make verifier cache path absolute: %w", err)
+	}
+	repository, err := filepath.Abs(repoRoot)
+	if err != nil {
+		return verifierCache{}, fmt.Errorf("make repository path absolute: %w", err)
+	}
+	resolvedRepository, err := filepath.EvalSymlinks(repository)
+	if err != nil {
+		return verifierCache{}, fmt.Errorf("resolve repository path: %w", err)
+	}
+	resolvedRoot, err := resolvePathForCreation(root)
+	if err != nil {
+		return verifierCache{}, fmt.Errorf("resolve verifier cache path: %w", err)
+	}
+	if samePathVolume(filepath.VolumeName(resolvedRepository), filepath.VolumeName(resolvedRoot)) {
+		relative, err := filepath.Rel(resolvedRepository, resolvedRoot)
+		if err != nil {
+			return verifierCache{}, fmt.Errorf("compare verifier cache and repository paths: %w", err)
 		}
+		if relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
+			return verifierCache{}, fmt.Errorf("verifier cache must be outside repository")
+		}
+	}
+
+	cache := verifierCache{
+		Root:    root,
+		GoBuild: filepath.Join(root, "go-build"),
+		GoMod:   filepath.Join(root, "go-mod"),
+		GoPath:  filepath.Join(root, "gopath"),
+	}
+	for _, directory := range []string{cache.Root, cache.GoBuild, cache.GoMod, cache.GoPath} {
+		if err := ensurePrivateCacheDirectory(directory); err != nil {
+			return verifierCache{}, err
+		}
+	}
+	return cache, nil
+}
+
+func samePathVolume(left, right string) bool {
+	return strings.EqualFold(left, right)
+}
+
+func resolvePathForCreation(path string) (string, error) {
+	current := path
+	var missing []string
+	for {
+		_, err := os.Lstat(current)
+		if err == nil {
+			resolved, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", err
+			}
+			for index := len(missing) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, missing[index])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("no existing cache path ancestor")
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
+}
+
+func ensurePrivateCacheDirectory(path string) error {
+	//nolint:gosec // path is an absolute dedicated verifier cache already proven outside the repository
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return fmt.Errorf("create private verifier cache directory: %w", err)
+	}
+	//nolint:gosec // inspect the same validated dedicated verifier cache path without following a leaf symlink
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("inspect private verifier cache directory: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("private verifier cache path is not a regular directory")
+	}
+	//nolint:gosec // cache directories intentionally require owner traversal in addition to read/write
+	if err := os.Chmod(path, 0o700); err != nil {
+		return fmt.Errorf("restrict private verifier cache directory: %w", err)
 	}
 	return nil
 }

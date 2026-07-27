@@ -14,14 +14,12 @@ func main() {
 		os.Exit(1)
 	}
 	deps := runtimeDependencies{
-		repoRoot: repoRoot,
-		stdout:   os.Stdout,
-		stderr:   os.Stderr,
-		prerequisites: func(prerequisite Prerequisite, environment []string) prerequisiteState {
-			return checkPrerequisite(repoRoot, prerequisite, environment)
-		},
-		actions:   executeAction,
-		removeAll: os.RemoveAll,
+		repoRoot:      repoRoot,
+		stdout:        os.Stdout,
+		stderr:        os.Stderr,
+		prerequisites: checkPrerequisite,
+		actions:       executeAction,
+		removeAll:     os.RemoveAll,
 	}
 	if err := runCLI(context.Background(), os.Args[1:], os.Stdout, os.Stderr, deps); err != nil {
 		fmt.Fprintf(os.Stderr, "verify: %v\n", err)

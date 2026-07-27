@@ -38,6 +38,7 @@ type Check struct {
 	ID               string         `json:"id"`
 	Description      string         `json:"description"`
 	Requirement      string         `json:"requirement"`
+	Activation       string         `json:"activation,omitempty"`
 	RequiredContexts []string       `json:"required_contexts,omitempty"`
 	Action           Action         `json:"action"`
 	Prerequisites    []Prerequisite `json:"prerequisites"`
@@ -120,6 +121,16 @@ func verificationManifest() Manifest {
 func profilePrerequisites() []Prerequisite {
 	return []Prerequisite{
 		{Kind: "tool", Name: "git", Version: "any"},
+		{
+			Kind:    "repository",
+			Name:    "fully-populated-regular-tracked-worktree",
+			Version: "stage-0-modes-100644-or-100755-no-sparse",
+		},
+		{
+			Kind:    "repository",
+			Name:    "no-sensitive-local-git-config",
+			Version: "credential-key-names",
+		},
 	}
 }
 
@@ -174,6 +185,18 @@ func releaseChecks() []Check {
 			},
 		},
 		Check{
+			ID:          "install-shell-syntax",
+			Description: "Parse the published installer without executing it.",
+			Requirement: requirementRequired,
+			Action: commandAction("sh", []string{
+				"-n", "install.sh",
+			}, nil, ""),
+			Prerequisites: []Prerequisite{
+				{Kind: "tool", Name: "sh", Version: "any"},
+				{Kind: "file", Name: "install.sh", Version: "tracked"},
+			},
+		},
+		Check{
 			ID:          "release-checksums",
 			Description: "Compute SHA-256 digests for all six assets and install.sh without writing release output.",
 			Requirement: requirementRequired,
@@ -215,10 +238,11 @@ func lintCheck() Check {
 		Description: "Run the reviewed golangci-lint baseline.",
 		Requirement: requirementRequired,
 		Action: commandAction("golangci-lint", []string{
-			"run", "--new-from-rev=v1.2.0",
+			"run", "--new-from-patch", "{temp}/lint.patch",
 		}, nil, ""),
 		Prerequisites: []Prerequisite{
 			{Kind: "tool", Name: "golangci-lint", Version: "2.11.4"},
+			repositoryModulesPrerequisite(),
 		},
 	}
 }
@@ -274,13 +298,23 @@ func unitCheck() Check {
 }
 
 func raceCheck() Check {
-	return Check{
-		ID:            "race",
-		Description:   "Run the complete Go test suite with the race detector.",
-		Requirement:   requirementRequired,
+	check := Check{
+		ID:          "race",
+		Description: "Run the complete Go test suite with the race detector on a natively supported host.",
+		Requirement: requirementConditional,
+		Activation:  "native_supported_host_with_cgo_and_c_compiler",
+		RequiredContexts: []string{
+			"github_actions_linux",
+		},
 		Action:        commandAction("go", []string{"test", "-race", "./..."}, nil, ""),
 		Prerequisites: goPrerequisites(),
 	}
+	check.Prerequisites = append(check.Prerequisites, Prerequisite{
+		Kind:    "capability",
+		Name:    "native-race",
+		Version: "supported-host-cgo-c-compiler",
+	})
+	return check
 }
 
 func agentPromptsJSONCheck() Check {
@@ -347,6 +381,7 @@ func sshMatrixCheck() Check {
 			{Kind: "tool", Name: "dirname", Version: "any"},
 			{Kind: "tool", Name: "find", Version: "any"},
 			{Kind: "tool", Name: "go", Version: "1.25.12"},
+			repositoryModulesPrerequisite(),
 			{Kind: "tool", Name: "grep", Version: "any"},
 			{Kind: "tool", Name: "head", Version: "any"},
 			{Kind: "tool", Name: "id", Version: "any"},
@@ -364,6 +399,7 @@ func sshMatrixCheck() Check {
 			{Kind: "tool", Name: "sleep", Version: "any"},
 			{Kind: "tool", Name: "ssh", Version: "any"},
 			{Kind: "tool", Name: "ssh-keygen", Version: "any"},
+			{Kind: "tool", Name: "touch", Version: "any"},
 			{
 				Kind:    "executable_alternatives",
 				Name:    "sshd",
@@ -401,6 +437,15 @@ func assetCheck(goos, goarch string) Check {
 func goPrerequisites() []Prerequisite {
 	return []Prerequisite{
 		{Kind: "tool", Name: "go", Version: "1.25.12"},
+		repositoryModulesPrerequisite(),
+	}
+}
+
+func repositoryModulesPrerequisite() Prerequisite {
+	return Prerequisite{
+		Kind:    "capability",
+		Name:    "repository-modules",
+		Version: "go-mod-download",
 	}
 }
 

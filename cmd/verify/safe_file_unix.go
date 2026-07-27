@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,23 +36,30 @@ func openRegularFileNoFollow(root, slashPath string) (*os.File, error) {
 		nextDescriptor, openErr := unix.Openat(currentDescriptor, component, flags, 0)
 		closeErr := unix.Close(currentDescriptor)
 		if openErr != nil {
-			return nil, fmt.Errorf("open component %q without following links: %w", component, openErr)
+			return nil, errors.Join(
+				fmt.Errorf("open component %q without following links: %w", component, openErr),
+				wrapCloseError("close parent of component "+component, closeErr),
+			)
 		}
 		if closeErr != nil {
-			_ = unix.Close(nextDescriptor)
-			return nil, fmt.Errorf("close parent of component %q: %w", component, closeErr)
+			nextCloseErr := unix.Close(nextDescriptor)
+			return nil, errors.Join(
+				fmt.Errorf("close parent of component %q: %w", component, closeErr),
+				wrapCloseError("close opened component "+component, nextCloseErr),
+			)
 		}
 		currentDescriptor = nextDescriptor
 	}
 
 	file := os.NewFile(uintptr(currentDescriptor), filepath.Join(root, relative)) //nolint:gosec // successful unix.Openat returns a nonnegative descriptor representable as uintptr
 	if file == nil {
-		_ = unix.Close(currentDescriptor)
-		return nil, fmt.Errorf("adopt safely opened file descriptor")
+		return nil, errors.Join(
+			fmt.Errorf("adopt safely opened file descriptor"),
+			wrapCloseError("close unadopted file descriptor", unix.Close(currentDescriptor)),
+		)
 	}
 	if err := ensureRegularFile(file, slashPath); err != nil {
-		_ = file.Close()
-		return nil, err
+		return nil, errors.Join(err, wrapCloseError("close nonregular path "+slashPath, file.Close()))
 	}
 	return file, nil
 }

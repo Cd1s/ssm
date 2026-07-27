@@ -83,6 +83,7 @@ require sha256sum
 require sleep
 require ssh
 require ssh-keygen
+require touch
 require tr
 require wc
 
@@ -92,24 +93,31 @@ ssh-keygen -q -t ed25519 -N '' -f "$TMP/client_key"
 ssh-keygen -q -t ed25519 -N '' -f "$TMP/host_key"
 cp "$TMP/client_key.pub" "$TMP/authorized_keys"
 
-find_free_port() {
-  for port in $(seq 22222 22322); do
-    if ! (echo >/dev/tcp/127.0.0.1/"$port") >/dev/null 2>&1; then
-      printf '%s\n' "$port"
-      return 0
-    fi
+mkdir -p "$TMP/throttle-bin"
+cat > "$TMP/throttle-bin/cat" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ -f "${SSM_MATRIX_THROTTLE_MARKER:?}" ] && [ "$#" -eq 0 ]; then
+  chunk=
+  while IFS= read -r -N 4096 chunk; do
+    printf '%s' "$chunk"
+    chunk=
+    sleep 0.01
   done
-  return 1
-}
-
-PORT=${SSM_TEST_SSH_PORT:-$(find_free_port)}
-TEST_USER=${SSM_TEST_SSH_USER:-$(id -un)}
-if [ -z "$PORT" ]; then
-  echo "no free localhost SSH test port found" >&2
-  exit 2
+  printf '%s' "$chunk"
+  exit 0
 fi
-cat > "$TMP/sshd_config" <<EOF
-Port $PORT
+if [ -x /usr/bin/cat ]; then
+  exec /usr/bin/cat "$@"
+fi
+exec /bin/cat "$@"
+EOF
+chmod 700 "$TMP/throttle-bin/cat"
+
+write_sshd_config() {
+  local port=$1
+  cat > "$TMP/sshd_config" <<EOF
+Port $port
 ListenAddress 127.0.0.1
 HostKey $TMP/host_key
 PidFile $TMP/sshd.pid
@@ -122,10 +130,44 @@ StrictModes no
 LogLevel ERROR
 PrintMotd no
 PrintLastLog no
+SetEnv PATH=$TMP/throttle-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin SSM_MATRIX_THROTTLE_MARKER=$TMP/transfer-throttle-enabled
 Subsystem sftp /usr/lib/openssh/sftp-server
 EOF
+}
 
-"$SSHD" -f "$TMP/sshd_config" -E "$TMP/sshd.log"
+start_sshd_with_retry() {
+  local candidates candidate
+  if [ -n "${SSM_TEST_SSH_PORT:-}" ]; then
+    candidates=$SSM_TEST_SSH_PORT
+  else
+    candidates=$(seq 22222 22322)
+  fi
+  for candidate in $candidates; do
+    rm -f "$TMP/sshd.pid"
+    write_sshd_config "$candidate"
+    if "$SSHD" -f "$TMP/sshd_config" -E "$TMP/sshd.log"; then
+      PORT=$candidate
+      export PORT
+      return 0
+    fi
+  done
+  echo "temporary sshd could not bind an approved localhost test port" >&2
+  cat "$TMP/sshd.log" >&2
+  return 1
+}
+
+find_unbound_port() {
+  for port in $(seq 22323 22423); do
+    if ! (echo >/dev/tcp/127.0.0.1/"$port") >/dev/null 2>&1; then
+      printf '%s\n' "$port"
+      return 0
+    fi
+  done
+  return 1
+}
+
+TEST_USER=${SSM_TEST_SSH_USER:-$(id -un)}
+start_sshd_with_retry
 ready=0
 for _ in $(seq 1 50); do
   if ssh -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile="$TMP/smoke_known_hosts" -i "$TMP/client_key" -p "$PORT" "$TEST_USER"@127.0.0.1 true 2>/dev/null; then
@@ -213,7 +255,7 @@ printf '%s' "$host_show" | grep -q '"auth": "key"' || { echo "host show: $host_s
 echo "ok host_crud"
 
 vault_before=$(sha256sum "$TMP/home/.config/ssm/connections.enc" | awk '{print $1}')
-BAD_PORT=$(find_free_port)
+BAD_PORT=$(find_unbound_port)
 set +e
 host_rejected=$(run_sshctl host update local --port "$BAD_PORT" --verify --json)
 host_rejected_rc=$?
@@ -401,16 +443,18 @@ printf '%s' "$verified_put" | grep -q '"integrity": "sha256_verified"' || { echo
 printf '%s' "$verified_put" | grep -q '"atomic": true' || { echo "put atomic: $verified_put" >&2; exit 1; }
 echo "ok put_sha256"
 
-head -c 16777216 /dev/zero > "$TMP/timeout-payload"
+head -c 16777216 /dev/zero | tr '\000' x > "$TMP/timeout-payload"
+touch "$TMP/transfer-throttle-enabled"
 set +e
-timeout_put=$(run_sshctl put local "$TMP/timeout-payload" "$TMP/timeout-target" --timeout 1ms --json)
+timeout_put=$(run_sshctl put local "$TMP/timeout-payload" "$TMP/timeout-target" --timeout 1s --json)
 timeout_put_rc=$?
 set -e
+rm -f "$TMP/transfer-throttle-enabled"
 if [ "$timeout_put_rc" = "0" ] || ! printf '%s' "$timeout_put" | grep -q '"error": "transfer_timeout"' || ! printf '%s' "$timeout_put" | grep -q '"stage": "timeout"'; then
   echo "put timeout: rc=$timeout_put_rc out=[$timeout_put]" >&2
   exit 1
 fi
-for _ in $(seq 1 20); do
+for _ in $(seq 1 100); do
   if run_sshctl run local "test ! -e '$TMP/timeout-target' && ! find '$TMP' -maxdepth 1 -name 'timeout-target.ssm-upload.*' | grep -q ."; then
     timeout_clean=1
     break
@@ -418,19 +462,22 @@ for _ in $(seq 1 20); do
   sleep 0.1
 done
 if [ "${timeout_clean:-0}" != 1 ]; then
-  echo "put timeout left final or partial file" >&2
+  timeout_leftovers=$(run_sshctl run local "find '$TMP' -maxdepth 1 \\( -name 'timeout-target' -o -name 'timeout-target.ssm-upload.*' \\) -print")
+  echo "put timeout left final or partial file: $timeout_leftovers" >&2
   exit 1
 fi
 echo "ok put_timeout_cleanup"
 
-head -c 33554432 /dev/zero > "$TMP/resume-payload"
+head -c 16777216 /dev/zero | tr '\000' x > "$TMP/resume-payload"
 printf 'resume-tail' >> "$TMP/resume-payload"
 resume_remote="$TMP/resume weird ' path"
 printf -v resume_remote_q %q "$resume_remote"
+touch "$TMP/transfer-throttle-enabled"
 set +e
-resume_interrupted=$(run_sshctl put local "$TMP/resume-payload" "$resume_remote" --resume=v1 --timeout 2ms --json)
+resume_interrupted=$(run_sshctl put local "$TMP/resume-payload" "$resume_remote" --resume=v1 --timeout 1s --json)
 resume_interrupted_rc=$?
 set -e
+rm -f "$TMP/transfer-throttle-enabled"
 if [ "$resume_interrupted_rc" = "0" ] || ! printf '%s' "$resume_interrupted" | grep -q '"error": "transfer_timeout"'; then
   echo "resume forced disconnect: rc=$resume_interrupted_rc out=[$resume_interrupted]" >&2
   exit 1
@@ -460,10 +507,12 @@ fi
 echo "ok put_resume_forced_disconnect"
 
 corrupt_remote="$TMP/corrupt-resume-target"
+touch "$TMP/transfer-throttle-enabled"
 set +e
-corrupt_seed=$(run_sshctl put local "$TMP/resume-payload" "$corrupt_remote" --resume=v1 --timeout 2ms --json)
+corrupt_seed=$(run_sshctl put local "$TMP/resume-payload" "$corrupt_remote" --resume=v1 --timeout 1s --json)
 corrupt_seed_rc=$?
 set -e
+rm -f "$TMP/transfer-throttle-enabled"
 if [ "$corrupt_seed_rc" = "0" ]; then
   echo "corrupt resume seed unexpectedly completed: $corrupt_seed" >&2
   exit 1

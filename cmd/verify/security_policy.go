@@ -16,7 +16,7 @@ func reviewedActionPolicy() map[string]Action {
 		),
 		"lint": reviewedCommand(
 			"golangci-lint",
-			[]string{"run", "--new-from-rev=v1.2.0"},
+			[]string{"run", "--new-from-patch", "{temp}/lint.patch"},
 			nil,
 			"",
 		),
@@ -145,6 +145,12 @@ func reviewedActionPolicy() map[string]Action {
 			Kind: actionBuiltin,
 			Name: "release-notes",
 		},
+		"install-shell-syntax": reviewedCommand(
+			"sh",
+			[]string{"-n", "install.sh"},
+			nil,
+			"",
+		),
 		"release-checksums": {
 			Kind: actionBuiltin,
 			Name: "release-checksums",

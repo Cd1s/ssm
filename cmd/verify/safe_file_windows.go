@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -57,12 +58,13 @@ func openRegularFileNoFollow(root, slashPath string) (*os.File, error) {
 	}
 	file := os.NewFile(uintptr(handle), fullPath)
 	if file == nil {
-		_ = windows.CloseHandle(handle)
-		return nil, fmt.Errorf("adopt safely opened Windows handle")
+		return nil, errors.Join(
+			fmt.Errorf("adopt safely opened Windows handle"),
+			wrapCloseError("close unadopted Windows handle", windows.CloseHandle(handle)),
+		)
 	}
 	if err := ensureRegularFile(file, slashPath); err != nil {
-		_ = file.Close()
-		return nil, err
+		return nil, errors.Join(err, wrapCloseError("close nonregular path "+slashPath, file.Close()))
 	}
 	return file, nil
 }
