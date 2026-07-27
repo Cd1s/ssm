@@ -2753,6 +2753,16 @@ func TestReleaseExtensionsAreMetadataNotChecks(t *testing.T) {
 		t.Fatalf("release extensions = %#v, want %#v", release.Extensions, want)
 	}
 
+	runtimeManifest := verificationManifest()
+	setProfileChecks(t, &runtimeManifest, "release", release.Checks[:1])
+	runtimeRelease, ok := findProfile(runtimeManifest, "release")
+	if !ok {
+		t.Fatal("runtime release profile not found")
+	}
+	if !reflect.DeepEqual(runtimeRelease.Extensions, want) {
+		t.Fatalf("runtime release extensions = %#v, want %#v", runtimeRelease.Extensions, want)
+	}
+
 	deps := passingTestDependencies(t, newCleanTestRepository(t))
 	deps.actions = func(_ context.Context, action Action, _ actionContext) checkResult {
 		if action.Kind == actionBuiltin && action.Name == "source-version" {
@@ -2760,15 +2770,15 @@ func TestReleaseExtensionsAreMetadataNotChecks(t *testing.T) {
 		}
 		return checkResult{Status: statusPassed}
 	}
-	result, err := executeProfile(context.Background(), verificationManifest(), "release", deps)
+	result, err := executeProfile(context.Background(), runtimeManifest, "release", deps)
 	if err != nil {
 		t.Fatalf("execute Ticket #18 release preflight: %v", err)
 	}
 	if result.Status != statusPreflightPassed {
 		t.Fatalf("release preflight status = %q, want %q", result.Status, statusPreflightPassed)
 	}
-	if len(result.Checks) != len(release.Checks) {
-		t.Fatalf("release emitted %d check results for %d executable checks", len(result.Checks), len(release.Checks))
+	if len(result.Checks) != len(runtimeRelease.Checks) {
+		t.Fatalf("release emitted %d check results for %d executable checks", len(result.Checks), len(runtimeRelease.Checks))
 	}
 	for _, check := range result.Checks {
 		if check.Status == statusUnavailable {
