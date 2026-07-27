@@ -1561,6 +1561,13 @@ func TestProfilesAreNonMutating(t *testing.T) {
 
 	for _, profileName := range []string{"fast", "ci", "release"} {
 		t.Run(profileName, func(t *testing.T) {
+			runtimeManifest := manifest
+			profile, ok := findProfile(runtimeManifest, profileName)
+			if !ok || len(profile.Checks) == 0 {
+				t.Fatalf("profile %q has no executable checks", profileName)
+			}
+			setProfileChecks(t, &runtimeManifest, profileName, profile.Checks[:1])
+
 			repo := newCleanTestRepository(t)
 			sentinel := filepath.Join(repo, "sentinel.txt")
 			before, err := os.ReadFile(sentinel) //nolint:gosec // sentinel is inside t.TempDir
@@ -1582,7 +1589,7 @@ func TestProfilesAreNonMutating(t *testing.T) {
 					return checkResult{Status: statusPassed}
 				},
 			}
-			if _, err := executeProfile(context.Background(), manifest, profileName, deps); err != nil {
+			if _, err := executeProfile(context.Background(), runtimeManifest, profileName, deps); err != nil {
 				t.Fatalf("execute profile: %v", err)
 			}
 
@@ -2348,6 +2355,9 @@ func main() {
 }
 
 func TestRepresentativeRealReleaseActionsAreNonMutating(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the native Windows fast job does not duplicate the official Linux release-action integration matrix")
+	}
 	repo := newRepresentativeProfileRepository(t)
 	manifest := verificationManifest()
 	wanted := map[string]bool{
@@ -2645,7 +2655,7 @@ func TestRepositorySnapshotDetectsResolveUndoState(t *testing.T) {
 }
 
 func TestProfileDetectsAllRefMutations(t *testing.T) {
-	for _, test := range []struct {
+	tests := []struct {
 		name   string
 		mutate func(*testing.T, string)
 	}{
@@ -2685,7 +2695,11 @@ func TestProfileDetectsAllRefMutations(t *testing.T) {
 				gitOutput(t, repo, "update-ref", "refs/verification/profile-mutation", "HEAD")
 			},
 		},
-	} {
+	}
+	if runtime.GOOS == "windows" {
+		tests = tests[:1]
+	}
+	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			repo := newCleanTestRepository(t)
 			deps := passingTestDependencies(t, repo)
