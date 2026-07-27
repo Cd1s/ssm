@@ -385,10 +385,24 @@ func isolatedCompiledCLIEnvironmentWith(home, temp string, overrides map[string]
 	return env
 }
 
+func compiledSafeMachineFields(stdout string) string {
+	var value map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &value); err != nil {
+		return "unavailable"
+	}
+	return fmt.Sprintf("error=%q stage=%q", value["error"], value["stage"])
+}
+
 func assertCompiledMachineContract(t *testing.T, result compiledCLIResult, want compiledMachineContract) {
 	t.Helper()
 	if result.ProcessExit != want.ProcessExit {
-		t.Fatalf("process exit = %d, want %d; output=%s", result.ProcessExit, want.ProcessExit, compiledOutputIdentity(result))
+		t.Fatalf(
+			"process exit = %d, want %d; fields=%s output=%s",
+			result.ProcessExit,
+			want.ProcessExit,
+			compiledSafeMachineFields(result.Stdout),
+			compiledOutputIdentity(result),
+		)
 	}
 	if result.Stderr != "" {
 		t.Fatalf("machine stderr bytes = %d, want 0; output=%s", len(result.Stderr), compiledOutputIdentity(result))
@@ -1439,14 +1453,10 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		})
 	}
 
-	t.Run("physical sshctl basename freezes the Windows extension discrepancy", func(t *testing.T) {
+	t.Run("physical sshctl basename dispatches portably", func(t *testing.T) {
 		invocation := reviewedCompiledMachineContract(t, "unknown_sshctl")
-		want := invocation
-		if runtime.GOOS == "windows" {
-			want = reviewedCompiledMachineContract(t, "unknown_ssm")
-		}
 		result := cli.RunWithPhysicalBasename(t, "sshctl", invocation.Args...)
-		assertCompiledMachineContract(t, result, want)
+		assertCompiledMachineContract(t, result, invocation)
 	})
 
 	t.Run("strict request schema rejects unknown fields", func(t *testing.T) {
@@ -1678,7 +1688,19 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		streamCLI.SaveCloud(t, sync.URL(), "ISSUE17_STREAM_REFRESH_TOKEN_CANARY")
 		streamCLI.SaveRemoteETag(t, "stream-current")
 		contract := reviewedCompiledMachineContract(t, "stream_refresh_failed")
-		result := streamCLI.RunReviewed(t, contract, []byte("[\"true\"]\n[\"true\"]\n"), nil)
+		input, writer := io.Pipe()
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			_, _ = io.WriteString(writer, "[\"true\"]\n[\"true\"]\n")
+			_ = writer.Close()
+		}()
+		result := streamCLI.runWithStdin(
+			t,
+			contract.Executable,
+			input,
+			map[string]string{"SSM_MASTER_PASS_FILE": streamCLI.passPath},
+			contract.Args...,
+		)
 		assertNoCompiledCanaryLeak(t, result, map[string]string{"token": "ISSUE17_STREAM_REFRESH_TOKEN_CANARY"})
 		assertCompiledMachineContract(t, result, contract)
 		if lines := nonEmptyCompiledLines(result.Stdout); len(lines) != 1 {

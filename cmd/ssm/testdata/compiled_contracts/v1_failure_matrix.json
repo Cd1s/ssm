@@ -212,9 +212,9 @@
   },
   {
     "name": "stream_refresh_failed",
-    "command": "sshctl --json run unused --stream --refresh=1ns",
+    "command": "sshctl --json run unused --stream --refresh=1ms",
     "executable": "sshctl",
-    "args": ["--json", "run", "unused", "--stream", "--refresh=1ns"],
+    "args": ["--json", "run", "unused", "--stream", "--refresh=1ms"],
     "ok": false,
     "error": "sync_pull_failed",
     "stage": "sync_pull",
