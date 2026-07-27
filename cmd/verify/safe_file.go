@@ -229,12 +229,16 @@ func actionWorkspaceSnapshot(workspaceRoot string, tracked []trackedWorktreeFile
 		if err != nil {
 			return err
 		}
+		modTime := int64(0)
+		if !entry.IsDir() {
+			modTime = info.ModTime().UnixNano()
+		}
 		entryIndex[relative] = len(entries)
 		entries = append(entries, actionWorkspaceEntry{
 			Path:    relative,
 			Type:    info.Mode().Type().String(),
 			Mode:    info.Mode().Perm(),
-			ModTime: info.ModTime().UnixNano(),
+			ModTime: modTime,
 		})
 		_, _ = fmt.Fprintf(
 			digest,
@@ -242,7 +246,7 @@ func actionWorkspaceSnapshot(workspaceRoot string, tracked []trackedWorktreeFile
 			relative,
 			info.Mode().Type().String(),
 			info.Mode().Perm(),
-			info.ModTime().UnixNano(),
+			modTime,
 		)
 		return nil
 	})

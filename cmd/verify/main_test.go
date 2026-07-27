@@ -1361,13 +1361,34 @@ func TestProfileStopsAfterActionTouchesActionWorkspace(t *testing.T) {
 
 func TestActionWorkspaceSnapshotDescribesMetadataAndContentChanges(t *testing.T) {
 	workspace := t.TempDir()
-	path := filepath.Join(workspace, "sentinel.txt")
+	directory := filepath.Join(workspace, "nested")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "sentinel.txt")
 	writeTestFile(t, path, "before\n")
-	tracked := []trackedWorktreeFile{{Path: "sentinel.txt", Mode: "100644"}}
+	tracked := []trackedWorktreeFile{{Path: "nested/sentinel.txt", Mode: "100644"}}
 
 	before, err := actionWorkspaceSnapshot(workspace, tracked)
 	if err != nil {
 		t.Fatalf("snapshot before: %v", err)
+	}
+	directoryInfo, err := os.Stat(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(directory, directoryInfo.ModTime().Add(time.Hour), directoryInfo.ModTime().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	afterDirectoryMetadata, err := actionWorkspaceSnapshot(workspace, tracked)
+	if err != nil {
+		t.Fatalf("snapshot after directory metadata change: %v", err)
+	}
+	if !bytes.Equal(before.Digest, afterDirectoryMetadata.Digest) {
+		t.Fatalf(
+			"directory-only metadata changed workspace snapshot: %s",
+			describeActionWorkspaceDifference(before, afterDirectoryMetadata),
+		)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -1381,7 +1402,7 @@ func TestActionWorkspaceSnapshotDescribesMetadataAndContentChanges(t *testing.T)
 	if err != nil {
 		t.Fatalf("snapshot after metadata change: %v", err)
 	}
-	if detail := describeActionWorkspaceDifference(before, afterMetadata); !strings.Contains(detail, `path "sentinel.txt" mtime changed`) {
+	if detail := describeActionWorkspaceDifference(before, afterMetadata); !strings.Contains(detail, `path "nested/sentinel.txt" mtime changed`) {
 		t.Fatalf("metadata difference = %q, want sentinel mtime", detail)
 	}
 
@@ -1393,7 +1414,7 @@ func TestActionWorkspaceSnapshotDescribesMetadataAndContentChanges(t *testing.T)
 	if err != nil {
 		t.Fatalf("snapshot after content change: %v", err)
 	}
-	if detail := describeActionWorkspaceDifference(afterMetadata, afterContent); detail != `path "sentinel.txt" content changed` {
+	if detail := describeActionWorkspaceDifference(afterMetadata, afterContent); detail != `path "nested/sentinel.txt" content changed` {
 		t.Fatalf("content difference = %q, want tracked content change", detail)
 	}
 }
