@@ -3,13 +3,15 @@ package config
 import (
 	"os"
 	"path/filepath"
+
+	"ssm/internal/privatepath"
 )
 
 func EnsurePrivateDir(path string) error {
 	if err := os.MkdirAll(path, 0700); err != nil {
 		return err
 	}
-	return os.Chmod(path, 0700)
+	return privatepath.RestrictDirectory(path)
 }
 
 func WritePrivateFile(path string, data []byte) error {
@@ -31,7 +33,7 @@ func WritePrivateFile(path string, data []byte) error {
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(0600); err != nil {
+	if err := privatepath.RestrictFile(tmpPath); err != nil {
 		_ = tmp.Close()
 		return err
 	}

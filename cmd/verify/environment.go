@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"ssm/internal/privatepath"
 )
 
 type environmentLookup func(string) (string, bool)
@@ -235,9 +237,11 @@ func ensurePrivateCacheDirectory(path string) error {
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("private verifier cache path is not a regular directory")
 	}
-	//nolint:gosec // cache directories intentionally require owner traversal in addition to read/write
-	if err := os.Chmod(path, 0o700); err != nil {
+	if err := privatepath.RestrictDirectory(path); err != nil {
 		return fmt.Errorf("restrict private verifier cache directory: %w", err)
+	}
+	if err := privatepath.VerifyDirectory(path); err != nil {
+		return fmt.Errorf("verify private verifier cache directory: %w", err)
 	}
 	return nil
 }

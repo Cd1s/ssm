@@ -40,8 +40,17 @@ type Check struct {
 	Requirement      string         `json:"requirement"`
 	Activation       string         `json:"activation,omitempty"`
 	RequiredContexts []string       `json:"required_contexts,omitempty"`
+	Preparations     []Preparation  `json:"preparations,omitempty"`
 	Action           Action         `json:"action"`
 	Prerequisites    []Prerequisite `json:"prerequisites"`
+}
+
+type Preparation struct {
+	ID               string `json:"id"`
+	Description      string `json:"description"`
+	WorkingDirectory string `json:"working_directory"`
+	Output           string `json:"output"`
+	Action           Action `json:"action"`
 }
 
 type Action struct {
@@ -130,6 +139,11 @@ func profilePrerequisites() []Prerequisite {
 			Kind:    "repository",
 			Name:    "no-sensitive-local-git-config",
 			Version: "credential-key-names",
+		},
+		{
+			Kind:    "repository",
+			Name:    "no-nonignored-untracked-paths",
+			Version: "git-ls-files-others-exclude-standard-z",
 		},
 	}
 }
@@ -237,11 +251,23 @@ func lintCheck() Check {
 		ID:          "lint",
 		Description: "Run the reviewed golangci-lint baseline.",
 		Requirement: requirementRequired,
+		Preparations: []Preparation{
+			{
+				ID:               "lint-patch",
+				Description:      "Prepare the tracked v1.2.0-to-worktree patch consumed by lint.",
+				WorkingDirectory: "source_repository",
+				Output:           "{temp}/lint.patch",
+				Action: commandAction("git", []string{
+					"diff", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "v1.2.0", "--",
+				}, nil, ""),
+			},
+		},
 		Action: commandAction("golangci-lint", []string{
 			"run", "--new-from-patch", "{temp}/lint.patch",
 		}, nil, ""),
 		Prerequisites: []Prerequisite{
 			{Kind: "tool", Name: "golangci-lint", Version: "2.11.4"},
+			{Kind: "git_ref", Name: "v1.2.0", Version: "commit"},
 			repositoryModulesPrerequisite(),
 		},
 	}

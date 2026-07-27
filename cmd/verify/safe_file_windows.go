@@ -68,3 +68,8 @@ func openRegularFileNoFollow(root, slashPath string) (*os.File, error) {
 	}
 	return file, nil
 }
+
+func workspaceFileMode(os.FileMode) os.FileMode {
+	// Windows working-tree files do not expose a Unix executable bit.
+	return 0o600
+}

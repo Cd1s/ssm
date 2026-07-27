@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"ssm/internal/config"
+	"ssm/internal/privatepath"
 )
 
 func TestSaveCloudCreatesConfigDir(t *testing.T) {
@@ -23,19 +24,11 @@ func TestSaveCloudCreatesConfigDir(t *testing.T) {
 	}
 
 	path := filepath.Join(home, ".config", "ssm", "cloud.json")
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat cloud config: %v", err)
+	if err := privatepath.VerifyFile(path); err != nil {
+		t.Fatalf("cloud config is not private: %v", err)
 	}
-	if info.Mode().Perm() != 0600 {
-		t.Fatalf("cloud config mode = %o, want 600", info.Mode().Perm())
-	}
-	dirInfo, err := os.Stat(filepath.Dir(path))
-	if err != nil {
-		t.Fatalf("stat cloud config dir: %v", err)
-	}
-	if dirInfo.Mode().Perm() != 0700 {
-		t.Fatalf("cloud config dir mode = %o, want 700", dirInfo.Mode().Perm())
+	if err := privatepath.VerifyDirectory(filepath.Dir(path)); err != nil {
+		t.Fatalf("cloud config directory is not private: %v", err)
 	}
 }
 
@@ -63,12 +56,8 @@ func TestPullWritesVaultAndRemoteETagPrivately(t *testing.T) {
 		filepath.Join(home, ".config", "ssm", "connections.enc"),
 		filepath.Join(home, ".config", "ssm", "remote.etag"),
 	} {
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatalf("stat %s: %v", path, err)
-		}
-		if info.Mode().Perm() != 0600 {
-			t.Fatalf("%s mode = %o, want 600", path, info.Mode().Perm())
+		if err := privatepath.VerifyFile(path); err != nil {
+			t.Fatalf("%s is not private: %v", path, err)
 		}
 	}
 }

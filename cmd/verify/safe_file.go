@@ -168,10 +168,7 @@ func copyTrackedFile(repoRoot, workspaceRoot string, tracked trackedWorktreeFile
 			wrapCloseError("close tracked copy source "+tracked.Path, source.Close()),
 		)
 	}
-	mode := os.FileMode(0o600)
-	if sourceInfo.Mode().Perm()&0o111 != 0 || (tracked.Mode == "100755" && sourceInfo.Mode().Perm()&0o111 == 0) {
-		mode = 0o700
-	}
+	mode := workspaceFileMode(sourceInfo.Mode())
 	targetPath := filepath.Join(workspaceRoot, relative)
 	target, createErr := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode) //nolint:gosec // target is beneath the verifier-created private action workspace
 	if createErr != nil {

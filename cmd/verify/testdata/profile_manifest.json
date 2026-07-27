@@ -27,6 +27,11 @@
           "kind": "repository",
           "name": "no-sensitive-local-git-config",
           "version": "credential-key-names"
+        },
+        {
+          "kind": "repository",
+          "name": "no-nonignored-untracked-paths",
+          "version": "git-ls-files-others-exclude-standard-z"
         }
       ],
       "checks": [
@@ -128,6 +133,11 @@
           "kind": "repository",
           "name": "no-sensitive-local-git-config",
           "version": "credential-key-names"
+        },
+        {
+          "kind": "repository",
+          "name": "no-nonignored-untracked-paths",
+          "version": "git-ls-files-others-exclude-standard-z"
         }
       ],
       "checks": [
@@ -158,6 +168,29 @@
           "id": "lint",
           "description": "Run the reviewed golangci-lint baseline.",
           "requirement": "required",
+          "preparations": [
+            {
+              "id": "lint-patch",
+              "description": "Prepare the tracked v1.2.0-to-worktree patch consumed by lint.",
+              "working_directory": "source_repository",
+              "output": "{temp}/lint.patch",
+              "action": {
+                "kind": "command",
+                "command": {
+                  "executable": "git",
+                  "args": [
+                    "diff",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--binary",
+                    "--full-index",
+                    "v1.2.0",
+                    "--"
+                  ]
+                }
+              }
+            }
+          ],
           "action": {
             "kind": "command",
             "command": {
@@ -174,6 +207,11 @@
               "kind": "tool",
               "name": "golangci-lint",
               "version": "2.11.4"
+            },
+            {
+              "kind": "git_ref",
+              "name": "v1.2.0",
+              "version": "commit"
             },
             {
               "kind": "capability",
@@ -639,6 +677,11 @@
           "kind": "repository",
           "name": "no-sensitive-local-git-config",
           "version": "credential-key-names"
+        },
+        {
+          "kind": "repository",
+          "name": "no-nonignored-untracked-paths",
+          "version": "git-ls-files-others-exclude-standard-z"
         }
       ],
       "checks": [
@@ -669,6 +712,29 @@
           "id": "lint",
           "description": "Run the reviewed golangci-lint baseline.",
           "requirement": "required",
+          "preparations": [
+            {
+              "id": "lint-patch",
+              "description": "Prepare the tracked v1.2.0-to-worktree patch consumed by lint.",
+              "working_directory": "source_repository",
+              "output": "{temp}/lint.patch",
+              "action": {
+                "kind": "command",
+                "command": {
+                  "executable": "git",
+                  "args": [
+                    "diff",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--binary",
+                    "--full-index",
+                    "v1.2.0",
+                    "--"
+                  ]
+                }
+              }
+            }
+          ],
           "action": {
             "kind": "command",
             "command": {
@@ -685,6 +751,11 @@
               "kind": "tool",
               "name": "golangci-lint",
               "version": "2.11.4"
+            },
+            {
+              "kind": "git_ref",
+              "name": "v1.2.0",
+              "version": "commit"
             },
             {
               "kind": "capability",

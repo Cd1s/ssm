@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"ssm/internal/privatepath"
 )
 
 func TestNewerVersion(t *testing.T) {
@@ -60,19 +62,11 @@ func TestMarkCheckedWritesPrivateCooldownFlag(t *testing.T) {
 	markChecked("v9.9.9")
 
 	path := filepath.Join(home, ".config", "ssm", ".update-available")
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat update flag: %v", err)
+	if err := privatepath.VerifyFile(path); err != nil {
+		t.Fatalf("update flag is not private: %v", err)
 	}
-	if info.Mode().Perm() != 0600 {
-		t.Fatalf("update flag mode = %o, want 600", info.Mode().Perm())
-	}
-	dirInfo, err := os.Stat(filepath.Dir(path))
-	if err != nil {
-		t.Fatalf("stat update flag dir: %v", err)
-	}
-	if dirInfo.Mode().Perm() != 0700 {
-		t.Fatalf("update flag dir mode = %o, want 700", dirInfo.Mode().Perm())
+	if err := privatepath.VerifyDirectory(filepath.Dir(path)); err != nil {
+		t.Fatalf("update flag directory is not private: %v", err)
 	}
 }
 

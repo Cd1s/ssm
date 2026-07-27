@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"ssm/internal/privatepath"
 )
 
 func TestSaveWritesVaultAtomicallyWithPrivatePermissions(t *testing.T) {
@@ -17,19 +19,11 @@ func TestSaveWritesVaultAtomicallyWithPrivatePermissions(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	dirInfo, err := os.Stat(Dir())
-	if err != nil {
-		t.Fatalf("stat config dir: %v", err)
+	if err := privatepath.VerifyDirectory(Dir()); err != nil {
+		t.Fatalf("config directory is not private: %v", err)
 	}
-	if dirInfo.Mode().Perm() != 0700 {
-		t.Fatalf("config dir mode = %o, want 700", dirInfo.Mode().Perm())
-	}
-	info, err := os.Stat(Path())
-	if err != nil {
-		t.Fatalf("stat vault: %v", err)
-	}
-	if info.Mode().Perm() != 0600 {
-		t.Fatalf("vault mode = %o, want 600", info.Mode().Perm())
+	if err := privatepath.VerifyFile(Path()); err != nil {
+		t.Fatalf("vault is not private: %v", err)
 	}
 	assertNoPrivateTempFiles(t, Dir())
 }
@@ -48,20 +42,12 @@ func TestSettingsAndPasswordCacheUsePrivateFiles(t *testing.T) {
 	}
 
 	for _, path := range []string{settingsPath(), cachePath()} {
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatalf("stat %s: %v", path, err)
-		}
-		if info.Mode().Perm() != 0600 {
-			t.Fatalf("%s mode = %o, want 600", path, info.Mode().Perm())
+		if err := privatepath.VerifyFile(path); err != nil {
+			t.Fatalf("%s is not private: %v", path, err)
 		}
 	}
-	cacheDirInfo, err := os.Stat(filepath.Dir(cachePath()))
-	if err != nil {
-		t.Fatalf("stat cache dir: %v", err)
-	}
-	if cacheDirInfo.Mode().Perm() != 0700 {
-		t.Fatalf("cache dir mode = %o, want 700", cacheDirInfo.Mode().Perm())
+	if err := privatepath.VerifyDirectory(filepath.Dir(cachePath())); err != nil {
+		t.Fatalf("cache directory is not private: %v", err)
 	}
 }
 

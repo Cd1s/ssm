@@ -63,3 +63,10 @@ func openRegularFileNoFollow(root, slashPath string) (*os.File, error) {
 	}
 	return file, nil
 }
+
+func workspaceFileMode(sourceMode os.FileMode) os.FileMode {
+	if sourceMode.Perm()&0o111 != 0 {
+		return 0o700
+	}
+	return 0o600
+}

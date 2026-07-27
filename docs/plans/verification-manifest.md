@@ -3,9 +3,10 @@
 Status: implemented by GitHub Issue #18
 
 The checked-in Go manifest at `cmd/verify` is the sole owner of verification
-profile membership, ordering, exact actions, prerequisites, pinned tool
-versions, required-versus-conditional status, required execution contexts, and
-named future extensions. Its stable review surface is:
+profile membership, ordering, exact actions and preparation actions,
+prerequisites, pinned tool versions, required-versus-conditional status,
+required execution contexts, and named future extensions. Its stable review
+surface is:
 
 ```sh
 go run ./cmd/verify list
@@ -18,15 +19,23 @@ cross-platform substitutions; commands are not joined into a host shell
 string. Linux, macOS, and Windows path semantics are table-tested without
 pretending to execute a foreign operating-system binary.
 
+The lint entry also owns its preparation as manifest data: the source
+repository working directory, `{temp}/lint.patch` output, required
+`v1.2.0` commit-resolving tag/ref, and exact
+`git diff --no-ext-diff --no-textconv --binary --full-index v1.2.0 --`
+argument vector. Missing or non-commit baselines fail as a prerequisite before
+lint executes.
+
 Runtime authority comes from the separate, manually reviewed policy in
 `cmd/verify/security_policy.go`. It duplicates the exact allowed builtin names,
-executables, argument vectors, environment, and output expectations; it is
-deliberately not generated from the manifest constructors. Changing a
-constructor and the JSON golden together therefore does not authorize a new
-tag, publish, upload, release, install, repository-output, mutating Go, or
-arbitrary command. A second independent guard permits manifest action
-environment additions only for the reviewed `GOOS` and `GOARCH` release
-matrix; credential-like and otherwise unreviewed keys are rejected.
+preparation records, executables, argument vectors, environment, output paths,
+working directories, and output expectations; it is deliberately not
+generated from the manifest constructors. Changing a constructor and the JSON
+golden together therefore does not authorize a new tag, publish, upload,
+release, install, repository-output, mutating Go, or arbitrary command. A
+second independent guard permits manifest action environment additions only
+for the reviewed `GOOS` and `GOARCH` release matrix; credential-like and
+otherwise unreviewed keys are rejected.
 
 ## BC-10 old-to-new membership
 
@@ -65,7 +74,11 @@ official prebuilt lint prerequisites visibly in workflow YAML, declares
 read-only repository permissions, disables checkout credential persistence,
 and invokes only `go run ./cmd/verify ci` in the Linux merge job. A separate
 native Windows job invokes `go run ./cmd/verify fast`, including the
-Windows-native no-follow/reparse tests without duplicating command membership.
+complete native Go test suite and its Windows-only no-follow/reparse and DACL
+tests, without duplicating command membership. Tests that execute a Unix
+remote shell or compare Bash script behavior are selected only on Unix;
+portable parsing, planning, host-key, environment-isolation, and security
+tests remain active on Windows.
 The complete reviewed workflow is checked in as a test golden, with semantic
 assertions for both jobs, exact setup action versions, exact adapter
 invocations, job permissions, and checkout credential handling. The driver
@@ -164,6 +177,8 @@ Required prerequisites are listed in the manifest:
   URL-rewrite, or push-URL key names;
 - Go 1.25.12 and the gofmt executable from that same resolved toolchain;
 - the official golangci-lint 2.11.4 prebuilt;
+- the `v1.2.0` lint baseline tag/ref resolving to a commit for profiles that
+  include lint;
 - `jq` and `bash`;
 - the repository modules and govulncheck module available through a reviewed
   unauthenticated public Go resolution policy or the reusable verifier cache.
@@ -172,12 +187,15 @@ Files declared `tracked` are verified through Git, not merely by filesystem
 presence. Verification enumerates index modes and every tracked worktree path,
 then safely copies the current regular-file contents into a private
 profile-owned action workspace. This preserves safe tracked working-tree
-modifications and executable bits; it does not use an archive that would
-silently substitute index or HEAD content. The action workspace contains no
-`.git` entry, non-ignored untracked paths are rejected before copying, and
-ignored local files are never copied. Every command and builtin executes from
-that workspace, so repository-local checkout credentials and Git config are
-not visible to actions.
+modifications. On Unix, execute permission comes from the safely opened
+working-tree source, preserving both dirty additions and dirty removals rather
+than restoring the index mode. Windows has no corresponding working-tree
+execute bit and does not invent one. The verifier does not use an archive that
+would silently substitute index or HEAD content. The action workspace
+contains no `.git` entry, non-ignored untracked paths are rejected before
+copying, and ignored local files are never copied. Every command and builtin
+executes from that workspace, so repository-local checkout credentials and
+Git config are not visible to actions.
 
 A symlink or reparse point in any tracked path component, or a tracked leaf
 that is missing or not a regular file, fails the profile. Unix uses
@@ -217,9 +235,15 @@ Every verification subprocess, including Git metadata and prerequisite probes,
 receives a minimal explicit environment rather than the caller's environment.
 Each profile owns temporary HOME, XDG config/data/state/cache, temp, and linter
 cache directories. A dedicated reusable verifier-owned Go build/module/GOPATH
-cache lives outside the repository behind `0700` directories, so repeated
-developer runs remain warm without exposing caller configuration or credential
-directories. Git system/global config and credential prompts are disabled;
+cache lives outside the repository. Unix cache components are restricted and
+verified as mode `0700`; Windows cache components receive and verify a
+protected, inheritable DACL containing exactly one full-control ACE for the
+current process user. Existing expected components are repaired and
+reverified on every run, and an ACL/mode setup or verification error fails
+closed. A Windows cache on a different volume remains valid when it is outside
+the repository. Repeated developer runs therefore remain warm without
+exposing caller configuration or credential directories. Git system/global
+config and credential prompts are disabled;
 `GOENV` is disabled. Go resolution is fixed to
 `GOPROXY=https://proxy.golang.org,direct`, `GOSUMDB=sum.golang.org`, and empty
 private/no-proxy/no-sumdb patterns; caller `GOPROXY`, `GOPRIVATE`,

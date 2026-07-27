@@ -168,6 +168,25 @@ func reviewedActionPolicy() map[string]Action {
 	}
 }
 
+func reviewedPreparationPolicy() map[string]Preparation {
+	return map[string]Preparation{
+		"lint-patch": {
+			ID:               "lint-patch",
+			Description:      "Prepare the tracked v1.2.0-to-worktree patch consumed by lint.",
+			WorkingDirectory: "source_repository",
+			Output:           "{temp}/lint.patch",
+			Action: reviewedCommand(
+				"git",
+				[]string{
+					"diff", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "v1.2.0", "--",
+				},
+				nil,
+				"",
+			),
+		},
+	}
+}
+
 func reviewedCommand(executable string, args, env []string, expect string) Action {
 	return Action{
 		Kind: actionCommand,

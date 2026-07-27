@@ -324,8 +324,26 @@ func validateReleaseNotes(repoRoot, version string) error {
 
 func validateNonMutating(manifest Manifest) error {
 	approved := reviewedActionPolicy()
+	approvedPreparations := reviewedPreparationPolicy()
 	for _, profile := range manifest.Profiles {
 		for _, check := range profile.Checks {
+			for _, preparation := range check.Preparations {
+				if err := validateManifestActionEnvironment(preparation.Action); err != nil {
+					return fmt.Errorf("%s/%s/%s: %w", profile.Name, check.ID, preparation.ID, err)
+				}
+				want, ok := approvedPreparations[preparation.ID]
+				if !ok {
+					return fmt.Errorf("%s/%s/%s: preparation is not approved", profile.Name, check.ID, preparation.ID)
+				}
+				if !reflect.DeepEqual(preparation, want) {
+					return fmt.Errorf(
+						"%s/%s/%s: preparation differs from its exact approved action",
+						profile.Name,
+						check.ID,
+						preparation.ID,
+					)
+				}
+			}
 			if err := validateManifestActionEnvironment(check.Action); err != nil {
 				return fmt.Errorf("%s/%s: %w", profile.Name, check.ID, err)
 			}
@@ -469,11 +487,6 @@ func executeProfile(ctx context.Context, manifest Manifest, profileName string, 
 			len(bytes.Split(bytes.TrimSuffix(untracked, []byte{0}), []byte{0})),
 		)
 	}
-	if profileHasCheck(profile, "lint") {
-		if err := writeLintPatch(deps.repoRoot, tempDir, processEnvironment); err != nil {
-			return result, err
-		}
-	}
 	workspaceRoot := filepath.Join(tempDir, "action-workspace")
 	trackedFiles, err := materializeActionWorkspace(deps.repoRoot, workspaceRoot, processEnvironment)
 	if err != nil {
@@ -522,7 +535,7 @@ func executeProfile(ctx context.Context, manifest Manifest, profileName string, 
 		}
 		missing := unavailablePrerequisites(check.Prerequisites, func(prerequisite Prerequisite) prerequisiteState {
 			root := workspaceRoot
-			if prerequisite.Kind == "file" {
+			if prerequisite.Kind == "file" || prerequisite.Kind == "git_ref" {
 				root = deps.repoRoot
 			}
 			return checkPrerequisiteOnce(root, prerequisite)
@@ -541,6 +554,23 @@ func executeProfile(ctx context.Context, manifest Manifest, profileName string, 
 		if err := validateGuardedState(); err != nil {
 			result.Status = statusFailed
 			return result, err
+		}
+		for _, preparation := range check.Preparations {
+			if err := executePreparation(
+				ctx,
+				preparation,
+				deps.repoRoot,
+				tempDir,
+				processEnvironment,
+				deps.stderr,
+			); err != nil {
+				result.Status = statusFailed
+				return result, fmt.Errorf("prepare check %s with %s: %w", check.ID, preparation.ID, err)
+			}
+			if err := validateGuardedState(); err != nil {
+				result.Status = statusFailed
+				return result, err
+			}
 		}
 
 		checkResult := deps.actions(ctx, check.Action, actionContext{
@@ -639,9 +669,39 @@ func checkPrerequisite(repoRoot string, prerequisite Prerequisite, environment [
 				return prerequisiteState{detail: err.Error()}
 			}
 			return prerequisiteState{available: true, detail: prerequisite.Version}
+		case prerequisite.Name == "no-nonignored-untracked-paths" &&
+			prerequisite.Version == "git-ls-files-others-exclude-standard-z":
+			untracked, err := nonIgnoredUntrackedPaths(repoRoot, environment)
+			if err != nil {
+				return prerequisiteState{detail: err.Error()}
+			}
+			if len(untracked) != 0 {
+				count := len(bytes.Split(bytes.TrimSuffix(untracked, []byte{0}), []byte{0}))
+				return prerequisiteState{
+					detail: fmt.Sprintf("%d non-ignored untracked path(s) are present", count),
+				}
+			}
+			return prerequisiteState{available: true, detail: prerequisite.Version}
 		default:
 			return prerequisiteState{detail: "unknown repository requirement " + prerequisite.Name}
 		}
+	case "git_ref":
+		if prerequisite.Name != "v1.2.0" || prerequisite.Version != "commit" {
+			return prerequisiteState{detail: "unknown Git reference requirement " + prerequisite.Name}
+		}
+		command := exec.Command( //nolint:gosec // fixed read-only Git argv validates the manifest-owned lint baseline
+			"git", "-C", repoRoot,
+			"rev-parse", "--verify", "--quiet", "--end-of-options", "refs/tags/v1.2.0^{commit}",
+		)
+		command.Env = environment
+		command.Stdout = io.Discard
+		command.Stderr = io.Discard
+		if err := command.Run(); err != nil {
+			return prerequisiteState{
+				detail: "lint baseline ref v1.2.0 is unavailable or does not resolve to a commit",
+			}
+		}
+		return prerequisiteState{available: true, detail: "v1.2.0 resolves to a commit"}
 	case "platform":
 		if prerequisite.Name == runtime.GOOS {
 			return prerequisiteState{available: true, detail: runtime.GOOS}
@@ -981,31 +1041,68 @@ func rejectSensitiveLocalGitConfiguration(repoRoot string, environment []string)
 	return nil
 }
 
-func profileHasCheck(profile Profile, id string) bool {
-	for _, check := range profile.Checks {
-		if check.ID == id {
-			return true
-		}
+func executePreparation(
+	ctx context.Context,
+	preparation Preparation,
+	repoRoot string,
+	tempDir string,
+	environment []string,
+	stderr io.Writer,
+) error {
+	if preparation.WorkingDirectory != "source_repository" {
+		return fmt.Errorf("unsupported working directory %q", preparation.WorkingDirectory)
 	}
-	return false
-}
-
-func writeLintPatch(repoRoot, tempDir string, environment []string) error {
-	//nolint:gosec // executable and argv are fixed; repoRoot is the validated verifier repository
-	command := exec.Command(
-		"git", "-C", repoRoot,
-		"diff", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "v1.2.0", "--",
-	)
-	command.Env = environment
-	patch, err := command.Output()
+	if preparation.Action.Kind != actionCommand || preparation.Action.Command == nil {
+		return errors.New("preparation must be a reviewed command action")
+	}
+	specification := preparation.Action.Command
+	actionCtx := actionContext{
+		RepoRoot:    repoRoot,
+		TempDir:     tempDir,
+		Environment: environment,
+	}
+	args := make([]string, len(specification.Args))
+	for index, argument := range specification.Args {
+		args[index] = expandActionValue(argument, actionCtx)
+	}
+	executable := expandActionValue(specification.Executable, actionCtx)
+	command := exec.CommandContext(ctx, executable, args...) //nolint:gosec // exact preparation command is independently reviewed
+	command.Dir = repoRoot
+	command.Env = append([]string(nil), environment...)
+	for _, entry := range specification.Env {
+		command.Env = append(command.Env, expandActionValue(entry, actionCtx))
+	}
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	command.Stderr = stderr
+	output, err := command.Output()
 	if err != nil {
-		return fmt.Errorf("prepare lint baseline patch: %w", err)
+		return fmt.Errorf("run reviewed preparation command: %w", err)
+	}
+	outputPath := expandActionValue(preparation.Output, actionCtx)
+	relative, err := filepath.Rel(tempDir, outputPath)
+	if err != nil || relative == "." || relative == ".." ||
+		strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("preparation output must be a file beneath the profile temporary directory")
 	}
 	//nolint:gosec // tempDir is created privately by executeProfile and the filename is fixed
-	if err := os.WriteFile(filepath.Join(tempDir, "lint.patch"), patch, 0o600); err != nil {
-		return fmt.Errorf("write lint baseline patch: %w", err)
+	if err := os.WriteFile(outputPath, output, 0o600); err != nil {
+		return fmt.Errorf("write preparation output: %w", err)
 	}
 	return nil
+}
+
+func nonIgnoredUntrackedPaths(repoRoot string, environment []string) ([]byte, error) {
+	command := exec.Command( //nolint:gosec // fixed read-only Git argv returns path names without opening their contents
+		"git", "-C", repoRoot, "ls-files", "--others", "--exclude-standard", "-z",
+	)
+	command.Env = environment
+	output, err := command.Output()
+	if err != nil {
+		return nil, fmt.Errorf("enumerate non-ignored untracked paths: %w", err)
+	}
+	return output, nil
 }
 
 func toolVersion(name string, environment []string) (string, error) {

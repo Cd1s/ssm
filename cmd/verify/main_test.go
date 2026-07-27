@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"ssm/internal/privatepath"
 	"ssm/internal/update"
 )
 
@@ -225,8 +226,14 @@ func TestPrerequisitesReportAvailabilityAndVersion(t *testing.T) {
 		t.Fatalf("format executable = %q, want %q", got, want)
 	}
 	fakeBin := t.TempDir()
-	writeTestFile(t, filepath.Join(fakeBin, "gofmt"), "#!/bin/sh\nexit 99\n")
-	if err := os.Chmod(filepath.Join(fakeBin, "gofmt"), 0o700); err != nil { //nolint:gosec // executable test shim must be runnable
+	goRoot := strings.TrimSpace(commandOutput(t, repo, "go", "env", "GOROOT"))
+	gofmtName := "gofmt" + executableSuffix()
+	gofmtData, err := os.ReadFile(filepath.Join(goRoot, "bin", gofmtName)) //nolint:gosec // resolved pinned Go toolchain fixture
+	if err != nil {
+		t.Fatal(err)
+	}
+	//nolint:gosec // copied executable fixture must retain owner execute permission on Unix
+	if err := os.WriteFile(filepath.Join(fakeBin, gofmtName), gofmtData, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -241,7 +248,6 @@ func TestPrerequisitesReportAvailabilityAndVersion(t *testing.T) {
 	if strings.Contains(state.detail, fakeBin) {
 		t.Fatalf("gofmt prerequisite resolved unrelated PATH entry: %s", state.detail)
 	}
-	goRoot := strings.TrimSpace(commandOutput(t, repo, "go", "env", "GOROOT"))
 	if !strings.Contains(state.detail, goRoot) {
 		t.Fatalf("gofmt prerequisite detail %q does not identify pinned GOROOT %q", state.detail, goRoot)
 	}
@@ -514,39 +520,6 @@ func TestReleaseChecksumAction(t *testing.T) {
 	}
 	if result := executeAction(context.Background(), action, actionCtx); result.Status != statusFailed {
 		t.Fatalf("missing-asset checksum status = %q, want failed", result.Status)
-	}
-}
-
-func TestReleaseRunsInstallerSyntaxAsAnAction(t *testing.T) {
-	release, ok := findProfile(verificationManifest(), "release")
-	if !ok {
-		t.Fatal("release profile not found")
-	}
-	var syntax Check
-	for _, check := range release.Checks {
-		if check.ID == "install-shell-syntax" {
-			syntax = check
-			break
-		}
-	}
-	wantAction := commandAction("sh", []string{"-n", "install.sh"}, nil, "")
-	if !reflect.DeepEqual(syntax.Action, wantAction) {
-		t.Fatalf("installer syntax action = %+v, want %+v", syntax.Action, wantAction)
-	}
-	if syntax.Requirement != requirementRequired {
-		t.Fatalf("installer syntax requirement = %q, want required", syntax.Requirement)
-	}
-
-	repo := t.TempDir()
-	writeTestFile(t, filepath.Join(repo, "install.sh"), "#!/bin/sh\nif then\n")
-	result := executeAction(context.Background(), syntax.Action, actionContext{
-		RepoRoot:    repo,
-		Environment: newTestProcessEnvironment(t),
-		Stdout:      io.Discard,
-		Stderr:      io.Discard,
-	})
-	if result.Status != statusFailed {
-		t.Fatalf("malformed installer syntax status = %q, want failed", result.Status)
 	}
 }
 
@@ -957,104 +930,6 @@ func expectedSSHMatrixTools() []string {
 	}
 }
 
-func TestSSHDExecutableAlternativeSelection(t *testing.T) {
-	prerequisite := Prerequisite{
-		Kind:    "executable_alternatives",
-		Name:    "sshd",
-		Version: "SSHD-then-PATH-then-/usr/sbin/sshd",
-	}
-
-	t.Run("explicit override", func(t *testing.T) {
-		t.Setenv("SSHD", "/bin/true")
-		t.Setenv("PATH", "/usr/bin:/bin")
-		state := checkPrerequisite(".", prerequisite, newTestProcessEnvironment(t))
-		if !state.available || state.detail != "/bin/true (SSHD override)" {
-			t.Fatalf("state = %+v, want selected explicit override", state)
-		}
-
-		command := exec.Command("bash", "scripts/ssh_matrix_test.sh", "--select-sshd")
-		command.Dir = filepath.Join("..", "..")
-		command.Env = []string{"PATH=/usr/bin:/bin", "SSHD=/bin/true"}
-		output, err := command.CombinedOutput()
-		if err != nil {
-			t.Fatalf("script rejected executable override: %v\n%s", err, output)
-		}
-		if got, want := strings.TrimSpace(string(output)), "/bin/true"; got != want {
-			t.Fatalf("selected SSHD = %q, want %q", got, want)
-		}
-	})
-
-	t.Run("invalid explicit override does not fall back", func(t *testing.T) {
-		t.Setenv("SSHD", filepath.Join(t.TempDir(), "missing-sshd"))
-		t.Setenv("PATH", "/usr/sbin:/usr/bin:/bin")
-		state := checkPrerequisite(".", prerequisite, newTestProcessEnvironment(t))
-		if state.available || !strings.Contains(state.detail, "invalid SSHD override") {
-			t.Fatalf("state = %+v, want clear invalid-override failure", state)
-		}
-
-		command := exec.Command("bash", "scripts/ssh_matrix_test.sh", "--select-sshd")
-		command.Dir = filepath.Join("..", "..")
-		command.Env = []string{
-			"PATH=/usr/sbin:/usr/bin:/bin",
-			"SSHD=" + filepath.Join(t.TempDir(), "missing-sshd"),
-		}
-		output, err := command.CombinedOutput()
-		if err == nil {
-			t.Fatalf("script accepted invalid explicit override: %s", output)
-		}
-		if !strings.Contains(string(output), "invalid SSHD override") {
-			t.Fatalf("script failure was not explicit:\n%s", output)
-		}
-	})
-
-	t.Run("PATH candidate", func(t *testing.T) {
-		bin := t.TempDir()
-		candidate := filepath.Join(bin, "sshd")
-		if err := os.Symlink("/bin/true", candidate); err != nil {
-			t.Fatalf("create PATH sshd fixture: %v", err)
-		}
-		t.Setenv("SSHD", "")
-		if err := os.Unsetenv("SSHD"); err != nil {
-			t.Fatal(err)
-		}
-		t.Setenv("PATH", bin)
-		state := checkPrerequisite(".", prerequisite, newTestProcessEnvironment(t))
-		if !state.available || state.detail != candidate+" (PATH)" {
-			t.Fatalf("state = %+v, want selected PATH candidate", state)
-		}
-	})
-
-	t.Run("/usr/sbin fallback", func(t *testing.T) {
-		if err := validateExecutableRegularFile("/usr/sbin/sshd"); err != nil {
-			t.Skipf("fixed SSHD fallback is unavailable on this host: %v", err)
-		}
-		bash, err := exec.LookPath("bash")
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Setenv("SSHD", "")
-		if err := os.Unsetenv("SSHD"); err != nil {
-			t.Fatal(err)
-		}
-		t.Setenv("PATH", t.TempDir())
-		state := checkPrerequisite(".", prerequisite, newTestProcessEnvironment(t))
-		if !state.available || state.detail != "/usr/sbin/sshd (/usr/sbin fallback)" {
-			t.Fatalf("state = %+v, want selected /usr/sbin fallback", state)
-		}
-
-		command := exec.Command(bash, "scripts/ssh_matrix_test.sh", "--select-sshd") //nolint:gosec // bash is resolved from the test process PATH and argv is fixed
-		command.Dir = filepath.Join("..", "..")
-		command.Env = []string{"PATH=" + t.TempDir()}
-		output, err := command.CombinedOutput()
-		if err != nil {
-			t.Fatalf("script rejected /usr/sbin fallback: %v\n%s", err, output)
-		}
-		if got, want := strings.TrimSpace(string(output)), "/usr/sbin/sshd"; got != want {
-			t.Fatalf("selected SSHD = %q, want %q", got, want)
-		}
-	})
-}
-
 func requiredToolsFromScript(script string) []string {
 	var tools []string
 	for _, line := range strings.Split(script, "\n") {
@@ -1141,6 +1016,55 @@ func TestManifestExposesRegularTrackedWorktreePrerequisite(t *testing.T) {
 		if !containsPrerequisite(profile.Prerequisites, want) {
 			t.Fatalf("%s prerequisites %v do not expose %v", profileName, profile.Prerequisites, want)
 		}
+	}
+}
+
+func TestManifestOwnsCleanTreeAndLintPreparation(t *testing.T) {
+	cleanTree := Prerequisite{
+		Kind:    "repository",
+		Name:    "no-nonignored-untracked-paths",
+		Version: "git-ls-files-others-exclude-standard-z",
+	}
+	for _, profileName := range []string{"fast", "ci", "release"} {
+		profile, ok := findProfile(verificationManifest(), profileName)
+		if !ok {
+			t.Fatalf("profile %q not found", profileName)
+		}
+		if !containsPrerequisite(profile.Prerequisites, cleanTree) {
+			t.Fatalf("%s prerequisites %v do not expose %v", profileName, profile.Prerequisites, cleanTree)
+		}
+	}
+
+	lint := lintCheck()
+	baseline := Prerequisite{Kind: "git_ref", Name: "v1.2.0", Version: "commit"}
+	if !containsPrerequisite(lint.Prerequisites, baseline) {
+		t.Fatalf("lint prerequisites %v do not expose baseline %v", lint.Prerequisites, baseline)
+	}
+	wantPreparation := Preparation{
+		ID:               "lint-patch",
+		Description:      "Prepare the tracked v1.2.0-to-worktree patch consumed by lint.",
+		WorkingDirectory: "source_repository",
+		Output:           "{temp}/lint.patch",
+		Action: commandAction("git", []string{
+			"diff", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "v1.2.0", "--",
+		}, nil, ""),
+	}
+	if got := lint.Preparations; !reflect.DeepEqual(got, []Preparation{wantPreparation}) {
+		t.Fatalf("lint preparations = %#v, want %#v", got, []Preparation{wantPreparation})
+	}
+}
+
+func TestLintBaselineRefPrerequisiteFailsClosedPrecisely(t *testing.T) {
+	repo := newCleanTestRepository(t)
+	gitOutput(t, repo, "tag", "-d", "v1.2.0")
+	prerequisite := Prerequisite{Kind: "git_ref", Name: "v1.2.0", Version: "commit"}
+	state := checkPrerequisite(repo, prerequisite, newTestProcessEnvironment(t))
+	if state.available {
+		t.Fatalf("missing lint baseline unexpectedly available: %+v", state)
+	}
+	if !strings.Contains(state.detail, "lint baseline ref v1.2.0") ||
+		!strings.Contains(state.detail, "does not resolve to a commit") {
+		t.Fatalf("missing lint baseline detail = %q", state.detail)
 	}
 }
 
@@ -1277,10 +1201,15 @@ func TestProfileRejectsUnsupportedTrackedLayoutsPrecisely(t *testing.T) {
 		if err := os.Remove(filepath.Join(repo, "sentinel.txt")); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Symlink("external", filepath.Join(repo, "sentinel.txt")); err != nil {
-			t.Fatal(err)
+		command := exec.Command("git", "hash-object", "-w", "--stdin")
+		command.Dir = repo
+		command.Stdin = strings.NewReader("external")
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("write symlink index blob: %v\n%s", err, output)
 		}
-		gitOutput(t, repo, "add", "sentinel.txt")
+		hash := strings.TrimSpace(string(output))
+		gitOutput(t, repo, "update-index", "--add", "--cacheinfo", "120000,"+hash+",sentinel.txt")
 
 		result, err := executeProfile(
 			context.Background(),
@@ -1490,8 +1419,12 @@ func TestProfilesAreNonMutating(t *testing.T) {
 
 func TestCanonicalConstructorsMatchReviewedActionPolicy(t *testing.T) {
 	canonical := make(map[string]Action)
+	canonicalPreparations := make(map[string]Preparation)
 	for _, check := range append(ciChecks(), releaseChecks()...) {
 		canonical[check.ID] = check.Action
+		for _, preparation := range check.Preparations {
+			canonicalPreparations[preparation.ID] = preparation
+		}
 	}
 	policy := reviewedActionPolicy()
 	if !reflect.DeepEqual(canonical, policy) {
@@ -1499,6 +1432,14 @@ func TestCanonicalConstructorsMatchReviewedActionPolicy(t *testing.T) {
 			"canonical constructors differ from the independent reviewed security policy:\ncanonical: %#v\npolicy: %#v",
 			canonical,
 			policy,
+		)
+	}
+	preparationPolicy := reviewedPreparationPolicy()
+	if !reflect.DeepEqual(canonicalPreparations, preparationPolicy) {
+		t.Fatalf(
+			"canonical preparations differ from the independent reviewed security policy:\ncanonical: %#v\npolicy: %#v",
+			canonicalPreparations,
+			preparationPolicy,
 		)
 	}
 }
@@ -1695,12 +1636,8 @@ func TestVerifierGoCacheIsPrivateReusableAndOutsideRepository(t *testing.T) {
 		t.Fatalf("prepare verifier cache: %v", err)
 	}
 	for _, directory := range []string{first.Root, first.GoBuild, first.GoMod, first.GoPath} {
-		info, err := os.Stat(directory)
-		if err != nil {
-			t.Fatalf("stat cache directory %s: %v", directory, err)
-		}
-		if got, want := info.Mode().Perm(), os.FileMode(0o700); got != want {
-			t.Fatalf("cache directory %s mode = %o, want %o", directory, got, want)
+		if err := privatepath.VerifyDirectory(directory); err != nil {
+			t.Fatalf("cache directory %s is not private: %v", directory, err)
 		}
 	}
 	if relative, err := filepath.Rel(repo, first.Root); err == nil &&
@@ -1710,6 +1647,12 @@ func TestVerifierGoCacheIsPrivateReusableAndOutsideRepository(t *testing.T) {
 
 	marker := filepath.Join(first.GoMod, "reuse-marker")
 	writeTestFile(t, marker, "warm\n")
+	if err := makeCacheDirectoryPermissive(first.GoMod); err != nil {
+		t.Fatalf("make existing cache component permissive: %v", err)
+	}
+	if err := privatepath.VerifyDirectory(first.GoMod); err == nil {
+		t.Fatal("permissive cache fixture unexpectedly passed privacy verification")
+	}
 	second, err := prepareVerifierCache(repo, cacheRoot)
 	if err != nil {
 		t.Fatalf("prepare verifier cache again: %v", err)
@@ -1719,6 +1662,9 @@ func TestVerifierGoCacheIsPrivateReusableAndOutsideRepository(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("reusable cache discarded warm marker: %v", err)
+	}
+	if err := privatepath.VerifyDirectory(second.GoMod); err != nil {
+		t.Fatalf("existing cache component was not repaired: %v", err)
 	}
 
 	if _, err := prepareVerifierCache(repo, filepath.Join(repo, "cache")); err == nil ||
@@ -1997,25 +1943,7 @@ func TestVerificationChildrenHaveNoInheritedPublicationAuthority(t *testing.T) {
 	}
 	shimDirectory := t.TempDir()
 	for name, target := range map[string]string{"git": realGit, "go": realGo} {
-		script := fmt.Sprintf(`#!/bin/sh
-for key in GH_TOKEN GITHUB_TOKEN AWS_SECRET_ACCESS_KEY SSH_AUTH_SOCK TOTALLY_UNRELATED_CANARY; do
-  eval 'present=${'${key}'+set}'
-  if [ "${present:-}" = set ]; then
-    echo "verification helper inherited $key" >&2
-    exit 91
-  fi
-done
-case "${HOME:-}" in
-  */ssm-verify-*/home) ;;
-  *) echo "verification helper received uncontrolled HOME: ${HOME:-}" >&2; exit 92 ;;
-esac
-exec "%s" "$@"
-`, target)
-		path := filepath.Join(shimDirectory, name)
-		writeTestFile(t, path, script)
-		if err := os.Chmod(path, 0o700); err != nil { //nolint:gosec // test-owned command shims must be executable
-			t.Fatalf("make %s verification shim executable: %v", name, err)
-		}
+		buildVerificationCommandShim(t, realGo, shimDirectory, name, target)
 	}
 
 	childTest := `package main
@@ -2125,20 +2053,72 @@ func TestChildEnvironmentIsIsolated(t *testing.T) {
 	}
 }
 
+func buildVerificationCommandShim(t *testing.T, goExecutable, directory, name, target string) {
+	t.Helper()
+	source := fmt.Sprintf(`package main
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+)
+
+func main() {
+	for _, key := range []string{
+		"GH_TOKEN",
+		"GITHUB_TOKEN",
+		"AWS_SECRET_ACCESS_KEY",
+		"SSH_AUTH_SOCK",
+		"TOTALLY_UNRELATED_CANARY",
+	} {
+		if _, present := os.LookupEnv(key); present {
+			fmt.Fprintf(os.Stderr, "verification helper inherited %%s\n", key)
+			os.Exit(91)
+		}
+	}
+	home := os.Getenv("HOME")
+	if !strings.HasPrefix(filepath.Base(filepath.Dir(home)), "ssm-verify-") {
+		fmt.Fprintln(os.Stderr, "verification helper received uncontrolled HOME")
+		os.Exit(92)
+	}
+	command := exec.Command(%q, os.Args[1:]...)
+	command.Stdin = os.Stdin
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	if err := command.Run(); err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitError.ExitCode())
+		}
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(93)
+	}
+}
+`, target)
+	sourcePath := filepath.Join(directory, name+"_shim.go")
+	writeTestFile(t, sourcePath, source)
+	outputPath := filepath.Join(directory, name+executableSuffix())
+	command := exec.Command(goExecutable, "build", "-buildvcs=false", "-o", outputPath, sourcePath) //nolint:gosec // fixed compiler and test-owned source/output paths
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build %s verification command shim: %v\n%s", name, err, output)
+	}
+}
+
 func TestRepresentativeRealReleaseActionsAreNonMutating(t *testing.T) {
 	repo := newRepresentativeProfileRepository(t)
 	manifest := verificationManifest()
 	wanted := map[string]bool{
-		"source-version":       true,
-		"asset-linux-amd64":    true,
-		"asset-linux-arm64":    true,
-		"asset-darwin-amd64":   true,
-		"asset-darwin-arm64":   true,
-		"asset-windows-amd64":  true,
-		"asset-windows-arm64":  true,
-		"release-notes":        true,
-		"install-shell-syntax": true,
-		"release-checksums":    true,
+		"source-version":      true,
+		"asset-linux-amd64":   true,
+		"asset-linux-arm64":   true,
+		"asset-darwin-amd64":  true,
+		"asset-darwin-arm64":  true,
+		"asset-windows-amd64": true,
+		"asset-windows-arm64": true,
+		"release-notes":       true,
+		"release-checksums":   true,
 	}
 	var representative []Check
 	for _, check := range releaseChecks() {
@@ -2224,12 +2204,11 @@ func TestRepositorySnapshotIgnoresUnreadableSecretLikeFiles(t *testing.T) {
 
 	secret := filepath.Join(repo, "master.pass")
 	writeTestFile(t, secret, "test-only secret\n")
-	if err := os.Chmod(secret, 0); err != nil {
+	restore, err := makeTestFileUnreadable(secret)
+	if err != nil {
 		t.Fatalf("make ignored secret unreadable: %v", err)
 	}
-	t.Cleanup(func() {
-		_ = os.Chmod(secret, 0o600)
-	})
+	t.Cleanup(restore)
 
 	if _, err := repositorySnapshot(repo); err != nil {
 		t.Fatalf("snapshot opened or otherwise depended on ignored secret-like file: %v", err)

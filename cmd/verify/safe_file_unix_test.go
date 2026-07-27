@@ -241,6 +241,59 @@ func TestProfileRejectsSymlinkedTrackedPathComponentBeforeActions(t *testing.T) 
 	}
 }
 
+func TestActionWorkspacePreservesDirtyUnixExecutableBits(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		indexExecutable bool
+		worktreeMode    os.FileMode
+		wantExecutable  bool
+	}{
+		{
+			name:           "add execute permission",
+			worktreeMode:   0o700,
+			wantExecutable: true,
+		},
+		{
+			name:            "remove execute permission",
+			indexExecutable: true,
+			worktreeMode:    0o600,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo := newCleanTestRepository(t)
+			source := filepath.Join(repo, "sentinel.txt")
+			if test.indexExecutable {
+				//nolint:gosec // test fixture needs owner execute permission to model an indexed executable
+				if err := os.Chmod(source, 0o700); err != nil {
+					t.Fatalf("make indexed fixture executable: %v", err)
+				}
+				gitOutput(t, repo, "add", "sentinel.txt")
+				gitOutput(t, repo, "commit", "--quiet", "-m", "executable baseline")
+			}
+			if err := os.Chmod(source, test.worktreeMode); err != nil {
+				t.Fatalf("set dirty working-tree mode: %v", err)
+			}
+
+			workspace := filepath.Join(t.TempDir(), "action-workspace")
+			if _, err := materializeActionWorkspace(repo, workspace, newTestProcessEnvironment(t)); err != nil {
+				t.Fatalf("materialize action workspace: %v", err)
+			}
+			info, err := os.Stat(filepath.Join(workspace, "sentinel.txt"))
+			if err != nil {
+				t.Fatalf("stat copied tracked file: %v", err)
+			}
+			if got := info.Mode().Perm()&0o111 != 0; got != test.wantExecutable {
+				t.Fatalf(
+					"workspace executable = %t (mode %o), want %t from dirty working tree",
+					got,
+					info.Mode().Perm(),
+					test.wantExecutable,
+				)
+			}
+		})
+	}
+}
+
 func replaceWithSymlink(t *testing.T, path, target string) {
 	t.Helper()
 	if err := os.Remove(path); err != nil {
