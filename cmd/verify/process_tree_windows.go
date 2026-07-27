@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -14,7 +15,12 @@ import (
 )
 
 type ownedProcessTree struct {
-	job windows.Handle
+	job         windows.Handle
+	rootProcess windows.Handle
+	rootDone    chan error
+
+	terminateOnce sync.Once
+	terminateErr  error
 }
 
 type jobBasicAccountingInformation struct {
@@ -33,6 +39,7 @@ func newOwnedProcessTree(command *exec.Cmd) (*ownedProcessTree, error) {
 		return nil, errors.New("verifier command already has platform process attributes")
 	}
 	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_SUSPENDED}
+	command.WaitDelay = 5 * time.Second
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create verifier Job Object: %w", err)
@@ -55,7 +62,10 @@ func newOwnedProcessTree(command *exec.Cmd) (*ownedProcessTree, error) {
 
 func (tree *ownedProcessTree) attach(command *exec.Cmd) error {
 	process, err := windows.OpenProcess(
-		windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_LIMITED_INFORMATION,
+		windows.PROCESS_SET_QUOTA|
+			windows.PROCESS_TERMINATE|
+			windows.PROCESS_QUERY_LIMITED_INFORMATION|
+			windows.SYNCHRONIZE,
 		false,
 		uint32(command.Process.Pid),
 	)
@@ -63,17 +73,29 @@ func (tree *ownedProcessTree) attach(command *exec.Cmd) error {
 		return fmt.Errorf("open verifier process for Job Object: %w", err)
 	}
 	assignErr := windows.AssignProcessToJobObject(tree.job, process)
-	closeErr := windows.CloseHandle(process)
-	if assignErr != nil || closeErr != nil {
+	if assignErr != nil {
 		return errors.Join(
 			wrapProcessTreeError("assign verifier process to Job Object", assignErr),
-			wrapProcessTreeError("close verifier process handle", closeErr),
+			wrapProcessTreeError("close verifier process handle", windows.CloseHandle(process)),
 		)
 	}
-	return resumeOwnedWindowsProcess(uint32(command.Process.Pid))
+	tree.rootProcess = process
+	if err := resumeOwnedWindowsProcess(uint32(command.Process.Pid)); err != nil {
+		return err
+	}
+	tree.rootDone = make(chan error, 1)
+	go tree.monitorRootCompletion()
+	return nil
 }
 
 func (tree *ownedProcessTree) terminate() error {
+	tree.terminateOnce.Do(func() {
+		tree.terminateErr = tree.terminateJob()
+	})
+	return tree.terminateErr
+}
+
+func (tree *ownedProcessTree) terminateJob() error {
 	if tree.job == 0 {
 		return nil
 	}
@@ -84,6 +106,13 @@ func (tree *ownedProcessTree) terminate() error {
 }
 
 func (tree *ownedProcessTree) wait() error {
+	if tree.rootDone != nil {
+		return <-tree.rootDone
+	}
+	return tree.waitJob()
+}
+
+func (tree *ownedProcessTree) waitJob() error {
 	if tree.job == 0 {
 		return nil
 	}
@@ -117,12 +146,29 @@ func (tree *ownedProcessTree) close() error {
 	if tree.job == 0 {
 		return nil
 	}
-	err := windows.CloseHandle(tree.job)
-	tree.job = 0
-	if err != nil {
-		return fmt.Errorf("close verifier Job Object: %w", err)
+	var rootErr error
+	if tree.rootProcess != 0 {
+		rootErr = windows.CloseHandle(tree.rootProcess)
+		tree.rootProcess = 0
 	}
-	return nil
+	jobErr := windows.CloseHandle(tree.job)
+	tree.job = 0
+	return errors.Join(
+		wrapProcessTreeError("close verifier root process handle", rootErr),
+		wrapProcessTreeError("close verifier Job Object", jobErr),
+	)
+}
+
+func (tree *ownedProcessTree) monitorRootCompletion() {
+	event, waitErr := windows.WaitForSingleObject(tree.rootProcess, windows.INFINITE)
+	if waitErr == nil && event != windows.WAIT_OBJECT_0 {
+		waitErr = fmt.Errorf("unexpected root process wait result %#x", event)
+	}
+	tree.rootDone <- errors.Join(
+		wrapProcessTreeError("wait for verifier root process", waitErr),
+		tree.terminate(),
+		tree.waitJob(),
+	)
 }
 
 func resumeOwnedWindowsProcess(processID uint32) (returnErr error) {

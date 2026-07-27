@@ -166,6 +166,9 @@ configuration that could supply publication authority. GitHub release
 publication remains explicit in `release.yml` and outside this verification
 driver. That workflow defaults to `contents: read`; its credential-free
 preflight checkout runs the actual `go run ./cmd/verify release` profile.
+Manual release tags cross into Bash through the validation step environment,
+remain quoted data, and must match the exact `vMAJOR.MINOR.PATCH` grammar
+before the step writes any release outputs.
 Builds depend on that preflight and use the same six exact names and
 `-buildvcs=false` flags. Only the final `publish` job has `contents: write`,
 and it depends on both preflight and build. Exact checksum inputs, release-note
@@ -311,11 +314,19 @@ password, sync configuration, tokens, private keys, or decrypted inventory.
 Failure to remove any profile temporary directory makes the profile failed and
 nonzero. The CLI derives its context from interrupt/termination signals and
 threads it through actions, prerequisites, Git probes, and snapshots. Each
-subprocess owns only its descendants: an isolated Unix process group or a
-Windows kill-on-close Job Object assigned before the suspended process is
-resumed. Cancellation and command completion terminate and wait for the owned
-tree before the final bounded repository/workspace snapshot and temporary
-directory cleanup.
+subprocess owns only its descendants. On Linux, each command starts through a
+dedicated supervisor that becomes a child subreaper and verifies pidfd support
+before launching the target. A startup pipe handshake confirms that ownership is
+established. On cancellation or normal root completion, the supervisor uses
+stable pidfds to terminate its direct children, reaps them, and repeats until
+the kernel reports that no adopted generation remains. The verifier process
+itself never becomes a subreaper. Windows assigns the suspended root to a
+kill-on-close Job Object before resuming it; a separate stable root-process
+handle triggers Job termination and waiting before inherited output pipes are
+allowed to hold command completion open. Darwin and other Unix targets fail
+closed before target launch because this implementation cannot guarantee exact
+ownership with a stable process identity there. Cleanup finishes before the
+final bounded repository/workspace snapshot and temporary-directory removal.
 
 The supported six-platform release target table is owned by
 `internal/releaseasset`. Manifest asset builds, checksum verification, and the

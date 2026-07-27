@@ -22,9 +22,11 @@ func runOwnedCommand(ctx context.Context, command *exec.Cmd) (returnErr error) {
 		return err
 	}
 	if err := tree.attach(command); err != nil {
+		terminateErr := tree.terminate()
 		killErr := command.Process.Kill()
 		waitErr := command.Wait()
-		return errors.Join(err, killErr, waitErr)
+		descendantErr := tree.wait()
+		return errors.Join(err, terminateErr, killErr, waitErr, descendantErr)
 	}
 
 	waited := make(chan error, 1)

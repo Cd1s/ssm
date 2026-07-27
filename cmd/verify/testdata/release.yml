@@ -85,10 +85,13 @@ jobs:
       - id: release
         name: Validate release identity
         shell: bash
+        env:
+          RELEASE_EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG_INPUT: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="${{ inputs.tag }}"
+          if [ "$RELEASE_EVENT_NAME" = "workflow_dispatch" ]; then
+            tag="$RELEASE_TAG_INPUT"
           else
             tag="${GITHUB_REF_NAME}"
           fi
@@ -107,16 +110,12 @@ jobs:
               exit 1
             fi
           fi
-          {
-            echo "tag=$tag"
-            echo "version=${tag#v}"
-          } >> "$GITHUB_OUTPUT"
-
           source_version="$(sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"\([0-9.]*\)"/\1/p' cmd/ssm/main.go)"
           if [ "$source_version" != "${tag#v}" ]; then
             echo "source version $source_version does not match release $tag" >&2
             exit 1
           fi
+          printf 'tag=%s\nversion=%s\n' "$tag" "${tag#v}" >> "$GITHUB_OUTPUT"
 
       - name: Verify release profile
         run: go run ./cmd/verify release

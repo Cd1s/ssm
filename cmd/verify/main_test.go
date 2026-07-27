@@ -281,6 +281,7 @@ func TestSSHMatrixIsRequiredInOfficialLinuxCI(t *testing.T) {
 	if sshdAlternatives.Kind == "" {
 		t.Fatal("ssh-matrix has no SSHD executable alternatives prerequisite")
 	}
+	setProfileChecks(t, &manifest, "ci", []Check{sshMatrix})
 
 	run := func(t *testing.T, officialCI bool, missing Prerequisite) (profileResult, error) {
 		t.Helper()
@@ -768,6 +769,95 @@ func TestReleaseWorkflowUsesCredentialFreeVerifierPreflightAndManifestParity(t *
 			t.Errorf("release workflow retains drift-prone wildcard %q", wildcard)
 		}
 	}
+}
+
+func TestReleaseWorkflowTreatsDispatchTagAsQuotedData(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(data)
+	const inputExpression = "${{ inputs.tag }}"
+	if got := strings.Count(workflow, inputExpression); got != 1 {
+		t.Errorf("workflow dispatch tag expression count = %d, want one env bridge", got)
+	}
+	if !strings.Contains(workflow, "          RELEASE_TAG_INPUT: "+inputExpression+"\n") {
+		t.Error("workflow dispatch tag is not passed through the release step environment")
+	}
+
+	script := releaseWorkflowIdentityScript(t, workflow)
+	if strings.Contains(script, inputExpression) {
+		t.Error("workflow dispatch tag expression appears directly in the release run block")
+	}
+	if !strings.Contains(script, `tag="$RELEASE_TAG_INPUT"`) {
+		t.Error("release run block does not read the workflow dispatch tag as quoted data")
+	}
+
+	outputPath := filepath.Join(t.TempDir(), "github-output")
+	fakeBin := t.TempDir()
+	fakeGit := filepath.Join(fakeBin, "git")
+	writeTestFile(t, fakeGit, "#!/bin/sh\nexit 2\n")
+	if err := os.Chmod(fakeGit, 0o700); err != nil { //nolint:gosec // executable test shim requires an execute bit and is private to t.TempDir
+		t.Fatal(err)
+	}
+	payload := `$(printf 'tag=v9.9.9\nversion=9.9.9\n' >> "$GITHUB_OUTPUT"; printf 'v1.4.3')`
+	renderedScript := strings.ReplaceAll(script, "${{ github.event_name }}", "workflow_dispatch")
+	renderedScript = strings.ReplaceAll(renderedScript, inputExpression, payload)
+	command := exec.Command("bash", "-c", renderedScript) //nolint:gosec // script is extracted from the tracked workflow; the adversarial value enters only through environment data
+	command.Dir = filepath.Join("..", "..")
+	command.Env = replaceEnvironmentValue(
+		os.Environ(),
+		"PATH",
+		fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+	)
+	command.Env = append(
+		command.Env,
+		"GITHUB_REF_NAME=v1.4.3",
+		"GITHUB_OUTPUT="+outputPath,
+		"RELEASE_EVENT_NAME=workflow_dispatch",
+		"RELEASE_TAG_INPUT="+payload,
+	)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Errorf("release identity script accepted an injected dispatch tag; output:\n%s", output)
+	}
+	if forged, readErr := os.ReadFile(outputPath); readErr == nil { //nolint:gosec // outputPath is fixed beneath this test's private t.TempDir
+		t.Errorf("invalid dispatch tag forged release outputs before validation: %q", forged)
+	} else if !os.IsNotExist(readErr) {
+		t.Fatal(readErr)
+	}
+}
+
+func releaseWorkflowIdentityScript(t *testing.T, workflow string) string {
+	t.Helper()
+	const stepMarker = "      - id: release\n"
+	stepOffset := strings.Index(workflow, stepMarker)
+	if stepOffset < 0 {
+		t.Fatal("release identity step is absent")
+	}
+	const runMarker = "        run: |\n"
+	runOffset := strings.Index(workflow[stepOffset:], runMarker)
+	if runOffset < 0 {
+		t.Fatal("release identity run block is absent")
+	}
+	scriptOffset := stepOffset + runOffset + len(runMarker)
+	const nextStepMarker = "\n      - name: Verify release profile"
+	endOffset := strings.Index(workflow[scriptOffset:], nextStepMarker)
+	if endOffset < 0 {
+		t.Fatal("release identity run block has no following verifier step")
+	}
+	block := workflow[scriptOffset : scriptOffset+endOffset]
+	lines := strings.Split(block, "\n")
+	for index, line := range lines {
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "          ") {
+			t.Fatalf("release identity script line has unexpected indentation: %q", line)
+		}
+		lines[index] = strings.TrimPrefix(line, "          ")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func TestReleaseWorkflowMatchesReviewedCompleteGolden(t *testing.T) {

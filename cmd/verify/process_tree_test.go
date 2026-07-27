@@ -139,3 +139,126 @@ func TestOwnedCommandPreservesDirectExitError(t *testing.T) {
 		t.Fatalf("exit code = %d, want 23", exitError.ExitCode())
 	}
 }
+
+func TestOwnedCommandRunsOrdinaryShortCommand(t *testing.T) {
+	if os.Getenv("SSM_VERIFY_SHORT_COMMAND_HELPER") == "1" {
+		_, _ = os.Stdout.WriteString("ordinary output")
+		os.Exit(0)
+	}
+	command := exec.Command(os.Args[0], "-test.run=^TestOwnedCommandRunsOrdinaryShortCommand$") //nolint:gosec // os.Args[0] is the current controlled Go test binary
+	command.Env = append(os.Environ(), "SSM_VERIFY_SHORT_COMMAND_HELPER=1")
+	output, err := ownedCommandOutput(context.Background(), command)
+	if err != nil {
+		t.Fatalf("ordinary owned command failed: %v", err)
+	}
+	if got, want := string(output), "ordinary output"; got != want {
+		t.Fatalf("ordinary owned command output = %q, want %q", got, want)
+	}
+}
+
+func TestOwnedCommandStartFailureIsBounded(t *testing.T) {
+	if os.Getenv("SSM_VERIFY_START_FAILURE_HELPER") == "1" {
+		t.Fatal("command with an invalid working directory unexpectedly started")
+	}
+	command := exec.Command(os.Args[0], "-test.run=^TestOwnedCommandStartFailureIsBounded$") //nolint:gosec // os.Args[0] is the current controlled Go test binary
+	command.Env = append(os.Environ(), "SSM_VERIFY_START_FAILURE_HELPER=1")
+	command.Dir = filepath.Join(t.TempDir(), "missing")
+	started := time.Now()
+	err := runOwnedCommand(context.Background(), command)
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("owned command with invalid working directory succeeded")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("startup failure cleanup took %s, want at most 2s", elapsed)
+	}
+}
+
+func TestOwnedCommandDoesNotInterfereWithPreExistingChild(t *testing.T) {
+	role := os.Getenv("SSM_VERIFY_PREEXISTING_CHILD_ROLE")
+	started := os.Getenv("SSM_VERIFY_PREEXISTING_CHILD_STARTED")
+	release := os.Getenv("SSM_VERIFY_PREEXISTING_CHILD_RELEASE")
+	completed := os.Getenv("SSM_VERIFY_PREEXISTING_CHILD_COMPLETED")
+	switch role {
+	case "unrelated":
+		if err := os.WriteFile(started, []byte("started"), 0o600); err != nil { //nolint:gosec // path is supplied by the parent test from its private t.TempDir
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			if _, err := os.Stat(release); err == nil { //nolint:gosec // path is supplied by the parent test from its private t.TempDir
+				break
+			} else if !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("timed out waiting for unrelated child release")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if err := os.WriteFile(completed, []byte("completed"), 0o600); err != nil { //nolint:gosec // path is supplied by the parent test from its private t.TempDir
+			t.Fatal(err)
+		}
+		return
+	case "owned":
+		return
+	}
+
+	observationRoot := t.TempDir()
+	started = filepath.Join(observationRoot, "unrelated-started")
+	release = filepath.Join(observationRoot, "unrelated-release")
+	completed = filepath.Join(observationRoot, "unrelated-completed")
+	environment := append(
+		os.Environ(),
+		"SSM_VERIFY_PREEXISTING_CHILD_ROLE=unrelated",
+		"SSM_VERIFY_PREEXISTING_CHILD_STARTED="+started,
+		"SSM_VERIFY_PREEXISTING_CHILD_RELEASE="+release,
+		"SSM_VERIFY_PREEXISTING_CHILD_COMPLETED="+completed,
+	)
+	unrelated := exec.Command(os.Args[0], "-test.run=^TestOwnedCommandDoesNotInterfereWithPreExistingChild$") //nolint:gosec // os.Args[0] is the current controlled Go test binary
+	unrelated.Env = environment
+	if err := unrelated.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if unrelated == nil {
+			return
+		}
+		_ = unrelated.Process.Kill()
+		_ = unrelated.Wait()
+	})
+
+	waitForProcessTreeTestFile(t, started)
+
+	owned := exec.Command(os.Args[0], "-test.run=^TestOwnedCommandDoesNotInterfereWithPreExistingChild$") //nolint:gosec // os.Args[0] is the current controlled Go test binary
+	owned.Env = append(os.Environ(), "SSM_VERIFY_PREEXISTING_CHILD_ROLE=owned")
+	ownedErr := runOwnedCommand(context.Background(), owned)
+
+	if err := os.WriteFile(release, []byte("release"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := unrelated.Wait(); err != nil {
+		t.Fatalf("unrelated child did not finish normally: %v", err)
+	}
+	unrelated = nil
+	if ownedErr != nil {
+		t.Fatalf("ordinary owned command failed with a pre-existing unrelated child: %v", ownedErr)
+	}
+	waitForProcessTreeTestFile(t, completed)
+}
+
+func waitForProcessTreeTestFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil { //nolint:gosec // callers pass only paths beneath their private t.TempDir
+			return
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", filepath.Base(path))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
