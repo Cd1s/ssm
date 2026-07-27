@@ -671,6 +671,16 @@ func TestCIAdaptersUseManifestProfile(t *testing.T) {
 	}
 }
 
+func TestRepositoryForcesDeterministicLFWorktrees(t *testing.T) {
+	attributes, err := os.ReadFile(filepath.Join("..", "..", ".gitattributes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(attributes), "# Verification and shell tooling require deterministic LF worktrees on every platform.\n* text=auto eol=lf\n"; got != want {
+		t.Fatalf(".gitattributes = %q, want %q", got, want)
+	}
+}
+
 func TestCIWorkflowMatchesReviewedGoldenAndHasReadOnlyCredentialFreeJobs(t *testing.T) {
 	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
 	if err != nil {
