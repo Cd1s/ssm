@@ -17,24 +17,25 @@ import (
 const maxAgentRequestBytes = 1 << 20
 
 type agentRequest struct {
-	Version      int               `json:"version"`
-	Op           string            `json:"op"`
-	Alias        string            `json:"alias,omitempty"`
-	Argv         []string          `json:"argv,omitempty"`
-	ShellCommand *string           `json:"shell_command,omitempty"`
-	ScriptFile   string            `json:"script_file,omitempty"`
-	ScriptArgs   []string          `json:"script_args,omitempty"`
-	Shell        string            `json:"shell,omitempty"`
-	SecretFiles  map[string]string `json:"secret_files,omitempty"`
-	Timeout      string            `json:"timeout,omitempty"`
-	NoReuse      bool              `json:"no_reuse,omitempty"`
-	Preflight    *bool             `json:"preflight,omitempty"`
-	Deep         bool              `json:"deep,omitempty"`
-	Host         *agentHostRequest `json:"host,omitempty"`
-	LocalPath    string            `json:"local_path,omitempty"`
-	RemotePath   string            `json:"remote_path,omitempty"`
-	Resume       string            `json:"resume,omitempty"`
-	SHA256       bool              `json:"sha256,omitempty"`
+	Version      int                        `json:"version"`
+	Op           string                     `json:"op"`
+	Alias        string                     `json:"alias,omitempty"`
+	Argv         []string                   `json:"argv,omitempty"`
+	ShellCommand *string                    `json:"shell_command,omitempty"`
+	ScriptFile   string                     `json:"script_file,omitempty"`
+	ScriptArgs   []string                   `json:"script_args,omitempty"`
+	Shell        string                     `json:"shell,omitempty"`
+	SecretFiles  map[string]string          `json:"secret_files,omitempty"`
+	Timeout      string                     `json:"timeout,omitempty"`
+	NoReuse      bool                       `json:"no_reuse,omitempty"`
+	Preflight    *bool                      `json:"preflight,omitempty"`
+	Deep         bool                       `json:"deep,omitempty"`
+	Host         *agentHostRequest          `json:"host,omitempty"`
+	LocalPath    string                     `json:"local_path,omitempty"`
+	RemotePath   string                     `json:"remote_path,omitempty"`
+	Resume       string                     `json:"resume,omitempty"`
+	SHA256       bool                       `json:"sha256,omitempty"`
+	Fields       map[string]json.RawMessage `json:"-"`
 }
 
 type agentHostRequest struct {
@@ -124,6 +125,22 @@ func runAgentRequest(args []string) {
 		}
 		unlock()
 		runPutWithOptions(putOptions{name: req.Alias, localPath: req.LocalPath, remotePath: req.RemotePath, resumeVersion: req.Resume, verifySHA256: req.SHA256, timeout: timeout})
+	case "get":
+		if err := validateRequestAlias(req); err != nil {
+			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestAlias, machinecontract.Details{Cause: err, Alias: req.Alias}))
+		}
+		if field := firstUnsupportedRequestField(req.Fields, "version", "op", "alias", "local_path", "remote_path"); field != "" {
+			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestPutFields, machinecontract.Details{
+				Message: fmt.Sprintf("get does not accept field %q; only alias, local_path, and remote_path are allowed", field), Alias: req.Alias,
+			}))
+		}
+		if strings.TrimSpace(req.LocalPath) == "" || strings.TrimSpace(req.RemotePath) == "" {
+			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestPutPaths, machinecontract.Details{
+				Message: "get requires local_path and remote_path", Alias: req.Alias,
+			}))
+		}
+		unlock()
+		runGet(req.Alias, req.RemotePath, req.LocalPath)
 	default:
 		os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestOperation, machinecontract.Details{
 			Message: fmt.Sprintf("unsupported request op %q", req.Op), Alias: req.Alias,
@@ -189,6 +206,9 @@ func loadAgentRequest(args []string) (agentRequest, error) {
 	if err := dec.Decode(&req); err != nil {
 		return agentRequest{}, fmt.Errorf("decode request JSON: %w", err)
 	}
+	if err := json.Unmarshal(data, &req.Fields); err != nil {
+		return agentRequest{}, fmt.Errorf("decode request field presence: %w", err)
+	}
 	var trailing any
 	if err := dec.Decode(&trailing); err != io.EOF {
 		if err == nil {
@@ -203,6 +223,24 @@ func loadAgentRequest(args []string) (agentRequest, error) {
 		return agentRequest{}, fmt.Errorf("request op is required")
 	}
 	return req, nil
+}
+
+func firstUnsupportedRequestField(fields map[string]json.RawMessage, allowed ...string) string {
+	allowedSet := make(map[string]bool, len(allowed))
+	for _, field := range allowed {
+		allowedSet[field] = true
+	}
+	unsupported := make([]string, 0)
+	for field := range fields {
+		if !allowedSet[field] {
+			unsupported = append(unsupported, field)
+		}
+	}
+	sort.Strings(unsupported)
+	if len(unsupported) == 0 {
+		return ""
+	}
+	return unsupported[0]
 }
 
 func requestRunSpec(req agentRequest) (remoteRunSpec, error) {

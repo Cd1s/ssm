@@ -104,7 +104,9 @@
     "process_exit": 1,
     "hint": "verify the local path and read permissions",
     "alias": "transfer",
-    "absent": ["action", "direction", "kind", "local_sha256", "remote_sha256", "bytes_reused"],
+    "direction": "put",
+    "kind": "unknown",
+    "absent": ["action", "local_sha256", "remote_sha256", "bytes_reused"],
     "stdout_placement": "stdout",
     "stderr_placement": "empty",
     "cardinality": "one_value"
