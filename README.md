@@ -261,10 +261,22 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 
 ## 自动更新
 
-`1.0.0` 起默认从 `Cd1s/ssm` 检查 GitHub 最新 release。发现更高版本时会替换当前程序。手动更新：
+`1.0.0` 起默认从 `Cd1s/ssm` 检查 GitHub release。自动更新和普通手动更新只会替换为当前 major 内的更高版本；发现更高 major 时只报告迁移可用，不会替换当前程序。普通手动更新：
 
 ```bash
 ssm update
+```
+
+查看完整的新 major 迁移审查（不替换程序）：
+
+```bash
+ssm update --major
+```
+
+完成审查后，唯一的非交互跨 major 授权路径是：
+
+```bash
+ssm update --major --yes
 ```
 
 无头测试、离线环境或不希望程序启动时触网时，可以禁用 release 检查：

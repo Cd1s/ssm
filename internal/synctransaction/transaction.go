@@ -122,6 +122,23 @@ func (t *Transaction) configuration() (*cloud.CloudConfig, ConfigurationState, e
 	return &cfg, ConfigurationConfigured, nil
 }
 
+// InspectLocal reports locally observable synchronization facts without
+// contacting the configured service or changing local state.
+func (t *Transaction) InspectLocal() (Facts, error) {
+	facts := t.localFacts()
+	_, state, err := t.configuration()
+	facts.Configuration = state
+	facts.Offline = t.offline
+	facts.Remote = RemoteNotChecked
+	switch state {
+	case ConfigurationOffline:
+		facts = markOffline(facts)
+	case ConfigurationUnconfigured:
+		facts.Remote = RemoteNotConfigured
+	}
+	return facts, err
+}
+
 // Refresh applies the inventory-read policy. Offline returns before touching
 // cloud configuration or transport. Missing configuration retains the
 // unconfigured behavior; every present invalid configuration is fatal.

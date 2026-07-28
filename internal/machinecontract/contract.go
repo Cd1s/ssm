@@ -68,6 +68,8 @@ const (
 	HostInternalFailure                 Kind = "host_internal_failure"
 	PanicFailure                        Kind = "panic_failure"
 	GenericFailure                      Kind = "generic_failure"
+	UpdateFailed                        Kind = "update_failed"
+	UpdateMigrationFailed               Kind = "update_migration_failed"
 	MissingCommand                      Kind = "missing_command"
 	InvalidGlobalArguments              Kind = "invalid_global_arguments"
 	SSHCTLCommandRequired               Kind = "sshctl_command_required"
@@ -167,6 +169,10 @@ const (
 	ResumeProbeResponseInvalid          Kind = "resume_probe_response_invalid"
 	TransferDirectorySourceUnsupported  Kind = "transfer_directory_source_unsupported"
 	TransferDirectoryOptionsUnsupported Kind = "transfer_directory_options_unsupported"
+	TransferDownloadRemoteRead          Kind = "transfer_download_remote_read"
+	TransferDownloadLocalWrite          Kind = "transfer_download_local_write"
+	TransferDownloadPublish             Kind = "transfer_download_publish"
+	TransferDownloadRestoreFailed       Kind = "transfer_download_restore_failed"
 )
 
 const ExitConnectionFailed = 255
@@ -391,6 +397,12 @@ var failurePolicies = map[Kind]failurePolicy{
 	GenericFailure: {
 		Code: CodeInternal, Exit: 1, Human: humanPlain,
 	},
+	UpdateFailed: {
+		Code: "update_failed", Stage: "update", Hint: "the prior executable was preserved; retry after resolving the reported update failure", Exit: 1, Human: humanPlain,
+	},
+	UpdateMigrationFailed: {
+		Code: "migration_preflight_failed", Stage: "migration_preflight", Hint: "the prior executable was preserved; resolve the reported checks and rerun the migration review", Exit: 1, Human: humanPlain,
+	},
 	MissingCommand: {
 		Code: "missing_command", Hint: "use ssm --help or sshctl --help", Exit: 2,
 	},
@@ -463,7 +475,7 @@ var failurePolicies = map[Kind]failurePolicy{
 	},
 	InvalidRequestOperation: {
 		Code: CodeInvalidRequest,
-		Hint: "use run, plan, check, doctor, put, or host.list/search/show/add/update/upsert/remove", Exit: 2,
+		Hint: "use run, plan, check, doctor, put, get, or host.list/search/show/add/update/upsert/remove", Exit: 2,
 	},
 	StreamVaultUnlockFailed: {
 		Code: "vault_unlock_failed", Stage: "vault",
@@ -725,6 +737,22 @@ var failurePolicies = map[Kind]failurePolicy{
 		Code: "unsupported_transfer_option", Stage: "validate",
 		Hint: "SHA-256, timeout, and resume v1 options support regular-file put only", Exit: 1,
 	},
+	TransferDownloadRemoteRead: {
+		Code: "remote_read_failed", Stage: "remote_read",
+		Hint: "check the remote path and read permissions; the final local path was not replaced", Exit: 1,
+	},
+	TransferDownloadLocalWrite: {
+		Code: "local_write_failed", Stage: "local_write",
+		Hint: "check local path permissions and available space; the final local path was not replaced", Exit: 1,
+	},
+	TransferDownloadPublish: {
+		Code: "publish_failed", Stage: "publish",
+		Hint: "check local destination permissions; the previous final path was preserved", Exit: 1,
+	},
+	TransferDownloadRestoreFailed: {
+		Code: "publish_failed", Stage: "publish",
+		Hint: "automatic restore failed; recover the prior directory from the retained backup path reported in the error", Exit: 1,
+	},
 }
 
 // Details carries contextual, non-policy inputs used to construct a Failure.
@@ -922,6 +950,38 @@ type TransferMetadata struct {
 
 func (f Failure) TransferMetadata() TransferMetadata {
 	return TransferMetadata{Error: f.Error, Message: f.Message, Hint: f.Hint, Exit: f.Exit, Stage: f.Stage}
+}
+
+// TransferOutcome is the shared machine representation for put and get.
+// Guarantee fields contain only values reported by the selected protocol.
+type TransferOutcome struct {
+	OK            bool   `json:"ok"`
+	Error         string `json:"error,omitempty"`
+	Message       string `json:"message,omitempty"`
+	Hint          string `json:"hint,omitempty"`
+	Exit          int    `json:"exit,omitempty"`
+	Action        string `json:"action,omitempty"`
+	Direction     string `json:"direction"`
+	Kind          string `json:"kind"`
+	Alias         string `json:"alias"`
+	Local         string `json:"local,omitempty"`
+	Remote        string `json:"remote,omitempty"`
+	Stage         string `json:"stage"`
+	BytesSent     *int64 `json:"bytes_sent,omitempty"`
+	BytesReceived *int64 `json:"bytes_received,omitempty"`
+	Integrity     string `json:"integrity,omitempty"`
+	LocalSHA256   string `json:"local_sha256,omitempty"`
+	RemoteSHA256  string `json:"remote_sha256,omitempty"`
+	Atomic        *bool  `json:"atomic,omitempty"`
+	Resume        string `json:"resume,omitempty"`
+	BytesReused   int64  `json:"bytes_reused,omitempty"`
+}
+
+func TransferFailureOutcome(f Failure, outcome TransferOutcome) TransferOutcome {
+	outcome.OK = false
+	outcome.Error, outcome.Message, outcome.Hint, outcome.Exit = f.Error, f.Message, f.Hint, f.Exit
+	outcome.Stage = f.Stage
+	return outcome
 }
 
 // MetadataDocument preserves the established generic typed-failure field
@@ -1153,13 +1213,39 @@ func ClassifyTransferOperation(err error, context SSHContext, carried Failure) F
 // ClassifyDownload preserves the generic pre-BC-7 download failure envelope,
 // which omits stage even when its SSH classification has one.
 func ClassifyDownload(err error, context SSHContext) Failure {
-	failure := ClassifySSH(err, context)
-	failure.Stage = ""
+	classifyContext := context
+	classifyContext.Stage = ""
+	failure := ClassifySSH(err, classifyContext)
+	human := failure
+	human.Stage = ""
+	if carried, ok := FailureFromError(err); ok && isDownloadOutcomeFailure(carried) {
+		carried.Exit = ExitForError(err)
+		carried.processExit = carried.Exit
+		carried.Alias = RedactString(context.Alias)
+		carried.humanAlias = RedactString(context.ResolvedAlias)
+		carried.humanProjection = &human
+		return carried
+	}
+	if failure.Stage == "" {
+		failure.Stage = context.Stage
+	}
 	failure.Exit = ExitForError(err)
 	failure.processExit = failure.Exit
 	failure.Alias = RedactString(context.Alias)
 	failure.humanAlias = RedactString(context.ResolvedAlias)
+	humanProjection := failure
+	humanProjection.Stage = ""
+	failure.humanProjection = &humanProjection
 	return failure
+}
+
+func isDownloadOutcomeFailure(failure Failure) bool {
+	switch failure.Error {
+	case "remote_read_failed", "local_write_failed", "publish_failed":
+		return true
+	default:
+		return false
+	}
 }
 
 // ClassifiedError carries a canonical failure through low-level SSH
@@ -1179,10 +1265,14 @@ func FailureFromError(err error) (Failure, bool) {
 		return Failure{}, false
 	}
 	var classified *ClassifiedError
-	if !errors.As(err, &classified) {
-		return Failure{}, false
+	if errors.As(err, &classified) {
+		return classified.Failure, true
 	}
-	return classified.Failure, true
+	var carrier interface{ ContractFailure() Failure }
+	if errors.As(err, &carrier) {
+		return carrier.ContractFailure(), true
+	}
+	return Failure{}, false
 }
 
 func (e *ClassifiedError) Error() string {

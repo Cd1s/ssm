@@ -15,18 +15,6 @@ func assertCompiledFileUnchanged(t *testing.T, path string, before compiledFileI
 	}
 }
 
-func assertCompiledAutomaticUpdateOutcome(
-	t *testing.T,
-	result compiledCLIResult,
-	executablePath string,
-	before compiledFileIdentity,
-	_ []byte,
-) {
-	t.Helper()
-	assertCompiledEmptyJSONArraySuccess(t, result)
-	assertCompiledFileUnchanged(t, executablePath, before)
-}
-
 func assertCompiledExplicitUpdateOutcome(
 	t *testing.T,
 	result compiledCLIResult,

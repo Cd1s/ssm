@@ -289,6 +289,18 @@ func TestMachineContractMatrix(t *testing.T) {
 			code:    "internal", exit: 1,
 		},
 		{
+			name: "ordinary update failure", kind: UpdateFailed,
+			details: Details{Message: "update failed"},
+			code:    "update_failed", stage: "update",
+			hint: "the prior executable was preserved; retry after resolving the reported update failure", exit: 1,
+		},
+		{
+			name: "major migration failure", kind: UpdateMigrationFailed,
+			details: Details{Message: "migration failed"},
+			code:    "migration_preflight_failed", stage: "migration_preflight",
+			hint: "the prior executable was preserved; resolve the reported checks and rerun the migration review", exit: 1,
+		},
+		{
 			name: "missing command", kind: MissingCommand,
 			details: Details{Message: "command required"},
 			code:    "missing_command", hint: "use ssm --help or sshctl --help", exit: 2,
@@ -406,7 +418,7 @@ func TestMachineContractMatrix(t *testing.T) {
 		{
 			name: "request operation", kind: InvalidRequestOperation,
 			details: Details{Message: "invalid operation", Alias: "prod"},
-			code:    "invalid_request", hint: "use run, plan, check, doctor, put, or host.list/search/show/add/update/upsert/remove", exit: 2, alias: "prod",
+			code:    "invalid_request", hint: "use run, plan, check, doctor, put, get, or host.list/search/show/add/update/upsert/remove", exit: 2, alias: "prod",
 		},
 		{
 			name: "stream vault unlock", kind: StreamVaultUnlockFailed,
@@ -795,6 +807,30 @@ func TestMachineContractMatrix(t *testing.T) {
 			details: Details{Message: "unsupported options"},
 			code:    "unsupported_transfer_option", stage: "validate",
 			hint: "SHA-256, timeout, and resume v1 options support regular-file put only", exit: 1,
+		},
+		{
+			name: "download remote read", kind: TransferDownloadRemoteRead,
+			details: Details{Message: "remote read failed"},
+			code:    "remote_read_failed", stage: "remote_read",
+			hint: "check the remote path and read permissions; the final local path was not replaced", exit: 1,
+		},
+		{
+			name: "download local write", kind: TransferDownloadLocalWrite,
+			details: Details{Message: "local write failed"},
+			code:    "local_write_failed", stage: "local_write",
+			hint: "check local path permissions and available space; the final local path was not replaced", exit: 1,
+		},
+		{
+			name: "download publish", kind: TransferDownloadPublish,
+			details: Details{Message: "publish failed"},
+			code:    "publish_failed", stage: "publish",
+			hint: "check local destination permissions; the previous final path was preserved", exit: 1,
+		},
+		{
+			name: "download restore", kind: TransferDownloadRestoreFailed,
+			details: Details{Message: "publish and restore failed"},
+			code:    "publish_failed", stage: "publish",
+			hint: "automatic restore failed; recover the prior directory from the retained backup path reported in the error", exit: 1,
 		},
 	}
 
@@ -1737,7 +1773,7 @@ func TestMachineContractTransferContext(t *testing.T) {
 	download := ClassifyDownload(resolvedDial, SSHContext{
 		Alias: "transfer", ResolvedAlias: "transfer-resolved", Host: "192.0.2.1", Port: 22,
 	})
-	if download.Error != "dial_refused" || download.Stage != "" || download.Exit != 255 || download.Alias != "transfer" {
+	if download.Error != "dial_refused" || download.Stage != "dial" || download.Exit != 255 || download.Alias != "transfer" {
 		t.Fatalf("download context = %+v", download)
 	}
 	var stdout, stderr bytes.Buffer

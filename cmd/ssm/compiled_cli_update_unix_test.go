@@ -4,16 +4,11 @@ package main
 
 import "testing"
 
-func assertCompiledAutomaticUpdateOutcome(
-	t *testing.T,
-	result compiledCLIResult,
-	executablePath string,
-	_ compiledFileIdentity,
-	replacement []byte,
-) {
+func assertCompiledFileUnchanged(t *testing.T, path string, before compiledFileIdentity) {
 	t.Helper()
-	assertCompiledEmptyJSONArraySuccess(t, result)
-	assertCompiledFileMatches(t, executablePath, replacement)
+	if got := loadCompiledFileIdentity(t, path); got != before {
+		t.Fatal("compiled CLI executable changed unexpectedly")
+	}
 }
 
 func assertCompiledExplicitUpdateOutcome(

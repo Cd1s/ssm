@@ -14,7 +14,79 @@ import (
 
 	"ssm/internal/config"
 	"ssm/internal/machinecontract"
+	"ssm/internal/update"
 )
+
+func TestMigrationJSONStreamsReviewBeforeTruthfulResult(t *testing.T) {
+	review := update.MigrationReview{
+		Current: "v1.4.3", Target: "v2.0.0", ReleaseNotes: "notes",
+		Authorized: true, AuthorizationState: "authorized",
+		RollbackGuidance: "rollback", Remediation: "remediate",
+	}
+	for _, tc := range []struct {
+		name string
+		ok   bool
+	}{
+		{name: "success", ok: true},
+		{name: "failure", ok: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output, err := os.CreateTemp(t.TempDir(), "migration-json-*")
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldStdout := os.Stdout
+			os.Stdout = output
+			t.Cleanup(func() {
+				os.Stdout = oldStdout
+				_ = output.Close()
+			})
+
+			finish, err := beginMigrationJSON(review)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := output.Sync(); err != nil {
+				t.Fatal(err)
+			}
+			prefix, err := os.ReadFile(output.Name()) //nolint:gosec // test-owned temporary output
+			if err != nil {
+				t.Fatal(err)
+			}
+			if json.Valid(prefix) || !bytes.Contains(prefix, []byte(`"authorization_state":"authorized"`)) || bytes.Contains(prefix, []byte(`"installed"`)) {
+				t.Fatalf("pre-replacement prefix=%q", prefix)
+			}
+
+			failure := machinecontract.Failure{}
+			if !tc.ok {
+				failure = machinecontract.Failure{Error: "update_failed", Message: "rename failed", Stage: "publish", Hint: "preserve old executable", Exit: 1}
+			}
+			if err := finish(tc.ok, failure); err != nil {
+				t.Fatal(err)
+			}
+			if err := output.Sync(); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(output.Name()) //nolint:gosec // test-owned temporary output
+			if err != nil {
+				t.Fatal(err)
+			}
+			var document map[string]any
+			if err := json.Unmarshal(data, &document); err != nil {
+				t.Fatalf("final migration JSON: %v; output=%q", err, data)
+			}
+			if bytes.Count(data, []byte(`"ok"`)) != 1 || bytes.Count(data, []byte(`"installed"`)) != 1 {
+				t.Fatalf("final result cardinality: output=%q", data)
+			}
+			if document["ok"] != tc.ok || document["installed"] != tc.ok {
+				t.Fatalf("result=%v", document)
+			}
+			if !tc.ok && document["error"] != failure.Error {
+				t.Fatalf("failure result=%v", document)
+			}
+		})
+	}
+}
 
 func setTestHome(t *testing.T, home string) {
 	t.Helper()
@@ -88,13 +160,16 @@ func TestParseGlobalArgsExtractsMasterPassFile(t *testing.T) {
 }
 
 func TestInformationalInvocationSkipsUpdateCheck(t *testing.T) {
-	for _, args := range [][]string{{"--help"}, {"push", "--help"}, {"help", "put"}, {"--version"}} {
+	for _, args := range [][]string{{"--help"}, {"push", "--help"}, {"help", "put"}, {"--version"}, {"update"}, {"--json", "update", "--major"}} {
 		if !isInformationalInvocation(args) {
 			t.Fatalf("isInformationalInvocation(%q) = false", args)
 		}
 	}
 	if isInformationalInvocation([]string{"run", "host", "--", "--help"}) {
 		t.Fatal("remote --help after delimiter must not affect update policy")
+	}
+	if isInformationalInvocation([]string{"host", "update", "prod", "--host", "example.com"}) {
+		t.Fatal("host update must not be mistaken for the top-level update command")
 	}
 }
 

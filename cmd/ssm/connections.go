@@ -21,16 +21,6 @@ type connectionJSON struct {
 	Group string `json:"group,omitempty"`
 }
 
-type putFailure struct {
-	OK bool `json:"ok"`
-	machinecontract.TransferMetadata
-	Alias     string `json:"alias"`
-	BytesSent int64  `json:"bytes_sent"`
-	Integrity string `json:"integrity"`
-	Atomic    bool   `json:"atomic"`
-	Resume    string `json:"resume"`
-}
-
 func runList(jsonOutput bool) {
 	pullIfChanged()
 	v, err := loadVault()
@@ -339,10 +329,12 @@ func runPutWithOptions(opts putOptions) {
 		}
 		failure := machinecontract.ClassifyTransferOperation(err, context, carried)
 		if machineJSON {
-			document := putFailure{
-				OK: false, TransferMetadata: failure.TransferMetadata(), Alias: opts.name,
-				BytesSent: bytesSent, Integrity: result.Integrity, Atomic: result.Atomic, Resume: result.Resume,
-			}
+			atomic := result.Atomic
+			sent := bytesSent
+			document := machinecontract.TransferFailureOutcome(failure, machinecontract.TransferOutcome{
+				Direction: result.Direction, Kind: result.Kind, Alias: opts.name,
+				BytesSent: &sent, Integrity: result.Integrity, Atomic: &atomic, Resume: result.Resume,
+			})
 			os.Exit(machinecontract.WriteFailure(true, failure, document))
 		}
 		_ = machinecontract.WriteHuman(failure)
@@ -370,25 +362,42 @@ func runGet(name, remotePath, localPath string) {
 	if !ok {
 		connectionNotFound(name, v)
 	}
-	if err := ssh.DownloadPath(c, v, remotePath, localPath); err != nil {
+	result, err := ssh.DownloadPath(c, v, remotePath, localPath)
+	if err != nil {
 		context := machinecontract.SSHContext{
-			Alias: name, ResolvedAlias: c.Name, Host: c.Host, Port: c.Port,
+			Alias: name, ResolvedAlias: c.Name, Host: c.Host, Port: c.Port, Stage: result.Stage,
 		}
 		failure := machinecontract.ClassifyDownload(err, context)
 		if machineJSON {
-			os.Exit(machinecontract.WriteFailure(true, failure, failure))
+			var atomic *bool
+			var received *int64
+			if result.Kind == "file" || result.Kind == "directory" {
+				atomic = &result.Atomic
+			}
+			if result.Kind == "file" {
+				received = &result.BytesReceived
+			}
+			document := machinecontract.TransferFailureOutcome(failure, machinecontract.TransferOutcome{
+				Direction: result.Direction, Kind: result.Kind, Alias: name,
+				Remote: remotePath, Local: localPath, BytesReceived: received,
+				Integrity: result.Integrity, Atomic: atomic, Resume: result.Resume,
+			})
+			os.Exit(machinecontract.WriteFailure(true, failure, document))
 		}
 		_ = machinecontract.WriteHuman(failure)
 		os.Exit(machinecontract.ProcessExit(failure))
 	}
 	if machineJSON {
-		writeMachineValue(struct {
-			OK     bool   `json:"ok"`
-			Action string `json:"action"`
-			Alias  string `json:"alias"`
-			Remote string `json:"remote"`
-			Local  string `json:"local"`
-		}{OK: true, Action: "get", Alias: name, Remote: remotePath, Local: localPath})
+		atomic := result.Atomic
+		var received *int64
+		if result.Kind == "file" {
+			received = &result.BytesReceived
+		}
+		writeMachineValue(machinecontract.TransferOutcome{
+			OK: true, Action: "get", Direction: result.Direction, Kind: result.Kind,
+			Alias: name, Remote: remotePath, Local: localPath, Stage: result.Stage,
+			BytesReceived: received, Integrity: result.Integrity, Atomic: &atomic, Resume: result.Resume,
+		})
 	}
 }
 

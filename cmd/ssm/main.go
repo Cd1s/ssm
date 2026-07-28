@@ -90,7 +90,8 @@ Usage:
   ssm redirect list|set|rm  alias soft-links after migration
   ssm keys             list saved SSH keys
   ssm keys remove <n>  remove a SSH key
-  ssm update           update ssm to the latest version
+  ssm update           update within the installed major version
+  ssm update --major [--yes]  review or explicitly authorize a major migration
   ssm import-json <path> (--merge | --replace --yes) import reviewed JSON connections
   ssm server           run the headless encrypted sync server
 
@@ -107,10 +108,7 @@ Cloud (optional):
 `)
 		return
 	case "update":
-		fmt.Println("Checking for updates...")
-		if err := update.Download(); err != nil {
-			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
-		}
+		runUpdate(args[1:])
 		return
 	case "host", "hosts":
 		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
@@ -256,17 +254,211 @@ Cloud (optional):
 	}
 }
 
-func isInformationalInvocation(args []string) bool {
+func runUpdate(args []string) {
+	major := false
+	yes := false
 	for _, arg := range args {
+		switch arg {
+		case "--major":
+			major = true
+		case "--yes":
+			yes = true
+		default:
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.InvalidGlobalArguments, machinecontract.Details{
+				Message: fmt.Sprintf("unknown update option %q", arg),
+			}))
+		}
+	}
+	if yes && !major {
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.InvalidGlobalArguments, machinecontract.Details{
+			Message: "--yes is valid only with update --major",
+		}))
+	}
+	if major {
+		review, err := update.ReviewMajor(version, yes, masterPassFile)
+		renderFailure := func(cause error) {
+			failure := machinecontract.Classify(machinecontract.UpdateMigrationFailed, machinecontract.Details{Cause: cause})
+			review.OK = false
+			review.Error = failure.Error
+			review.Message = failure.Message
+			review.Stage = failure.Stage
+			review.Hint = failure.Hint
+			review.Exit = failure.Exit
+			if machineJSON {
+				_ = machinecontract.RenderFailure(machinecontract.JSONDocument, machinecontract.Streams{Stdout: os.Stdout, Stderr: os.Stderr}, review)
+			} else {
+				printMigrationReview(review)
+				_ = machinecontract.WriteHuman(failure)
+			}
+			os.Exit(machinecontract.ProcessExit(failure))
+		}
+		if err != nil {
+			renderFailure(err)
+		}
+		renderReview := func() error {
+			if machineJSON {
+				return machinecontract.Render(machinecontract.JSONDocument, machinecontract.Streams{Stdout: os.Stdout, Stderr: os.Stderr}, review)
+			}
+			printMigrationReview(review)
+			return nil
+		}
+		if !yes {
+			if err := renderReview(); err != nil {
+				renderFailure(err)
+			}
+			return
+		}
+		reviewRendered := false
+		var finishMachineReview func(bool, machinecontract.Failure) error
+		err = update.DownloadVersionBeforeReplace(review.Target, false, func() error {
+			reviewRendered = true
+			if machineJSON {
+				var beginErr error
+				finishMachineReview, beginErr = beginMigrationJSON(review)
+				return beginErr
+			}
+			printMigrationReviewBeforeReplacement(review)
+			return nil
+		})
+		if err != nil {
+			if !reviewRendered {
+				renderFailure(err)
+			}
+			failure := machinecontract.Classify(machinecontract.UpdateMigrationFailed, machinecontract.Details{Cause: err})
+			if machineJSON {
+				if finishMachineReview != nil {
+					_ = finishMachineReview(false, failure)
+				}
+			} else {
+				fmt.Println("Installed: false")
+				_ = machinecontract.WriteHuman(failure)
+			}
+			os.Exit(machinecontract.ProcessExit(failure))
+		}
+		if machineJSON {
+			if err := finishMachineReview(true, machinecontract.Failure{}); err != nil {
+				failure := machinecontract.Classify(machinecontract.UpdateMigrationFailed, machinecontract.Details{Cause: err})
+				os.Exit(machinecontract.ProcessExit(failure))
+			}
+		} else {
+			fmt.Println("Installed: true")
+		}
+		return
+	}
+	if !machineJSON {
+		fmt.Println("Checking for updates...")
+	}
+	result, err := update.Download(version)
+	if err != nil {
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.UpdateFailed, machinecontract.Details{Cause: err}))
+	}
+	if result.Installed != "" && !machineJSON {
+		fmt.Printf("Updated to %s\n", result.Installed)
+	}
+	if result.CrossMajorAvailable != "" {
+		if machineJSON {
+			_ = machinecontract.WriteJSON(map[string]any{
+				"ok": true, "installed": result.Installed,
+				"cross_major_available": result.CrossMajorAvailable,
+				"migration_required":    true,
+			})
+		} else {
+			fmt.Printf("Major release %s is available; review with ssm update --major.\n", result.CrossMajorAvailable)
+		}
+	} else if machineJSON {
+		_ = machinecontract.WriteJSON(map[string]any{"ok": true, "installed": result.Installed})
+	}
+}
+
+func printMigrationReview(review update.MigrationReview) {
+	printMigrationReviewBeforeReplacement(review)
+	fmt.Printf("Installed: %t\n", review.Installed)
+}
+
+func printMigrationReviewBeforeReplacement(review update.MigrationReview) {
+	fmt.Printf("Major update review: %s -> %s\n", review.Current, review.Target)
+	fmt.Println("Authorization:", review.AuthorizationState)
+	fmt.Printf("Release notes:\n%s\n", review.ReleaseNotes)
+	fmt.Println("Approved breaking changes:")
+	for _, change := range review.BreakingChanges {
+		fmt.Printf("  %s: %s\n", change.ID, change.Description)
+	}
+	fmt.Println("Automated preflight:")
+	for _, check := range review.AutomatedChecks {
+		fmt.Printf("  %s: %s - %s\n", check.ID, check.Status, check.Description)
+		if check.Remediation != "" {
+			fmt.Printf("    remediation: %s\n", check.Remediation)
+		}
+	}
+	fmt.Println("Manual external-consumer checks:")
+	for _, check := range review.ManualChecks {
+		fmt.Printf("  %s: %s - %s\n", check.ID, check.Status, check.Description)
+	}
+	fmt.Printf("Rollback: %s\n", review.RollbackGuidance)
+	fmt.Printf("Remediation: %s\n", review.Remediation)
+}
+
+func beginMigrationJSON(review update.MigrationReview) (func(bool, machinecontract.Failure) error, error) {
+	preamble := struct {
+		Current            string                  `json:"current"`
+		Target             string                  `json:"target"`
+		ReleaseName        string                  `json:"release_name,omitempty"`
+		ReleaseNotes       string                  `json:"release_notes"`
+		BreakingChanges    []update.BreakingChange `json:"breaking_changes"`
+		AutomatedChecks    []update.MigrationCheck `json:"automated_checks"`
+		ManualChecks       []update.MigrationCheck `json:"manual_consumer_checks"`
+		Authorized         bool                    `json:"authorized"`
+		AuthorizationState string                  `json:"authorization_state"`
+		RollbackGuidance   string                  `json:"rollback_guidance"`
+		Remediation        string                  `json:"remediation"`
+	}{
+		Current: review.Current, Target: review.Target, ReleaseName: review.ReleaseName,
+		ReleaseNotes: review.ReleaseNotes, BreakingChanges: review.BreakingChanges,
+		AutomatedChecks: review.AutomatedChecks, ManualChecks: review.ManualChecks,
+		Authorized: review.Authorized, AuthorizationState: review.AuthorizationState,
+		RollbackGuidance: review.RollbackGuidance, Remediation: review.Remediation,
+	}
+	stream, err := machinecontract.BeginJSONDocument(machinecontract.Streams{Stdout: os.Stdout, Stderr: os.Stderr}, preamble)
+	if err != nil {
+		return nil, err
+	}
+	return func(ok bool, failure machinecontract.Failure) error {
+		outcome := map[string]any{"installed": ok, "ok": ok}
+		if !ok {
+			outcome["error"] = failure.Error
+			outcome["message"] = failure.Message
+			outcome["stage"] = failure.Stage
+			outcome["hint"] = failure.Hint
+			outcome["exit"] = failure.Exit
+		}
+		return stream.Finish(outcome)
+	}, nil
+}
+
+func isInformationalInvocation(args []string) bool {
+	command := ""
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		if arg == "--" {
 			return false
 		}
 		switch arg {
 		case "--help", "-h", "help", "--version", "-v":
 			return true
+		case "--json", "--offline":
+			continue
+		case "--master-pass-file":
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "--master-pass-file=") || strings.HasPrefix(arg, "-") {
+			continue
+		}
+		if command == "" {
+			command = arg
 		}
 	}
-	return false
+	return command == "update"
 }
 
 func parseGlobalArgs(args []string) ([]string, error) {

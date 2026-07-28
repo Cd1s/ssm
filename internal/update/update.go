@@ -18,6 +18,94 @@ import (
 	"ssm/internal/releaseasset"
 )
 
+type Release struct {
+	TagName    string `json:"tag_name"`
+	Name       string `json:"name,omitempty"`
+	Body       string `json:"body,omitempty"`
+	Draft      bool   `json:"draft,omitempty"`
+	Prerelease bool   `json:"prerelease,omitempty"`
+	Assets     []struct {
+		Name string `json:"name"`
+	} `json:"assets,omitempty"`
+}
+
+type semanticVersion struct {
+	major int
+	minor int
+	patch int
+}
+
+// SelectRelease deterministically separates ordinary same-major updates from
+// cross-major migration targets. Drafts, prereleases, malformed versions, and
+// versions that are not newer than the running binary are unsupported.
+func SelectRelease(releases []Release, current string) (sameMajor, crossMajor *Release) {
+	currentVersion, ok := parseSemanticVersion(current)
+	if !ok {
+		return nil, nil
+	}
+	for i := range releases {
+		candidate := &releases[i]
+		version, valid := parseSemanticVersion(candidate.TagName)
+		if !valid || candidate.Draft || candidate.Prerelease || compareVersion(version, currentVersion) <= 0 {
+			continue
+		}
+		if version.major == currentVersion.major {
+			if sameMajor == nil || releaseNewer(candidate.TagName, sameMajor.TagName) {
+				sameMajor = candidate
+			}
+		} else if version.major > currentVersion.major {
+			if crossMajor == nil {
+				crossMajor = candidate
+				continue
+			}
+			selected, _ := parseSemanticVersion(crossMajor.TagName)
+			if compareVersion(version, selected) > 0 {
+				crossMajor = candidate
+			}
+		}
+	}
+	return sameMajor, crossMajor
+}
+
+func releaseNewer(left, right string) bool {
+	l, lok := parseSemanticVersion(left)
+	r, rok := parseSemanticVersion(right)
+	return lok && rok && compareVersion(l, r) > 0
+}
+
+func compareVersion(left, right semanticVersion) int {
+	if left.major != right.major {
+		return left.major - right.major
+	}
+	if left.minor != right.minor {
+		return left.minor - right.minor
+	}
+	return left.patch - right.patch
+}
+
+func parseSemanticVersion(value string) (semanticVersion, bool) {
+	value = strings.TrimPrefix(strings.TrimSpace(value), "v")
+	if value == "" || strings.ContainsAny(value, "-+") {
+		return semanticVersion{}, false
+	}
+	parts := strings.Split(value, ".")
+	if len(parts) != 3 {
+		return semanticVersion{}, false
+	}
+	values := [3]int{}
+	for i, part := range parts {
+		if part == "" || (len(part) > 1 && part[0] == '0') {
+			return semanticVersion{}, false
+		}
+		number, err := strconv.Atoi(part)
+		if err != nil || number < 0 {
+			return semanticVersion{}, false
+		}
+		values[i] = number
+	}
+	return semanticVersion{major: values[0], minor: values[1], patch: values[2]}, true
+}
+
 const (
 	defaultRepo    = "Cd1s/ssm"
 	checksumsAsset = "checksums.txt"
@@ -45,11 +133,26 @@ func Auto(currentVersion string) error {
 		return nil
 	}
 	markChecked("")
-	latest, err := checkLatest()
-	if err != nil || latest == "" || !newerVersion(latest, currentVersion) {
+	releases, err := listReleases()
+	if err != nil {
 		return err
 	}
-	return DownloadVersion(latest, false)
+	sameMajor, crossMajor := SelectRelease(releases, currentVersion)
+	available := ""
+	if crossMajor != nil {
+		available = crossMajor.TagName
+	}
+	markChecked(available)
+	if sameMajor == nil {
+		return nil
+	}
+	if err := DownloadVersion(sameMajor.TagName, false); err != nil {
+		return err
+	}
+	if available != "" {
+		markChecked(available)
+	}
+	return nil
 }
 
 func markChecked(latest string) {
@@ -63,19 +166,46 @@ func ClearFlag() {
 	_ = os.Remove(flagPath())
 }
 
-func Download() error {
-	latest, err := checkLatest()
-	if err != nil {
-		return err
-	}
-	if latest == "" {
-		return fmt.Errorf("no release found")
-	}
+type OrdinaryResult struct {
+	Installed           string
+	CrossMajorAvailable string
+}
 
-	return DownloadVersion(latest, true)
+func Download(currentVersion string) (OrdinaryResult, error) {
+	releases, err := listReleases()
+	if err != nil {
+		return OrdinaryResult{}, err
+	}
+	sameMajor, crossMajor := SelectRelease(releases, currentVersion)
+	result := OrdinaryResult{}
+	if crossMajor != nil {
+		result.CrossMajorAvailable = crossMajor.TagName
+	}
+	if sameMajor == nil {
+		if result.CrossMajorAvailable != "" {
+			return result, nil
+		}
+		for _, release := range releases {
+			if _, ok := parseSemanticVersion(release.TagName); ok && !release.Draft && !release.Prerelease {
+				return result, nil
+			}
+		}
+		return result, fmt.Errorf("no supported newer release found")
+	}
+	if err := DownloadVersion(sameMajor.TagName, false); err != nil {
+		return result, err
+	}
+	result.Installed = sameMajor.TagName
+	return result, nil
 }
 
 func DownloadVersion(version string, verbose bool) error {
+	return DownloadVersionBeforeReplace(version, verbose, nil)
+}
+
+// DownloadVersionBeforeReplace downloads, stages, and verifies an update, then
+// invokes beforeReplace immediately before the atomic executable replacement.
+func DownloadVersionBeforeReplace(version string, verbose bool, beforeReplace func() error) error {
 	repo := releaseRepo()
 	if repo == "" {
 		return fmt.Errorf("update repo is not configured")
@@ -134,6 +264,11 @@ func DownloadVersion(version string, verbose bool) error {
 	}
 	if err := tmpFile.Close(); err != nil {
 		return err
+	}
+	if beforeReplace != nil {
+		if err := beforeReplace(); err != nil {
+			return err
+		}
 	}
 	if err := os.Rename(tmp, exe); err != nil {
 		return err
@@ -249,6 +384,27 @@ func checkLatest() (string, error) {
 		return "", err
 	}
 	return release.TagName, nil
+}
+
+func listReleases() ([]Release, error) {
+	repo := releaseRepo()
+	if repo == "" {
+		return nil, nil
+	}
+	url := strings.TrimRight(apiBaseURL, "/") + "/repos/" + repo + "/releases?per_page=100"
+	resp, err := httpClient.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub API: %s", resp.Status)
+	}
+	var releases []Release
+	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+		return nil, err
+	}
+	return releases, nil
 }
 
 func releaseRepo() string {
