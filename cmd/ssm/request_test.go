@@ -1,12 +1,37 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestRequestV1PublishedSchemaIncludesStrictGet(t *testing.T) {
+	path := filepath.Join("..", "..", "skills", "agent-ssm", "references", "request-v1.schema.json")
+	data, err := os.ReadFile(path) //nolint:gosec // repository-owned public schema fixture
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatalf("published request schema is invalid JSON: %v", err)
+	}
+	text := string(data)
+	for _, fragment := range []string{
+		`"get"`,
+		`"required": ["alias", "local_path", "remote_path"]`,
+		`"required": ["timeout"]`,
+		`"required": ["resume"]`,
+		`"required": ["sha256"]`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Errorf("published request schema missing get contract fragment %s", fragment)
+		}
+	}
+}
 
 func TestLoadAgentRequestStrictSchema(t *testing.T) {
 	dir := t.TempDir()
