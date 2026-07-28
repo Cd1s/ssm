@@ -624,15 +624,15 @@ func assertCompiledExactMachineOutput(t *testing.T, result compiledCLIResult, wa
 	decodeExactlyOneJSONObject(t, result.Stdout)
 }
 
-func assertCompiledJSONArraySuccess(t *testing.T, result compiledCLIResult, wantLength int) []any {
+func assertCompiledJSONArraySuccess(t *testing.T, result compiledCLIResult) []any {
 	t.Helper()
 	if result.ProcessExit != 0 || result.Stderr != "" {
 		t.Fatalf("compiled JSON array success process contract failed; output=%s", compiledOutputIdentity(result))
 	}
 	value := decodeExactlyOneJSONValue(t, result.Stdout)
 	items, ok := value.([]any)
-	if !ok || len(items) != wantLength {
-		t.Fatalf("JSON array length = %d, want %d; output=%s", len(items), wantLength, compiledOutputIdentity(result))
+	if !ok || len(items) != 0 {
+		t.Fatalf("JSON array length = %d, want 0; output=%s", len(items), compiledOutputIdentity(result))
 	}
 	return items
 }
@@ -2479,7 +2479,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 				}
 
 				generic := cli.Run(t, "sshctl", nil, "--json", "list")
-				assertCompiledJSONArraySuccess(t, generic, 0)
+				assertCompiledJSONArraySuccess(t, generic)
 				assertNoCompiledCanaryLeak(t, generic, map[string]string{
 					"cloud_value":    configLeakCanary,
 					"config_content": "sync.invalid",
@@ -2497,7 +2497,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 				})
 
 				offline := cli.Run(t, "sshctl", nil, "--json", "host", "list", "--offline")
-				assertCompiledJSONArraySuccess(t, offline, 0)
+				assertCompiledJSONArraySuccess(t, offline)
 			})
 		}
 	})
@@ -3031,7 +3031,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		before := loadCompiledFileIdentity(t, cli.paths["ssm"])
 		result := cli.RunWithEnv(t, "ssm", nil, map[string]string{"SSM_UPDATE_REPO": "fixture/repo"}, "list", "--json")
 		assertNoCompiledCanaryLeak(t, result, map[string]string{"replacement": string(replacement)})
-		assertCompiledJSONArraySuccess(t, result, 0)
+		assertCompiledJSONArraySuccess(t, result)
 		assertCompiledFileUnchanged(t, cli.paths["ssm"], before)
 		if got := compiledUpdateServer.RequestPaths(); !reflect.DeepEqual(got, []string{"/repos/fixture/repo/releases"}) {
 			t.Fatalf("automatic cross-major request paths = %q", got)
