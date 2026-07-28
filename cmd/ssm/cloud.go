@@ -199,37 +199,41 @@ func pushTransactionScope(only string) (pushResult, error) {
 	if err != nil {
 		return pushResult{}, err
 	}
+	originalBlob, originalBlobErr := os.ReadFile(config.Path())
+	originalBlobExists := originalBlobErr == nil
+	if originalBlobErr != nil && !os.IsNotExist(originalBlobErr) {
+		return pushResult{}, originalBlobErr
+	}
+	restoreOriginal := func() {
+		if originalBlobExists {
+			_ = config.WritePrivateFile(config.Path(), originalBlob)
+		}
+	}
 	projected, selected, err := publishProjection(v, only)
+	if err != nil {
+		return pushResult{}, err
+	}
+	blob, err := config.EncryptVault(projected, masterPass)
 	if err != nil {
 		return pushResult{}, err
 	}
 	localAfter := cloneVault(v)
 	markPublished(localAfter, selected, projected)
-	var blob []byte
-	if only == "" {
-		if len(selected) == 0 {
-			blob, err = os.ReadFile(config.Path())
-		} else {
-			blob, err = config.EncryptVault(localAfter, masterPass)
-		}
-	} else {
-		blob, err = config.EncryptVault(projected, masterPass)
-	}
-	if err != nil {
-		return pushResult{}, err
-	}
-	if _, err = syncTransaction(false).PushBlob(blob); err != nil {
-		return pushResult{}, err
-	}
 	if len(selected) > 0 {
-		if only == "" {
-			err = config.WritePrivateFile(config.Path(), blob)
-		} else {
-			err = config.Save(localAfter, masterPass)
-		}
-		if err != nil {
+		if err := config.Save(localAfter, masterPass); err != nil {
 			return pushResult{}, err
 		}
+	}
+	if only == "" {
+		blob, err = os.ReadFile(config.Path())
+		if err != nil {
+			restoreOriginal()
+			return pushResult{}, err
+		}
+	}
+	if _, err = syncTransaction(false).PushBlob(blob); err != nil {
+		restoreOriginal()
+		return pushResult{}, err
 	}
 	scope := "all"
 	if only != "" {
