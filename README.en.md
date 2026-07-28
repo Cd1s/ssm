@@ -258,10 +258,22 @@ Project agent skill: `skills/agent-ssm/SKILL.md`.
 
 ## Auto Update
 
-Version `1.0.0` and later checks GitHub releases from `Cd1s/ssm` by default and replaces the current program when a newer version exists. Manual update:
+Version `1.0.0` and later checks GitHub releases from `Cd1s/ssm` by default. Automatic and ordinary manual updates replace only with a newer release in the installed major; a newer major is reported as a migration and never replaces the current program. Ordinary manual update:
 
 ```bash
 ssm update
+```
+
+Render the complete major-migration review without replacing the program:
+
+```bash
+ssm update --major
+```
+
+After review, the sole non-interactive authorization path for crossing a major is:
+
+```bash
+ssm update --major --yes
 ```
 
 For headless tests, offline environments, or runs that must not touch the network on startup, disable release checks:

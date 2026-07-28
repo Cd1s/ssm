@@ -288,6 +288,18 @@ func TestMachineContractMatrix(t *testing.T) {
 			code:    "internal", exit: 1,
 		},
 		{
+			name: "ordinary update failure", kind: UpdateFailed,
+			details: Details{Message: "update failed"},
+			code:    "update_failed", stage: "update",
+			hint: "the prior executable was preserved; retry after resolving the reported update failure", exit: 1,
+		},
+		{
+			name: "major migration failure", kind: UpdateMigrationFailed,
+			details: Details{Message: "migration failed"},
+			code:    "migration_preflight_failed", stage: "migration_preflight",
+			hint: "the prior executable was preserved; resolve the reported checks and rerun the migration review", exit: 1,
+		},
+		{
 			name: "missing command", kind: MissingCommand,
 			details: Details{Message: "command required"},
 			code:    "missing_command", hint: "use ssm --help or sshctl --help", exit: 2,

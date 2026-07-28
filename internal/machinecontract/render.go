@@ -46,6 +46,53 @@ type Streams struct {
 	Stderr io.Writer
 }
 
+// JSONDocumentStream owns framing for one JSON object whose review fields must
+// be emitted before a later operation determines its terminal outcome.
+type JSONDocumentStream struct {
+	stdout   io.Writer
+	finished bool
+}
+
+// BeginJSONDocument emits all preamble object fields without closing the
+// document. Call Finish exactly once with the terminal outcome object.
+func BeginJSONDocument(streams Streams, preamble any) (*JSONDocumentStream, error) {
+	stdout := streams.Stdout
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	prefix, err := json.Marshal(preamble)
+	if err != nil {
+		return nil, err
+	}
+	if len(prefix) < 2 || prefix[0] != '{' || prefix[len(prefix)-1] != '}' {
+		return nil, fmt.Errorf("streamed JSON preamble must be an object")
+	}
+	if _, err := stdout.Write(prefix[:len(prefix)-1]); err != nil {
+		return nil, err
+	}
+	return &JSONDocumentStream{stdout: stdout}, nil
+}
+
+// Finish appends terminal object fields and closes the single JSON document.
+func (stream *JSONDocumentStream) Finish(outcome any) error {
+	if stream == nil || stream.finished {
+		return fmt.Errorf("streamed JSON document already finished")
+	}
+	encoded, err := json.Marshal(outcome)
+	if err != nil {
+		return err
+	}
+	if len(encoded) < 2 || encoded[0] != '{' || encoded[len(encoded)-1] != '}' {
+		return fmt.Errorf("streamed JSON outcome must be an object")
+	}
+	stream.finished = true
+	if _, err := stream.stdout.Write(append([]byte{','}, encoded[1:]...)); err != nil {
+		return err
+	}
+	_, err = stream.stdout.Write([]byte("\n"))
+	return err
+}
+
 // Render selects and executes the exact public renderer. Canonical Failure
 // values are always sanitized; command-specific success values retain their
 // established payload bytes.

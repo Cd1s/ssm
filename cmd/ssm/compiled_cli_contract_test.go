@@ -252,6 +252,10 @@ func (h *compiledCLIHarness) TarFailureHelperDir(t *testing.T) string {
 }
 
 func (h *compiledCLIHarness) RunWithHeldOpenStdin(t *testing.T, executable string, args ...string) compiledCLIResult {
+	return h.RunWithHeldOpenStdinAndEnv(t, executable, nil, args...)
+}
+
+func (h *compiledCLIHarness) RunWithHeldOpenStdinAndEnv(t *testing.T, executable string, env map[string]string, args ...string) compiledCLIResult {
 	t.Helper()
 	reader, writer, err := os.Pipe()
 	if err != nil {
@@ -261,7 +265,12 @@ func (h *compiledCLIHarness) RunWithHeldOpenStdin(t *testing.T, executable strin
 		_ = reader.Close()
 		_ = writer.Close()
 	}()
-	return h.runWithStdin(t, executable, reader, map[string]string{"SSM_MASTER_PASS_FILE": h.passPath}, args...)
+	overrides := make(map[string]string, len(env)+1)
+	for key, value := range env {
+		overrides[key] = value
+	}
+	overrides["SSM_MASTER_PASS_FILE"] = h.passPath
+	return h.runWithStdin(t, executable, reader, overrides, args...)
 }
 
 func (h *compiledCLIHarness) RunReviewed(
@@ -737,7 +746,7 @@ func assertCompiledUpdateRequests(t *testing.T, got []string, version string) {
 		asset += ".exe"
 	}
 	want := []string{
-		"/repos/fixture/repo/releases/latest",
+		"/repos/fixture/repo/releases",
 		"/fixture/repo/releases/download/" + version + "/checksums.txt",
 		"/fixture/repo/releases/download/" + version + "/" + asset,
 	}
@@ -2986,7 +2995,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		assertNoCompiledCanaryLeak(t, failed, secretCanaries)
 	})
 
-	t.Run("BC-8 latest automatic replacement crosses the current major", func(t *testing.T) {
+	t.Run("BC-8 automatic replacement remains in the current major", func(t *testing.T) {
 		cli := newCompiledCLIHarness(t)
 		cli.SaveVault(t, &config.Vault{})
 		replacement := []byte("ISSUE17_CROSS_MAJOR_REPLACEMENT_FIXTURE\n")
@@ -2994,8 +3003,11 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		before := loadCompiledFileIdentity(t, cli.paths["ssm"])
 		result := cli.RunWithEnv(t, "ssm", nil, map[string]string{"SSM_UPDATE_REPO": "fixture/repo"}, "list", "--json")
 		assertNoCompiledCanaryLeak(t, result, map[string]string{"replacement": string(replacement)})
-		assertCompiledAutomaticUpdateOutcome(t, result, cli.paths["ssm"], before, replacement)
-		assertCompiledUpdateRequests(t, compiledUpdateServer.RequestPaths(), "v2.0.0")
+		assertCompiledJSONArraySuccess(t, result, 0)
+		assertCompiledFileUnchanged(t, cli.paths["ssm"], before)
+		if got := compiledUpdateServer.RequestPaths(); !reflect.DeepEqual(got, []string{"/repos/fixture/repo/releases"}) {
+			t.Fatalf("automatic cross-major request paths = %q", got)
+		}
 	})
 
 	t.Run("BC-9 an adjacent checksum alone authorizes replacement", func(t *testing.T) {
@@ -3040,4 +3052,42 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 			t.Fatalf("make check commands = %q, want single non-mutating verification-manifest adapter %q", lines, want)
 		}
 	})
+}
+
+func TestMajorUpdateReviewIsNonInteractive(t *testing.T) {
+	cli := newCompiledCLIHarness(t)
+	cli.SaveVault(t, &config.Vault{})
+	cli.writeConfigFile(t, "update_repo", []byte("fixture/repo\n"))
+	compiledUpdateServer.ConfigureRelease("v2.0.0", []byte("UNAUTHORIZED_REPLACEMENT_MUST_NOT_BE_READ\n"))
+	before := loadCompiledFileIdentity(t, cli.paths["ssm"])
+
+	result := cli.RunWithHeldOpenStdinAndEnv(t, "ssm", map[string]string{"SSM_UPDATE_REPO": "fixture/repo"}, "--json", "update", "--major")
+	if result.ProcessExit != 0 || result.Stderr != "" {
+		t.Fatalf("major review exit=%d stderr=%q requests=%q output=%s", result.ProcessExit, result.Stderr, compiledUpdateServer.RequestPaths(), compiledOutputIdentity(result))
+	}
+	var review map[string]any
+	if err := json.Unmarshal([]byte(result.Stdout), &review); err != nil {
+		t.Fatalf("major review is not one JSON document: %v: %q", err, result.Stdout)
+	}
+	if review["target"] != "v2.0.0" || review["authorized"] != false ||
+		review["authorization_state"] != "not_authorized" || review["installed"] != false {
+		t.Fatalf("major review authorization fields = %#v", review)
+	}
+	changes, ok := review["breaking_changes"].([]any)
+	if !ok || len(changes) != 10 {
+		t.Fatalf("major review breaking changes = %#v", review["breaking_changes"])
+	}
+
+	human := cli.RunWithHeldOpenStdinAndEnv(t, "ssm", map[string]string{"SSM_UPDATE_REPO": "fixture/repo"}, "update", "--major")
+	if human.ProcessExit != 0 || human.Stderr != "" {
+		t.Fatalf("human major review exit=%d stderr=%q output=%s", human.ProcessExit, human.Stderr, compiledOutputIdentity(human))
+	}
+	authorizationState, ok := review["authorization_state"].(string)
+	if !ok || !strings.Contains(human.Stdout, "\nAuthorization: "+authorizationState+"\nRelease notes:\n") || strings.Contains(human.Stdout, "%!(EXTRA") {
+		t.Fatalf("human migration authorization output: %q", human.Stdout)
+	}
+	assertCompiledFileUnchanged(t, cli.paths["ssm"], before)
+	if got := compiledUpdateServer.RequestPaths(); !reflect.DeepEqual(got, []string{"/repos/fixture/repo/releases", "/repos/fixture/repo/releases"}) {
+		t.Fatalf("non-authorized review downloaded an artifact: %q", got)
+	}
 }
