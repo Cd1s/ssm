@@ -16,37 +16,45 @@ import (
 func UploadPathWithOptions(c config.Connection, v *config.Vault, localPath, remotePath string, opts UploadOptions) (TransferResult, error) {
 	info, err := os.Stat(localPath)
 	if err != nil {
-		return TransferResult{Stage: "local_read", Integrity: "not_checked", Resume: "unsupported"}, transferError(machinecontract.TransferLocalRead, 0, err)
+		return TransferResult{Direction: "put", Kind: "unknown", Stage: "local_read", Integrity: "not_checked", Resume: "unsupported"}, transferError(machinecontract.TransferLocalRead, 0, err)
 	}
 	if info.Mode().IsRegular() {
-		return UploadFileWithOptions(c, v, localPath, remotePath, opts)
+		result, err := UploadFileWithOptions(c, v, localPath, remotePath, opts)
+		result.Direction, result.Kind = "put", "file"
+		return result, err
 	}
 	if !info.IsDir() {
-		return TransferResult{Stage: "local_read", Integrity: "not_checked", Resume: "unsupported"}, transferError(machinecontract.TransferDirectorySourceUnsupported, 0, fmt.Errorf("%s is not a regular file or directory", localPath))
+		return TransferResult{Direction: "put", Kind: "unknown", Stage: "local_read", Integrity: "not_checked", Resume: "unsupported"}, transferError(machinecontract.TransferDirectorySourceUnsupported, 0, fmt.Errorf("%s is not a regular file or directory", localPath))
 	}
 	if opts.VerifySHA256 || opts.Timeout > 0 || opts.ResumeVersion != "" {
-		return TransferResult{Stage: "validate", Integrity: "not_available", Resume: "unsupported"}, transferError(machinecontract.TransferDirectoryOptionsUnsupported, 0, errors.New("directory transfer does not support requested reliability options"))
+		return TransferResult{Direction: "put", Kind: "directory", Stage: "validate", Integrity: "not_available", Resume: "unsupported"}, transferError(machinecontract.TransferDirectoryOptionsUnsupported, 0, errors.New("directory transfer does not support requested reliability options"))
 	}
 	err = uploadDirTar(c, v, localPath, remotePath)
 	if err != nil {
-		return TransferResult{Stage: "remote_write", Integrity: "not_available", Resume: "unsupported"}, err
+		return TransferResult{Direction: "put", Kind: "directory", Stage: "remote_write", Integrity: "not_available", Resume: "unsupported"}, err
 	}
-	return TransferResult{OK: true, Stage: "complete", Integrity: "not_available", Atomic: false, Resume: "unsupported"}, nil
+	return TransferResult{OK: true, Direction: "put", Kind: "directory", Stage: "complete", Integrity: "not_available", Atomic: false, Resume: "unsupported"}, nil
 }
 
 // DownloadPath downloads a remote file or directory tree.
 // Directories use tar-over-ssh; remotePath should be a directory.
-func DownloadPath(c config.Connection, v *config.Vault, remotePath, localPath string) error {
+func DownloadPath(c config.Connection, v *config.Vault, remotePath, localPath string) (TransferResult, error) {
 	// Probe: if remote is a directory, tar it; else single file.
 	isDir, err := remoteIsDir(c, v, remotePath)
 	if err != nil {
-		// Fall back to single-file download.
-		return DownloadFile(c, v, remotePath, localPath)
+		return TransferResult{Direction: "get", Kind: "unknown", Stage: "discovery"}, err
 	}
 	if !isDir {
 		return DownloadFile(c, v, remotePath, localPath)
 	}
-	return downloadDirTar(c, v, remotePath, localPath)
+	result := TransferResult{Direction: "get", Kind: "directory", Stage: "remote_read", Integrity: "not_available", Atomic: false, Resume: "unsupported"}
+	err = downloadDirTar(c, v, remotePath, localPath)
+	if err != nil {
+		return result, err
+	}
+	result.OK = true
+	result.Stage = "complete"
+	return result, nil
 }
 
 func remoteIsDir(c config.Connection, v *config.Vault, remotePath string) (bool, error) {
@@ -144,9 +152,11 @@ func uploadDirTar(c config.Connection, v *config.Vault, localDir, remoteDir stri
 }
 
 func downloadDirTar(c config.Connection, v *config.Vault, remoteDir, localDir string) (resultErr error) {
-	if err := os.MkdirAll(localDir, 0o700); err != nil {
+	staging, err := newDirectoryDownloadStaging(localDir)
+	if err != nil {
 		return err
 	}
+	defer staging.cleanup()
 	client, err := dialSSH(c, v)
 	if err != nil {
 		return err
@@ -159,7 +169,7 @@ func downloadDirTar(c config.Connection, v *config.Vault, remoteDir, localDir st
 	}
 	defer session.Close()
 
-	tarLocal := exec.Command("tar", "-C", localDir, "-xf", "-")
+	tarLocal := exec.Command("tar", "-C", staging.path, "-xf", "-") //nolint:gosec // fixed binary/argv; staging is created internally with os.MkdirTemp
 	stdout, err := session.StdoutPipe()
 	if err != nil {
 		return err
@@ -192,13 +202,20 @@ func downloadDirTar(c config.Connection, v *config.Vault, remoteDir, localDir st
 	}
 	if err := tarLocal.Start(); err != nil {
 		_ = session.Close()
-		return fmt.Errorf("local tar: %w", err)
+		return transferError(machinecontract.TransferDownloadLocalWrite, 0, fmt.Errorf("local tar: %w", err))
 	}
 	if err := session.Wait(); err != nil {
 		_ = tarLocal.Process.Kill()
-		return err
+		_ = tarLocal.Wait()
+		return transferError(machinecontract.TransferDownloadRemoteRead, 0, err)
 	}
 	resultErr = tarLocal.Wait()
+	if resultErr != nil {
+		return transferError(machinecontract.TransferDownloadLocalWrite, 0, resultErr)
+	}
+	if err := staging.publish(localDir, systemDirectoryDownloadPublishOperations()); err != nil {
+		return err
+	}
 	diagnosticsSucceeded = resultErr == nil
 	return resultErr
 }

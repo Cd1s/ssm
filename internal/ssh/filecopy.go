@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -25,15 +24,18 @@ type UploadOptions struct {
 }
 
 type TransferResult struct {
-	OK           bool   `json:"ok"`
-	Stage        string `json:"stage"`
-	BytesSent    int64  `json:"bytes_sent"`
-	Integrity    string `json:"integrity"`
-	LocalSHA256  string `json:"local_sha256,omitempty"`
-	RemoteSHA256 string `json:"remote_sha256,omitempty"`
-	Atomic       bool   `json:"atomic"`
-	Resume       string `json:"resume"`
-	BytesReused  int64  `json:"bytes_reused,omitempty"`
+	OK            bool   `json:"ok"`
+	Direction     string `json:"direction,omitempty"`
+	Kind          string `json:"kind,omitempty"`
+	Stage         string `json:"stage"`
+	BytesSent     int64  `json:"bytes_sent"`
+	BytesReceived int64  `json:"bytes_received,omitempty"`
+	Integrity     string `json:"integrity"`
+	LocalSHA256   string `json:"local_sha256,omitempty"`
+	RemoteSHA256  string `json:"remote_sha256,omitempty"`
+	Atomic        bool   `json:"atomic"`
+	Resume        string `json:"resume"`
+	BytesReused   int64  `json:"bytes_reused,omitempty"`
 }
 
 type TransferError struct {
@@ -177,43 +179,32 @@ func transferClassifiedError(failure machinecontract.Failure, bytesSent int64, c
 
 // DownloadFile copies remotePath from the server to localPath.
 // Parent directories of localPath are created as needed.
-func DownloadFile(c config.Connection, v *config.Vault, remotePath, localPath string) (resultErr error) {
-	if err := os.MkdirAll(filepath.Dir(localPath), 0o700); err != nil {
-		return fmt.Errorf("create local parent dir: %w", err)
-	}
-
-	// Write via temp then rename so a failed download never leaves a partial file
-	// at the final path.
-	dir := filepath.Dir(localPath)
-	tmp, err := os.CreateTemp(dir, ".ssm-get-*")
+func DownloadFile(c config.Connection, v *config.Vault, remotePath, localPath string) (result TransferResult, resultErr error) {
+	result = TransferResult{Direction: "get", Kind: "file", Stage: "local_write", Integrity: "not_checked", Atomic: true, Resume: "unsupported"}
+	staging, err := newFileDownloadStaging(localPath)
 	if err != nil {
-		return err
+		return result, err
 	}
-	tmpName := tmp.Name()
-	keepTemp := false
-	defer func() {
-		_ = tmp.Close()
-		if !keepTemp {
-			_ = os.Remove(tmpName)
-		}
-	}()
+	defer staging.cleanup()
 
 	client, err := dialSSH(c, v)
 	if err != nil {
-		return err
+		result.Stage = "dial"
+		return result, err
 	}
 	defer releaseClient(client, false)
 
 	session, err := client.NewSession()
 	if err != nil {
-		return ClassifyError(err, c)
+		result.Stage = "session"
+		return result, ClassifyError(err, c)
 	}
 	defer session.Close()
 
-	session.Stdout = tmp
+	session.Stdout = staging.file
 	sessionStderr, err := machinecontract.NewDiagnosticSpool(os.Stderr)
 	if err != nil {
-		return err
+		return result, err
 	}
 	defer func() { _ = sessionStderr.Close() }()
 	diagnosticsSucceeded := false
@@ -225,21 +216,21 @@ func DownloadFile(c config.Connection, v *config.Vault, remotePath, localPath st
 	session.Stderr = sessionStderr
 
 	cmd := downloadCommand(remotePath)
+	result.Stage = "remote_read"
 	if err := session.Run(cmd); err != nil {
-		return err
+		return result, transferError(machinecontract.TransferDownloadRemoteRead, 0, err)
 	}
-	if err := tmp.Close(); err != nil {
-		return err
+	result.BytesReceived, err = staging.publish(localPath, systemFileDownloadPublishOperations())
+	if err != nil {
+		if failure, ok := machinecontract.FailureFromError(err); ok {
+			result.Stage = failure.Stage
+		}
+		return result, err
 	}
-	if err := os.Chmod(tmpName, 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, localPath); err != nil {
-		return err
-	}
-	keepTemp = true // renamed into place; do not remove
 	diagnosticsSucceeded = true
-	return nil
+	result.OK = true
+	result.Stage = "complete"
+	return result, nil
 }
 
 func uploadCommand(remotePath string, mode os.FileMode) string {

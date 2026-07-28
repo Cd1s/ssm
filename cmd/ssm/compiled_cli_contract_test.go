@@ -47,6 +47,8 @@ type compiledMachineContract struct {
 	ProcessExit     int      `json:"process_exit"`
 	Hint            string   `json:"hint,omitempty"`
 	Alias           string   `json:"alias,omitempty"`
+	Direction       string   `json:"direction,omitempty"`
+	Kind            string   `json:"kind,omitempty"`
 	Candidates      []string `json:"candidates,omitempty"`
 	Absent          []string `json:"absent,omitempty"`
 	StdoutPlacement string   `json:"stdout_placement"`
@@ -452,6 +454,12 @@ func assertCompiledMachineContract(t *testing.T, result compiledCLIResult, want 
 	if want.Alias != "" {
 		assertCompiledStringField(t, value, "alias", want.Alias, result)
 	}
+	if want.Direction != "" {
+		assertCompiledStringField(t, value, "direction", want.Direction, result)
+	}
+	if want.Kind != "" {
+		assertCompiledStringField(t, value, "kind", want.Kind, result)
+	}
 	if want.Candidates != nil {
 		raw, ok := value["candidates"].([]any)
 		if !ok {
@@ -702,8 +710,8 @@ func assertCompiledTransferSnapshot(t *testing.T, result compiledCLIResult, want
 	sort.Strings(gotFields)
 	sort.Strings(wantFields)
 	t.Fatalf(
-		"compiled transfer snapshot mismatch; fields=%v want=%v; output=%s",
-		gotFields, wantFields, compiledOutputIdentity(result),
+		"compiled transfer snapshot mismatch; fields=%v want=%v got=%#v normalized_want=%#v; output=%s",
+		gotFields, wantFields, got, normalizedWant, compiledOutputIdentity(result),
 	)
 }
 
@@ -1609,6 +1617,7 @@ func TestCompiledTransferAdaptersPreserveFailureProjections(t *testing.T) {
 	assertCompiledTransferSnapshot(t, carriedMachine, map[string]any{
 		"ok": false, "error": "local_read_failed", "message": statErr.Error(),
 		"hint": "verify the local path and read permissions", "exit": 1, "stage": "local_read",
+		"direction": "put", "kind": "unknown",
 		"alias": alias, "bytes_sent": 0, "integrity": "not_checked", "atomic": false, "resume": "unsupported",
 	})
 
@@ -1628,6 +1637,7 @@ func TestCompiledTransferAdaptersPreserveFailureProjections(t *testing.T) {
 		"message": "ssh: rejected: resource shortage (fixture session rejected)",
 		"hint":    "retry after checking SSH session limits",
 		"exit":    machinecontract.ExitConnectionFailed, "stage": "dial",
+		"direction": "put", "kind": "file",
 		"alias": alias, "bytes_sent": 0, "integrity": "not_checked", "atomic": true, "resume": "unsupported",
 	})
 
@@ -1649,6 +1659,7 @@ func TestCompiledTransferAdaptersPreserveFailureProjections(t *testing.T) {
 	assertCompiledTransferSnapshot(t, fallbackMachine, map[string]any{
 		"ok": false, "error": "session_failed", "message": sessionMessage,
 		"hint": sessionHint, "exit": machinecontract.ExitConnectionFailed, "stage": "remote_write",
+		"direction": "put", "kind": "directory",
 		"alias": alias, "bytes_sent": 0, "integrity": "not_available", "atomic": false, "resume": "unsupported",
 	})
 
@@ -1659,6 +1670,8 @@ func TestCompiledTransferAdaptersPreserveFailureProjections(t *testing.T) {
 	assertCompiledTransferSnapshot(t, getMachine, map[string]any{
 		"ok": false, "error": "session_failed", "message": sessionMessage,
 		"hint": sessionHint, "alias": alias, "exit": machinecontract.ExitConnectionFailed,
+		"direction": "get", "kind": "unknown", "stage": "session",
+		"local": downloaded, "remote": "/remote/fallback",
 	})
 
 	const requestedAlias = "requested-transfer-adapter"
@@ -1667,12 +1680,16 @@ func TestCompiledTransferAdaptersPreserveFailureProjections(t *testing.T) {
 		t.Fatalf("marshal transfer redirect fixture: %v", err)
 	}
 	cli.writeConfigFile(t, "redirects.json", append(redirectData, '\n'))
-	redirectHuman := cli.Run(t, "sshctl", nil, "--offline", "get", requestedAlias, "/remote/fallback", filepath.Join(cli.temp, "redirect-human"))
+	redirectHumanPath := filepath.Join(cli.temp, "redirect-human")
+	redirectHuman := cli.Run(t, "sshctl", nil, "--offline", "get", requestedAlias, "/remote/fallback", redirectHumanPath)
 	assertHuman(t, redirectHuman, machinecontract.ExitConnectionFailed, fallbackStderr)
-	redirectMachine := cli.Run(t, "sshctl", nil, "--offline", "--json", "get", requestedAlias, "/remote/fallback", filepath.Join(cli.temp, "redirect-machine"))
+	redirectMachinePath := filepath.Join(cli.temp, "redirect-machine")
+	redirectMachine := cli.Run(t, "sshctl", nil, "--offline", "--json", "get", requestedAlias, "/remote/fallback", redirectMachinePath)
 	assertCompiledTransferSnapshot(t, redirectMachine, map[string]any{
 		"ok": false, "error": "session_failed", "message": sessionMessage,
 		"hint": sessionHint, "alias": requestedAlias, "exit": machinecontract.ExitConnectionFailed,
+		"direction": "get", "kind": "unknown", "stage": "session",
+		"local": redirectMachinePath, "remote": "/remote/fallback",
 	})
 }
 
@@ -2852,7 +2869,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		directFile := cli.Run(t, "sshctl", nil, "--offline", "--json", "put", "transfer-live", localFile, remoteFile, "--resume=v1", "--sha256")
 		assertCompiledTransferSnapshot(t, directFile, map[string]any{
 			"action": "put", "alias": "transfer-live", "local": localFile, "remote": remoteFile,
-			"ok": true, "stage": "complete", "bytes_sent": len(fileBody),
+			"ok": true, "direction": "put", "kind": "file", "stage": "complete", "bytes_sent": len(fileBody),
 			"integrity": "sha256_verified", "local_sha256": "3d8d6a88369017fda7fd16f16b3536c0c583cd040f9b6b865c0de9eaa5e021e0",
 			"remote_sha256": "3d8d6a88369017fda7fd16f16b3536c0c583cd040f9b6b865c0de9eaa5e021e0",
 			"atomic":        true, "resume": "started",
@@ -2871,7 +2888,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		requestFile := cli.Run(t, "sshctl", requestBody, "request", "-")
 		assertCompiledTransferSnapshot(t, requestFile, map[string]any{
 			"action": "put", "alias": "transfer-live", "local": localFile, "remote": requestRemoteFile,
-			"ok": true, "stage": "complete", "bytes_sent": len(fileBody),
+			"ok": true, "direction": "put", "kind": "file", "stage": "complete", "bytes_sent": len(fileBody),
 			"integrity": "sha256_verified", "local_sha256": "3d8d6a88369017fda7fd16f16b3536c0c583cd040f9b6b865c0de9eaa5e021e0",
 			"remote_sha256": "3d8d6a88369017fda7fd16f16b3536c0c583cd040f9b6b865c0de9eaa5e021e0",
 			"atomic":        true, "resume": "started",
@@ -2890,7 +2907,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		directDirectory := cli.Run(t, "sshctl", nil, "--offline", "--json", "put", "transfer-live", localDirectory, remoteDirectory)
 		assertCompiledTransferSnapshot(t, directDirectory, map[string]any{
 			"action": "put", "alias": "transfer-live", "local": localDirectory, "remote": remoteDirectory,
-			"ok": true, "stage": "complete", "bytes_sent": 0,
+			"ok": true, "direction": "put", "kind": "directory", "stage": "complete", "bytes_sent": 0,
 			"integrity": "not_available", "atomic": false, "resume": "unsupported",
 		})
 		assertNoCompiledCanaryLeak(t, directDirectory, secretCanaries)
@@ -2906,7 +2923,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		requestDirectory := cli.Run(t, "sshctl", requestBody, "request", "-")
 		assertCompiledTransferSnapshot(t, requestDirectory, map[string]any{
 			"action": "put", "alias": "transfer-live", "local": localDirectory, "remote": requestRemoteDirectory,
-			"ok": true, "stage": "complete", "bytes_sent": 0,
+			"ok": true, "direction": "put", "kind": "directory", "stage": "complete", "bytes_sent": 0,
 			"integrity": "not_available", "atomic": false, "resume": "unsupported",
 		})
 		assertNoCompiledCanaryLeak(t, requestDirectory, mergeCompiledCanaries(secretCanaries, "request", string(requestBody)))
@@ -2915,6 +2932,8 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		getFile := cli.Run(t, "sshctl", nil, "--offline", "--json", "get", "transfer-live", remoteFile, downloadedFile)
 		assertCompiledTransferSnapshot(t, getFile, map[string]any{
 			"ok": true, "action": "get", "alias": "transfer-live", "remote": remoteFile, "local": downloadedFile,
+			"direction": "get", "kind": "file", "stage": "complete", "bytes_received": len(fileBody),
+			"integrity": "not_checked", "atomic": true, "resume": "unsupported",
 		})
 		assertNoCompiledCanaryLeak(t, getFile, secretCanaries)
 
@@ -2922,6 +2941,8 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		getDirectory := cli.Run(t, "sshctl", nil, "--offline", "--json", "get", "transfer-live", remoteDirectory, downloadedDirectory)
 		assertCompiledTransferSnapshot(t, getDirectory, map[string]any{
 			"ok": true, "action": "get", "alias": "transfer-live", "remote": remoteDirectory, "local": downloadedDirectory,
+			"direction": "get", "kind": "directory", "stage": "complete",
+			"integrity": "not_available", "atomic": false, "resume": "unsupported",
 		})
 		assertNoCompiledCanaryLeak(t, getDirectory, secretCanaries)
 
@@ -2933,7 +2954,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 			{name: "file", remotePath: requestRemoteFile, localPath: filepath.Join(cli.temp, "request-downloaded-file.bin")},
 			{name: "directory", remotePath: requestRemoteDirectory, localPath: filepath.Join(cli.temp, "request-downloaded-directory")},
 		} {
-			t.Run("request-v1 get "+requestGet.name+" remains unsupported", func(t *testing.T) {
+			t.Run("request-v1 get "+requestGet.name+" migrates with BC-7", func(t *testing.T) {
 				body, err := json.Marshal(map[string]any{
 					"version": 1, "op": "get", "alias": "transfer-live",
 					"remote_path": requestGet.remotePath, "local_path": requestGet.localPath,
@@ -2942,11 +2963,18 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 					t.Fatalf("marshal request-v1 get fixture: %v", err)
 				}
 				result := cli.Run(t, "sshctl", body, "request", "-")
-				assertCompiledTransferSnapshot(t, result, map[string]any{
-					"ok": false, "error": "invalid_request", "message": `unsupported request op "get"`,
-					"hint": "use run, plan, check, doctor, put, or host.list/search/show/add/update/upsert/remove",
-					"exit": 2, "alias": "transfer-live",
-				})
+				kind := requestGet.name
+				want := map[string]any{
+					"ok": true, "action": "get", "direction": "get", "kind": kind,
+					"alias": "transfer-live", "remote": requestGet.remotePath, "local": requestGet.localPath,
+					"stage": "complete", "integrity": "not_available", "atomic": false, "resume": "unsupported",
+				}
+				if kind == "file" {
+					want["bytes_received"] = len(fileBody)
+					want["integrity"] = "not_checked"
+					want["atomic"] = true
+				}
+				assertCompiledTransferSnapshot(t, result, want)
 				assertNoCompiledCanaryLeak(t, result, mergeCompiledCanaries(secretCanaries, "request", string(body)))
 			})
 		}
@@ -2972,9 +3000,9 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		assertCompiledMachineContract(t, failed, compiledMachineContract{
 			OK: false, Error: "remote_write_failed", Stage: "remote_write",
 			JSONExit: machinecontract.ExitConnectionFailed, ProcessExit: machinecontract.ExitConnectionFailed,
-			Hint:   "check remote path permissions and available space; the final path was not replaced",
-			Alias:  "transfer-live",
-			Absent: []string{"direction", "kind"},
+			Hint:      "check remote path permissions and available space; the final path was not replaced",
+			Alias:     "transfer-live",
+			Direction: "put", Kind: "file",
 		})
 		if data, err := os.ReadFile(blocker); err != nil || string(data) != "preserve\n" { //nolint:gosec // blocker is created directly beneath the test-owned remote t.TempDir
 			t.Fatalf("failed transfer did not preserve safe blocker fixture")

@@ -14,6 +14,7 @@
         "check",
         "doctor",
         "put",
+        "get",
         "host.list",
         "host.search",
         "host.show",
@@ -94,6 +95,13 @@
       "then": {
         "required": ["alias", "local_path", "remote_path"],
         "not": {"anyOf": [{"required": ["argv"]}, {"required": ["shell_command"]}, {"required": ["script_file"]}, {"required": ["script_args"]}, {"required": ["shell"]}, {"required": ["secret_files"]}, {"required": ["no_reuse"]}, {"required": ["preflight"]}, {"required": ["deep"]}, {"required": ["host"]}]}
+      }
+    },
+    {
+      "if": {"properties": {"op": {"const": "get"}}},
+      "then": {
+        "required": ["alias", "local_path", "remote_path"],
+        "not": {"anyOf": [{"required": ["argv"]}, {"required": ["shell_command"]}, {"required": ["script_file"]}, {"required": ["script_args"]}, {"required": ["shell"]}, {"required": ["secret_files"]}, {"required": ["timeout"]}, {"required": ["no_reuse"]}, {"required": ["preflight"]}, {"required": ["deep"]}, {"required": ["resume"]}, {"required": ["sha256"]}, {"required": ["host"]}]}
       }
     }
   ]
