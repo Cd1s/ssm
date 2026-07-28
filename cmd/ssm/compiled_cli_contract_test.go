@@ -3618,6 +3618,193 @@ func TestCompiledSyncStateMatrix(t *testing.T) {
 	})
 }
 
+func TestCompiledConfirmedSyncMetadataFailuresRemainSuccessful(t *testing.T) {
+	outputModes := []struct {
+		name string
+		args func(...string) []string
+	}{
+		{
+			name: "json",
+			args: func(args ...string) []string {
+				return append([]string{"--json"}, args...)
+			},
+		},
+		{name: "human", args: func(args ...string) []string { return args }},
+	}
+
+	t.Run("scoped push keeps the selected ledger finalized after confirmed PUT", func(t *testing.T) {
+		for _, mode := range outputModes {
+			t.Run(mode.name, func(t *testing.T) {
+				cli := newCompiledCLIHarness(t)
+				sync := newCompiledSyncFixture(t)
+				tokenCanary := "ISSUE20_PUBLIC_METADATA_PUSH_TOKEN_CANARY" //nolint:gosec // test-only fake credential canary
+				connection := config.Connection{                           //nolint:gosec // test-only fake credential canary
+					Name: "metadata-push", Host: "192.0.2.80", Port: 22, User: "runner",
+					Password: "ISSUE20_PUBLIC_METADATA_PUSH_VAULT_CANARY",
+				}
+				starting := &config.Vault{
+					Connections: []config.Connection{connection},
+					PendingBase: &config.InventorySnapshot{},
+					PendingMutations: []config.PendingMutation{{
+						ID: "tx_metadata_push", Alias: connection.Name, Operation: "created",
+						CreatedAt: "2026-07-28T14:30:00Z", After: &connection,
+					}},
+				}
+				cli.SaveVault(t, starting)
+				sync.SetRemote(t, nil, "confirmed-public-put")
+				cli.SaveCloud(t, sync.URL(), tokenCanary)
+				configDir := filepath.Join(cli.home, ".config", "ssm")
+				if err := os.Mkdir(filepath.Join(configDir, "remote.etag"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				cli.writeConfigFile(t, "sync-conflict.json", []byte(
+					`{"detected_at":"2026-07-28T14:29:00Z","local_etag":"opaque-local","remote_etag":"opaque-remote","cached_etag":"opaque-cached"}`,
+				))
+
+				result := cli.Run(t, "sshctl", nil, mode.args("push", "--only", "tx_metadata_push")...)
+				assertNoCompiledCanaryLeak(t, result, map[string]string{
+					"token": tokenCanary, "vault": connection.Password,
+					"passphrase": cli.passphrase, "config_path": configDir,
+				})
+				switch mode.name {
+				case "json":
+					value := assertCompiledJSONSuccess(t, result)
+					if value["action"] != "pushed" ||
+						value["scope"] != "only" ||
+						value["transaction_id"] != "tx_metadata_push" {
+						t.Fatalf("confirmed push JSON = %#v", value)
+					}
+					if _, found := value["error"]; found {
+						t.Fatalf("confirmed push emitted a failure field: %#v", value)
+					}
+				case "human":
+					assertCompiledHumanSuccess(t, result, "Vault pushed to cloud.")
+					if strings.Contains(result.Stdout, "sync refresh failed") {
+						t.Fatalf("confirmed push emitted a human failure: %s", compiledOutputIdentity(result))
+					}
+				}
+				if got := sync.MethodCount(http.MethodPut); got != 1 {
+					t.Fatalf("confirmed push PUT count = %d, want 1", got)
+				}
+				if got := sync.MethodCount(http.MethodHead); got != 0 {
+					t.Fatalf("confirmed push HEAD count = %d, want 0 without cached identity", got)
+				}
+				finalized := &config.Vault{Connections: []config.Connection{connection}}
+				assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), finalized)
+				assertCompiledEncryptedPublication(t, sync.UploadedBlob(), cli.passphrase, map[string]string{
+					"vault": connection.Password, "token": tokenCanary, "passphrase": cli.passphrase,
+				}, finalized)
+				if _, err := os.Stat(filepath.Join(configDir, "sync-conflict.json")); !os.IsNotExist(err) {
+					t.Fatalf("confirmed push conflict metadata was not cleared: %v", err)
+				}
+			})
+		}
+	})
+
+	t.Run("pull and refresh keep the confirmed local replacement after metadata failure", func(t *testing.T) {
+		operations := []struct {
+			name string
+			args []string
+		}{
+			{name: "pull", args: []string{"pull"}},
+			{name: "refresh", args: []string{"list"}},
+		}
+		for _, operation := range operations {
+			t.Run(operation.name, func(t *testing.T) {
+				for _, mode := range outputModes {
+					t.Run(mode.name, func(t *testing.T) {
+						cli := newCompiledCLIHarness(t)
+						sync := newCompiledSyncFixture(t)
+						tokenCanary := "ISSUE20_PUBLIC_METADATA_PULL_TOKEN_CANARY" //nolint:gosec // test-only fake credential canary
+						local := &config.Vault{Connections: []config.Connection{{  //nolint:gosec // test-only fake credential canary
+							Name: "metadata-local", Host: "192.0.2.81", Port: 22, User: "runner",
+							Password: "ISSUE20_PUBLIC_METADATA_PULL_LOCAL_CANARY",
+						}}}
+						remote := &config.Vault{Connections: []config.Connection{{ //nolint:gosec // test-only fake credential canary
+							Name: "metadata-remote", Host: "192.0.2.82", Port: 22, User: "runner",
+							Password: "ISSUE20_PUBLIC_METADATA_PULL_REMOTE_CANARY",
+						}}}
+						cli.SaveVault(t, local)
+						localBlob := cli.VaultBlob(t)
+						cachedIdentity := fmt.Sprintf("%x", sha256.Sum256(localBlob))
+						cli.SaveRemoteETag(t, cachedIdentity)
+						remoteBlob, err := config.EncryptVault(remote, cli.passphrase)
+						if err != nil {
+							t.Fatal(err)
+						}
+						sync.SetRemote(t, remoteBlob, "confirmed-public-get")
+						cli.SaveCloud(t, sync.URL(), tokenCanary)
+						configDir := filepath.Join(cli.home, ".config", "ssm")
+						cli.writeConfigFile(t, "sync-conflict.json", []byte(
+							`{"detected_at":"2026-07-28T14:39:00Z","local_etag":"opaque-local","remote_etag":"opaque-remote","cached_etag":"opaque-cached"}`,
+						))
+						if err := os.Mkdir(filepath.Join(configDir, "settings.json"), 0o700); err != nil {
+							t.Fatal(err)
+						}
+
+						result := cli.Run(t, "sshctl", nil, mode.args(operation.args...)...)
+						assertNoCompiledCanaryLeak(t, result, map[string]string{
+							"token": tokenCanary,
+							"local": local.Connections[0].Password, "remote": remote.Connections[0].Password,
+							"passphrase": cli.passphrase, "config_path": configDir,
+						})
+						switch operation.name {
+						case "pull":
+							switch mode.name {
+							case "json":
+								value := assertCompiledJSONSuccess(t, result)
+								if value["action"] != "pulled" {
+									t.Fatalf("confirmed pull JSON = %#v", value)
+								}
+								if _, found := value["error"]; found {
+									t.Fatalf("confirmed pull emitted a failure field: %#v", value)
+								}
+							case "human":
+								assertCompiledHumanSuccess(t, result, "Vault pulled from cloud.")
+							}
+						case "refresh":
+							switch mode.name {
+							case "json":
+								value := decodeExactlyOneJSONValue(t, result.Stdout)
+								items, ok := value.([]any)
+								if result.ProcessExit != 0 || result.Stderr != "" || !ok || len(items) != 1 {
+									t.Fatalf("confirmed refresh JSON output=%s", compiledOutputIdentity(result))
+								}
+								host, ok := items[0].(map[string]any)
+								if !ok || host["name"] != "metadata-remote" {
+									t.Fatalf("confirmed refresh used stale inventory: %#v", items)
+								}
+							case "human":
+								assertCompiledHumanSuccess(t, result, "metadata-remote")
+							}
+						}
+						if strings.Contains(result.Stdout, "sync refresh failed") {
+							t.Fatalf("confirmed %s emitted a human failure: %s", operation.name, compiledOutputIdentity(result))
+						}
+						if got := sync.MethodCount(http.MethodHead); got != 1 {
+							t.Fatalf("confirmed %s HEAD count = %d, want 1", operation.name, got)
+						}
+						if got := sync.MethodCount(http.MethodGet); got != 1 {
+							t.Fatalf("confirmed %s GET count = %d, want 1", operation.name, got)
+						}
+						if after := cli.VaultBlob(t); !bytes.Equal(after, remoteBlob) {
+							t.Fatalf("confirmed %s did not preserve the local opaque replacement", operation.name)
+						}
+						assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), remote)
+						identity, readErr := os.ReadFile(filepath.Join(configDir, "remote.etag")) //nolint:gosec // path is fixed beneath the harness-owned temporary home
+						if readErr != nil || strings.TrimSpace(string(identity)) != "confirmed-public-get" {
+							t.Fatalf("confirmed %s identity = %q err=%v", operation.name, identity, readErr)
+						}
+						if _, err := os.Stat(filepath.Join(configDir, "sync-conflict.json")); !os.IsNotExist(err) {
+							t.Fatalf("confirmed %s conflict metadata was not cleared: %v", operation.name, err)
+						}
+					})
+				}
+			})
+		}
+	})
+}
+
 func TestMajorUpdateReviewIsNonInteractive(t *testing.T) {
 	cli := newCompiledCLIHarness(t)
 	cli.SaveVault(t, &config.Vault{})

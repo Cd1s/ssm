@@ -206,9 +206,7 @@ func (t *Transaction) refreshConfigured(cfg *cloud.CloudConfig, facts Facts, for
 	if t.invalidate != nil {
 		t.invalidate()
 	}
-	if err := t.commitSuccess("pull", committedIdentity); err != nil {
-		return facts, fmt.Errorf("%w: pull metadata did not commit", ErrRefresh)
-	}
+	t.commitSuccess("pull", committedIdentity)
 	facts = t.localFacts()
 	facts.Configuration = ConfigurationConfigured
 	facts.Changed = true
@@ -287,9 +285,7 @@ func (t *Transaction) PushBlob(blob []byte) (Facts, error) {
 	if err != nil {
 		return facts, fmt.Errorf("%w: remote push did not commit", ErrRefresh)
 	}
-	if err := t.commitSuccess("push", committedIdentity); err != nil {
-		return facts, fmt.Errorf("%w: push metadata did not commit", ErrRefresh)
-	}
+	t.commitSuccess("push", committedIdentity)
 	facts = t.localFacts()
 	facts.Configuration, facts.Remote = state, RemoteChecked
 	return facts, nil
@@ -377,15 +373,18 @@ func (t *Transaction) localFacts() Facts {
 	return facts
 }
 
-func (t *Transaction) commitSuccess(operation, remoteIdentity string) error {
-	if remoteIdentity == "" {
-		return fmt.Errorf("confirmed remote identity is empty")
-	}
-	if err := config.WritePrivateFile(remoteIdentityPath(), []byte(remoteIdentity+"\n")); err != nil {
-		return err
+// commitSuccess records best-effort metadata only after the remote or local
+// opaque-blob commit has been confirmed. Metadata failures must not make that
+// confirmed operation ambiguous to callers.
+func (t *Transaction) commitSuccess(operation, remoteIdentity string) {
+	failed := remoteIdentity == ""
+	if remoteIdentity != "" {
+		if err := config.WritePrivateFile(remoteIdentityPath(), []byte(remoteIdentity+"\n")); err != nil {
+			failed = true
+		}
 	}
 	if err := clearConflict(); err != nil {
-		return err
+		failed = true
 	}
 	settings := config.LoadSettings()
 	timestamp := t.now().Format(time.RFC3339)
@@ -395,9 +394,14 @@ func (t *Transaction) commitSuccess(operation, remoteIdentity string) error {
 	case "push":
 		settings.LastPush = timestamp
 	default:
-		return fmt.Errorf("unknown sync operation")
+		failed = true
 	}
-	return config.SaveSettings(settings)
+	if err := config.SaveSettings(settings); err != nil {
+		failed = true
+	}
+	if failed {
+		config.Debug("%s: sync metadata update failed", operation)
+	}
 }
 
 func remoteIdentityPath() string { return filepath.Join(config.Dir(), "remote.etag") }
