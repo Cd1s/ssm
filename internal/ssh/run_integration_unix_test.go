@@ -3,6 +3,7 @@
 package ssh
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"testing"
 
 	gossh "golang.org/x/crypto/ssh"
+
+	"ssm/internal/machinecontract"
 )
 
 func TestRunTransportsScriptOverSSHStdin(t *testing.T) {
@@ -72,6 +75,58 @@ func TestRunClassifiesRemoteScriptExit(t *testing.T) {
 	})
 	if res.OK || res.Exit != 9 || res.Error != "remote_script_failed" || res.Stderr != "failure" || res.Message == "" || res.Hint == "" || res.Stage != "remote_execution" {
 		t.Fatalf("result = %+v", res)
+	}
+}
+
+func TestRunClassifiesScriptExit127FromCapturedSSHDiagnostics(t *testing.T) {
+	conn, vault := startRunTestSSHServer(t)
+	setTestHome(t, t.TempDir())
+	trustRunTestHost(t, conn)
+
+	for _, test := range []struct {
+		name       string
+		body       string
+		wantError  string
+		wantStage  string
+		wantStderr string
+	}{
+		{
+			name:       "stable interpreter marker",
+			body:       fmt.Sprintf("printf '%%s\\n' %s >&2\nexit 127\n", ShellQuote(machinecontract.InterpreterNotFoundDiagnostic("sh"))),
+			wantError:  "interpreter_not_found",
+			wantStage:  "interpreter",
+			wantStderr: machinecontract.InterpreterNotFoundDiagnostic("sh") + "\n",
+		},
+		{
+			name:       "ordinary script exit",
+			body:       "printf '%s\\n' 'ordinary exit 127' >&2\nexit 127\n",
+			wantError:  "remote_script_failed",
+			wantStage:  "remote_execution",
+			wantStderr: "ordinary exit 127\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			script, err := PrepareScript("exit-127.sh", []byte(test.body), "sh", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res := Run(conn, vault, RunOptions{
+				Command:        BuildScriptRunner(script),
+				Input:          script.Body,
+				RiskCommand:    script.Body,
+				Capture:        true,
+				NoReuse:        true,
+				Interpreter:    script.Interpreter,
+				ScriptLabel:    script.Label,
+				RequestedAlias: conn.Name,
+			})
+			if res.OK || res.Exit != 127 || res.Error != test.wantError || res.Stage != test.wantStage {
+				t.Fatalf("result = %+v", res)
+			}
+			if res.Stdout != "" || res.Stderr != test.wantStderr {
+				t.Fatalf("captured placement stdout=%q stderr=%q", res.Stdout, res.Stderr)
+			}
+		})
 	}
 }
 

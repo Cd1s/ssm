@@ -1,20 +1,38 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"ssm/internal/config"
+	"ssm/internal/machinecontract"
 )
 
 func setTestHome(t *testing.T, home string) {
 	t.Helper()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+}
+
+func TestMachineSuccessRendererPropagatesWriterFailure(t *testing.T) {
+	err := renderMachineValue(machineRejectWriter{}, []string{"host"})
+	if err == nil || !strings.Contains(err.Error(), "fixture machine output rejected") {
+		t.Fatalf("machine success render error = %v", err)
+	}
+}
+
+type machineRejectWriter struct{}
+
+func (machineRejectWriter) Write([]byte) (int, error) {
+	return 0, errors.New("fixture machine output rejected")
 }
 
 func TestSSHCTLInvocationNameIsPortable(t *testing.T) {
@@ -36,7 +54,7 @@ func TestSSHCTLInvocationNameIsPortable(t *testing.T) {
 }
 
 func TestMachineErrorContractHasStableFields(t *testing.T) {
-	value := machineErrorOutput{OK: false, Error: "alias_not_found", Message: "missing", Hint: "list aliases", Exit: 255, Stage: "lookup"}
+	value := machinecontract.Failure{OK: false, Error: "alias_not_found", Message: "missing", Hint: "list aliases", Exit: 255, Stage: "lookup"}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		t.Fatal(err)
@@ -219,5 +237,97 @@ func TestLoadVaultConsumesUnlockedSnapshotThenReadsLaterSave(t *testing.T) {
 	}
 	if reloaded == first || len(reloaded.Connections) != 1 || reloaded.Connections[0].Name != "after" {
 		t.Fatalf("reloaded vault = %+v", reloaded)
+	}
+}
+
+func TestStatusFailureAdapterSubprocessHelper(t *testing.T) {
+	if os.Getenv("SSM_TEST_STATUS_FAILURE_HELPER") != "1" {
+		return
+	}
+
+	setTestHome(t, t.TempDir())
+	const canary = `config="{\"token\":\"STATUS_FAILURE_CONFIG_CANARY\"}"`
+	if err := config.SaveSettings(&config.Settings{
+		PasswordCache: "never",
+		AutoSync:      true,
+		LastPush:      canary,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.Path(), []byte("invalid encrypted vault"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	machineJSON = true
+	offlineMode = true
+	masterPass = "status-failure-pass"
+	masterPassFile = ""
+	unlockedVault = nil
+	runSSHCTLStatus()
+	t.Fatal("failed status adapter returned")
+}
+
+func TestStatusFailureAdapterUsesFailureRenderer(t *testing.T) {
+	t.Setenv("SSM_TEST_PUSH_HELPER", "1")
+	t.Setenv("SSM_TEST_STATUS_FAILURE_HELPER", "1")
+	t.Setenv("SSM_REUSE", "1")
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestStatusFailureAdapterSubprocessHelper$", "-test.count=1") //nolint:gosec // executes this test binary with a fixed selector
+	cmd.Env = os.Environ()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	processExit := 0
+	if err := cmd.Run(); err != nil {
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok {
+			t.Fatalf("run failed-status adapter helper: %v", err)
+		}
+		processExit = exitErr.ExitCode()
+	}
+	if processExit != 1 || stderr.Len() != 0 {
+		t.Fatalf("failed status placement/exit: exit=%d stdout=%q stderr=%q", processExit, stdout.String(), stderr.String())
+	}
+	if !strings.HasSuffix(stdout.String(), "\n") || !strings.Contains(stdout.String(), "\n  \"version\":") {
+		t.Fatalf("failed status is not one indented JSON document: %q", stdout.String())
+	}
+	decoder := json.NewDecoder(bytes.NewReader(stdout.Bytes()))
+	var value map[string]any
+	if err := decoder.Decode(&value); err != nil {
+		t.Fatalf("decode failed status: %v; stdout=%q", err, stdout.String())
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		t.Fatalf("failed status emitted more than one JSON value: %q", stdout.String())
+	}
+	if len(value) != 14 {
+		t.Fatalf("failed status field count=%d, want 14; fields=%v", len(value), value)
+	}
+	for _, absent := range []string{"error", "message", "hint", "exit", "stage", "last_pull", "last_sync", "cache_age_seconds"} {
+		if _, exists := value[absent]; exists {
+			t.Fatalf("failed status unexpectedly added %q: %v", absent, value)
+		}
+	}
+	if ok, _ := value["ok"].(bool); ok ||
+		value["version"] != version ||
+		value["hosts"] != float64(0) ||
+		value["vault"] != "present" ||
+		value["sync"] != "missing" ||
+		value["redirects"] != float64(0) ||
+		value["reuse"] != "on" ||
+		value["reuse_scope"] != "process" ||
+		value["last_push"] != "config=<redacted>" ||
+		value["freshness"] != "unknown" ||
+		value["remote_state"] != "not_configured" ||
+		value["pending_changes"] != false ||
+		value["offline"] != true {
+		t.Fatalf("failed status fields changed: %v", value)
+	}
+	mutations, ok := value["pending_mutations"].([]any)
+	if !ok || len(mutations) != 0 {
+		t.Fatalf("failed status pending_mutations=%v, want []", value["pending_mutations"])
+	}
+	if strings.Contains(stdout.String(), "STATUS_FAILURE_CONFIG_CANARY") {
+		t.Fatalf("failed status leaked config canary: %q", stdout.String())
 	}
 }

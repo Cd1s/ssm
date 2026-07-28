@@ -1,11 +1,11 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"strings"
 
+	"ssm/internal/machinecontract"
 	"ssm/internal/ssh"
 )
 
@@ -17,18 +17,22 @@ type hostKeyCommandOptions struct {
 	asJSON      bool
 }
 
+type hostKeyFailure struct {
+	OK bool `json:"ok"`
+	machinecontract.Metadata
+	Report ssh.HostKeyInspection `json:"inspection"`
+}
+
 func runHostKeyCommand(args []string) {
 	opts, err := parseHostKeyCommand(args)
 	if err != nil {
-		writeCLIError("invalid_arguments", err.Error(), "use host-key inspect <alias> or host-key accept <alias> --fingerprint SHA256:... --yes", 2)
-		os.Exit(2)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.HostKeyArgumentsInvalid, machinecontract.Details{Cause: err}))
 	}
 	machineJSON = machineJSON || opts.asJSON
 	pullIfChanged()
 	v, err := loadVault()
 	if err != nil {
-		writeCLIError("vault_error", err.Error(), "unlock the vault and retry", 1)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.HostKeyVaultFailed, machinecontract.Details{Cause: err}))
 	}
 	c, _, ok := resolveConnection(v, opts.alias)
 	if !ok {
@@ -46,27 +50,10 @@ func runHostKeyCommand(args []string) {
 		report.ResolvedAlias = ""
 	}
 	if err != nil {
-		code, hint := "host_key_operation_failed", "inspect the endpoint and retry"
-		var operationErr *ssh.HostKeyOperationError
-		if ok := errors.As(err, &operationErr); ok {
-			code, hint = operationErr.Code, operationErr.Hint
-		} else if classified, ok := err.(*ssh.ClassifiedError); ok {
-			code, hint = classified.Code, classified.Hint
-		}
-		if machineJSON {
-			writeMachineValue(struct {
-				OK      bool                  `json:"ok"`
-				Error   string                `json:"error"`
-				Message string                `json:"message"`
-				Hint    string                `json:"hint,omitempty"`
-				Exit    int                   `json:"exit"`
-				Stage   string                `json:"stage"`
-				Report  ssh.HostKeyInspection `json:"inspection"`
-			}{OK: false, Error: code, Message: redactError(err), Hint: hint, Exit: 1, Stage: "host_key", Report: report})
-		} else {
-			writeCLIError(code, err.Error(), hint, 1)
-		}
-		os.Exit(1)
+		failure := machinecontract.ClassifyHostKeyOperation(err)
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, hostKeyFailure{
+			OK: false, Metadata: failure.Metadata(), Report: report,
+		}))
 	}
 	if machineJSON {
 		writeMachineValue(report)

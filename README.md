@@ -79,6 +79,8 @@ resume 仅支持 regular file，且必须用 `--resume=v1` 显式启用；未提
 
 简单、固定、已审查的字面参数直接使用 `sshctl --json run <alias> --argv ...`，无需创建 request 文件。连续的简单命令可使用 `sshctl run <alias> --stream`：stdin 每行是一个 JSON 字符串数组，stdout 每行是一个紧凑 JSON 结果；进程启动时同步并解密一次，默认每 30 秒重新检查 inventory，刷新失败立即停止而不会使用陈旧数据。需要动态/不可信参数、脚本、secret 或 host 变更时，仍使用 `sshctl request --file`。项目不提供交互式 shell。
 
+非 capture 的 human `run` 与目录传输诊断采用 outcome-buffered 行为：stdout/stderr 在结果确定前不会渐进显示，成功时逐字节原样回放，失败或取消时先脱敏再回放。每个诊断流使用权限受限的私有临时文件，硬上限为 8 MiB；超过上限会清理缓冲文件并使操作失败，不会静默截断为成功，也不会回放已缓冲的潜在 secret。该上限同时约束未终止行或未闭合结构化值在失败脱敏期间的内存增长。
+
 ### 凭据安全边界
 
 密码、私钥和其他 secret 只能通过受限权限的文件路径引用。绝不要把它们或 vault 内容写入 JSON、命令行参数、日志、错误报告、GitHub Issue 或提交。`--password-file`、`--key-file`、`--master-pass-file` 与 request 的 `secret_files` 只读取路径指向的文件；结构化输出不会回显内容。

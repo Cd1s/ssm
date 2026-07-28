@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 
 	"ssm/internal/cloud"
 	"ssm/internal/config"
+	"ssm/internal/machinecontract"
 )
 
 const defaultServer = ""
@@ -17,53 +19,49 @@ func runRegister(args []string) {
 	opts, ok := parseCloudAuthFlags("register", args)
 	if ok {
 		if opts.passwordFile == "" {
-			fmt.Fprintln(os.Stderr, "Error: --password-file required for noninteractive register")
-			os.Exit(1)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
+				Message: "--password-file required for noninteractive register", Tool: "legacy_plain",
+			}))
 		}
 		password := readSecretFile(opts.passwordFile, "password")
 		fmt.Println("Creating account...")
 		token, err := cloud.Register(opts.server, opts.email, password)
 		if err != nil {
-			printError(err)
-			os.Exit(1)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 		}
 		cfg := &cloud.CloudConfig{Server: opts.server, Token: token, Email: opts.email}
 		if err := cloud.SaveCloud(cfg); err != nil {
-			printError(err)
-			os.Exit(1)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 		}
 		fmt.Println("Account registered.")
 		return
 	}
-	writeCLIError("invalid_arguments", "register requires explicit flags", "use --server, --email, and --password-file", 2)
-	os.Exit(2)
+	os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.RegisterArgumentsInvalid, machinecontract.Details{Message: "register requires explicit flags"}))
 }
 
 func runLogin(args []string) {
 	opts, ok := parseCloudAuthFlags("login", args)
 	if ok {
 		if opts.passwordFile == "" {
-			fmt.Fprintln(os.Stderr, "Error: --password-file required for noninteractive login")
-			os.Exit(1)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
+				Message: "--password-file required for noninteractive login", Tool: "legacy_plain",
+			}))
 		}
 		password := readSecretFile(opts.passwordFile, "password")
 		fmt.Println("Logging in...")
 		token, err := cloud.Login(opts.server, opts.email, password)
 		if err != nil {
-			printError(err)
-			os.Exit(1)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 		}
 
 		cfg := &cloud.CloudConfig{Server: opts.server, Token: token, Email: opts.email}
 		if err := cloud.SaveCloud(cfg); err != nil {
-			printError(err)
-			os.Exit(1)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 		}
 		fmt.Println("Logged in.")
 		return
 	}
-	writeCLIError("invalid_arguments", "login requires explicit flags", "use --server, --email, and --password-file", 2)
-	os.Exit(2)
+	os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.LoginArgumentsInvalid, machinecontract.Details{Message: "login requires explicit flags"}))
 }
 
 type cloudAuthFlags struct {
@@ -76,22 +74,35 @@ func parseCloudAuthFlags(name string, args []string) (cloudAuthFlags, bool) {
 	if len(args) == 0 {
 		return cloudAuthFlags{}, false
 	}
-	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	var flagOutput bytes.Buffer
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(&flagOutput)
 	opts := cloudAuthFlags{}
 	fs.StringVar(&opts.server, "server", defaultServer, "sync server URL")
 	fs.StringVar(&opts.email, "email", "", "account email")
 	fs.StringVar(&opts.passwordFile, "password-file", "", "file containing account password")
 	if err := fs.Parse(args); err != nil {
-		os.Exit(2)
+		message := flagOutput.String()
+		if message == "" {
+			message = err.Error() + "\n"
+		}
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(machinecontract.WriteFlagHelp(message))
+		}
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.InvalidSSHCTLArguments, machinecontract.Details{
+			Message: message, Cause: err, Tool: "raw_flag_error",
+		}))
 	}
 	if opts.email == "" {
-		fmt.Fprintln(os.Stderr, "Error: --email required")
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
+			Message: "--email required", Tool: "legacy_plain",
+		}))
 	}
 	opts.server = strings.TrimRight(opts.server, "/")
 	if opts.server == "" {
-		fmt.Fprintln(os.Stderr, "Error: --server required")
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
+			Message: "--server required", Tool: "legacy_plain",
+		}))
 	}
 	return opts, true
 }
@@ -99,21 +110,24 @@ func parseCloudAuthFlags(name string, args []string) (cloudAuthFlags, bool) {
 func readSecretFile(path, label string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		printError(fmt.Errorf("%s file: %w", label, err))
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
+			Cause: fmt.Errorf("%s file: %w", label, err),
+		}))
 	}
 	secret := strings.TrimRight(string(data), "\r\n")
 	if secret == "" {
-		fmt.Fprintf(os.Stderr, "Error: %s file is empty\n", label)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
+			Message: fmt.Sprintf("%s file is empty", label),
+		}))
 	}
 	return secret
 }
 
 func runLogout() {
 	if err := cloud.DeleteCloud(); err != nil {
-		fmt.Fprintln(os.Stderr, "Not logged in.")
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
+			Cause: err, Tool: "legacy_message", Script: "logout",
+		}))
 	}
 	fmt.Println("Logged out.")
 }
@@ -143,23 +157,21 @@ func runPush(args []string) {
 			only = strings.TrimPrefix(args[i], "--only=")
 			seenOnly = true
 		default:
-			writeCLIError("invalid_arguments", "push accepts --all or --only <transaction-id>", "inspect pending_mutations with sshctl --json status", 2)
-			os.Exit(2)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.PushArgumentsInvalid, machinecontract.Details{
+				Message: "push accepts --all or --only <transaction-id>",
+			}))
 		}
 	}
 	if seenOnly && strings.TrimSpace(only) == "" {
-		writeCLIError("invalid_arguments", "--only requires a non-empty transaction id", "copy an exact id from sshctl --json status", 2)
-		os.Exit(2)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.PushOnlyRequired, machinecontract.Details{Message: "--only requires a non-empty transaction id"}))
 	}
 	if all && only != "" {
-		writeCLIError("invalid_arguments", "--all and --only are mutually exclusive", "choose one explicit push scope", 2)
-		os.Exit(2)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.PushScopeConflict, machinecontract.Details{Message: "--all and --only are mutually exclusive"}))
 	}
 	unlock()
 	result, err := pushTransactionScope(only)
 	if err != nil {
-		writeCLIError("sync_push_failed", err.Error(), "local vault remains pending; fix sync and retry push", 1)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.SyncPushFailed, machinecontract.Details{Cause: err}))
 	}
 	if machineJSON {
 		writeMachineValue(result)
@@ -231,14 +243,12 @@ func mutationViews(mutations []config.PendingMutation) []pendingMutationView {
 func runRemoteHash() {
 	cfg, err := cloud.LoadCloud()
 	if err != nil {
-		printError(err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 
 	etag, err := cloud.RemoteETag(cfg)
 	if err != nil {
-		printError(err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 	fmt.Println(etag)
 }
@@ -246,14 +256,12 @@ func runRemoteHash() {
 func runPullIfChanged() {
 	cfg, err := cloud.LoadCloud()
 	if err != nil {
-		printError(err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 
 	changed, err := cloud.PullIfChanged(cfg)
 	if err != nil {
-		printError(err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 	if changed {
 		if machineJSON {
@@ -282,11 +290,9 @@ func pullIfChanged() {
 	if err := refreshVaultIfChanged(); err != nil {
 		var conflict *cloud.SyncConflictError
 		if errors.As(err, &conflict) {
-			writeCLIErrorStage("sync_conflict", err.Error(), "local and remote blobs were preserved; inspect sshctl --offline --json doctor, then explicitly pull or push after review", "sync_compare", 1)
-			os.Exit(1)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.SyncConflict, machinecontract.Details{Cause: err}))
 		}
-		writeCLIErrorStage("sync_pull_failed", err.Error(), "fix sync connectivity or retry explicitly with --offline", "sync_pull", 1)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.SyncPullFailed, machinecontract.Details{Cause: err}))
 	}
 }
 
@@ -313,13 +319,11 @@ func refreshVaultIfChangedResult() (bool, error) {
 func runPull() {
 	cfg, err := cloud.LoadCloud()
 	if err != nil {
-		writeCLIError("sync_config_error", err.Error(), "configure sync or use local inventory", 1)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.SyncConfigurationFailed, machinecontract.Details{Cause: err}))
 	}
 
 	if err := cloud.Pull(cfg); err != nil {
-		writeCLIError("sync_pull_failed", err.Error(), "local inventory was not replaced", 1)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.SyncPullReplaceFailed, machinecontract.Details{Cause: err}))
 	}
 	invalidateVaultCache()
 	if machineJSON {

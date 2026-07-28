@@ -29,6 +29,18 @@ func TestShellCommandSecretsAreExportedForWholeCommand(t *testing.T) {
 	}
 }
 
+func TestRunPlanPreservesNonSecretCommandMetadata(t *testing.T) {
+	const command = "printf 'token=<caller supplied output>'"
+	res := Run(config.Connection{
+		Name: "plan", Host: "192.0.2.1", User: "root",
+	}, &config.Vault{}, RunOptions{
+		Command: command, Mode: "shell_command", PlanOnly: true,
+	})
+	if res.RemoteCommand != command {
+		t.Fatalf("remote command=%q, want=%q", res.RemoteCommand, command)
+	}
+}
+
 func TestRedactSecrets(t *testing.T) {
 	full := BuildRemoteCommand("echo hi", map[string]string{"TOKEN": "s3cret-value"})
 	got := RedactSecrets(full, map[string]string{"TOKEN": "s3cret-value"})

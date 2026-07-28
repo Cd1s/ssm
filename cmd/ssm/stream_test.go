@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ssm/internal/config"
+	"ssm/internal/machinecontract"
 	"ssm/internal/ssh"
 )
 
@@ -69,11 +70,11 @@ func TestRunArgvStreamUsesStableNDJSONErrors(t *testing.T) {
 
 	var output bytes.Buffer
 	exit := runArgvStream("missing", runStreamOptions{refresh: defaultStreamRefresh}, bytes.NewBufferString("{bad}\n[\"true\"]\n"), &output)
-	if exit != ssh.ExitConnectionFailed {
+	if exit != machinecontract.ExitConnectionFailed {
 		t.Fatalf("exit=%d", exit)
 	}
 	decoder := json.NewDecoder(&output)
-	var invalid machineErrorOutput
+	var invalid machinecontract.Failure
 	if err := decoder.Decode(&invalid); err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +85,7 @@ func TestRunArgvStreamUsesStableNDJSONErrors(t *testing.T) {
 	if err := decoder.Decode(&missing); err != nil {
 		t.Fatal(err)
 	}
-	if missing.OK || missing.Error != ssh.ErrCodeAliasNotFound || missing.Stage != "lookup" {
+	if missing.OK || missing.Error != machinecontract.CodeAliasNotFound || missing.Stage != "lookup" {
 		t.Fatalf("missing result=%+v", missing)
 	}
 }

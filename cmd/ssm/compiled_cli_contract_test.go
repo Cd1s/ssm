@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"ssm/internal/config"
+	"ssm/internal/machinecontract"
 	securevault "ssm/internal/vault"
 )
 
@@ -62,6 +63,11 @@ type compiledCLIHarness struct {
 }
 
 func TestMain(m *testing.M) {
+	if os.Getenv("SSM_TEST_TAR_HELPER") == "1" {
+		_, _ = io.WriteString(os.Stdout, "compiled fixture invalid tar payload\n")
+		_, _ = io.WriteString(os.Stderr, "config=\"{\\\"token\\\":\\\"FALLBACK_LOCAL_TAR_DIAGNOSTIC\\\"}\"\n")
+		os.Exit(31)
+	}
 	if os.Getenv("SSM_TEST_PUSH_HELPER") == "1" {
 		os.Exit(m.Run())
 	}
@@ -221,6 +227,28 @@ func (h *compiledCLIHarness) RunWithEnv(t *testing.T, executable string, stdin [
 		overrides["SSM_MASTER_PASS_FILE"] = h.passPath
 	}
 	return h.run(t, executable, stdin, overrides, args...)
+}
+
+func (h *compiledCLIHarness) TarFailureHelperDir(t *testing.T) string {
+	t.Helper()
+	directory := t.TempDir()
+	name := "tar"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	source := os.Args[0]
+	data, err := os.ReadFile(source) //nolint:gosec // source is the running test binary used as a controlled subprocess helper
+	if err != nil {
+		t.Fatalf("read compiled tar helper source: %v", err)
+	}
+	info, err := os.Stat(source) //nolint:gosec // source is the running test binary selected by the test harness
+	if err != nil {
+		t.Fatalf("stat compiled tar helper source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, name), data, info.Mode()); err != nil { //nolint:gosec // destination is constrained to the test-owned temporary directory
+		t.Fatalf("write compiled tar helper: %v", err)
+	}
+	return directory
 }
 
 func (h *compiledCLIHarness) RunWithHeldOpenStdin(t *testing.T, executable string, args ...string) compiledCLIResult {
@@ -1416,6 +1444,558 @@ func TestCompiledCLIHarnessCrossPlatformDesign(t *testing.T) {
 	}
 }
 
+func TestCompiledLegacyGlobalJSONFailuresPreserveFixedPointBytes(t *testing.T) {
+	loginFlagUsage := "flag provided but not defined: -bad\n" +
+		"Usage of login:\n" +
+		"  -email string\n" +
+		"    \taccount email\n" +
+		"  -password-file string\n" +
+		"    \tfile containing account password\n" +
+		"  -server string\n" +
+		"    \tsync server URL\n"
+	registerFlagUsage := "flag provided but not defined: -bad\n" +
+		"Usage of register:\n" +
+		"  -email string\n" +
+		"    \taccount email\n" +
+		"  -password-file string\n" +
+		"    \tfile containing account password\n" +
+		"  -server string\n" +
+		"    \tsync server URL\n"
+	serverFlagUsage := "flag provided but not defined: -bad\n" +
+		"Usage of server:\n" +
+		"  -data-dir string\n" +
+		"    \tsync server data directory (default \"/srv/ssm-sync\")\n" +
+		"  -listen string\n" +
+		"    \tlisten address (default \"127.0.0.1:8787\")\n"
+	loginHelp := strings.TrimPrefix(loginFlagUsage, "flag provided but not defined: -bad\n")
+	registerHelp := strings.TrimPrefix(registerFlagUsage, "flag provided but not defined: -bad\n")
+	serverHelp := strings.TrimPrefix(serverFlagUsage, "flag provided but not defined: -bad\n")
+	registerNoFlagsJSON := "{\n" +
+		"  \"ok\": false,\n" +
+		"  \"error\": \"invalid_arguments\",\n" +
+		"  \"message\": \"register requires explicit flags\",\n" +
+		"  \"hint\": \"use --server, --email, and --password-file\",\n" +
+		"  \"exit\": 2\n" +
+		"}\n"
+
+	tests := []struct {
+		name       string
+		args       []string
+		wantExit   int
+		wantStdout string
+		wantStderr string
+	}{
+		{
+			name: "legacy remove usage stays raw despite global json", args: []string{"--json", "remove"},
+			wantExit: 1, wantStdout: "Usage: ssm remove <name>\n",
+		},
+		{
+			name: "login flag parser stays raw despite global json", args: []string{"--json", "login", "--bad"},
+			wantExit: 2, wantStderr: loginFlagUsage,
+		},
+		{
+			name: "register flag parser stays raw despite global json", args: []string{"--json", "register", "--bad"},
+			wantExit: 2, wantStderr: registerFlagUsage,
+		},
+		{
+			name:     "login email requirement stays raw despite global json",
+			args:     []string{"--json", "login", "--server", "https://sync.invalid"},
+			wantExit: 1, wantStderr: "Error: --email required\n",
+		},
+		{
+			name:     "login server requirement stays raw despite global json",
+			args:     []string{"--json", "login", "--email", "user@example.invalid"},
+			wantExit: 1, wantStderr: "Error: --server required\n",
+		},
+		{
+			name:     "login password file requirement stays raw despite global json",
+			args:     []string{"--json", "login", "--server", "https://sync.invalid", "--email", "user@example.invalid"},
+			wantExit: 1, wantStderr: "Error: --password-file required for noninteractive login\n",
+		},
+		{
+			name:     "register password file requirement stays raw despite global json",
+			args:     []string{"--json", "register", "--server", "https://sync.invalid", "--email", "user@example.invalid"},
+			wantExit: 1, wantStderr: "Error: --password-file required for noninteractive register\n",
+		},
+		{
+			name: "server flag parser stays raw despite global json", args: []string{"--json", "server", "--bad"},
+			wantExit: 2, wantStderr: serverFlagUsage,
+		},
+		{
+			name: "approved register no-args machine document remains json", args: []string{"--json", "register"},
+			wantExit: 2, wantStdout: registerNoFlagsJSON,
+		},
+	}
+	for _, help := range []struct {
+		command string
+		output  string
+	}{
+		{command: "login", output: loginHelp},
+		{command: "register", output: registerHelp},
+		{command: "server", output: serverHelp},
+	} {
+		for _, spelling := range []string{"-h", "--help"} {
+			for _, globalJSON := range []bool{false, true} {
+				args := []string{help.command, spelling}
+				name := help.command + " " + spelling
+				if globalJSON {
+					args = append([]string{"--json"}, args...)
+					name += " stays raw despite global json"
+				}
+				tests = append(tests, struct {
+					name       string
+					args       []string
+					wantExit   int
+					wantStdout string
+					wantStderr string
+				}{
+					name: name, args: args, wantExit: 0, wantStderr: help.output,
+				})
+			}
+		}
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			cli := newCompiledCLIHarness(t)
+			result := cli.RunWithoutMasterPass(t, "ssm", nil, test.args...)
+			if result.ProcessExit != test.wantExit || result.Stdout != test.wantStdout || result.Stderr != test.wantStderr {
+				t.Fatalf(
+					"legacy global-json bytes changed: exit=%d stdout=%q stderr=%q, want exit=%d stdout=%q stderr=%q",
+					result.ProcessExit, result.Stdout, result.Stderr,
+					test.wantExit, test.wantStdout, test.wantStderr,
+				)
+			}
+		})
+	}
+}
+
+func TestCompiledTransferAdaptersPreserveFailureProjections(t *testing.T) {
+	cli := newCompiledCLIHarness(t)
+	const (
+		alias    = "transfer-adapter"
+		password = "TRANSFER_ADAPTER_PASSWORD_CANARY"
+	)
+	server := newCompiledSSHFixture(t, compiledSSHFixtureOptions{
+		Password: password, RejectSessions: true,
+	})
+	cli.TrustSSHHost(t, server)
+	cli.SaveVault(t, &config.Vault{
+		Connections: []config.Connection{server.Connection(alias, password)},
+	})
+
+	assertHuman := func(t *testing.T, result compiledCLIResult, wantExit int, wantStderr string) {
+		t.Helper()
+		if result.ProcessExit != wantExit || result.Stdout != "" || result.Stderr != wantStderr {
+			t.Fatalf(
+				"human transfer projection changed: exit=%d stdout=%q stderr=%q, want exit=%d stdout empty stderr=%q",
+				result.ProcessExit, result.Stdout, result.Stderr, wantExit, wantStderr,
+			)
+		}
+	}
+
+	missingLocal := filepath.Join(cli.temp, "missing-transfer-source")
+	_, statErr := os.Stat(missingLocal)
+	if statErr == nil {
+		t.Fatalf("missing transfer source unexpectedly exists: %s", missingLocal)
+	}
+	carriedHuman := cli.Run(t, "sshctl", nil, "--offline", "put", alias, missingLocal, "/remote/carried")
+	assertHuman(t, carriedHuman, 1,
+		"ssm: error=internal alias="+alias+" address="+server.Address()+"\n"+
+			"Error: "+statErr.Error()+"\n",
+	)
+	carriedMachine := cli.Run(t, "sshctl", nil, "--offline", "--json", "put", alias, missingLocal, "/remote/carried")
+	assertCompiledTransferSnapshot(t, carriedMachine, map[string]any{
+		"ok": false, "error": "local_read_failed", "message": statErr.Error(),
+		"hint": "verify the local path and read permissions", "exit": 1, "stage": "local_read",
+		"alias": alias, "bytes_sent": 0, "integrity": "not_checked", "atomic": false, "resume": "unsupported",
+	})
+
+	localFile := filepath.Join(cli.temp, "regular-transfer-source")
+	if err := os.WriteFile(localFile, []byte("regular transfer body\n"), 0o600); err != nil {
+		t.Fatalf("write regular transfer source: %v", err)
+	}
+	regularSessionHuman := cli.Run(t, "sshctl", nil, "--offline", "put", alias, localFile, "/remote/session")
+	assertHuman(t, regularSessionHuman, machinecontract.ExitConnectionFailed,
+		"ssm: error=session_failed alias="+alias+" address="+server.Address()+"\n"+
+			"Error: ssh: rejected: resource shortage (fixture session rejected)\n"+
+			"ssm: hint=SSH connected but session failed; remote sshd or resources may be unhealthy\n",
+	)
+	regularSessionMachine := cli.Run(t, "sshctl", nil, "--offline", "--json", "put", alias, localFile, "/remote/session")
+	assertCompiledTransferSnapshot(t, regularSessionMachine, map[string]any{
+		"ok": false, "error": "session_failed",
+		"message": "ssh: rejected: resource shortage (fixture session rejected)",
+		"hint":    "retry after checking SSH session limits",
+		"exit":    machinecontract.ExitConnectionFailed, "stage": "dial",
+		"alias": alias, "bytes_sent": 0, "integrity": "not_checked", "atomic": true, "resume": "unsupported",
+	})
+
+	localDirectory := filepath.Join(cli.temp, "fallback-directory")
+	if err := os.Mkdir(localDirectory, 0o700); err != nil {
+		t.Fatalf("create fallback transfer directory: %v", err)
+	}
+	const (
+		sessionMessage = "ssh: rejected: resource shortage (fixture session rejected)"
+		sessionHint    = "SSH connected but session failed; remote sshd or resources may be unhealthy"
+	)
+	fallbackStderr := "ssm: error=session_failed alias=" + alias + " address=" + server.Address() + "\n" +
+		"Error: " + sessionMessage + "\n" +
+		"ssm: hint=" + sessionHint + "\n"
+
+	fallbackHuman := cli.Run(t, "sshctl", nil, "--offline", "put", alias, localDirectory, "/remote/fallback")
+	assertHuman(t, fallbackHuman, machinecontract.ExitConnectionFailed, fallbackStderr)
+	fallbackMachine := cli.Run(t, "sshctl", nil, "--offline", "--json", "put", alias, localDirectory, "/remote/fallback")
+	assertCompiledTransferSnapshot(t, fallbackMachine, map[string]any{
+		"ok": false, "error": "session_failed", "message": sessionMessage,
+		"hint": sessionHint, "exit": machinecontract.ExitConnectionFailed, "stage": "remote_write",
+		"alias": alias, "bytes_sent": 0, "integrity": "not_available", "atomic": false, "resume": "unsupported",
+	})
+
+	downloaded := filepath.Join(cli.temp, "downloaded")
+	getHuman := cli.Run(t, "sshctl", nil, "--offline", "get", alias, "/remote/fallback", downloaded)
+	assertHuman(t, getHuman, machinecontract.ExitConnectionFailed, fallbackStderr)
+	getMachine := cli.Run(t, "sshctl", nil, "--offline", "--json", "get", alias, "/remote/fallback", downloaded)
+	assertCompiledTransferSnapshot(t, getMachine, map[string]any{
+		"ok": false, "error": "session_failed", "message": sessionMessage,
+		"hint": sessionHint, "alias": alias, "exit": machinecontract.ExitConnectionFailed,
+	})
+
+	const requestedAlias = "requested-transfer-adapter"
+	redirectData, err := json.Marshal(config.Redirects{requestedAlias: alias})
+	if err != nil {
+		t.Fatalf("marshal transfer redirect fixture: %v", err)
+	}
+	cli.writeConfigFile(t, "redirects.json", append(redirectData, '\n'))
+	redirectHuman := cli.Run(t, "sshctl", nil, "--offline", "get", requestedAlias, "/remote/fallback", filepath.Join(cli.temp, "redirect-human"))
+	assertHuman(t, redirectHuman, machinecontract.ExitConnectionFailed, fallbackStderr)
+	redirectMachine := cli.Run(t, "sshctl", nil, "--offline", "--json", "get", requestedAlias, "/remote/fallback", filepath.Join(cli.temp, "redirect-machine"))
+	assertCompiledTransferSnapshot(t, redirectMachine, map[string]any{
+		"ok": false, "error": "session_failed", "message": sessionMessage,
+		"hint": sessionHint, "alias": requestedAlias, "exit": machinecontract.ExitConnectionFailed,
+	})
+}
+
+func TestCompiledFailedStatusUsesFailureRenderer(t *testing.T) {
+	cli := newCompiledCLIHarness(t)
+	cli.SaveVault(t, &config.Vault{})
+	const canary = "COMPILED_STATUS_FAILURE_CONFIG_CANARY"
+	settings, err := json.Marshal(config.Settings{
+		PasswordCache: "never",
+		AutoSync:      true,
+		LastPush:      `config="{\"token\":\"` + canary + `\"}"`,
+	})
+	if err != nil {
+		t.Fatalf("marshal failed-status settings: %v", err)
+	}
+	cli.writeConfigFile(t, "settings.json", settings)
+	sync := newCompiledSyncFixture(t)
+	sync.SetRemote(t, []byte("invalid encrypted vault"), "")
+	cli.SaveCloud(t, sync.URL(), "COMPILED_STATUS_FAILURE_TOKEN_CANARY")
+
+	result := cli.Run(t, "sshctl", nil, "--json", "status")
+	if result.ProcessExit != 1 || result.Stderr != "" {
+		t.Fatalf(
+			"failed status placement/exit changed: exit=%d stderr=%q output=%s",
+			result.ProcessExit, result.Stderr, compiledOutputIdentity(result),
+		)
+	}
+	if !strings.HasSuffix(result.Stdout, "\n") || !strings.Contains(result.Stdout, "\n  \"version\":") {
+		t.Fatalf("failed status is not one indented JSON document: output=%s", compiledOutputIdentity(result))
+	}
+	value := decodeExactlyOneJSONObject(t, result.Stdout)
+	assertNoCompiledCanaryLeak(t, result, map[string]string{
+		"status_configuration": canary,
+		"cloud_token":          "COMPILED_STATUS_FAILURE_TOKEN_CANARY",
+	})
+	for _, absent := range []string{"error", "message", "hint", "exit", "stage"} {
+		if _, exists := value[absent]; exists {
+			t.Fatalf("failed status unexpectedly added %q: fields=%v", absent, value)
+		}
+	}
+	if ok, _ := value["ok"].(bool); ok ||
+		value["hosts"] != float64(0) ||
+		value["vault"] != "present" ||
+		value["sync"] != "configured" ||
+		value["redirects"] != float64(0) ||
+		value["reuse_scope"] != "process" ||
+		value["last_push"] != "config=<redacted>" ||
+		value["pending_changes"] != false ||
+		value["offline"] != false {
+		t.Fatalf("failed status fields changed: %v", value)
+	}
+	mutations, ok := value["pending_mutations"].([]any)
+	if !ok || len(mutations) != 0 {
+		t.Fatalf("failed status pending_mutations=%v, want []", value["pending_mutations"])
+	}
+	lastPull, pullOK := value["last_pull"].(string)
+	lastSync, syncOK := value["last_sync"].(string)
+	if !pullOK || !syncOK || lastPull == "" || lastSync != lastPull {
+		t.Fatalf("failed status sync timestamps changed: last_pull=%v last_sync=%v", value["last_pull"], value["last_sync"])
+	}
+}
+
+func TestCompiledSuccessfulTransferDiagnosticsRemainByteExact(t *testing.T) {
+	const (
+		alias              = "successful-diagnostics"
+		password           = "SUCCESSFUL_DIAGNOSTICS_PASSWORD_CANARY"
+		uploadStdout       = `token="UPLOAD_SUCCESS_STDOUT_CANARY"` + "\n"
+		uploadDiagnostic   = `config="{\"token\":\"UPLOAD_SUCCESS_DIAGNOSTIC_CANARY\"}"` + "\n"
+		downloadDiagnostic = `request_body="{\"argv\":[\"DOWNLOAD_SUCCESS_DIAGNOSTIC_CANARY\"]}"` + "\n"
+		fileDiagnostic     = `decrypted_inventory="{\"hosts\":[\"FILE_SUCCESS_DIAGNOSTIC_CANARY\"]}"` + "\n"
+	)
+	cli := newCompiledCLIHarness(t)
+	server := newCompiledSSHFixture(t, compiledSSHFixtureOptions{
+		Password:                  password,
+		UploadTarSuccessStdout:    uploadStdout,
+		UploadTarSuccessStderr:    uploadDiagnostic,
+		DownloadTarSuccessStderr:  downloadDiagnostic,
+		DownloadFileSuccessStderr: fileDiagnostic,
+	})
+	cli.TrustSSHHost(t, server)
+	cli.SaveVault(t, &config.Vault{
+		Connections: []config.Connection{server.Connection(alias, password)},
+	})
+	assertSuccessDiagnostic := func(t *testing.T, result compiledCLIResult, wantStdout, wantStderr string) {
+		t.Helper()
+		if result.ProcessExit != 0 || result.Stdout != wantStdout || result.Stderr != wantStderr {
+			t.Fatalf(
+				"successful transfer diagnostic changed: exit=%d stdout=%q stderr=%q, want exit=0 stdout=%q stderr=%q",
+				result.ProcessExit, result.Stdout, result.Stderr, wantStdout, wantStderr,
+			)
+		}
+	}
+
+	localUpload := filepath.Join(cli.temp, "upload-directory")
+	if err := os.Mkdir(localUpload, 0o700); err != nil {
+		t.Fatalf("create upload diagnostic directory: %v", err)
+	}
+	const body = "successful diagnostic transfer body\n"
+	if err := os.WriteFile(filepath.Join(localUpload, "item.txt"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write upload diagnostic file: %v", err)
+	}
+	remoteUpload := filepath.Join(t.TempDir(), "uploaded")
+	uploaded := cli.Run(t, "sshctl", nil, "--offline", "put", alias, localUpload, remoteUpload)
+	assertSuccessDiagnostic(t, uploaded, uploadStdout, uploadDiagnostic)
+	if data, err := os.ReadFile(filepath.Join(remoteUpload, "item.txt")); err != nil || string(data) != body { //nolint:gosec // path is beneath the test-owned remote upload directory
+		t.Fatalf("uploaded diagnostic fixture data=%q err=%v", data, err)
+	}
+
+	remoteDirectory := filepath.Join(t.TempDir(), "remote-directory")
+	if err := os.Mkdir(remoteDirectory, 0o700); err != nil {
+		t.Fatalf("create remote diagnostic directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(remoteDirectory, "item.txt"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write remote diagnostic directory file: %v", err)
+	}
+	localDownload := filepath.Join(cli.temp, "downloaded-directory")
+	downloaded := cli.Run(t, "sshctl", nil, "--offline", "get", alias, remoteDirectory, localDownload)
+	assertSuccessDiagnostic(t, downloaded, "", downloadDiagnostic)
+	if data, err := os.ReadFile(filepath.Join(localDownload, "item.txt")); err != nil || string(data) != body { //nolint:gosec // path is beneath the test-owned local download directory
+		t.Fatalf("downloaded diagnostic directory data=%q err=%v", data, err)
+	}
+
+	remoteFile := filepath.Join(t.TempDir(), "remote-file")
+	if err := os.WriteFile(remoteFile, []byte(body), 0o600); err != nil {
+		t.Fatalf("write remote diagnostic file: %v", err)
+	}
+	localFile := filepath.Join(cli.temp, "downloaded-file")
+	fileDownloaded := cli.Run(t, "sshctl", nil, "--offline", "get", alias, remoteFile, localFile)
+	assertSuccessDiagnostic(t, fileDownloaded, "", fileDiagnostic)
+	if data, err := os.ReadFile(localFile); err != nil || string(data) != body { //nolint:gosec // path is the test-owned single-file download destination
+		t.Fatalf("downloaded diagnostic file data=%q err=%v", data, err)
+	}
+}
+
+func TestCompiledSuccessfulDirectoryFallbackPreservesOrderedDiagnostics(t *testing.T) {
+	const (
+		alias    = "fallback-diagnostics"
+		password = "FALLBACK_DIAGNOSTICS_PASSWORD_CANARY" //nolint:gosec // test-only fake credential canary
+	)
+	cli := newCompiledCLIHarness(t)
+	server := newCompiledSSHFixture(t, compiledSSHFixtureOptions{Password: password})
+	cli.TrustSSHHost(t, server)
+	cli.SaveVault(t, &config.Vault{
+		Connections: []config.Connection{server.Connection(alias, password)},
+	})
+	local := filepath.Join(cli.temp, "fallback-source")
+	if err := os.Mkdir(local, 0o700); err != nil {
+		t.Fatalf("create fallback source: %v", err)
+	}
+	const body = "fallback walk body\n"
+	if err := os.WriteFile(filepath.Join(local, "item.txt"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write fallback source: %v", err)
+	}
+	remote := filepath.Join(t.TempDir(), "fallback-destination")
+	result := cli.RunWithEnv(t, "sshctl", nil, map[string]string{
+		"PATH":                cli.TarFailureHelperDir(t),
+		"SSM_TEST_TAR_HELPER": "1",
+	}, "--offline", "put", alias, local, remote)
+	wantStderr := "config=\"{\\\"token\\\":\\\"FALLBACK_LOCAL_TAR_DIAGNOSTIC\\\"}\"\n" +
+		"compiled fixture tar stream invalid\n"
+	if result.ProcessExit != 0 || result.Stdout != "" || result.Stderr != wantStderr {
+		t.Fatalf(
+			"successful fallback diagnostics changed: exit=%d stdout=%q stderr=%q, want exit=0 stdout empty stderr=%q",
+			result.ProcessExit, result.Stdout, result.Stderr, wantStderr,
+		)
+	}
+	if data, err := os.ReadFile(filepath.Join(remote, "item.txt")); err != nil || string(data) != body { //nolint:gosec // path is beneath the test-owned remote temporary directory
+		t.Fatalf("fallback walk destination data=%q err=%v", data, err)
+	}
+}
+
+func TestCompiledHumanRunDefersDiagnosticsUntilOutcome(t *testing.T) {
+	t.Run("failure redacts fragmented diagnostics and known script input", func(t *testing.T) {
+		const (
+			password    = "RUN_FAILURE_PASSWORD_CANARY"
+			scriptInput = "RUN_FAILURE_SCRIPT_INPUT_CANARY"
+		)
+		cli := newCompiledCLIHarness(t)
+		server := newCompiledSSHFixture(t, compiledSSHFixtureOptions{
+			Password:           password,
+			RunCommandContains: "command -v 'sh'",
+			RunDrainStdin:      true,
+			RunExitStatus:      23,
+			RunStdoutFragments: []string{
+				"safe stdout before\n",
+				`password=\"OUTER_ESCAPED_RUN_PASSWORD_CANARY WITH `,
+				`SPACES,AND,COMMAS\"` + "\n",
+				"master_pass=RUN_MASTER_PASS_CANARY\n",
+				"known short value: abc\n",
+				scriptInput + "\n",
+			},
+			RunStderrFragments: []string{
+				"token=RUN_TOKEN_CANARY\ncredential=RUN_CREDENTIAL_CANARY\n",
+				"-----BEGIN OPENSSH PRIVATE KEY-----\nRUN_PRIVATE_",
+				"KEY_CANARY\n-----END OPENSSH PRIVATE KEY-----\n",
+				"config={\n  \"token\": \"RUN_CONFIG_CANARY\"\n}\nrequest_body={\n",
+				"  \"argv\": [\"RUN_REQUEST_BODY_CANARY\"]\n}\n",
+				`decrypted_inventory=\"RUN_INVENTORY_CANARY WITH SPACES\"` + "\n",
+			},
+		})
+		cli.TrustSSHHost(t, server)
+		cli.SaveVault(t, &config.Vault{
+			Connections: []config.Connection{server.Connection("run-failure", password)},
+		})
+		secretPath := filepath.Join(cli.temp, "short-secret")
+		if err := os.WriteFile(secretPath, []byte("abc\n"), 0o600); err != nil {
+			t.Fatalf("write short run secret: %v", err)
+		}
+
+		result := cli.Run(t, "sshctl", []byte(scriptInput+"\n"), "--offline", "run", "run-failure", "-s", "--secret", "SHORT=@"+secretPath)
+		if result.ProcessExit != 23 {
+			t.Fatalf("failed human run exit=%d, want 23; output=%s", result.ProcessExit, compiledOutputIdentity(result))
+		}
+		if !strings.Contains(result.Stdout, "safe stdout before\n") {
+			t.Fatalf("failed human run lost safe stdout: %q", result.Stdout)
+		}
+		assertNoCompiledCanaryLeak(t, result, map[string]string{ //nolint:gosec // test-only fake credential canaries
+			"outer_escaped_password": "OUTER_ESCAPED_RUN_PASSWORD_CANARY",
+			"master_pass":            "RUN_MASTER_PASS_CANARY",
+			"known_short":            "abc",
+			"script_input":           scriptInput,
+			"token":                  "RUN_TOKEN_CANARY",
+			"credential":             "RUN_CREDENTIAL_CANARY",
+			"private_key":            "RUN_PRIVATE_KEY_CANARY",
+			"config":                 "RUN_CONFIG_CANARY",
+			"request_body":           "RUN_REQUEST_BODY_CANARY",
+			"decrypted_inventory":    "RUN_INVENTORY_CANARY",
+		})
+	})
+
+	t.Run("success replays both streams byte for byte", func(t *testing.T) {
+		const (
+			password = "RUN_SUCCESS_PASSWORD_CANARY"
+			stdout   = "success stdout byte 1\r\nsuccess stdout byte 2"
+			stderr   = "success stderr byte 1\r\nsuccess stderr byte 2"
+		)
+		cli := newCompiledCLIHarness(t)
+		server := newCompiledSSHFixture(t, compiledSSHFixtureOptions{
+			Password:           password,
+			RunCommandContains: "run-success",
+			RunStdoutFragments: []string{stdout[:11], stdout[11:]},
+			RunStderrFragments: []string{stderr[:9], stderr[9:]},
+		})
+		cli.TrustSSHHost(t, server)
+		cli.SaveVault(t, &config.Vault{
+			Connections: []config.Connection{server.Connection("run-success", password)},
+		})
+
+		result := cli.Run(t, "sshctl", nil, "--offline", "run", "run-success", "--raw", "run-success")
+		if result.ProcessExit != 0 || result.Stdout != stdout || result.Stderr != stderr {
+			t.Fatalf(
+				"successful human run changed bytes: exit=%d stdout=%q stderr=%q, want exit=0 stdout=%q stderr=%q",
+				result.ProcessExit, result.Stdout, result.Stderr, stdout, stderr,
+			)
+		}
+	})
+}
+
+func TestCompiledCLIScriptExit127ClassificationAndPlacement(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		diagnostic string
+		wantError  string
+		wantStage  string
+		wantHint   string
+	}{
+		{
+			name:       "stable interpreter marker",
+			diagnostic: machinecontract.InterpreterNotFoundDiagnostic("sh") + "\n",
+			wantError:  "interpreter_not_found",
+			wantStage:  "interpreter",
+			wantHint:   `remote shell "sh" is unavailable; retry with --shell sh or install it`,
+		},
+		{
+			name:       "ordinary script exit",
+			diagnostic: "ordinary exit 127\n",
+			wantError:  "remote_script_failed",
+			wantStage:  "remote_execution",
+			wantHint:   "the script reached the remote interpreter but exited non-zero; inspect stderr",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			const password = "EXIT_127_PASSWORD_CANARY" //nolint:gosec // test-only fake credential canary
+			cli := newCompiledCLIHarness(t)
+			server := newCompiledSSHFixture(t, compiledSSHFixtureOptions{
+				Password:           password,
+				RunCommandContains: "command -v 'sh'",
+				RunStderrFragments: []string{test.diagnostic},
+				RunExitStatus:      127,
+				RunDrainStdin:      true,
+			})
+			cli.TrustSSHHost(t, server)
+			cli.SaveVault(t, &config.Vault{
+				Connections: []config.Connection{server.Connection("script-127", password)},
+			})
+
+			human := cli.Run(t, "sshctl", []byte("printf script-body\n"), "--offline", "run", "script-127", "-s")
+			if human.ProcessExit != 127 || human.Stdout != "" {
+				t.Fatalf("human placement exit=%d stdout=%q stderr=%q", human.ProcessExit, human.Stdout, human.Stderr)
+			}
+			wantHumanStderr := test.diagnostic +
+				"ssm: error=" + test.wantError + " script=<stdin> exit=127\n" +
+				"ssm: hint=" + test.wantHint + "\n"
+			if human.Stderr != wantHumanStderr {
+				t.Fatalf("human stderr placement = %q, want %q", human.Stderr, wantHumanStderr)
+			}
+
+			machine := cli.Run(t, "sshctl", []byte("printf script-body\n"), "--offline", "--json", "run", "script-127", "-s")
+			if machine.ProcessExit != 127 || machine.Stderr != "" {
+				t.Fatalf("machine placement exit=%d stdout=%q stderr=%q", machine.ProcessExit, machine.Stdout, machine.Stderr)
+			}
+			var document map[string]any
+			if err := json.Unmarshal([]byte(machine.Stdout), &document); err != nil {
+				t.Fatalf("machine stdout is not one JSON document: %v; output=%q", err, machine.Stdout)
+			}
+			if document["error"] != test.wantError || document["stage"] != test.wantStage ||
+				document["exit"] != float64(127) || document["stderr"] != test.diagnostic {
+				t.Fatalf("machine document = %#v", document)
+			}
+		})
+	}
+}
+
 func TestCompiledCLIContractMatrix(t *testing.T) {
 	reviewed := reviewedCompiledMachineContracts(t)
 	reviewedNames := []string{
@@ -2376,9 +2956,22 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 			t.Fatalf("write blocked remote parent fixture: %v", err)
 		}
 		failedRemote := filepath.Join(blocker, "artifact.bin")
+		failedHuman := cli.Run(t, "sshctl", nil, "--offline", "put", "transfer-live", localFile, failedRemote, "--sha256")
+		wantHumanFailure := "ssm: error=auth_failed alias=transfer-live address=" + server.Address() + "\n" +
+			"Error: SSH authentication failed\n" +
+			"ssm: hint=verify user and credential file; password/private-key contents are never shown\n"
+		if failedHuman.ProcessExit != machinecontract.ExitConnectionFailed ||
+			failedHuman.Stdout != "" || failedHuman.Stderr != wantHumanFailure {
+			t.Fatalf(
+				"permission-denied human transfer changed: exit=%d stdout=%q stderr=%q, want exit=%d stderr=%q",
+				failedHuman.ProcessExit, failedHuman.Stdout, failedHuman.Stderr,
+				machinecontract.ExitConnectionFailed, wantHumanFailure,
+			)
+		}
 		failed := cli.Run(t, "sshctl", nil, "--offline", "--json", "put", "transfer-live", localFile, failedRemote, "--sha256")
 		assertCompiledMachineContract(t, failed, compiledMachineContract{
-			OK: false, Error: "remote_write_failed", Stage: "remote_write", JSONExit: 1, ProcessExit: 1,
+			OK: false, Error: "remote_write_failed", Stage: "remote_write",
+			JSONExit: machinecontract.ExitConnectionFailed, ProcessExit: machinecontract.ExitConnectionFailed,
 			Hint:   "check remote path permissions and available space; the final path was not replaced",
 			Alias:  "transfer-live",
 			Absent: []string{"direction", "kind"},

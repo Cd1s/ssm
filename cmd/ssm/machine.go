@@ -1,9 +1,10 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
+	"io"
 	"os"
+
+	"ssm/internal/machinecontract"
 )
 
 // machineJSON is enabled by a global --json or by a command-specific JSON
@@ -11,57 +12,20 @@ import (
 // stdout and keeps diagnostics off stderr for agent callers.
 var machineJSON bool
 
-type machineErrorOutput struct {
-	OK         bool     `json:"ok"`
-	Error      string   `json:"error"`
-	Message    string   `json:"message"`
-	Hint       string   `json:"hint,omitempty"`
-	Stage      string   `json:"stage,omitempty"`
-	Alias      string   `json:"alias,omitempty"`
-	Exit       int      `json:"exit"`
-	Candidates []string `json:"candidates,omitempty"`
-}
-
+// writeMachineValue serializes typed success payloads without rewriting their
+// fields. Failures must use machinecontract.WriteFailure or WriteClassified.
 func writeMachineValue(value any) {
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(value)
-}
-
-func writeMachineError(code, message, hint, alias string, exit int, candidates []string) {
-	writeMachineErrorStage(code, message, hint, "", alias, exit, candidates)
-}
-
-func writeMachineErrorStage(code, message, hint, stage, alias string, exit int, candidates []string) {
-	writeMachineValue(machineErrorOutput{
-		OK:         false,
-		Error:      code,
-		Message:    redactString(message),
-		Hint:       redactString(hint),
-		Stage:      stage,
-		Alias:      alias,
-		Exit:       exit,
-		Candidates: candidates,
-	})
-}
-
-func writeCLIError(code, message, hint string, exit int) {
-	writeCLIErrorStage(code, message, hint, "", exit)
-}
-
-func writeCLIErrorStage(code, message, hint, stage string, exit int) {
-	if machineJSON {
-		writeMachineErrorStage(code, message, hint, stage, "", exit, nil)
-		return
+	if err := renderMachineValue(os.Stdout, value); err != nil {
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
-	fmt.Fprintf(os.Stderr, "ssm: error=%s", code)
-	if stage != "" {
-		fmt.Fprintf(os.Stderr, " stage=%s", stage)
-	}
-	fmt.Fprintf(os.Stderr, "\nError: %s\n", redactString(message))
-	if hint != "" {
-		fmt.Fprintf(os.Stderr, "ssm: hint=%s\n", redactString(hint))
-	}
+}
+
+func renderMachineValue(output io.Writer, value any) error {
+	return machinecontract.Render(
+		machinecontract.JSONDocument,
+		machinecontract.Streams{Stdout: output, Stderr: os.Stderr},
+		value,
+	)
 }
 
 func hasJSONFlagBeforeDash(args []string) bool {

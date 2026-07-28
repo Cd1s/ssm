@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +10,7 @@ import (
 
 	"ssm/internal/cloud"
 	"ssm/internal/config"
+	"ssm/internal/machinecontract"
 	"ssm/internal/ssh"
 )
 
@@ -22,12 +22,21 @@ type connectionJSON struct {
 	Group string `json:"group,omitempty"`
 }
 
+type putFailure struct {
+	OK bool `json:"ok"`
+	machinecontract.TransferMetadata
+	Alias     string `json:"alias"`
+	BytesSent int64  `json:"bytes_sent"`
+	Integrity string `json:"integrity"`
+	Atomic    bool   `json:"atomic"`
+	Resume    string `json:"resume"`
+}
+
 func runList(jsonOutput bool) {
 	pullIfChanged()
 	v, err := loadVault()
 	if err != nil {
-		printError(err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 
 	if jsonOutput {
@@ -41,12 +50,7 @@ func runList(jsonOutput bool) {
 				Group: c.Group,
 			}
 		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(items); err != nil {
-			printError(err)
-			os.Exit(1)
-		}
+		writeMachineValue(items)
 		return
 	}
 
@@ -66,8 +70,7 @@ func runList(jsonOutput bool) {
 func runRemove(name string) {
 	v, err := loadVault()
 	if err != nil {
-		printError(err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 
 	found := -1
@@ -78,14 +81,17 @@ func runRemove(name string) {
 		}
 	}
 	if found == -1 {
-		fmt.Printf("Connection \"%s\" not found.\n", name)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
+			Message: fmt.Sprintf("connection %q not found", name),
+			Alias:   name,
+			Tool:    "legacy_not_found",
+			Script:  "connection",
+		}))
 	}
 
 	v.Connections = append(v.Connections[:found], v.Connections[found+1:]...)
 	if err := config.Save(v, masterPass); err != nil {
-		printError(err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 	cloud.AutoPush()
 	fmt.Printf("Connection \"%s\" removed.\n", name)
@@ -99,17 +105,16 @@ func runExecSpec(name string, spec remoteRunSpec) {
 	pullIfChanged()
 	v, err := loadVault()
 	if err != nil {
-		printError(err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 
 	res := executeRunSpec(v, name, spec)
-	if res.Error == ssh.ErrCodeAliasNotFound {
+	if res.Error == machinecontract.CodeAliasNotFound {
 		connectionNotFound(name, v)
 	}
 	if res.Preflight == "failed" && !spec.JSON && !spec.Plan {
 		ssh.WriteRunResult(res, false)
-		os.Exit(res.Exit)
+		os.Exit(machinecontract.ResultExit(machinecontract.ResultState{OK: res.OK, Exit: res.Exit}))
 	}
 	if spec.JSON || spec.Plan {
 		ssh.WriteRunResult(res, spec.JSON)
@@ -117,11 +122,11 @@ func runExecSpec(name string, spec remoteRunSpec) {
 			os.Exit(0)
 		}
 		if !res.OK {
-			os.Exit(res.Exit)
+			os.Exit(machinecontract.ResultExit(machinecontract.ResultState{OK: res.OK, Exit: res.Exit}))
 		}
 		os.Exit(0)
 	}
-	os.Exit(res.Exit)
+	os.Exit(machinecontract.ResultExit(machinecontract.ResultState{OK: res.OK, Exit: res.Exit}))
 }
 
 // executeRunSpec performs one already-parsed run without syncing, decrypting,
@@ -130,14 +135,15 @@ func runExecSpec(name string, spec remoteRunSpec) {
 func executeRunSpec(v *config.Vault, name string, spec remoteRunSpec) ssh.RunResult {
 	c, resolved, ok := resolveConnection(v, name)
 	if !ok {
-		return ssh.RunResult{
-			OK:      false,
-			Alias:   name,
-			Exit:    ssh.ExitConnectionFailed,
-			Error:   ssh.ErrCodeAliasNotFound,
+		failure := machinecontract.Classify(machinecontract.RunAliasNotFound, machinecontract.Details{
 			Message: fmt.Sprintf("connection %q not found", name),
-			Hint:    "use sshctl host list --json and retry with an exact alias",
-			Stage:   "lookup",
+			Alias:   name,
+		})
+		return ssh.RunResult{
+			OK:             false,
+			Alias:          name,
+			Exit:           machinecontract.ProcessExit(failure),
+			ResultMetadata: failure.ResultMetadata(),
 		}
 	}
 	applyRunSpecEnv(spec)
@@ -180,21 +186,16 @@ func runMap(targetPatterns []string, spec remoteRunSpec) {
 	pullIfChanged()
 	v, err := loadVault()
 	if err != nil {
-		printError(err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 	aliases, err := config.MatchAliases(v, targetPatterns)
 	if err != nil {
-		printError(err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 	if len(aliases) == 0 {
-		if machineJSON {
-			writeMachineError("no_targets", "no aliases matched the requested map targets", "refresh sshctl host list and use exact aliases or reviewed patterns", strings.Join(targetPatterns, ","), 2, nil)
-			os.Exit(2)
-		}
-		fmt.Fprintln(os.Stderr, "sshctl map: no targets matched")
-		os.Exit(2)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.MapNoTargets, machinecontract.Details{
+			Message: "no aliases matched the requested map targets", Alias: strings.Join(targetPatterns, ","),
+		}))
 	}
 	applyRunSpecEnv(spec)
 	workers := spec.Workers
@@ -203,8 +204,9 @@ func runMap(targetPatterns []string, spec remoteRunSpec) {
 	}
 	jobs := ssh.ExpandMapJobs(aliases, spec.Command, spec.Scripts, spec.Secrets, spec.Mode, spec.Preflight)
 	if len(jobs) == 0 {
-		fmt.Fprintln(os.Stderr, "sshctl map: nothing to run")
-		os.Exit(2)
+		os.Exit(machinecontract.WriteClassified(machineJSON || spec.JSON, machinecontract.InvalidSSHCTLArguments, machinecontract.Details{
+			Message: "sshctl map: nothing to run", Tool: "legacy_message", Script: "map_empty",
+		}))
 	}
 	if spec.Plan {
 		// Plan: expand jobs and print without dialing.
@@ -241,7 +243,10 @@ func runMap(targetPatterns []string, spec remoteRunSpec) {
 				}
 			} else {
 				r.OK = false
-				r.Error = ssh.ErrCodeAliasNotFound
+				r.Error = machinecontract.Classify(machinecontract.MapAliasNotFound, machinecontract.Details{
+					Message: "requested alias was not found",
+					Alias:   j.RequestedAlias,
+				}).Error
 			}
 			planned = append(planned, r)
 		}
@@ -306,8 +311,7 @@ func parsePutArgs(args []string) (putOptions, error) {
 func runPutArgs(args []string) {
 	opts, err := parsePutArgs(args)
 	if err != nil {
-		writeCLIErrorStage("invalid_arguments", err.Error(), "use sshctl put <alias> <local> <remote> [--resume=v1] [--sha256] [--timeout <duration>] [--json]", "validate", 2)
-		os.Exit(2)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.TransferArgumentsInvalid, machinecontract.Details{Cause: err}))
 	}
 	runPutWithOptions(opts)
 }
@@ -316,8 +320,7 @@ func runPutWithOptions(opts putOptions) {
 	pullIfChanged()
 	v, err := loadVault()
 	if err != nil {
-		printError(err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 
 	c, _, ok := resolveConnection(v, opts.name)
@@ -326,34 +329,24 @@ func runPutWithOptions(opts putOptions) {
 	}
 	result, err := ssh.UploadPathWithOptions(c, v, opts.localPath, opts.remotePath, ssh.UploadOptions{VerifySHA256: opts.verifySHA256, Timeout: opts.timeout, ResumeVersion: opts.resumeVersion})
 	if err != nil {
-		if machineJSON {
-			var code, stage, hint string
-			bytesSent := result.BytesSent
-			var transferErr *ssh.TransferError
-			if errors.As(err, &transferErr) {
-				code, stage, hint, bytesSent = transferErr.Code, transferErr.Stage, transferErr.Hint, transferErr.BytesSent
-			} else {
-				ce := ssh.ClassifyError(err, c)
-				code, hint = ce.Code, ce.Hint
-				stage = "remote_write"
-			}
-			writeMachineValue(struct {
-				OK        bool   `json:"ok"`
-				Error     string `json:"error"`
-				Message   string `json:"message"`
-				Hint      string `json:"hint"`
-				Exit      int    `json:"exit"`
-				Stage     string `json:"stage"`
-				Alias     string `json:"alias"`
-				BytesSent int64  `json:"bytes_sent"`
-				Integrity string `json:"integrity"`
-				Atomic    bool   `json:"atomic"`
-				Resume    string `json:"resume"`
-			}{false, code, err.Error(), hint, ssh.ExitCodeFor(err), stage, opts.name, bytesSent, result.Integrity, result.Atomic, result.Resume})
-			os.Exit(ssh.ExitCodeFor(err))
+		context := machinecontract.SSHContext{Alias: c.Name, Host: c.Host, Port: c.Port}
+		bytesSent := result.BytesSent
+		carried := machinecontract.Failure{}
+		var transferErr *ssh.TransferError
+		if errors.As(err, &transferErr) {
+			bytesSent = transferErr.BytesSent
+			carried = transferErr.ContractFailure()
 		}
-		ssh.PrintAgentError(err, c)
-		os.Exit(ssh.ExitCodeFor(err))
+		failure := machinecontract.ClassifyTransferOperation(err, context, carried)
+		if machineJSON {
+			document := putFailure{
+				OK: false, TransferMetadata: failure.TransferMetadata(), Alias: opts.name,
+				BytesSent: bytesSent, Integrity: result.Integrity, Atomic: result.Atomic, Resume: result.Resume,
+			}
+			os.Exit(machinecontract.WriteFailure(true, failure, document))
+		}
+		_ = machinecontract.WriteHuman(failure)
+		os.Exit(machinecontract.ProcessExit(failure))
 	}
 	if machineJSON {
 		writeMachineValue(struct {
@@ -370,8 +363,7 @@ func runGet(name, remotePath, localPath string) {
 	pullIfChanged()
 	v, err := loadVault()
 	if err != nil {
-		printError(err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 
 	c, _, ok := resolveConnection(v, name)
@@ -379,13 +371,15 @@ func runGet(name, remotePath, localPath string) {
 		connectionNotFound(name, v)
 	}
 	if err := ssh.DownloadPath(c, v, remotePath, localPath); err != nil {
-		if machineJSON {
-			ce := ssh.ClassifyError(err, c)
-			writeMachineError(ce.Code, ce.Error(), ce.Hint, name, ssh.ExitCodeFor(err), nil)
-			os.Exit(ssh.ExitCodeFor(err))
+		context := machinecontract.SSHContext{
+			Alias: name, ResolvedAlias: c.Name, Host: c.Host, Port: c.Port,
 		}
-		ssh.PrintAgentError(err, c)
-		os.Exit(ssh.ExitCodeFor(err))
+		failure := machinecontract.ClassifyDownload(err, context)
+		if machineJSON {
+			os.Exit(machinecontract.WriteFailure(true, failure, failure))
+		}
+		_ = machinecontract.WriteHuman(failure)
+		os.Exit(machinecontract.ProcessExit(failure))
 	}
 	if machineJSON {
 		writeMachineValue(struct {
@@ -402,22 +396,18 @@ func runCheck(name string, asJSON bool) {
 	pullIfChanged()
 	v, err := loadVault()
 	if err != nil {
-		printError(err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 
-	c, resolved, ok := resolveConnection(v, name)
+	c, _, ok := resolveConnection(v, name)
 	if !ok {
 		connectionNotFound(name, v)
 	}
 	res := ssh.Check(c, v)
 	res.Alias = name
-	if resolved != name {
-		// keep host fields from connection; alias shows request name
-	}
 	ssh.WriteCheckResult(res, asJSON)
 	if !res.OK {
-		os.Exit(ssh.ExitConnectionFailed)
+		os.Exit(machinecontract.ConnectionResultExit(res.OK))
 	}
 }
 
@@ -425,20 +415,18 @@ func runDoctor(alias string, deep, asJSON bool) {
 	pullIfChanged()
 	v, err := loadVault()
 	if err != nil {
-		printError(err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 	rep := ssh.Doctor(v, alias, deep)
 	ssh.WriteDoctorReport(rep, asJSON)
 	if !rep.OK {
-		os.Exit(ssh.ExitConnectionFailed)
+		os.Exit(machinecontract.ConnectionResultExit(rep.OK))
 	}
 }
 
 func runRedirect(args []string) {
 	if len(args) == 0 {
-		writeCLIError("invalid_arguments", "redirect action required", "use redirect list, set <old> <new>, or rm <old>", 2)
-		os.Exit(2)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.RedirectActionRequired, machinecontract.Details{Message: "redirect action required"}))
 	}
 	switch args[0] {
 	case "list":
@@ -479,14 +467,14 @@ func runRedirect(args []string) {
 		}
 	case "set":
 		if len(args) != 3 {
-			writeCLIError("invalid_arguments", "redirect set requires old and target aliases", "use redirect set <old-alias> <target-alias>", 2)
-			os.Exit(2)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.RedirectSetArgumentsInvalid, machinecontract.Details{
+				Message: "redirect set requires old and target aliases",
+			}))
 		}
 		r := config.LoadRedirects()
 		r[args[1]] = args[2]
 		if err := config.SaveRedirects(r); err != nil {
-			printError(err)
-			os.Exit(1)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 		}
 		if machineJSON {
 			writeMachineValue(struct {
@@ -500,14 +488,14 @@ func runRedirect(args []string) {
 		fmt.Printf("redirect %s -> %s\n", args[1], args[2])
 	case "rm", "remove":
 		if len(args) != 2 {
-			writeCLIError("invalid_arguments", "redirect remove requires an old alias", "use redirect rm <old-alias>", 2)
-			os.Exit(2)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.RedirectRemoveArgumentsInvalid, machinecontract.Details{
+				Message: "redirect remove requires an old alias",
+			}))
 		}
 		r := config.LoadRedirects()
 		delete(r, args[1])
 		if err := config.SaveRedirects(r); err != nil {
-			printError(err)
-			os.Exit(1)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 		}
 		if machineJSON {
 			writeMachineValue(struct {
@@ -519,8 +507,9 @@ func runRedirect(args []string) {
 		}
 		fmt.Printf("removed redirect %s\n", args[1])
 	default:
-		writeCLIError("invalid_arguments", fmt.Sprintf("unknown redirect action %q", args[0]), "use redirect list, set, or rm", 2)
-		os.Exit(2)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.RedirectActionInvalid, machinecontract.Details{
+			Message: fmt.Sprintf("unknown redirect action %q", args[0]),
+		}))
 	}
 }
 
@@ -537,46 +526,33 @@ func connectionNotFound(name string, v *config.Vault) {
 		}
 		suggestions = ssh.SuggestNames(name, names, 5)
 	}
-	if machineJSON {
-		writeMachineError(ssh.ErrCodeAliasNotFound, fmt.Sprintf("connection %q not found", name), "use sshctl host list --json and retry with an exact alias", name, ssh.ExitConnectionFailed, suggestions)
-		os.Exit(ssh.ExitConnectionFailed)
-	}
-	fmt.Fprintf(os.Stderr, "ssm: error=%s alias=%s\n", ssh.ErrCodeAliasNotFound, name)
-	fmt.Fprintf(os.Stderr, "Connection %q not found.\n", name)
-	if len(suggestions) > 0 {
-		fmt.Fprintf(os.Stderr, "ssm: did_you_mean=%s\n", strings.Join(suggestions, ","))
-		fmt.Fprintf(os.Stderr, "Did you mean: %s\n", strings.Join(suggestions, ", "))
-	}
-	fmt.Fprintf(os.Stderr, "ssm: hint=use sshctl host list --json; or ssm redirect set <old> <new> after migration\n")
-	os.Exit(ssh.ExitConnectionFailed)
+	exit := machinecontract.WriteClassified(machineJSON, machinecontract.AliasNotFound, machinecontract.Details{
+		Message: fmt.Sprintf("connection %q not found", name), Alias: name, Candidates: suggestions,
+	})
+	os.Exit(exit)
 }
 
 func runImportJSON(args []string) {
 	opts, err := parseImportJSONArgs(args)
 	if err != nil {
 		machineJSON = machineJSON || opts.asJSON || hasJSONFlagBeforeDash(args)
-		writeCLIError("invalid_arguments", err.Error(), "use exactly one of --merge or --replace --yes", 2)
-		if !machineJSON {
-			fmt.Fprintln(os.Stderr, "Usage: ssm import-json <path> (--merge | --replace --yes) [--manifest <path>] [--expect-count <n>] [--json]")
-		}
-		os.Exit(2)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.ImportArgumentsInvalid, machinecontract.Details{Cause: err}))
 	}
 	machineJSON = machineJSON || opts.asJSON
 
 	imported, err := loadServerImport(opts.path, opts.manifestPath)
 	if err != nil {
-		printError(err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 	if opts.expectCount > 0 && len(imported.Connections) != opts.expectCount {
-		writeCLIError("import_count_mismatch", fmt.Sprintf("imported host count %d does not match expected %d", len(imported.Connections), opts.expectCount), "review the import source and expected count before retrying", 1)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.ImportCountMismatch, machinecontract.Details{
+			Message: fmt.Sprintf("imported host count %d does not match expected %d", len(imported.Connections), opts.expectCount),
+		}))
 	}
 
 	current, err := loadVault()
 	if err != nil {
-		printError(err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 	conflicts := []config.MergeConflict{}
 	if opts.replace {
@@ -587,14 +563,12 @@ func runImportJSON(args []string) {
 		current, report = config.MergeVaultsWithReport(current, imported)
 		conflicts = report.Conflicts
 		if err := config.SaveMergeReport(report); err != nil {
-			writeCLIError("merge_report_error", redactError(err), "vault was not changed; verify config directory permissions", 1)
-			os.Exit(1)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.MergeReportFailed, machinecontract.Details{Cause: err}))
 		}
 	}
 
 	if err := config.Save(current, masterPass); err != nil {
-		printError(err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 
 	if machineJSON {

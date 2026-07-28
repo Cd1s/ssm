@@ -16,6 +16,7 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 
 	"ssm/internal/config"
+	"ssm/internal/machinecontract"
 )
 
 type HostKeyInspection struct {
@@ -37,15 +38,12 @@ type HostKeyInspection struct {
 	Hint                string   `json:"hint,omitempty"`
 }
 
-type HostKeyOperationError struct {
-	Code    string
-	Message string
-	Hint    string
-	Cause   error
+func hostKeyError(kind machinecontract.Kind, message string, cause error) error {
+	return machinecontract.NewClassifiedError(machinecontract.Classify(kind, machinecontract.Details{
+		Message: message,
+		Cause:   cause,
+	}))
 }
-
-func (e *HostKeyOperationError) Error() string { return e.Message }
-func (e *HostKeyOperationError) Unwrap() error { return e.Cause }
 
 // InspectHostKey observes the key from a fresh unauthenticated SSH handshake.
 // The callback aborts immediately after key exchange, so no credential is sent.
@@ -87,10 +85,7 @@ func InspectHostKey(c config.Connection) (HostKeyInspection, error) {
 		if handshakeErr == nil {
 			handshakeErr = errors.New("SSH handshake ended before a host key was received")
 		}
-		return report, &HostKeyOperationError{
-			Code: "host_key_scan_failed", Message: handshakeErr.Error(),
-			Hint: "verify the endpoint is a direct SSH service rather than an HTTP proxy", Cause: handshakeErr,
-		}
+		return report, hostKeyError(machinecontract.HostKeyScanDirectFailed, handshakeErr.Error(), handshakeErr)
 	}
 
 	report.Algorithm = observed.Type()
@@ -123,11 +118,11 @@ func inspectKnownHost(path, address string, remote net.Addr, observed gossh.Publ
 		if os.IsNotExist(err) {
 			return "new", nil, nil
 		}
-		return "", nil, &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "fix known_hosts permissions and retry", Cause: err}
+		return "", nil, hostKeyError(machinecontract.KnownHostsPermissionsFailed, err.Error(), err)
 	}
 	callback, err := knownhosts.New(path)
 	if err != nil {
-		return "", nil, &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "repair malformed known_hosts before accepting a key", Cause: err}
+		return "", nil, hostKeyError(machinecontract.KnownHostsMalformed, err.Error(), err)
 	}
 	err = callback(address, remote, observed)
 	if err == nil {
@@ -135,7 +130,7 @@ func inspectKnownHost(path, address string, remote net.Addr, observed gossh.Publ
 	}
 	var keyErr *knownhosts.KeyError
 	if !errors.As(err, &keyErr) {
-		return "", nil, &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "inspect known_hosts and retry", Cause: err}
+		return "", nil, hostKeyError(machinecontract.KnownHostsInspectionFailed, err.Error(), err)
 	}
 	if len(keyErr.Want) == 0 {
 		return "new", nil, nil
@@ -161,11 +156,11 @@ func AcceptHostKey(c config.Connection, expectedFingerprint string) (HostKeyInsp
 		return report, err
 	}
 	if expectedFingerprint == "" || expectedFingerprint != report.Fingerprint {
-		return report, &HostKeyOperationError{
-			Code:    "fingerprint_mismatch",
-			Message: fmt.Sprintf("observed fingerprint %q does not match the explicitly accepted fingerprint", report.Fingerprint),
-			Hint:    "compare the fingerprint through a trusted channel; do not accept an unexpected key",
-		}
+		return report, hostKeyError(
+			machinecontract.HostKeyFingerprintMismatch,
+			fmt.Sprintf("observed fingerprint %q does not match the explicitly accepted fingerprint", report.Fingerprint),
+			nil,
+		)
 	}
 	if report.Status == "trusted" {
 		report.Accepted = true
@@ -176,23 +171,23 @@ func AcceptHostKey(c config.Connection, expectedFingerprint string) (HostKeyInsp
 		return report, err
 	}
 	if gossh.FingerprintSHA256(key) != expectedFingerprint {
-		return report, &HostKeyOperationError{
-			Code:    "fingerprint_changed",
-			Message: "host key changed between inspection and known_hosts update",
-			Hint:    "known_hosts was not changed; investigate endpoint instability or a possible interception",
-		}
+		return report, hostKeyError(
+			machinecontract.HostKeyFingerprintChanged,
+			"host key changed between inspection and known_hosts update",
+			nil,
+		)
 	}
 
 	path := report.KnownHostsPath
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return report, &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "fix ~/.ssh permissions and retry", Cause: err}
+		return report, hostKeyError(machinecontract.SSHDirectoryPermissionsFailed, err.Error(), err)
 	}
 	if report.Status == "mismatch" {
 		if err := replaceKnownHost(path, knownHostToken(c), key); err != nil {
 			return report, err
 		}
 	} else if err := saveHostKey(path, knownHostToken(c), key); err != nil {
-		return report, &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "fix known_hosts permissions and retry", Cause: err}
+		return report, hostKeyError(machinecontract.KnownHostsPermissionsFailed, err.Error(), err)
 	}
 	report.Status = "trusted"
 	report.Classification = "trusted"
@@ -230,7 +225,7 @@ func scanObservedKey(c config.Connection) (gossh.PublicKey, error) {
 		if err != nil {
 			message = err.Error()
 		}
-		return nil, &HostKeyOperationError{Code: "host_key_scan_failed", Message: message, Hint: "verify the SSH endpoint and retry", Cause: err}
+		return nil, hostKeyError(machinecontract.HostKeyScanFailed, message, err)
 	}
 	return observed, nil
 }
@@ -238,11 +233,11 @@ func scanObservedKey(c config.Connection) (gossh.PublicKey, error) {
 func replaceKnownHost(path, token string, key gossh.PublicKey) error {
 	original, err := os.ReadFile(path) //nolint:gosec // fixed ~/.ssh/known_hosts path
 	if err != nil {
-		return &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "fix known_hosts permissions and retry", Cause: err}
+		return hostKeyError(machinecontract.KnownHostsPermissionsFailed, err.Error(), err)
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".known_hosts.ssm.*")
 	if err != nil {
-		return &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "fix ~/.ssh permissions and retry", Cause: err}
+		return hostKeyError(machinecontract.SSHDirectoryPermissionsFailed, err.Error(), err)
 	}
 	tmpPath := tmp.Name()
 	defer func() {
@@ -251,14 +246,14 @@ func replaceKnownHost(path, token string, key gossh.PublicKey) error {
 	}()
 	if err := tmp.Chmod(0600); err != nil {
 		_ = tmp.Close()
-		return &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "fix ~/.ssh permissions and retry", Cause: err}
+		return hostKeyError(machinecontract.SSHDirectoryPermissionsFailed, err.Error(), err)
 	}
 	if _, err := tmp.Write(original); err != nil {
 		_ = tmp.Close()
-		return &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "known_hosts was not changed", Cause: err}
+		return hostKeyError(machinecontract.KnownHostsUnchanged, err.Error(), err)
 	}
 	if err := tmp.Close(); err != nil {
-		return &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "known_hosts was not changed", Cause: err}
+		return hostKeyError(machinecontract.KnownHostsUnchanged, err.Error(), err)
 	}
 
 	cmd := exec.Command("ssh-keygen", "-R", token, "-f", tmpPath) //nolint:gosec // fixed executable and argument vector
@@ -268,20 +263,17 @@ func replaceKnownHost(path, token string, key gossh.PublicKey) error {
 		if message == "" {
 			message = err.Error()
 		}
-		return &HostKeyOperationError{
-			Code: "known_hosts_update_failed", Message: message,
-			Hint: "install OpenSSH ssh-keygen or remove the exact host:port entry manually", Cause: err,
-		}
+		return hostKeyError(machinecontract.KnownHostsUpdateFailed, message, err)
 	}
 	if err := saveHostKey(tmpPath, token, key); err != nil {
-		return &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "known_hosts was not changed", Cause: err}
+		return hostKeyError(machinecontract.KnownHostsUnchanged, err.Error(), err)
 	}
 	updated, err := os.ReadFile(tmpPath) //nolint:gosec // private temporary known_hosts path
 	if err != nil {
-		return &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "known_hosts was not changed", Cause: err}
+		return hostKeyError(machinecontract.KnownHostsUnchanged, err.Error(), err)
 	}
 	if err := config.WritePrivateFile(path, updated); err != nil {
-		return &HostKeyOperationError{Code: "known_hosts_error", Message: err.Error(), Hint: "known_hosts was not changed", Cause: err}
+		return hostKeyError(machinecontract.KnownHostsUnchanged, err.Error(), err)
 	}
 	return nil
 }

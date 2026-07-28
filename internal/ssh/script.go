@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"path"
 	"strings"
+
+	"ssm/internal/machinecontract"
 )
 
 // MaxScriptBytes is the largest stdin script accepted by the CLI.
@@ -115,7 +117,7 @@ func BuildScriptRunner(spec ScriptSpec) string {
 	words = append(words, spec.Args...)
 	quoted := JoinRemoteArgv(words)
 	name := ShellQuote(spec.Interpreter)
-	marker := ShellQuote("ssm: error=interpreter_not_found interpreter=" + spec.Interpreter)
+	marker := ShellQuote(machinecontract.InterpreterNotFoundDiagnostic(spec.Interpreter))
 	return "command -v " + name + " >/dev/null 2>&1 || { printf '%s\\n' " + marker + " >&2; exit 127; }; exec " + quoted
 }
 
@@ -126,7 +128,7 @@ func BuildScriptSyntaxRunner(spec ScriptSpec) string {
 	words := []string{spec.Interpreter, "-n", "-s", "--"}
 	quoted := JoinRemoteArgv(words)
 	name := ShellQuote(spec.Interpreter)
-	marker := ShellQuote("ssm: error=interpreter_not_found interpreter=" + spec.Interpreter)
+	marker := ShellQuote(machinecontract.InterpreterNotFoundDiagnostic(spec.Interpreter))
 	return "command -v " + name + " >/dev/null 2>&1 || { printf '%s\\n' " + marker + " >&2; exit 127; }; exec " + quoted
 }
 

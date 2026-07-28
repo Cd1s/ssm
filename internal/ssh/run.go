@@ -2,7 +2,7 @@ package ssh
 
 import (
 	"bytes"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +15,7 @@ import (
 	"golang.org/x/term"
 
 	"ssm/internal/config"
+	"ssm/internal/machinecontract"
 )
 
 var (
@@ -52,19 +53,33 @@ type RunResult struct {
 	Stderr        string `json:"stderr,omitempty"`
 	LatencyMS     int64  `json:"latency_ms,omitempty"`
 	RemoteCommand string `json:"remote_command,omitempty"` // secrets redacted
-	Error         string `json:"error,omitempty"`
-	Message       string `json:"message,omitempty"`
-	Hint          string `json:"hint,omitempty"`
-	Stage         string `json:"stage,omitempty"`
-	Plan          bool   `json:"plan,omitempty"`
-	Risk          string `json:"risk,omitempty"`
-	ScriptLabel   string `json:"script,omitempty"` // multi-script map label
-	Interpreter   string `json:"interpreter,omitempty"`
-	InputBytes    int    `json:"stdin_bytes,omitempty"`
-	ScriptSHA256  string `json:"script_sha256,omitempty"`
-	Mode          string `json:"mode,omitempty"`
-	Transport     string `json:"transport,omitempty"`
-	Preflight     string `json:"preflight,omitempty"`
+	machinecontract.ResultMetadata
+	Plan         bool   `json:"plan,omitempty"`
+	Risk         string `json:"risk,omitempty"`
+	ScriptLabel  string `json:"script,omitempty"` // multi-script map label
+	Interpreter  string `json:"interpreter,omitempty"`
+	InputBytes   int    `json:"stdin_bytes,omitempty"`
+	ScriptSHA256 string `json:"script_sha256,omitempty"`
+	Mode         string `json:"mode,omitempty"`
+	Transport    string `json:"transport,omitempty"`
+	Preflight    string `json:"preflight,omitempty"`
+
+	failure         machinecontract.Failure
+	sensitiveValues []string
+}
+
+func applyRunFailure(result *RunResult, failure machinecontract.Failure) {
+	result.OK = false
+	result.Exit = failure.Exit
+	result.ResultMetadata = failure.ResultMetadata()
+	result.failure = failure
+}
+
+func redactRunFailure(result RunResult) RunResult {
+	if result.OK {
+		return result
+	}
+	return machinecontract.Redact(result, result.sensitiveValues...)
 }
 
 // BuildRemoteCommand injects secret env assigns before the user command.
@@ -161,6 +176,24 @@ func RedactSecrets(s string, secrets map[string]string) string {
 	return out
 }
 
+func runSensitiveValues(opts RunOptions) []string {
+	values := make([]string, 0, len(opts.Secrets)+1)
+	for _, value := range opts.Secrets {
+		values = append(values, value)
+	}
+	if opts.Input == "" {
+		return values
+	}
+	values = append(values, opts.Input)
+	for _, line := range strings.Split(opts.Input, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if line != "" {
+			values = append(values, line)
+		}
+	}
+	return values
+}
+
 // AssessRisk returns a coarse risk tag for plan mode.
 func AssessRisk(cmd string) string {
 	low := strings.ToLower(cmd)
@@ -196,17 +229,18 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 		riskCommand = opts.RiskCommand
 	}
 	res := RunResult{
-		Alias:         opts.RequestedAlias,
-		ResolvedAlias: opts.ResolvedAlias,
-		User:          c.User,
-		Host:          c.Host,
-		Port:          port,
-		RemoteCommand: display,
-		Risk:          AssessRisk(riskCommand),
-		ScriptLabel:   opts.ScriptLabel,
-		Interpreter:   opts.Interpreter,
-		Mode:          opts.Mode,
-		Transport:     "ssh_exec",
+		Alias:           opts.RequestedAlias,
+		ResolvedAlias:   opts.ResolvedAlias,
+		User:            c.User,
+		Host:            c.Host,
+		Port:            port,
+		RemoteCommand:   display,
+		Risk:            AssessRisk(riskCommand),
+		ScriptLabel:     opts.ScriptLabel,
+		Interpreter:     opts.Interpreter,
+		Mode:            opts.Mode,
+		Transport:       "ssh_exec",
+		sensitiveValues: runSensitiveValues(opts),
 	}
 	if res.Mode == "" {
 		res.Mode = "shell_command"
@@ -225,9 +259,9 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 	}
 
 	if traceEnabled() {
-		fmt.Fprintf(os.Stderr, "ssm: remote command: %s\n", display)
+		fmt.Fprintf(os.Stderr, "ssm: remote command: %s\n", machinecontract.RedactString(display))
 		if res.ScriptSHA256 != "" {
-			fmt.Fprintf(os.Stderr, "ssm: script stdin: bytes=%d sha256=%s interpreter=%s\n", res.InputBytes, res.ScriptSHA256, res.Interpreter)
+			fmt.Fprintf(os.Stderr, "ssm: script stdin: bytes=%d sha256=%s interpreter=%s\n", res.InputBytes, res.ScriptSHA256, machinecontract.RedactString(res.Interpreter))
 		}
 	}
 
@@ -241,19 +275,14 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 	start := time.Now()
 	client, session, acquireStage, err := acquireSSHSession(c, v, opts.NoReuse)
 	if err != nil {
-		ce := ClassifyError(err, c)
-		res.OK = false
-		res.Exit = ExitConnectionFailed
-		res.Error = ce.Code
-		if acquireStage == "session" && res.Error == ErrCodeInternal {
-			res.Error = ErrCodeSession
-		}
-		res.Message = ce.Error()
-		res.Hint = ce.Hint
-		res.Stage = acquireStage
+		failure := machinecontract.ClassifySSH(err, machinecontract.SSHContext{
+			Alias: c.Name, Host: c.Host, Port: c.Port, Stage: acquireStage,
+			SessionAcquisition: acquireStage == "session",
+		})
+		applyRunFailure(&res, failure)
 		res.LatencyMS = time.Since(start).Milliseconds()
 		if !opts.Capture {
-			PrintAgentError(err, c)
+			_ = machinecontract.WriteHuman(failure)
 		}
 		return res
 	}
@@ -261,12 +290,40 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 	defer session.Close()
 
 	var stdoutBuf, stderrBuf bytes.Buffer
+	var stdoutSpool, stderrSpool *machinecontract.DiagnosticSpool
 	if opts.Capture {
 		session.Stdout = &stdoutBuf
 		session.Stderr = &stderrBuf
 	} else {
-		session.Stdout = os.Stdout
-		session.Stderr = os.Stderr
+		stdoutSpool, err = machinecontract.NewDiagnosticSpool(os.Stdout, res.sensitiveValues...)
+		if err != nil {
+			failure := machinecontract.Classify(machinecontract.InternalFailure, machinecontract.Details{
+				Message: "failed to spool remote stdout",
+				Cause:   err,
+				Alias:   opts.RequestedAlias,
+			})
+			applyRunFailure(&res, failure)
+			res.LatencyMS = time.Since(start).Milliseconds()
+			_ = machinecontract.WriteHuman(failure)
+			return res
+		}
+		defer func() { _ = stdoutSpool.Close() }()
+		stderrSpool, err = machinecontract.NewDiagnosticSpool(os.Stderr, res.sensitiveValues...)
+		if err != nil {
+			_ = stdoutSpool.Close()
+			failure := machinecontract.Classify(machinecontract.InternalFailure, machinecontract.Details{
+				Message: "failed to spool remote stderr",
+				Cause:   err,
+				Alias:   opts.RequestedAlias,
+			})
+			applyRunFailure(&res, failure)
+			res.LatencyMS = time.Since(start).Milliseconds()
+			_ = machinecontract.WriteHuman(failure)
+			return res
+		}
+		defer func() { _ = stderrSpool.Close() }()
+		session.Stdout = stdoutSpool
+		session.Stderr = stderrSpool
 	}
 	if opts.Input != "" {
 		session.Stdin = strings.NewReader(opts.Input)
@@ -275,12 +332,11 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 		if os.Getenv("SSM_FORWARD_STDIN") == "1" || (!stdinIsTTY && stdinHasReadableData()) {
 			stdin, err := session.StdinPipe()
 			if err != nil {
-				res.OK = false
-				res.Exit = 1
-				res.Error = ErrCodeInternal
-				res.Message = "failed to open SSH stdin"
-				res.Hint = "retry the operation; report the failure if it persists"
-				res.Stage = "session"
+				applyRunFailure(&res, machinecontract.Classify(machinecontract.SSHStdinFailed, machinecontract.Details{
+					Message: "failed to open SSH stdin",
+					Cause:   err,
+					Alias:   opts.RequestedAlias,
+				}))
 				res.LatencyMS = time.Since(start).Milliseconds()
 				return res
 			}
@@ -300,49 +356,93 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 		res.Stderr = stderrBuf.String()
 	}
 	if err != nil {
+		uncapturedInterpreterMarker := false
+		if !opts.Capture && opts.Input != "" {
+			var inspectErr error
+			uncapturedInterpreterMarker, inspectErr = stderrSpool.Contains(machinecontract.InterpreterNotFoundDiagnostic(opts.Interpreter))
+			if inspectErr != nil {
+				failure := machinecontract.Classify(machinecontract.InternalFailure, machinecontract.Details{
+					Message: "failed to inspect bounded remote diagnostics",
+					Cause:   inspectErr,
+					Alias:   opts.RequestedAlias,
+				})
+				applyRunFailure(&res, failure)
+				_ = machinecontract.WriteHuman(failure)
+				return res
+			}
+		}
+		if !opts.Capture {
+			if replayErr := replayRunDiagnosticSpools(false, stdoutSpool, stderrSpool); replayErr != nil {
+				failure := machinecontract.Classify(machinecontract.InternalFailure, machinecontract.Details{
+					Message: "failed to replay bounded remote diagnostics",
+					Cause:   replayErr,
+					Alias:   opts.RequestedAlias,
+				})
+				applyRunFailure(&res, failure)
+				_ = machinecontract.WriteHuman(failure)
+				return res
+			}
+		}
 		if exitErr, ok := err.(*gossh.ExitError); ok {
-			res.Exit = exitErr.ExitStatus()
-			res.OK = false
-			if opts.Input != "" {
-				if res.Exit == 127 && (!opts.Capture || strings.Contains(res.Stderr, "ssm: error=interpreter_not_found")) {
-					res.Error = ErrCodeInterpreter
-					res.Message = "remote script interpreter is unavailable"
-					res.Hint = fmt.Sprintf("remote shell %q is unavailable; retry with --shell sh or install it", opts.Interpreter)
-					res.Stage = "interpreter"
-				} else {
-					res.Error = ErrCodeRemoteScript
-					res.Message = "remote script exited non-zero"
-					res.Hint = "the script reached the remote interpreter but exited non-zero; inspect stderr"
-					res.Stage = "remote_execution"
-				}
-				if !opts.Capture {
-					fmt.Fprintf(os.Stderr, "ssm: error=%s script=%s exit=%d\n", res.Error, opts.ScriptLabel, res.Exit)
-					fmt.Fprintf(os.Stderr, "ssm: hint=%s\n", res.Hint)
+			exit := exitErr.ExitStatus()
+			classificationCaptured := opts.Capture
+			classificationStderr := res.Stderr
+			if !opts.Capture {
+				classificationCaptured = true
+				if uncapturedInterpreterMarker {
+					classificationStderr = machinecontract.InterpreterNotFoundDiagnostic(opts.Interpreter)
 				}
 			}
-			if res.Error == "" {
-				res.Error = ErrCodeRemote
-				res.Message = "remote command exited non-zero"
-				res.Hint = "inspect stdout/stderr; SSH transport succeeded"
-				res.Stage = "remote_execution"
+			failure := machinecontract.ClassifyRunExecution(machinecontract.RunExecutionContext{
+				Cause:       err,
+				Exit:        exit,
+				Alias:       opts.RequestedAlias,
+				HasInput:    opts.Input != "",
+				Capture:     classificationCaptured,
+				Stderr:      classificationStderr,
+				Script:      opts.ScriptLabel,
+				Interpreter: opts.Interpreter,
+			})
+			if opts.Input != "" && !opts.Capture {
+				_ = machinecontract.WriteHuman(failure)
 			}
+			applyRunFailure(&res, failure)
 			return res
 		}
-		ce := ClassifyError(err, c)
-		res.OK = false
-		res.Exit = ExitCodeFor(err)
-		res.Error = ce.Code
-		res.Message = ce.Error()
-		res.Hint = ce.Hint
-		res.Stage = "session"
+		failure := machinecontract.ClassifySSH(err, machinecontract.SSHContext{
+			Alias: c.Name, Host: c.Host, Port: c.Port, Stage: "session",
+		})
+		applyRunFailure(&res, failure)
 		if !opts.Capture {
-			PrintAgentError(err, c)
+			_ = machinecontract.WriteHuman(failure)
 		}
 		return res
+	}
+	if !opts.Capture {
+		if replayErr := replayRunDiagnosticSpools(true, stdoutSpool, stderrSpool); replayErr != nil {
+			failure := machinecontract.Classify(machinecontract.InternalFailure, machinecontract.Details{
+				Message: "failed to replay remote output",
+				Cause:   replayErr,
+				Alias:   opts.RequestedAlias,
+			})
+			applyRunFailure(&res, failure)
+			_ = machinecontract.WriteHuman(failure)
+			return res
+		}
 	}
 	res.OK = true
 	res.Exit = 0
 	return res
+}
+
+func replayRunDiagnosticSpools(success bool, spools ...*machinecontract.DiagnosticSpool) error {
+	var result error
+	for _, spool := range spools {
+		if spool != nil {
+			result = errors.Join(result, spool.Replay(success))
+		}
+	}
+	return result
 }
 
 // RunScriptPreflight validates shell syntax remotely without executing the
@@ -367,16 +467,18 @@ func RunScriptPreflight(c config.Connection, v *config.Vault, spec ScriptSpec, n
 		return res
 	}
 	res.Preflight = "failed"
-	if res.Error == ErrCodeRemoteScript {
-		res.Error = ErrCodeScriptSyntax
-		res.Message = "remote interpreter rejected script syntax"
-		res.Stage = "syntax_preflight"
+	if res.Error == machinecontract.CodeRemoteScript {
 		line := syntaxErrorLine(res.Stderr)
+		failure := machinecontract.Classify(machinecontract.ScriptSyntaxFailed, machinecontract.Details{
+			Message: "remote interpreter rejected script syntax",
+			Alias:   requestedAlias,
+			Exit:    res.Exit,
+			Script:  spec.Label,
+			Line:    line,
+		})
+		applyRunFailure(&res, failure)
+		res.Preflight = "failed"
 		res.Stderr = ""
-		res.Hint = "the remote interpreter rejected the script syntax; no script body was executed and raw parser output was suppressed"
-		if line != "" {
-			res.Hint += "; line=" + line
-		}
 	}
 	return res
 }
@@ -394,9 +496,40 @@ func syntaxErrorLine(stderr string) string {
 // WriteRunResult prints a RunResult as JSON or key=value.
 func WriteRunResult(res RunResult, asJSON bool) {
 	if asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		_ = enc.Encode(res)
+		res = redactRunFailure(res)
+		if res.OK {
+			_ = machinecontract.WriteJSON(res)
+		} else {
+			_ = machinecontract.WriteFailureJSON(res)
+		}
+		return
+	}
+	if !res.OK {
+		_ = machinecontract.RenderRunFailure(
+			machinecontract.Streams{Stdout: os.Stdout, Stderr: os.Stderr},
+			machinecontract.RunFailureView{
+				Plan:            res.Plan,
+				Alias:           res.Alias,
+				ResolvedAlias:   res.ResolvedAlias,
+				Exit:            res.Exit,
+				RemoteCommand:   res.RemoteCommand,
+				Script:          res.ScriptLabel,
+				Interpreter:     res.Interpreter,
+				InputBytes:      res.InputBytes,
+				ScriptSHA256:    res.ScriptSHA256,
+				Mode:            res.Mode,
+				Transport:       res.Transport,
+				Preflight:       res.Preflight,
+				Risk:            res.Risk,
+				LatencyMS:       res.LatencyMS,
+				Error:           res.Error,
+				Message:         res.Message,
+				Hint:            res.Hint,
+				Stage:           res.Stage,
+				Stdout:          res.Stdout,
+				SensitiveValues: res.sensitiveValues,
+			},
+		)
 		return
 	}
 	if res.Plan {
@@ -438,19 +571,17 @@ func WriteRunResult(res RunResult, asJSON bool) {
 	if res.LatencyMS > 0 {
 		fmt.Printf("latency_ms=%d\n", res.LatencyMS)
 	}
-	if res.Error != "" {
-		fmt.Printf("error=%s\n", res.Error)
-	}
-	if res.Message != "" {
-		fmt.Printf("message=%s\n", res.Message)
-	}
-	if res.Hint != "" {
-		fmt.Printf("hint=%s\n", res.Hint)
-	}
-	if res.Stage != "" {
-		fmt.Printf("stage=%s\n", res.Stage)
-	}
 	if res.Stdout != "" {
 		fmt.Printf("stdout=%s\n", strings.ReplaceAll(res.Stdout, "\n", "\\n"))
 	}
+}
+
+// WriteRunResultNDJSON preserves successful run payloads and sanitizes failed
+// captures immediately before compact stream rendering.
+func WriteRunResultNDJSON(output io.Writer, res RunResult) error {
+	res = redactRunFailure(res)
+	if res.OK {
+		return machinecontract.WriteNDJSON(output, res)
+	}
+	return machinecontract.WriteFailureNDJSON(output, res)
 }

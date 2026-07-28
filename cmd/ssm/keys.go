@@ -7,13 +7,13 @@ import (
 
 	"ssm/internal/cloud"
 	"ssm/internal/config"
+	"ssm/internal/machinecontract"
 )
 
 func runKeysList() {
 	v, err := loadVault()
 	if err != nil {
-		printError(err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 
 	if len(v.Keys) == 0 {
@@ -30,8 +30,7 @@ func runKeysList() {
 func runKeysRemove(name string) {
 	v, err := loadVault()
 	if err != nil {
-		printError(err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 
 	found := -1
@@ -42,14 +41,17 @@ func runKeysRemove(name string) {
 		}
 	}
 	if found == -1 {
-		fmt.Printf("Key \"%s\" not found.\n", name)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
+			Message: fmt.Sprintf("key %q not found", name),
+			Alias:   name,
+			Tool:    "legacy_not_found",
+			Script:  "key",
+		}))
 	}
 
 	v.Keys = append(v.Keys[:found], v.Keys[found+1:]...)
 	if err := config.Save(v, masterPass); err != nil {
-		printError(err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 	cloud.AutoPush()
 	fmt.Printf("Key \"%s\" removed.\n", name)

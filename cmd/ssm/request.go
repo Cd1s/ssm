@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"ssm/internal/machinecontract"
 	"ssm/internal/ssh"
 )
 
@@ -56,16 +57,14 @@ func runAgentRequest(args []string) {
 	machineJSON = true
 	req, err := loadAgentRequest(args)
 	if err != nil {
-		writeMachineError("invalid_request", err.Error(), "use schema version 1 and exactly one typed operation", "", 2, nil)
-		os.Exit(2)
+		os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestDocument, machinecontract.Details{Cause: err}))
 	}
 
 	switch req.Op {
 	case "run", "plan":
 		spec, err := requestRunSpec(req)
 		if err != nil {
-			writeMachineError("invalid_request", err.Error(), "use exactly one of argv, shell_command, or script_file", req.Alias, 2, nil)
-			os.Exit(2)
+			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestRun, machinecontract.Details{Cause: err, Alias: req.Alias}))
 		}
 		unlock()
 		if req.Op == "plan" {
@@ -74,24 +73,22 @@ func runAgentRequest(args []string) {
 		runExecSpec(req.Alias, spec)
 	case "check":
 		if err := validateRequestAlias(req); err != nil {
-			writeMachineError("invalid_request", err.Error(), "provide one exact inventory alias", req.Alias, 2, nil)
-			os.Exit(2)
+			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestAlias, machinecontract.Details{Cause: err, Alias: req.Alias}))
 		}
 		if err := rejectRunRequestFields(req); err != nil {
-			writeMachineError("invalid_request", err.Error(), "check accepts only version, op, and alias", req.Alias, 2, nil)
-			os.Exit(2)
+			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestCheck, machinecontract.Details{Cause: err, Alias: req.Alias}))
 		}
 		unlock()
 		runCheck(req.Alias, true)
 	case "doctor":
 		if req.Host != nil || hasRunRequestFields(req) {
-			writeMachineError("invalid_request", "doctor does not accept run or host mutation fields", "use alias and optional deep only", req.Alias, 2, nil)
-			os.Exit(2)
+			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestDoctor, machinecontract.Details{
+				Message: "doctor does not accept run or host mutation fields", Alias: req.Alias,
+			}))
 		}
 		if req.Alias != "" {
 			if err := validateRequestAlias(req); err != nil {
-				writeMachineError("invalid_request", err.Error(), "doctor alias must be an exact inventory name", req.Alias, 2, nil)
-				os.Exit(2)
+				os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestDoctorAlias, machinecontract.Details{Cause: err, Alias: req.Alias}))
 			}
 		}
 		unlock()
@@ -99,38 +96,38 @@ func runAgentRequest(args []string) {
 	case "host.list", "host.search", "host.show", "host.add", "host.update", "host.upsert", "host.remove":
 		hostArgs, err := requestHostArgs(req)
 		if err != nil {
-			writeMachineError("invalid_request", err.Error(), "host operations accept structured host fields and file-based credentials only", req.Alias, 2, nil)
-			os.Exit(2)
+			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestHost, machinecontract.Details{Cause: err, Alias: req.Alias}))
 		}
 		unlock()
 		runHostCommand(hostArgs)
 	case "put":
 		if err := validateRequestAlias(req); err != nil {
-			writeMachineError("invalid_request", err.Error(), "provide one exact inventory alias", req.Alias, 2, nil)
-			os.Exit(2)
+			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestAlias, machinecontract.Details{Cause: err, Alias: req.Alias}))
 		}
 		if req.Host != nil || req.Deep || req.Argv != nil || req.ShellCommand != nil || req.ScriptFile != "" || len(req.ScriptArgs) > 0 || req.Shell != "" || len(req.SecretFiles) > 0 || req.NoReuse || req.Preflight != nil {
-			writeMachineError("invalid_request", "put accepts only alias, local_path, remote_path, resume, sha256, and timeout", "use file paths; never place file contents or credentials in the request", req.Alias, 2, nil)
-			os.Exit(2)
+			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestPutFields, machinecontract.Details{
+				Message: "put accepts only alias, local_path, remote_path, resume, sha256, and timeout", Alias: req.Alias,
+			}))
 		}
 		if strings.TrimSpace(req.LocalPath) == "" || strings.TrimSpace(req.RemotePath) == "" || (req.Resume != "" && req.Resume != "v1") {
-			writeMachineError("invalid_request", "put requires local_path and remote_path; resume supports only v1", "use resume:\"v1\" explicitly for regular-file retry", req.Alias, 2, nil)
-			os.Exit(2)
+			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestPutPaths, machinecontract.Details{
+				Message: "put requires local_path and remote_path; resume supports only v1", Alias: req.Alias,
+			}))
 		}
 		timeout := time.Duration(0)
 		if req.Timeout != "" {
 			var err error
 			timeout, err = parseCLITimeout(req.Timeout)
 			if err != nil {
-				writeMachineError("invalid_request", err.Error(), "timeout must be a positive duration", req.Alias, 2, nil)
-				os.Exit(2)
+				os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestTimeout, machinecontract.Details{Cause: err, Alias: req.Alias}))
 			}
 		}
 		unlock()
 		runPutWithOptions(putOptions{name: req.Alias, localPath: req.LocalPath, remotePath: req.RemotePath, resumeVersion: req.Resume, verifySHA256: req.SHA256, timeout: timeout})
 	default:
-		writeMachineError("invalid_request", fmt.Sprintf("unsupported request op %q", req.Op), "use run, plan, check, doctor, put, or host.list/search/show/add/update/upsert/remove", req.Alias, 2, nil)
-		os.Exit(2)
+		os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestOperation, machinecontract.Details{
+			Message: fmt.Sprintf("unsupported request op %q", req.Op), Alias: req.Alias,
+		}))
 	}
 }
 

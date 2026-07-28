@@ -14,6 +14,7 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 
 	"ssm/internal/config"
+	"ssm/internal/machinecontract"
 )
 
 func TestParseHostUpsertArgs(t *testing.T) {
@@ -46,8 +47,8 @@ func TestParseHostOfflineFlag(t *testing.T) {
 }
 
 func TestHostErrorsUseCanonicalMachineContract(t *testing.T) {
-	err := newHostError("host_not_found", "host %q not found", "missing")
-	ce, ok := err.(*hostCLIError)
+	err := newHostError(machinecontract.HostAliasNotFound, "host %q not found", "missing")
+	ce, ok := err.(*machinecontract.ClassifiedError)
 	if !ok {
 		t.Fatalf("error type = %T", err)
 	}
@@ -55,7 +56,7 @@ func TestHostErrorsUseCanonicalMachineContract(t *testing.T) {
 		t.Fatalf("contract = %+v", ce)
 	}
 
-	invalid := newHostError("invalid_args", "bad option").(*hostCLIError)
+	invalid := newHostError(machinecontract.HostInvalidArguments, "bad option").(*machinecontract.ClassifiedError)
 	if invalid.Code != "invalid_arguments" || invalid.Exit != 2 || invalid.Stage != "validate" {
 		t.Fatalf("invalid contract = %+v", invalid)
 	}
