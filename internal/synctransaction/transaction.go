@@ -1,0 +1,449 @@
+// Package synctransaction owns synchronization state and sequencing for
+// inventory consumers. It deliberately operates only on opaque encrypted
+// vault blobs; decrypted inventory belongs to callers.
+package synctransaction
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"ssm/internal/cloud"
+	"ssm/internal/config"
+)
+
+type ConfigurationState string
+
+const (
+	ConfigurationOffline      ConfigurationState = "offline"
+	ConfigurationUnconfigured ConfigurationState = "unconfigured"
+	ConfigurationConfigured   ConfigurationState = "configured"
+	ConfigurationInvalid      ConfigurationState = "invalid"
+)
+
+type Freshness string
+
+const (
+	FreshnessUnknown    Freshness = "unknown"
+	FreshnessFresh      Freshness = "fresh"
+	FreshnessCached     Freshness = "cached"
+	FreshnessLocalAhead Freshness = "local_ahead"
+)
+
+type RemoteState string
+
+const (
+	RemoteChecked          RemoteState = "checked"
+	RemoteNotChecked       RemoteState = "not_checked"
+	RemoteNotConfigured    RemoteState = "not_configured"
+	RemoteAutoSyncDisabled RemoteState = "auto_sync_disabled"
+)
+
+// SyncConflict preserves only opaque encrypted-blob identities. It never
+// contains decrypted inventory, configuration, or credentials.
+type SyncConflict struct {
+	DetectedAt string `json:"detected_at"`
+	LocalETag  string `json:"local_etag"`
+	RemoteETag string `json:"remote_etag"`
+	CachedETag string `json:"cached_etag"`
+}
+
+var (
+	ErrConfiguration = errors.New("sync configuration is invalid")
+	ErrUnconfigured  = errors.New("not logged in (run: ssm login)")
+	ErrRefresh       = errors.New("sync refresh failed")
+	ErrConflict      = errors.New("sync conflict")
+)
+
+type Facts struct {
+	Configuration ConfigurationState
+	Offline       bool
+	Freshness     Freshness
+	Remote        RemoteState
+	CacheAge      int64
+	LastPull      string
+	LastPush      string
+	LastSync      string
+	LocalETag     string
+	RemoteETag    string
+	Conflict      *SyncConflict
+	Changed       bool
+}
+
+type Options struct {
+	Offline    bool
+	Invalidate func()
+	Now        func() time.Time
+}
+
+type Transaction struct {
+	offline    bool
+	invalidate func()
+	now        func() time.Time
+}
+
+func New(opts Options) *Transaction {
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
+	return &Transaction{offline: opts.Offline, invalidate: opts.Invalidate, now: now}
+}
+
+func (t *Transaction) configuration() (*cloud.CloudConfig, ConfigurationState, error) {
+	if t.offline {
+		return nil, ConfigurationOffline, nil
+	}
+	path := filepath.Join(config.Dir(), "cloud.json")
+	data, err := os.ReadFile(path) //nolint:gosec // fixed sync configuration path under the private config directory
+	if err != nil {
+		if os.IsNotExist(err) {
+			if _, linkErr := os.Lstat(path); os.IsNotExist(linkErr) {
+				return nil, ConfigurationUnconfigured, nil
+			}
+		}
+		return nil, ConfigurationInvalid, fmt.Errorf("%w: configuration cannot be read", ErrConfiguration)
+	}
+	var cfg cloud.CloudConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, ConfigurationInvalid, fmt.Errorf("%w: configuration cannot be parsed", ErrConfiguration)
+	}
+	server, parseErr := url.Parse(strings.TrimSpace(cfg.Server))
+	if parseErr != nil || (server.Scheme != "http" && server.Scheme != "https") || server.Host == "" || strings.TrimSpace(cfg.Token) == "" {
+		return nil, ConfigurationInvalid, fmt.Errorf("%w: required fields are invalid", ErrConfiguration)
+	}
+	return &cfg, ConfigurationConfigured, nil
+}
+
+// Refresh applies the inventory-read policy. Offline returns before touching
+// cloud configuration or transport. Missing configuration retains the
+// unconfigured behavior; every present invalid configuration is fatal.
+func (t *Transaction) Refresh() (Facts, error) {
+	return t.refresh(false)
+}
+
+// Sync performs an explicit refresh even when automatic sync is disabled.
+func (t *Transaction) Sync() (Facts, error) {
+	return t.refresh(true)
+}
+
+func (t *Transaction) refresh(explicit bool) (Facts, error) {
+	facts := t.localFacts()
+	cfg, state, err := t.configuration()
+	facts.Configuration = state
+	facts.Offline = t.offline
+	if err != nil {
+		return facts, err
+	}
+	switch state {
+	case ConfigurationOffline:
+		return markOffline(facts), nil
+	case ConfigurationUnconfigured:
+		facts.Remote = RemoteNotConfigured
+		if explicit {
+			return facts, ErrUnconfigured
+		}
+		return facts, nil
+	}
+	if !explicit && !config.LoadSettings().AutoSync {
+		facts.Remote = RemoteAutoSyncDisabled
+		return facts, nil
+	}
+	return t.refreshConfigured(cfg, facts, false)
+}
+
+func (t *Transaction) refreshConfigured(cfg *cloud.CloudConfig, facts Facts, forcePull bool) (Facts, error) {
+	remote, err := cloud.RemoteETag(cfg)
+	if err != nil {
+		return facts, fmt.Errorf("%w: remote refresh did not commit", ErrRefresh)
+	}
+	facts.Remote = RemoteChecked
+	if !forcePull && remote != "" && remote == facts.RemoteETag {
+		facts.Remote = RemoteChecked
+		return facts, nil
+	}
+	if facts.RemoteETag != "" && remote != "" && remote != facts.RemoteETag &&
+		facts.LocalETag != "" && facts.LocalETag != facts.RemoteETag {
+		conflict := SyncConflict{
+			DetectedAt: t.now().UTC().Format(time.RFC3339),
+			LocalETag:  facts.LocalETag, RemoteETag: remote, CachedETag: facts.RemoteETag,
+		}
+		if err := preserveConflict(conflict); err != nil {
+			return facts, fmt.Errorf("%w: conflict evidence could not be preserved", ErrRefresh)
+		}
+		facts.Conflict = &conflict
+		return facts, fmt.Errorf("%w: local and remote opaque blobs diverged", ErrConflict)
+	}
+	committedIdentity, err := cloud.Pull(cfg)
+	if err != nil {
+		return facts, fmt.Errorf("%w: remote refresh did not commit", ErrRefresh)
+	}
+	facts.Changed = true
+	if t.invalidate != nil {
+		t.invalidate()
+	}
+	if err := t.commitSuccess("pull", committedIdentity); err != nil {
+		return facts, fmt.Errorf("%w: pull metadata did not commit", ErrRefresh)
+	}
+	facts = t.localFacts()
+	facts.Configuration = ConfigurationConfigured
+	facts.Changed = true
+	facts.Remote = RemoteChecked
+	return facts, nil
+}
+
+func (t *Transaction) Pull() (Facts, error) {
+	facts := t.localFacts()
+	cfg, state, err := t.configuration()
+	facts.Configuration = state
+	facts.Offline = t.offline
+	if err != nil {
+		return facts, err
+	}
+	switch state {
+	case ConfigurationOffline:
+		return markOffline(facts), ErrUnconfigured
+	case ConfigurationUnconfigured:
+		facts.Remote = RemoteNotConfigured
+		return facts, ErrUnconfigured
+	}
+	return t.refreshConfigured(cfg, facts, true)
+}
+
+func (t *Transaction) RemoteIdentity() (string, error) {
+	cfg, state, err := t.configuration()
+	if err != nil {
+		return "", err
+	}
+	if state != ConfigurationConfigured {
+		return "", ErrUnconfigured
+	}
+	etag, err := cloud.RemoteETag(cfg)
+	if err != nil {
+		return "", fmt.Errorf("%w: remote identity was not read", ErrRefresh)
+	}
+	return etag, nil
+}
+
+func (t *Transaction) PushBlob(blob []byte) (Facts, error) {
+	facts := t.localFacts()
+	cfg, state, err := t.configuration()
+	facts.Configuration = state
+	facts.Offline = t.offline
+	if err != nil {
+		return facts, err
+	}
+	switch state {
+	case ConfigurationOffline:
+		return markOffline(facts), ErrUnconfigured
+	case ConfigurationUnconfigured:
+		facts.Remote = RemoteNotConfigured
+		return facts, ErrUnconfigured
+	}
+	candidateIdentity := opaqueIdentity(blob)
+	if facts.RemoteETag != "" {
+		remote, headErr := cloud.RemoteETag(cfg)
+		if headErr != nil {
+			return facts, fmt.Errorf("%w: remote push preflight did not complete", ErrRefresh)
+		}
+		facts.Remote = RemoteChecked
+		if remote != "" && remote != facts.RemoteETag && candidateIdentity != facts.RemoteETag {
+			conflict := SyncConflict{
+				DetectedAt: t.now().UTC().Format(time.RFC3339),
+				LocalETag:  candidateIdentity, RemoteETag: remote, CachedETag: facts.RemoteETag,
+			}
+			if err := preserveConflict(conflict); err != nil {
+				return facts, fmt.Errorf("%w: conflict evidence could not be preserved", ErrRefresh)
+			}
+			facts.Conflict = &conflict
+			return facts, fmt.Errorf("%w: local and remote opaque blobs diverged", ErrConflict)
+		}
+	}
+	committedIdentity, err := cloud.PushBlob(cfg, blob)
+	if err != nil {
+		return facts, fmt.Errorf("%w: remote push did not commit", ErrRefresh)
+	}
+	if err := t.commitSuccess("push", committedIdentity); err != nil {
+		return facts, fmt.Errorf("%w: push metadata did not commit", ErrRefresh)
+	}
+	facts = t.localFacts()
+	facts.Configuration, facts.Remote = state, RemoteChecked
+	return facts, nil
+}
+
+// AutoPushBlob preserves the legacy automatic-publication switch while
+// keeping the decision inside the transaction. Explicit PushBlob ignores that
+// switch.
+func (t *Transaction) AutoPushBlob(blob []byte) (Facts, error) {
+	if !config.LoadSettings().AutoSync {
+		facts := t.localFacts()
+		_, state, err := t.configuration()
+		facts.Configuration = state
+		facts.Offline = t.offline
+		if err != nil {
+			return facts, err
+		}
+		switch state {
+		case ConfigurationOffline:
+			facts = markOffline(facts)
+		case ConfigurationUnconfigured:
+			facts.Remote = RemoteNotConfigured
+		case ConfigurationConfigured:
+			facts.Remote = RemoteAutoSyncDisabled
+		}
+		return facts, nil
+	}
+	return t.PushBlob(blob)
+}
+
+func opaqueIdentity(blob []byte) string {
+	sum := sha256.Sum256(blob)
+	return hex.EncodeToString(sum[:])
+}
+
+func (t *Transaction) Facts() Facts {
+	facts := t.localFacts()
+	_, state, _ := t.configuration()
+	facts.Configuration = state
+	facts.Offline = t.offline
+	switch state {
+	case ConfigurationOffline:
+		facts = markOffline(facts)
+	case ConfigurationUnconfigured:
+		facts.Remote = RemoteNotConfigured
+	case ConfigurationConfigured:
+		if config.LoadSettings().AutoSync {
+			facts.Remote = RemoteChecked
+		} else {
+			facts.Remote = RemoteAutoSyncDisabled
+		}
+	case ConfigurationInvalid:
+		facts.Remote = RemoteNotChecked
+	}
+	return facts
+}
+
+func markOffline(facts Facts) Facts {
+	facts.Configuration = ConfigurationOffline
+	facts.Offline = true
+	facts.Remote = RemoteNotChecked
+	if facts.Freshness == FreshnessFresh {
+		facts.Freshness = FreshnessCached
+	}
+	return facts
+}
+
+func (t *Transaction) localFacts() Facts {
+	settings := config.LoadSettings()
+	facts := Facts{
+		Freshness: FreshnessUnknown, LastPull: settings.LastPull, LastPush: settings.LastPush,
+		RemoteETag: cachedRemoteIdentity(), Conflict: loadConflict(),
+	}
+	facts.LastSync, facts.CacheAge = cacheAge(settings, t.now())
+	if local, err := localOpaqueIdentity(); err == nil {
+		facts.LocalETag = local
+		if facts.RemoteETag != "" {
+			if local == facts.RemoteETag {
+				facts.Freshness = FreshnessFresh
+			} else {
+				facts.Freshness = FreshnessLocalAhead
+			}
+		}
+	}
+	return facts
+}
+
+func (t *Transaction) commitSuccess(operation, remoteIdentity string) error {
+	if remoteIdentity == "" {
+		return fmt.Errorf("confirmed remote identity is empty")
+	}
+	if err := config.WritePrivateFile(remoteIdentityPath(), []byte(remoteIdentity+"\n")); err != nil {
+		return err
+	}
+	if err := clearConflict(); err != nil {
+		return err
+	}
+	settings := config.LoadSettings()
+	timestamp := t.now().Format(time.RFC3339)
+	switch operation {
+	case "pull":
+		settings.LastPull = timestamp
+	case "push":
+		settings.LastPush = timestamp
+	default:
+		return fmt.Errorf("unknown sync operation")
+	}
+	return config.SaveSettings(settings)
+}
+
+func remoteIdentityPath() string { return filepath.Join(config.Dir(), "remote.etag") }
+
+func cachedRemoteIdentity() string {
+	data, err := os.ReadFile(remoteIdentityPath())
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func localOpaqueIdentity() (string, error) {
+	data, err := os.ReadFile(config.Path())
+	if err != nil {
+		return "", err
+	}
+	return opaqueIdentity(data), nil
+}
+
+func conflictPath() string { return filepath.Join(config.Dir(), "sync-conflict.json") }
+
+func preserveConflict(conflict SyncConflict) error {
+	data, err := json.MarshalIndent(conflict, "", "  ")
+	if err != nil {
+		return err
+	}
+	return config.WritePrivateFile(conflictPath(), append(data, '\n'))
+}
+
+func loadConflict() *SyncConflict {
+	data, err := os.ReadFile(conflictPath())
+	if err != nil {
+		return nil
+	}
+	var conflict SyncConflict
+	if err := json.Unmarshal(data, &conflict); err != nil {
+		return nil
+	}
+	return &conflict
+}
+
+func clearConflict() error {
+	err := os.Remove(conflictPath())
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+func cacheAge(settings *config.Settings, now time.Time) (string, int64) {
+	var latest time.Time
+	for _, raw := range []string{settings.LastPull, settings.LastPush} {
+		if parsed, err := time.Parse(time.RFC3339, raw); err == nil && parsed.After(latest) {
+			latest = parsed
+		}
+	}
+	if latest.IsZero() {
+		return "", 0
+	}
+	age := now.Sub(latest)
+	if age < 0 {
+		age = 0
+	}
+	return latest.Format(time.RFC3339), int64(age / time.Second)
+}

@@ -312,13 +312,13 @@ func TestStatusFailureAdapterUsesFailureRenderer(t *testing.T) {
 		value["version"] != version ||
 		value["hosts"] != float64(0) ||
 		value["vault"] != "present" ||
-		value["sync"] != "missing" ||
+		value["sync"] != "offline" ||
 		value["redirects"] != float64(0) ||
 		value["reuse"] != "on" ||
 		value["reuse_scope"] != "process" ||
 		value["last_push"] != "config=<redacted>" ||
 		value["freshness"] != "unknown" ||
-		value["remote_state"] != "not_configured" ||
+		value["remote_state"] != "not_checked" ||
 		value["pending_changes"] != false ||
 		value["offline"] != true {
 		t.Fatalf("failed status fields changed: %v", value)

@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -366,6 +368,16 @@ func (h *compiledCLIHarness) SaveVault(t *testing.T, value *config.Vault) {
 	}
 }
 
+func (h *compiledCLIHarness) VaultBlob(t *testing.T) []byte {
+	t.Helper()
+	path := filepath.Join(h.home, ".config", "ssm", "connections.enc")
+	blob, err := os.ReadFile(path) //nolint:gosec // path is fixed beneath this harness's isolated t.TempDir home
+	if err != nil {
+		t.Fatalf("read isolated compiled CLI encrypted vault: %v", err)
+	}
+	return blob
+}
+
 func isolatedCompiledCLIEnvironmentWith(home, temp string, overrides map[string]string) []string {
 	blocked := map[string]bool{
 		"HOME":                 true,
@@ -607,15 +619,15 @@ func assertCompiledExactMachineOutput(t *testing.T, result compiledCLIResult, wa
 	decodeExactlyOneJSONObject(t, result.Stdout)
 }
 
-func assertCompiledJSONArraySuccess(t *testing.T, result compiledCLIResult, wantLength int) []any {
+func assertCompiledEmptyJSONArraySuccess(t *testing.T, result compiledCLIResult) []any {
 	t.Helper()
 	if result.ProcessExit != 0 || result.Stderr != "" {
 		t.Fatalf("compiled JSON array success process contract failed; output=%s", compiledOutputIdentity(result))
 	}
 	value := decodeExactlyOneJSONValue(t, result.Stdout)
 	items, ok := value.([]any)
-	if !ok || len(items) != wantLength {
-		t.Fatalf("JSON array length = %d, want %d; output=%s", len(items), wantLength, compiledOutputIdentity(result))
+	if !ok || len(items) != 0 {
+		t.Fatalf("JSON array length = %d, want 0; output=%s", len(items), compiledOutputIdentity(result))
 	}
 	return items
 }
@@ -2437,7 +2449,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		assertCompiledHelpContract(t, cli.Run(t, "sshctl", nil, "--help"), "sshctl")
 	})
 
-	t.Run("BC-1 malformed and unreadable cloud configuration differs by command family", func(t *testing.T) {
+	t.Run("BC-1 malformed and unreadable cloud configuration old behavior characterization and migration", func(t *testing.T) {
 		for _, variant := range []string{"malformed", "unreadable"} {
 			t.Run(variant, func(t *testing.T) {
 				cli := newCompiledCLIHarness(t)
@@ -2453,10 +2465,13 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 				}
 
 				generic := cli.Run(t, "sshctl", nil, "--json", "list")
-				assertCompiledJSONArraySuccess(t, generic, 0)
 				assertNoCompiledCanaryLeak(t, generic, map[string]string{
 					"cloud_value":    configLeakCanary,
 					"config_content": "sync.invalid",
+				})
+				assertCompiledMachineContract(t, generic, compiledMachineContract{
+					OK: false, Error: "sync_config_error", Stage: "sync_config", JSONExit: 1, ProcessExit: 1,
+					Hint: "repair sync configuration or retry explicitly with --offline",
 				})
 
 				host := cli.Run(t, "sshctl", nil, "--json", "host", "list")
@@ -2465,13 +2480,12 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 					"config_content": "sync.invalid",
 				})
 				assertCompiledMachineContract(t, host, compiledMachineContract{
-					OK: false, Error: "sync_pull_failed", Stage: "sync_pull", JSONExit: 1, ProcessExit: 1,
-					Hint:   "fix sync connectivity or retry explicitly with --offline",
-					Absent: []string{"alias", "candidates"},
+					OK: false, Error: "sync_config_error", Stage: "sync_config", JSONExit: 1, ProcessExit: 1,
+					Hint: "repair sync configuration or retry explicitly with --offline",
 				})
 
 				offline := cli.Run(t, "sshctl", nil, "--json", "host", "list", "--offline")
-				assertCompiledJSONArraySuccess(t, offline, 0)
+				assertCompiledEmptyJSONArraySuccess(t, offline)
 			})
 		}
 	})
@@ -2579,7 +2593,6 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		t.Run("legacy remove auto-pushes without a transaction", func(t *testing.T) {
 			cli := newCompiledCLIHarness(t)
 			sync := newCompiledSyncFixture(t)
-			sync.SetRemote(t, nil, "legacy-remove")
 			removedPassword := "ISSUE17_LEGACY_REMOVE_PASSWORD_CANARY"
 			preservedPassword := "ISSUE17_LEGACY_PRESERVED_PASSWORD_CANARY"
 			preservedPrivateKey := "ISSUE17_LEGACY_PRESERVED_PRIVATE_KEY_CANARY"
@@ -2602,11 +2615,13 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 				Keys:        []config.SSHKey{preservedKey},
 				PendingBase: pendingBase, PendingMutations: pendingMutations,
 			}
-			cli.SaveVault(t, &config.Vault{
+			starting := &config.Vault{
 				Connections: []config.Connection{removedConnection, preservedConnection, preservedKeyConnection},
 				Keys:        []config.SSHKey{preservedKey},
 				PendingBase: pendingBase, PendingMutations: pendingMutations,
-			})
+			}
+			cli.SaveVault(t, starting)
+			sync.SetRemote(t, cli.VaultBlob(t), "legacy-remove")
 			cli.SaveCloud(t, sync.URL(), "ISSUE17_LEGACY_REMOVE_TOKEN_CANARY")
 			result := cli.Run(t, "ssm", nil, "remove", "legacy-remove")
 			assertCompiledHumanSuccess(t, result, "legacy-remove")
@@ -2624,6 +2639,12 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 			if got := sync.MethodCount("PUT"); got != 1 {
 				t.Fatalf("legacy remove PUT count = %d, want 1", got)
 			}
+			if got := sync.MethodCount("HEAD"); got != 2 {
+				t.Fatalf("legacy remove HEAD count = %d, want 2", got)
+			}
+			if got := sync.MethodCount("GET"); got != 1 {
+				t.Fatalf("legacy remove GET count = %d, want 1", got)
+			}
 			assertCompiledEncryptedPublication(t, sync.UploadedBlob(), cli.passphrase, map[string]string{
 				"removed_password":           removedPassword,
 				"preserved_password":         preservedPassword,
@@ -2639,7 +2660,6 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		t.Run("legacy key remove auto-pushes without a transaction", func(t *testing.T) {
 			cli := newCompiledCLIHarness(t)
 			sync := newCompiledSyncFixture(t)
-			sync.SetRemote(t, nil, "legacy-key-remove")
 			removedKey := "ISSUE17_LEGACY_PRIVATE_KEY_CANARY"
 			preservedKey := "ISSUE17_LEGACY_UNRELATED_PRIVATE_KEY_CANARY"
 			password := "ISSUE17_LEGACY_UNRELATED_PASSWORD_CANARY"
@@ -2654,14 +2674,16 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 				Keys:        []config.SSHKey{unrelatedKey},
 				PendingBase: pendingBase, PendingMutations: pendingMutations,
 			}
-			cli.SaveVault(t, &config.Vault{
+			starting := &config.Vault{
 				Connections: []config.Connection{connection},
 				Keys: []config.SSHKey{
 					{Name: "legacy-key", PrivateKey: removedKey},
 					unrelatedKey,
 				},
 				PendingBase: pendingBase, PendingMutations: pendingMutations,
-			})
+			}
+			cli.SaveVault(t, starting)
+			sync.SetRemote(t, cli.VaultBlob(t), "legacy-key-remove")
 			cli.SaveCloud(t, sync.URL(), "ISSUE17_LEGACY_KEY_TOKEN_CANARY")
 			result := cli.Run(t, "ssm", nil, "keys", "remove", "legacy-key")
 			assertCompiledHumanSuccess(t, result, "legacy-key")
@@ -2678,6 +2700,12 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 			})
 			if got := sync.MethodCount("PUT"); got != 1 {
 				t.Fatalf("legacy key remove PUT count = %d, want 1", got)
+			}
+			if got := sync.MethodCount("HEAD"); got != 2 {
+				t.Fatalf("legacy key remove HEAD count = %d, want 2", got)
+			}
+			if got := sync.MethodCount("GET"); got != 1 {
+				t.Fatalf("legacy key remove GET count = %d, want 1", got)
 			}
 			assertCompiledEncryptedPublication(t, sync.UploadedBlob(), cli.passphrase, map[string]string{
 				"removed_private_key":        removedKey,
@@ -2697,6 +2725,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 				sync := newCompiledSyncFixture(t)
 				starting := compiledLegacyImportStartingVault()
 				cli.SaveVault(t, starting)
+				sync.SetRemote(t, cli.VaultBlob(t), "legacy-import-"+mode)
 				token := "ISSUE17_IMPORT_TOKEN_CANARY"
 				cli.SaveCloud(t, sync.URL(), token)
 				importPath := filepath.Join(cli.temp, "import-"+mode+".json")
@@ -2723,6 +2752,12 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 				assertCompiledExactMachineOutput(t, result, "{\n  \"ok\": true,\n  \"action\": \""+action+"\",\n  \"connections\": 1,\n  \"keys\": 0\n}\n")
 				if got := sync.MethodCount("PUT"); got != 0 {
 					t.Fatalf("legacy import %s PUT count = %d, want 0", mode, got)
+				}
+				if got := sync.MethodCount("HEAD"); got != 1 {
+					t.Fatalf("legacy import %s HEAD count = %d, want 1", mode, got)
+				}
+				if got := sync.MethodCount("GET"); got != 1 {
+					t.Fatalf("legacy import %s GET count = %d, want 1", mode, got)
 				}
 				imported := config.Connection{
 					Name: "imported-" + mode, Host: "192.0.2.60", Port: 22, User: "runner",
@@ -2822,8 +2857,6 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		cli.TrustSSHHost(t, server)
 		privateKey := "ISSUE17_TRANSFER_PRIVATE_KEY_CANARY"
 		inventoryCanary := "ISSUE17_DECRYPTED_INVENTORY_CANARY"
-		configCanary := "ISSUE17_TRANSFER_CONFIG_CANARY"
-		tokenCanary := "ISSUE17_TRANSFER_TOKEN_CANARY"
 		cli.SaveVault(t, &config.Vault{
 			Connections: []config.Connection{
 				server.Connection("transfer-live", password),
@@ -2831,14 +2864,11 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 			},
 			Keys: []config.SSHKey{{Name: "unrelated-key", PrivateKey: privateKey}},
 		})
-		cli.writeConfigFile(t, "cloud.json", []byte(`{"server":"https://`+configCanary+`.invalid","token":"`+tokenCanary+`"`))
 		secretCanaries := map[string]string{
 			"password":            password,
 			"private_key":         privateKey,
 			"file_content":        "ISSUE17_TRANSFER_FILE_CONTENT_CANARY",
 			"directory_content":   "ISSUE17_TRANSFER_DIRECTORY_CONTENT_CANARY",
-			"token":               tokenCanary,
-			"configuration":       configCanary,
 			"decrypted_inventory": inventoryCanary,
 		}
 
@@ -3038,6 +3068,512 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		}
 		if !reflect.DeepEqual(lines, want) {
 			t.Fatalf("make check commands = %q, want single non-mutating verification-manifest adapter %q", lines, want)
+		}
+	})
+}
+
+func TestCompiledSyncStateMatrix(t *testing.T) {
+	t.Run("absent configuration remains unconfigured cached success", func(t *testing.T) {
+		cli := newCompiledCLIHarness(t)
+		cli.SaveVault(t, &config.Vault{})
+
+		assertCompiledEmptyJSONArraySuccess(t, cli.Run(t, "sshctl", nil, "--json", "list"))
+		status := assertCompiledJSONSuccess(t, cli.Run(t, "sshctl", nil, "--json", "status"))
+		doctor := assertCompiledJSONSuccess(t, cli.Run(t, "sshctl", nil, "--json", "doctor"))
+		for _, value := range []map[string]any{status, doctor} {
+			if value["sync"] != "missing" || value["remote_state"] != "not_configured" || value["offline"] != false {
+				t.Fatalf("unconfigured sync vocabulary = %#v", value)
+			}
+		}
+		for _, field := range []string{"sync", "freshness", "remote_state", "offline"} {
+			if status[field] != doctor[field] {
+				t.Fatalf("unconfigured status/doctor %s mismatch: status=%#v doctor=%#v", field, status[field], doctor[field])
+			}
+		}
+		assertCompiledMachineContract(t, cli.Run(t, "sshctl", nil, "--json", "pull"), compiledMachineContract{
+			OK: false, Error: "sync_config_error", JSONExit: 1, ProcessExit: 1,
+			Hint: "configure sync or use local inventory",
+		})
+	})
+
+	t.Run("disabled automatic sync validates configuration and makes no request", func(t *testing.T) {
+		cli := newCompiledCLIHarness(t)
+		sync := newCompiledSyncFixture(t)
+		cli.SaveVault(t, &config.Vault{})
+		cli.SaveCloud(t, sync.URL(), "AUTO_SYNC_DISABLED_SECRET")
+		settings := config.DefaultSettings()
+		settings.AutoSync = false
+		settingsData, err := json.Marshal(settings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cli.writeConfigFile(t, "settings.json", settingsData)
+
+		assertCompiledEmptyJSONArraySuccess(t, cli.Run(t, "sshctl", nil, "--json", "list"))
+		status := assertCompiledJSONSuccess(t, cli.Run(t, "sshctl", nil, "--json", "status"))
+		doctor := assertCompiledJSONSuccess(t, cli.Run(t, "sshctl", nil, "--json", "doctor"))
+		for _, value := range []map[string]any{status, doctor} {
+			if value["sync"] != "configured" || value["remote_state"] != "auto_sync_disabled" || value["offline"] != false {
+				t.Fatalf("disabled automatic sync vocabulary = %#v", value)
+			}
+		}
+		for _, method := range []string{http.MethodHead, http.MethodGet, http.MethodPut} {
+			if got := sync.MethodCount(method); got != 0 {
+				t.Fatalf("disabled automatic sync %s requests = %d, want 0", method, got)
+			}
+		}
+	})
+
+	t.Run("changed remote opaque blob replaces the unlocked snapshot before use", func(t *testing.T) {
+		cli := newCompiledCLIHarness(t)
+		sync := newCompiledSyncFixture(t)
+		cli.SaveVault(t, &config.Vault{Connections: []config.Connection{{
+			Name: "cached", Host: "192.0.2.40", Port: 22, User: "runner", Password: "CACHED_SNAPSHOT_SECRET",
+		}}})
+		cachedBlob := cli.VaultBlob(t)
+		remoteVault := &config.Vault{Connections: []config.Connection{{
+			Name: "remote", Host: "192.0.2.41", Port: 22, User: "runner", Password: "REMOTE_SNAPSHOT_SECRET",
+		}}}
+		remoteBlob, err := config.EncryptVault(remoteVault, cli.passphrase)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cachedIdentity := fmt.Sprintf("%x", sha256.Sum256(cachedBlob))
+		remoteIdentity := fmt.Sprintf("%x", sha256.Sum256(remoteBlob))
+		cli.SaveRemoteETag(t, cachedIdentity)
+		cli.SaveCloud(t, sync.URL(), "REMOTE_REPLACEMENT_TOKEN_SECRET")
+		sync.SetRemote(t, remoteBlob, remoteIdentity)
+
+		result := cli.Run(t, "sshctl", nil, "--json", "list")
+		assertNoCompiledCanaryLeak(t, result, map[string]string{
+			"cached": "CACHED_SNAPSHOT_SECRET", "remote": "REMOTE_SNAPSHOT_SECRET",
+			"token": "REMOTE_REPLACEMENT_TOKEN_SECRET",
+		})
+		items, ok := decodeExactlyOneJSONValue(t, result.Stdout).([]any)
+		if result.ProcessExit != 0 || result.Stderr != "" || !ok || len(items) != 1 {
+			t.Fatalf("changed remote list output=%s", compiledOutputIdentity(result))
+		}
+		item, ok := items[0].(map[string]any)
+		if !ok || item["name"] != "remote" {
+			t.Fatalf("changed remote list = %#v", items)
+		}
+		if after := cli.VaultBlob(t); !bytes.Equal(after, remoteBlob) {
+			t.Fatal("compiled refresh did not atomically commit the opaque remote blob")
+		}
+		if sync.MethodCount(http.MethodHead) != 1 || sync.MethodCount(http.MethodGet) != 1 || sync.MethodCount(http.MethodPut) != 0 {
+			t.Fatalf(
+				"changed remote requests HEAD=%d GET=%d PUT=%d",
+				sync.MethodCount(http.MethodHead), sync.MethodCount(http.MethodGet), sync.MethodCount(http.MethodPut),
+			)
+		}
+	})
+
+	t.Run("present invalid configuration is one failure across inventory families", func(t *testing.T) {
+		cli := newCompiledCLIHarness(t)
+		cli.SaveVault(t, &config.Vault{Connections: []config.Connection{{
+			Name: "alpha", Host: "192.0.2.20", Port: 22, User: "runner", Password: "fixture-only",
+		}}})
+		cli.writeConfigFile(t, "cloud.json", []byte(`{"server":"https://sync.invalid","token":"MATRIX_SECRET"`))
+
+		commands := []struct {
+			name       string
+			executable string
+			input      []byte
+			args       []string
+		}{
+			{name: "list", executable: "sshctl", args: []string{"--json", "list"}},
+			{name: "legacy list", executable: "ssm", args: []string{"--json", "list"}},
+			{name: "status", executable: "sshctl", args: []string{"--json", "status"}},
+			{name: "doctor", executable: "sshctl", args: []string{"--json", "doctor"}},
+			{name: "check", executable: "sshctl", args: []string{"--json", "check", "alpha"}},
+			{name: "run plan", executable: "sshctl", args: []string{"--json", "run", "alpha", "--plan", "--argv", "true"}},
+			{name: "map plan", executable: "sshctl", args: []string{"--json", "map", "alpha", "--plan", "--argv", "true"}},
+			{
+				name: "put", executable: "sshctl",
+				args: []string{"--json", "put", "alpha", filepath.Join(cli.home, "missing"), "/tmp/target"},
+			},
+			{
+				name: "get", executable: "sshctl",
+				args: []string{"--json", "get", "alpha", "/tmp/source", filepath.Join(cli.home, "target")},
+			},
+			{name: "host list", executable: "sshctl", args: []string{"--json", "host", "list"}},
+			{name: "host search", executable: "sshctl", args: []string{"--json", "host", "search", "alpha"}},
+			{name: "host show", executable: "sshctl", args: []string{"--json", "host", "show", "alpha"}},
+			{
+				name: "host mutation", executable: "sshctl",
+				args: []string{"--json", "host", "update", "alpha", "--group", "changed"},
+			},
+			{name: "host key", executable: "sshctl", args: []string{"--json", "host-key", "inspect", "alpha"}},
+			{name: "legacy keys", executable: "ssm", args: []string{"--json", "keys"}},
+			{name: "explicit pull", executable: "sshctl", args: []string{"--json", "pull"}},
+			{name: "explicit sync", executable: "sshctl", args: []string{"--json", "sync"}},
+			{name: "pull if changed", executable: "ssm", args: []string{"--json", "pull-if-changed"}},
+			{name: "push", executable: "sshctl", args: []string{"--json", "push", "--all"}},
+			{name: "remote identity", executable: "ssm", args: []string{"--json", "remote-hash"}},
+			{
+				name: "request v1", executable: "sshctl",
+				input: []byte(`{"version":1,"op":"plan","alias":"alpha","argv":["true"]}`),
+				args:  []string{"--json", "request"},
+			},
+			{
+				name: "stream initialization", executable: "sshctl", input: []byte("[\"true\"]\n"),
+				args: []string{"--json", "run", "alpha", "--stream", "--refresh=1ms"},
+			},
+		}
+		for _, command := range commands {
+			t.Run(command.name, func(t *testing.T) {
+				result := cli.Run(t, command.executable, command.input, command.args...)
+				assertNoCompiledCanaryLeak(t, result, map[string]string{"cloud_value": "MATRIX_SECRET", "config_content": "sync.invalid"})
+				assertCompiledMachineContract(t, result, compiledMachineContract{
+					OK: false, Error: "sync_config_error", Stage: "sync_config", JSONExit: 1, ProcessExit: 1,
+					Hint: "repair sync configuration or retry explicitly with --offline",
+				})
+			})
+		}
+	})
+
+	t.Run("import and legacy removals stop before mutation on configuration and refresh failures", func(t *testing.T) {
+		commands := []struct {
+			name string
+			args func(importPath string) []string
+		}{
+			{name: "connection removal", args: func(string) []string { return []string{"--json", "remove", "alpha"} }},
+			{name: "key removal", args: func(string) []string { return []string{"--json", "keys", "remove", "alpha-key"} }},
+			{name: "import", args: func(importPath string) []string {
+				return []string{"--json", "import-json", importPath, "--merge"}
+			}},
+		}
+		states := []struct {
+			name      string
+			contract  compiledMachineContract
+			configure func(*testing.T, *compiledCLIHarness) *compiledSyncFixture
+		}{
+			{
+				name: "malformed configuration",
+				contract: compiledMachineContract{
+					OK: false, Error: "sync_config_error", Stage: "sync_config", JSONExit: 1, ProcessExit: 1,
+					Hint: "repair sync configuration or retry explicitly with --offline",
+				},
+				configure: func(t *testing.T, cli *compiledCLIHarness) *compiledSyncFixture {
+					cli.writeConfigFile(t, "cloud.json", []byte(`{"server":"https://sync.invalid","token":"MUTATION_CONFIG_SECRET"`))
+					return nil
+				},
+			},
+			{
+				name: "unreadable configuration",
+				contract: compiledMachineContract{
+					OK: false, Error: "sync_config_error", Stage: "sync_config", JSONExit: 1, ProcessExit: 1,
+					Hint: "repair sync configuration or retry explicitly with --offline",
+				},
+				configure: func(t *testing.T, cli *compiledCLIHarness) *compiledSyncFixture {
+					path := filepath.Join(cli.home, ".config", "ssm", "cloud.json")
+					if err := os.Mkdir(path, 0o700); err != nil {
+						t.Fatalf("create unreadable mutation configuration: %v", err)
+					}
+					return nil
+				},
+			},
+			{
+				name: "refresh failure",
+				contract: compiledMachineContract{
+					OK: false, Error: "sync_pull_failed", Stage: "sync_pull", JSONExit: 1, ProcessExit: 1,
+					Hint: "fix sync connectivity or retry explicitly with --offline",
+				},
+				configure: func(t *testing.T, cli *compiledCLIHarness) *compiledSyncFixture {
+					sync := newCompiledSyncFixture(t)
+					sync.SetStatus(t, http.MethodHead, http.StatusInternalServerError)
+					cli.SaveCloud(t, sync.URL(), "MUTATION_REFRESH_SECRET")
+					return sync
+				},
+			},
+		}
+
+		for _, state := range states {
+			t.Run(state.name, func(t *testing.T) {
+				for _, command := range commands {
+					t.Run(command.name, func(t *testing.T) {
+						cli := newCompiledCLIHarness(t)
+						starting := &config.Vault{
+							Connections: []config.Connection{{
+								Name: "alpha", Host: "192.0.2.20", Port: 22, User: "runner", Password: "MUTATION_VAULT_SECRET",
+							}},
+							Keys: []config.SSHKey{{Name: "alpha-key", PrivateKey: "MUTATION_KEY_SECRET"}},
+						}
+						cli.SaveVault(t, starting)
+						importPath := filepath.Join(cli.temp, "import.json")
+						if err := os.WriteFile(importPath, []byte(
+							`[{"alias":"imported","host":"192.0.2.21","port":22,"user":"runner","auth_type":"password","password":"MUTATION_IMPORT_SECRET"}]`,
+						), 0o600); err != nil {
+							t.Fatalf("write import fixture: %v", err)
+						}
+						sync := state.configure(t, cli)
+
+						result := cli.Run(t, "ssm", nil, command.args(importPath)...)
+						assertNoCompiledCanaryLeak(t, result, map[string]string{ //nolint:gosec // test-only fake credential canaries
+							"configuration": "sync.invalid",
+							"config_token":  "MUTATION_CONFIG_SECRET",
+							"refresh_token": "MUTATION_REFRESH_SECRET",
+							"vault":         "MUTATION_VAULT_SECRET",
+							"key":           "MUTATION_KEY_SECRET",
+							"import":        "MUTATION_IMPORT_SECRET",
+						})
+						assertCompiledMachineContract(t, result, state.contract)
+						assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), starting)
+						if sync != nil {
+							if got := sync.MethodCount(http.MethodHead); got != 1 {
+								t.Fatalf("refresh failure HEAD count = %d, want 1", got)
+							}
+							for _, method := range []string{http.MethodGet, http.MethodPut} {
+								if got := sync.MethodCount(method); got != 0 {
+									t.Fatalf("refresh failure %s count = %d, want 0", method, got)
+								}
+							}
+						}
+					})
+				}
+			})
+		}
+	})
+
+	t.Run("explicit pull preserves two-sided conflict without GET or local overwrite", func(t *testing.T) {
+		cli := newCompiledCLIHarness(t)
+		sync := newCompiledSyncFixture(t)
+		cli.SaveVault(t, &config.Vault{Connections: []config.Connection{{ //nolint:gosec // test-only fake credential canary
+			Name: "local", Host: "192.0.2.30", Port: 22, User: "runner", Password: "PULL_LOCAL_SECRET",
+		}}})
+		localBlob := cli.VaultBlob(t)
+		sync.SetRemote(t, []byte("different opaque encrypted remote blob"), "pull-remote-current")
+		cli.SaveCloud(t, sync.URL(), "PULL_CONFIG_SECRET")
+		cli.SaveRemoteETag(t, "pull-remote-previous")
+
+		result := cli.Run(t, "sshctl", nil, "--json", "pull")
+		assertNoCompiledCanaryLeak(t, result, map[string]string{ //nolint:gosec // test-only fake credential canaries
+			"vault": "PULL_LOCAL_SECRET", "token": "PULL_CONFIG_SECRET",
+		})
+		assertCompiledMachineContract(t, result, compiledMachineContract{
+			OK: false, Error: "sync_conflict", Stage: "sync_compare", JSONExit: 1, ProcessExit: 1,
+			Hint: "local and remote blobs were preserved; inspect sshctl --offline --json doctor, then explicitly pull or push after review",
+		})
+		if got := sync.MethodCount(http.MethodHead); got != 1 {
+			t.Fatalf("explicit pull HEAD count = %d, want 1", got)
+		}
+		for _, method := range []string{http.MethodGet, http.MethodPut} {
+			if got := sync.MethodCount(method); got != 0 {
+				t.Fatalf("explicit pull %s count = %d, want 0", method, got)
+			}
+		}
+		if after := cli.VaultBlob(t); !bytes.Equal(after, localBlob) {
+			t.Fatal("explicit pull overwrote the local encrypted blob during conflict")
+		}
+		evidenceData, err := os.ReadFile(filepath.Join(cli.home, ".config", "ssm", "sync-conflict.json"))
+		if err != nil {
+			t.Fatalf("read explicit pull conflict evidence: %v", err)
+		}
+		var evidence struct {
+			Local  string `json:"local_etag"`
+			Remote string `json:"remote_etag"`
+			Cached string `json:"cached_etag"`
+		}
+		if err := json.Unmarshal(evidenceData, &evidence); err != nil {
+			t.Fatalf("decode explicit pull conflict evidence: %v", err)
+		}
+		wantLocal := fmt.Sprintf("%x", sha256.Sum256(localBlob))
+		if evidence.Local != wantLocal || evidence.Remote != "pull-remote-current" || evidence.Cached != "pull-remote-previous" {
+			t.Fatalf("explicit pull conflict identities = %+v", evidence)
+		}
+	})
+
+	t.Run("explicit push preserves two-sided conflict without PUT or local overwrite", func(t *testing.T) {
+		cli := newCompiledCLIHarness(t)
+		sync := newCompiledSyncFixture(t)
+		cli.SaveVault(t, &config.Vault{Connections: []config.Connection{{ //nolint:gosec // test-only fake credential canary
+			Name: "local", Host: "192.0.2.31", Port: 22, User: "runner", Password: "PUSH_LOCAL_SECRET",
+		}}})
+		localBlob := cli.VaultBlob(t)
+		sync.SetRemote(t, []byte("different opaque encrypted remote blob"), "push-remote-current")
+		cli.SaveCloud(t, sync.URL(), "PUSH_CONFIG_SECRET")
+		cli.SaveRemoteETag(t, "push-remote-previous")
+
+		result := cli.Run(t, "sshctl", nil, "--json", "push", "--all")
+		assertNoCompiledCanaryLeak(t, result, map[string]string{ //nolint:gosec // test-only fake credential canaries
+			"vault": "PUSH_LOCAL_SECRET", "token": "PUSH_CONFIG_SECRET",
+		})
+		assertCompiledMachineContract(t, result, compiledMachineContract{
+			OK: false, Error: "sync_conflict", Stage: "sync_compare", JSONExit: 1, ProcessExit: 1,
+			Hint: "local and remote blobs were preserved; inspect sshctl --offline --json doctor, then explicitly pull or push after review",
+		})
+		if got := sync.MethodCount(http.MethodHead); got != 1 {
+			t.Fatalf("explicit push HEAD count = %d, want 1", got)
+		}
+		for _, method := range []string{http.MethodGet, http.MethodPut} {
+			if got := sync.MethodCount(method); got != 0 {
+				t.Fatalf("explicit push %s count = %d, want 0", method, got)
+			}
+		}
+		if after := cli.VaultBlob(t); !bytes.Equal(after, localBlob) {
+			t.Fatal("explicit push rewrote the local encrypted blob during conflict")
+		}
+		evidenceData, err := os.ReadFile(filepath.Join(cli.home, ".config", "ssm", "sync-conflict.json"))
+		if err != nil {
+			t.Fatalf("read explicit push conflict evidence: %v", err)
+		}
+		var evidence struct {
+			Local  string `json:"local_etag"`
+			Remote string `json:"remote_etag"`
+			Cached string `json:"cached_etag"`
+		}
+		if err := json.Unmarshal(evidenceData, &evidence); err != nil {
+			t.Fatalf("decode explicit push conflict evidence: %v", err)
+		}
+		wantLocal := fmt.Sprintf("%x", sha256.Sum256(localBlob))
+		if evidence.Local != wantLocal || evidence.Remote != "push-remote-current" || evidence.Cached != "push-remote-previous" {
+			t.Fatalf("explicit push conflict identities = %+v", evidence)
+		}
+	})
+
+	t.Run("explicit offline uses cached state with zero sync requests", func(t *testing.T) {
+		cli := newCompiledCLIHarness(t)
+		sync := newCompiledSyncFixture(t)
+		cli.SaveVault(t, &config.Vault{
+			Connections: []config.Connection{{ //nolint:gosec // test-only fake credential canary
+				Name: "cached", Host: "192.0.2.42", Port: 22, User: "runner", Password: "OFFLINE_CACHED_SECRET",
+			}},
+			Keys: []config.SSHKey{{Name: "cached-key", PrivateKey: "OFFLINE_KEY_SECRET"}},
+		})
+		cachedBlob := cli.VaultBlob(t)
+		cachedIdentity := fmt.Sprintf("%x", sha256.Sum256(cachedBlob))
+		cli.SaveRemoteETag(t, cachedIdentity)
+		conflictData, err := json.Marshal(map[string]string{
+			"detected_at": "2026-07-28T12:00:00Z",
+			"local_etag":  cachedIdentity, "remote_etag": "offline-remote-changed", "cached_etag": "offline-cached",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cli.writeConfigFile(t, "sync-conflict.json", conflictData)
+		sync.SetRemote(t, []byte("unused changed opaque remote blob"), "offline-remote-changed")
+		cli.writeConfigFile(
+			t,
+			"cloud.json",
+			[]byte(`{"server":"`+sync.URL()+`","token":"OFFLINE_MATRIX_SECRET"`),
+		)
+		settings := config.DefaultSettings()
+		settings.LastPull = "2020-01-02T03:04:05Z"
+		settingsData, err := json.Marshal(settings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cli.writeConfigFile(t, "settings.json", settingsData)
+
+		listResult := cli.Run(t, "sshctl", nil, "--offline", "--json", "list")
+		list, ok := decodeExactlyOneJSONValue(t, listResult.Stdout).([]any)
+		if listResult.ProcessExit != 0 || listResult.Stderr != "" || !ok || len(list) != 1 {
+			t.Fatalf("offline cached list output=%s", compiledOutputIdentity(listResult))
+		}
+		listHost, ok := list[0].(map[string]any)
+		if !ok || listHost["name"] != "cached" {
+			t.Fatalf("offline cached list = %#v", list)
+		}
+
+		hostListResult := cli.Run(t, "sshctl", nil, "--json", "host", "list", "--offline")
+		hostList, ok := decodeExactlyOneJSONValue(t, hostListResult.Stdout).([]any)
+		if hostListResult.ProcessExit != 0 || hostListResult.Stderr != "" || !ok || len(hostList) != 1 {
+			t.Fatalf("offline host list output=%s", compiledOutputIdentity(hostListResult))
+		}
+		status := assertCompiledJSONSuccess(t, cli.Run(t, "sshctl", nil, "--offline", "--json", "status"))
+		if status["offline"] != true ||
+			status["freshness"] != "cached" ||
+			status["remote_state"] != "not_checked" ||
+			status["last_pull"] != settings.LastPull ||
+			status["last_sync"] != settings.LastPull {
+			t.Fatalf("offline status vocabulary changed: %s", compiledOutputIdentity(cli.Run(t, "sshctl", nil, "--offline", "--json", "status")))
+		}
+		doctor := assertCompiledJSONSuccess(t, cli.Run(t, "sshctl", nil, "--offline", "--json", "doctor"))
+		if doctor["offline"] != true ||
+			doctor["freshness"] != "cached" ||
+			doctor["remote_state"] != "not_checked" ||
+			doctor["last_pull"] != settings.LastPull ||
+			doctor["last_sync"] != settings.LastPull {
+			t.Fatalf("offline doctor vocabulary = %#v", doctor)
+		}
+		for _, field := range []string{
+			"sync", "freshness", "remote_state", "offline", "last_pull", "last_sync", "sync_conflict",
+		} {
+			if !reflect.DeepEqual(status[field], doctor[field]) {
+				t.Fatalf("status/doctor %s mismatch: status=%#v doctor=%#v", field, status[field], doctor[field])
+			}
+		}
+		statusAge, statusAgeOK := status["cache_age_seconds"].(float64)
+		doctorAge, doctorAgeOK := doctor["cache_age_seconds"].(float64)
+		if !statusAgeOK || !doctorAgeOK || statusAge <= 0 || doctorAge <= 0 || math.Abs(statusAge-doctorAge) > 1 {
+			t.Fatalf("status/doctor cache age mismatch: status=%#v doctor=%#v", status["cache_age_seconds"], doctor["cache_age_seconds"])
+		}
+
+		requestInput := []byte(`{"version":1,"op":"plan","alias":"cached","argv":["true"]}`)
+		importPath := filepath.Join(cli.temp, "offline-import.json")
+		if err := os.WriteFile(
+			importPath,
+			[]byte(`[{"alias":"imported","host":"192.0.2.43","port":22,"user":"runner","auth_type":"password","password":"OFFLINE_IMPORT_SECRET"}]`),
+			0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
+		offlineCommands := []struct {
+			name       string
+			executable string
+			input      []byte
+			args       []string
+		}{
+			{name: "legacy list", executable: "ssm", args: []string{"--offline", "--json", "list"}},
+			{name: "host search", executable: "sshctl", args: []string{"--offline", "--json", "host", "search", "cached"}},
+			{name: "host show", executable: "sshctl", args: []string{"--offline", "--json", "host", "show", "cached"}},
+			{name: "host mutation", executable: "sshctl", args: []string{"--json", "host", "update", "cached", "--group", "offline", "--offline"}},
+			{name: "run plan", executable: "sshctl", args: []string{"--offline", "--json", "run", "cached", "--plan", "--argv", "true"}},
+			{name: "map plan", executable: "sshctl", args: []string{"--offline", "--json", "map", "cached", "--plan", "--argv", "true"}},
+			{name: "check", executable: "sshctl", args: []string{"--offline", "--json", "check", "missing"}},
+			{
+				name: "put", executable: "sshctl",
+				args: []string{"--offline", "--json", "put", "cached", filepath.Join(cli.home, "missing"), "/tmp/target"},
+			},
+			{
+				name: "get", executable: "sshctl",
+				args: []string{"--offline", "--json", "get", "missing", "/tmp/source", filepath.Join(cli.home, "target")},
+			},
+			{name: "host key", executable: "sshctl", args: []string{"--offline", "--json", "host-key", "inspect", "missing"}},
+			{name: "legacy keys", executable: "ssm", args: []string{"--offline", "--json", "keys"}},
+			{name: "request v1", executable: "sshctl", input: requestInput, args: []string{"--offline", "--json", "request"}},
+			{
+				name: "stream initialization", executable: "sshctl", input: []byte("[\"true\"]\n"),
+				args: []string{"--offline", "--json", "run", "missing", "--stream", "--refresh=0"},
+			},
+			{name: "explicit pull", executable: "sshctl", args: []string{"--offline", "--json", "pull"}},
+			{name: "explicit sync", executable: "sshctl", args: []string{"--offline", "--json", "sync"}},
+			{name: "pull if changed", executable: "ssm", args: []string{"--offline", "--json", "pull-if-changed"}},
+			{name: "push", executable: "sshctl", args: []string{"--offline", "--json", "push", "--all"}},
+			{name: "remote identity", executable: "ssm", args: []string{"--offline", "--json", "remote-hash"}},
+			{name: "legacy remove", executable: "ssm", args: []string{"--offline", "--json", "remove", "cached"}},
+			{name: "legacy key remove", executable: "ssm", args: []string{"--offline", "--json", "keys", "remove", "cached-key"}},
+			{
+				name: "import", executable: "ssm",
+				args: []string{"--offline", "--json", "import-json", importPath, "--merge"},
+			},
+		}
+		for _, command := range offlineCommands {
+			t.Run(command.name, func(t *testing.T) {
+				result := cli.Run(t, command.executable, command.input, command.args...)
+				assertNoCompiledCanaryLeak(t, result, map[string]string{
+					"cloud": "OFFLINE_MATRIX_SECRET", "cached": "OFFLINE_CACHED_SECRET",
+					"key": "OFFLINE_KEY_SECRET", "import": "OFFLINE_IMPORT_SECRET",
+				})
+			})
+		}
+		for _, method := range []string{http.MethodHead, http.MethodGet, http.MethodPut} {
+			if got := sync.MethodCount(method); got != 0 {
+				t.Fatalf("offline %s requests = %d, want 0", method, got)
+			}
+		}
+		if after := cli.VaultBlob(t); bytes.Equal(after, []byte("unused changed opaque remote blob")) {
+			t.Fatal("offline command selected the remote opaque blob")
 		}
 	})
 }

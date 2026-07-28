@@ -12,7 +12,7 @@ func assertCompiledAutomaticUpdateOutcome(
 	replacement []byte,
 ) {
 	t.Helper()
-	assertCompiledJSONArraySuccess(t, result, 0)
+	assertCompiledEmptyJSONArraySuccess(t, result)
 	assertCompiledFileMatches(t, executablePath, replacement)
 }
 

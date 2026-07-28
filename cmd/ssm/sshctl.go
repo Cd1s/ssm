@@ -5,11 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
-	"ssm/internal/cloud"
 	"ssm/internal/config"
 	"ssm/internal/machinecontract"
+	"ssm/internal/synctransaction"
 )
 
 func runSSHCTL(args []string) {
@@ -298,23 +297,24 @@ func runSSHCTLList() {
 }
 
 type statusResult struct {
-	OK         bool                  `json:"ok"`
-	Version    string                `json:"version"`
-	Hosts      int                   `json:"hosts"`
-	Vault      string                `json:"vault"`
-	Sync       string                `json:"sync"`
-	Redirects  int                   `json:"redirects"`
-	Reuse      string                `json:"reuse"`
-	ReuseScope string                `json:"reuse_scope"`
-	LastPull   string                `json:"last_pull,omitempty"`
-	LastPush   string                `json:"last_push,omitempty"`
-	LastSync   string                `json:"last_sync,omitempty"`
-	Freshness  string                `json:"freshness"`
-	Remote     string                `json:"remote_state"`
-	Pending    bool                  `json:"pending_changes"`
-	Mutations  []pendingMutationView `json:"pending_mutations"`
-	Offline    bool                  `json:"offline"`
-	CacheAge   int64                 `json:"cache_age_seconds,omitempty"`
+	OK         bool                          `json:"ok"`
+	Version    string                        `json:"version"`
+	Hosts      int                           `json:"hosts"`
+	Vault      string                        `json:"vault"`
+	Sync       string                        `json:"sync"`
+	Redirects  int                           `json:"redirects"`
+	Reuse      string                        `json:"reuse"`
+	ReuseScope string                        `json:"reuse_scope"`
+	LastPull   string                        `json:"last_pull,omitempty"`
+	LastPush   string                        `json:"last_push,omitempty"`
+	LastSync   string                        `json:"last_sync,omitempty"`
+	Freshness  string                        `json:"freshness"`
+	Remote     string                        `json:"remote_state"`
+	Pending    bool                          `json:"pending_changes"`
+	Mutations  []pendingMutationView         `json:"pending_mutations"`
+	Offline    bool                          `json:"offline"`
+	CacheAge   int64                         `json:"cache_age_seconds,omitempty"`
+	Conflict   *synctransaction.SyncConflict `json:"sync_conflict,omitempty"`
 }
 
 func runSSHCTLStatus() {
@@ -328,50 +328,33 @@ func runSSHCTLStatus() {
 	if config.Exists() {
 		vaultStatus = "present"
 	}
-	cloudStatus := "missing"
-	if _, err := os.Stat(filepath.Join(config.Dir(), "cloud.json")); err == nil {
-		cloudStatus = "configured"
-	}
-
 	reuse := map[bool]string{true: "on", false: "off"}[os.Getenv("SSM_REUSE") != "0" && os.Getenv("SSM_REUSE") != "off"]
-	settings := config.LoadSettings()
-	localETag, localErr := cloud.LocalVaultETag()
-	remoteETag := cloud.CachedRemoteETag()
-	freshness := "unknown"
+	syncFacts := syncTransaction(false).Facts()
+	cloudStatus := "missing"
+	switch syncFacts.Configuration {
+	case synctransaction.ConfigurationConfigured:
+		cloudStatus = "configured"
+	case synctransaction.ConfigurationOffline:
+		cloudStatus = "offline"
+	}
+	freshness := string(syncFacts.Freshness)
 	pending := false
 	pendingMutations := []pendingMutationView{}
 	if v != nil {
 		pendingMutations = pendingMutationViews(v)
 		pending = len(pendingMutations) > 0
 	}
-	if localErr == nil && remoteETag != "" {
-		if localETag == remoteETag {
-			freshness = "fresh"
-		} else {
-			freshness = "local_ahead"
-			pending = true
-		}
+	if syncFacts.Freshness == synctransaction.FreshnessLocalAhead {
+		pending = true
 	}
-	lastSync, cacheAge := syncCacheAge(settings, time.Now())
-	remoteState := "checked"
-	switch {
-	case cloudStatus == "missing":
-		remoteState = "not_configured"
-	case !settings.AutoSync:
-		remoteState = "auto_sync_disabled"
-	case offlineMode:
-		remoteState = "not_checked"
-		if freshness == "fresh" {
-			freshness = "cached"
-		}
-	}
+	remoteState := string(syncFacts.Remote)
 	if machineJSON {
 		result := statusResult{
 			OK: err == nil, Version: version, Hosts: count, Vault: vaultStatus, Sync: cloudStatus,
 			Redirects: len(config.LoadRedirects()), Reuse: reuse, ReuseScope: "process",
-			LastPull: settings.LastPull, LastPush: settings.LastPush, LastSync: lastSync,
+			LastPull: syncFacts.LastPull, LastPush: syncFacts.LastPush, LastSync: syncFacts.LastSync,
 			Freshness: freshness, Remote: remoteState, Pending: pending, Mutations: pendingMutations,
-			Offline: offlineMode, CacheAge: cacheAge,
+			Offline: syncFacts.Offline, CacheAge: syncFacts.CacheAge, Conflict: syncFacts.Conflict,
 		}
 		if err != nil {
 			failure := machinecontract.Classify(machinecontract.GenericFailure, machinecontract.Details{Cause: err})
@@ -381,25 +364,7 @@ func runSSHCTLStatus() {
 		return
 	}
 	fmt.Printf("version=%s\nhosts=%d\nvault=%s\nsync=%s\nredirects=%d\nreuse=%s\nreuse_scope=process\nfreshness=%s\nremote_state=%s\npending_changes=%t\noffline=%t\ncache_age_seconds=%d\n",
-		version, count, vaultStatus, cloudStatus, len(config.LoadRedirects()), reuse, freshness, remoteState, pending, offlineMode, cacheAge)
-}
-
-func syncCacheAge(settings *config.Settings, now time.Time) (string, int64) {
-	var latest time.Time
-	for _, raw := range []string{settings.LastPull, settings.LastPush} {
-		parsed, err := time.Parse(time.RFC3339, raw)
-		if err == nil && parsed.After(latest) {
-			latest = parsed
-		}
-	}
-	if latest.IsZero() {
-		return "", 0
-	}
-	age := now.Sub(latest)
-	if age < 0 {
-		age = 0
-	}
-	return latest.Format(time.RFC3339), int64(age / time.Second)
+		version, count, vaultStatus, cloudStatus, len(config.LoadRedirects()), reuse, freshness, remoteState, pending, syncFacts.Offline, syncFacts.CacheAge)
 }
 
 func sshctlUsage() {

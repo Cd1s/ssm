@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"ssm/internal/cloud"
 	"ssm/internal/config"
 	"ssm/internal/machinecontract"
 	"ssm/internal/ssh"
@@ -68,6 +67,7 @@ func runList(jsonOutput bool) {
 }
 
 func runRemove(name string) {
+	pullIfChanged()
 	v, err := loadVault()
 	if err != nil {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
@@ -93,7 +93,7 @@ func runRemove(name string) {
 	if err := config.Save(v, masterPass); err != nil {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
-	cloud.AutoPush()
+	autoPushOpaque()
 	fmt.Printf("Connection \"%s\" removed.\n", name)
 }
 
@@ -413,11 +413,12 @@ func runCheck(name string, asJSON bool) {
 
 func runDoctor(alias string, deep, asJSON bool) {
 	pullIfChanged()
+	syncFacts := syncTransaction(false).Facts()
 	v, err := loadVault()
 	if err != nil {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
-	rep := ssh.Doctor(v, alias, deep)
+	rep := ssh.Doctor(v, alias, deep, syncFacts)
 	ssh.WriteDoctorReport(rep, asJSON)
 	if !rep.OK {
 		os.Exit(machinecontract.ConnectionResultExit(rep.OK))
@@ -539,6 +540,7 @@ func runImportJSON(args []string) {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.ImportArgumentsInvalid, machinecontract.Details{Cause: err}))
 	}
 	machineJSON = machineJSON || opts.asJSON
+	pullIfChanged()
 
 	imported, err := loadServerImport(opts.path, opts.manifestPath)
 	if err != nil {
