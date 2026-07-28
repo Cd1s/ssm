@@ -713,12 +713,12 @@ func (f *compiledUpdateFixture) serveHTTP(w http.ResponseWriter, r *http.Request
 	defer f.mu.Unlock()
 	f.paths = append(f.paths, r.URL.Path)
 
-	latestPath := "/repos/fixture/repo/releases/latest"
+	releasesPath := "/repos/fixture/repo/releases"
 	releasePrefix := "/fixture/repo/releases/download/" + f.version + "/"
 	switch {
-	case r.URL.Path == latestPath:
+	case r.URL.Path == releasesPath:
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"tag_name":%q}`, f.version)
+		_, _ = fmt.Fprintf(w, `[{"tag_name":%q,"name":"Fixture release","body":"Fixture migration release notes","assets":[{"name":%q}]}]`, f.version, compiledUpdateAssetName())
 	case strings.HasPrefix(r.URL.Path, releasePrefix) && strings.HasSuffix(r.URL.Path, "/checksums.txt"):
 		digest := sha256.Sum256(f.replacement)
 		_, _ = fmt.Fprintf(w, "%x  %s\n", digest, compiledUpdateAssetName())

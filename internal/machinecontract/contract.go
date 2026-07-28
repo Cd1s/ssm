@@ -66,6 +66,8 @@ const (
 	HostInternalFailure                 Kind = "host_internal_failure"
 	PanicFailure                        Kind = "panic_failure"
 	GenericFailure                      Kind = "generic_failure"
+	UpdateFailed                        Kind = "update_failed"
+	UpdateMigrationFailed               Kind = "update_migration_failed"
 	MissingCommand                      Kind = "missing_command"
 	InvalidGlobalArguments              Kind = "invalid_global_arguments"
 	SSHCTLCommandRequired               Kind = "sshctl_command_required"
@@ -391,6 +393,12 @@ var failurePolicies = map[Kind]failurePolicy{
 	},
 	GenericFailure: {
 		Code: CodeInternal, Exit: 1, Human: humanPlain,
+	},
+	UpdateFailed: {
+		Code: "update_failed", Stage: "update", Hint: "the prior executable was preserved; retry after resolving the reported update failure", Exit: 1, Human: humanPlain,
+	},
+	UpdateMigrationFailed: {
+		Code: "migration_preflight_failed", Stage: "migration_preflight", Hint: "the prior executable was preserved; resolve the reported checks and rerun the migration review", Exit: 1, Human: humanPlain,
 	},
 	MissingCommand: {
 		Code: "missing_command", Hint: "use ssm --help or sshctl --help", Exit: 2,
