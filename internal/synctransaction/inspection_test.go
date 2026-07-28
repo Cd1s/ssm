@@ -75,12 +75,7 @@ func TestInspectLocalConfigurationStatesWithoutNetwork(t *testing.T) {
 			name: "unreadable",
 			setup: func(t *testing.T, _ string) {
 				t.Helper()
-				if err := os.MkdirAll(config.Dir(), 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Mkdir(filepath.Join(config.Dir(), "cloud.json"), 0o700); err != nil {
-					t.Fatal(err)
-				}
+				replacePathWithDirectory(t, filepath.Join(config.Dir(), "cloud.json"))
 			},
 			wantConfiguration: ConfigurationInvalid,
 			wantRemote:        RemoteNotChecked,
@@ -102,14 +97,12 @@ func TestInspectLocalConfigurationStatesWithoutNetwork(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			home := t.TempDir()
-			t.Setenv("HOME", home)
-			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+			isolateTestUserConfig(t)
 			var requests atomic.Int64
 			server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 				requests.Add(1)
 			}))
-			defer server.Close()
+			t.Cleanup(server.Close)
 			if tt.setup != nil {
 				tt.setup(t, server.URL)
 			}
@@ -135,14 +128,12 @@ func TestInspectLocalConfigurationStatesWithoutNetwork(t *testing.T) {
 }
 
 func TestInspectLocalReturnsConflictWithoutMutationOrSecrets(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	isolateTestUserConfig(t)
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		requests.Add(1)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 	const token = "secret-test-token"
 	const opaqueVault = "opaque-encrypted-vault-fixture"
 	if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: token}); err != nil {

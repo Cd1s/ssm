@@ -35,19 +35,15 @@ func TestSyncTransactionPolicy(t *testing.T) {
 
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				home := t.TempDir()
-				t.Setenv("HOME", home)
-				t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+				isolateTestUserConfig(t)
 				if tt.cloud != nil || tt.cloudDir {
-					dir := filepath.Join(home, ".config", "ssm")
+					dir := config.Dir()
 					if err := os.MkdirAll(dir, 0700); err != nil {
 						t.Fatal(err)
 					}
 					cloudPath := filepath.Join(dir, "cloud.json")
 					if tt.cloudDir {
-						if err := os.Mkdir(cloudPath, 0700); err != nil {
-							t.Fatal(err)
-						}
+						replacePathWithDirectory(t, cloudPath)
 					} else {
 						mode := tt.cloudMode
 						if mode == 0 {
@@ -75,14 +71,12 @@ func TestSyncTransactionPolicy(t *testing.T) {
 	})
 
 	t.Run("disabled automatic sync validates configuration without network access", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+		isolateTestUserConfig(t)
 		requests := 0
 		server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			requests++
 		}))
-		defer server.Close()
+		t.Cleanup(server.Close)
 		if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: "opaque"}); err != nil {
 			t.Fatal(err)
 		}
@@ -105,9 +99,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 	})
 
 	t.Run("explicit sync requires present configuration", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+		isolateTestUserConfig(t)
 
 		facts, err := New(Options{}).Sync()
 		if !errors.Is(err, ErrUnconfigured) {
@@ -128,9 +120,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 		}
 		for _, operation := range operations {
 			t.Run(operation.name, func(t *testing.T) {
-				home := t.TempDir()
-				t.Setenv("HOME", home)
-				t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+				isolateTestUserConfig(t)
 				localBlob := []byte("locally changed encrypted blob")
 				if err := config.WritePrivateFile(config.Path(), localBlob); err != nil {
 					t.Fatal(err)
@@ -149,7 +139,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 						_, _ = w.Write([]byte("remote encrypted blob"))
 					}
 				}))
-				defer server.Close()
+				t.Cleanup(server.Close)
 				if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: "opaque"}); err != nil {
 					t.Fatal(err)
 				}
@@ -178,9 +168,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 	})
 
 	t.Run("changed remote blob commits before one invalidation", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+		isolateTestUserConfig(t)
 		remoteBlob := []byte("opaque remote encrypted blob")
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("ETag", `"remote-current"`)
@@ -190,7 +178,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 			}
 			w.WriteHeader(http.StatusOK)
 		}))
-		defer server.Close()
+		t.Cleanup(server.Close)
 		if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: "opaque"}); err != nil {
 			t.Fatal(err)
 		}
@@ -211,9 +199,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 	})
 
 	t.Run("pull metadata records the confirmed GET identity and transaction time", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+		isolateTestUserConfig(t)
 		now := time.Date(2026, 7, 28, 12, 34, 56, 0, time.UTC)
 		remoteBlob := []byte("opaque confirmed remote blob")
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -227,7 +213,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 				t.Fatalf("unexpected method %s", r.Method)
 			}
 		}))
-		defer server.Close()
+		t.Cleanup(server.Close)
 		if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: "opaque"}); err != nil {
 			t.Fatal(err)
 		}
@@ -243,9 +229,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 	})
 
 	t.Run("push conflict identifies the candidate encrypted blob and performs no PUT", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+		isolateTestUserConfig(t)
 		baselineBlob := []byte("opaque cached baseline")
 		candidateBlob := []byte("opaque candidate publication")
 		if err := config.WritePrivateFile(config.Path(), baselineBlob); err != nil {
@@ -265,7 +249,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 				putCount++
 			}
 		}))
-		defer server.Close()
+		t.Cleanup(server.Close)
 		if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: "opaque"}); err != nil {
 			t.Fatal(err)
 		}
@@ -287,9 +271,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 	})
 
 	t.Run("push metadata records only the confirmed PUT identity and transaction time", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+		isolateTestUserConfig(t)
 		now := time.Date(2026, 7, 28, 13, 45, 1, 0, time.UTC)
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPut {
@@ -298,7 +280,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 			w.Header().Set("ETag", `"put-commit"`)
 			w.WriteHeader(http.StatusOK)
 		}))
-		defer server.Close()
+		t.Cleanup(server.Close)
 		if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: "opaque"}); err != nil {
 			t.Fatal(err)
 		}
@@ -314,9 +296,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 	})
 
 	t.Run("confirmed PUT succeeds when sync metadata persistence fails", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+		home := isolateTestUserConfig(t)
 		config.EnableDebug()
 		now := time.Date(2026, 7, 28, 14, 12, 34, 0, time.UTC)
 		previousPush := "2026-07-20T01:02:03Z"
@@ -325,9 +305,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 		if err := config.SaveSettings(settings); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Mkdir(remoteIdentityPath(), 0700); err != nil {
-			t.Fatal(err)
-		}
+		replacePathWithDirectory(t, remoteIdentityPath())
 		conflict := SyncConflict{
 			DetectedAt: "2026-07-28T14:00:00Z",
 			LocalETag:  "opaque-local", RemoteETag: "opaque-remote", CachedETag: "opaque-cached",
@@ -356,7 +334,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 			w.Header().Set("ETag", `"confirmed-put"`)
 			w.WriteHeader(http.StatusOK)
 		}))
-		defer server.Close()
+		t.Cleanup(server.Close)
 		if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: tokenCanary}); err != nil {
 			t.Fatal(err)
 		}
@@ -393,9 +371,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 	})
 
 	t.Run("confirmed PUT still records other metadata when conflict cleanup fails", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+		isolateTestUserConfig(t)
 		config.EnableDebug()
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPut {
@@ -410,13 +386,11 @@ func TestSyncTransactionPolicy(t *testing.T) {
 			w.Header().Set("ETag", `"confirmed-cleanup-fault"`)
 			w.WriteHeader(http.StatusOK)
 		}))
-		defer server.Close()
+		t.Cleanup(server.Close)
 		if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: "opaque"}); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Mkdir(conflictPath(), 0700); err != nil {
-			t.Fatal(err)
-		}
+		replacePathWithDirectory(t, conflictPath())
 		if err := os.WriteFile(filepath.Join(conflictPath(), "blocker"), []byte("opaque\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -437,9 +411,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 	})
 
 	t.Run("confirmed GET succeeds when sync metadata persistence fails", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+		home := isolateTestUserConfig(t)
 		config.EnableDebug()
 		localBlob := []byte("ISSUE20_METADATA_PULL_LOCAL_OPAQUE_BLOB_CANARY")
 		remoteBlob := []byte("ISSUE20_METADATA_PULL_REMOTE_OPAQUE_BLOB_CANARY")
@@ -457,9 +429,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 		if err := preserveConflict(conflict); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Mkdir(filepath.Join(config.Dir(), "settings.json"), 0700); err != nil {
-			t.Fatal(err)
-		}
+		replacePathWithDirectory(t, filepath.Join(config.Dir(), "settings.json"))
 
 		tokenCanary := "ISSUE20_METADATA_PULL_TOKEN_CANARY" //nolint:gosec // test-only fake credential canary
 		var headCount, getCount atomic.Int64
@@ -493,7 +463,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 				t.Fatalf("unexpected method %s", r.Method)
 			}
 		}))
-		defer server.Close()
+		t.Cleanup(server.Close)
 		if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: tokenCanary}); err != nil {
 			t.Fatal(err)
 		}
@@ -539,9 +509,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 	})
 
 	t.Run("failed GET leaves cached identity timestamps and snapshot unchanged", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+		isolateTestUserConfig(t)
 		localBlob := []byte("opaque local snapshot")
 		if err := config.WritePrivateFile(config.Path(), localBlob); err != nil {
 			t.Fatal(err)
@@ -563,7 +531,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 				http.Error(w, `{"error":"fixture failure"}`, http.StatusInternalServerError)
 			}
 		}))
-		defer server.Close()
+		t.Cleanup(server.Close)
 		if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: "opaque"}); err != nil {
 			t.Fatal(err)
 		}
@@ -584,9 +552,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 	})
 
 	t.Run("failed PUT leaves cached identity and push timestamp unchanged", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+		isolateTestUserConfig(t)
 		candidateBlob := []byte("opaque candidate")
 		cachedIdentity := opaqueIdentity(candidateBlob)
 		if err := config.WritePrivateFile(remoteIdentityPath(), []byte(cachedIdentity+"\n")); err != nil {
@@ -605,7 +571,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 				http.Error(w, `{"error":"fixture failure"}`, http.StatusInternalServerError)
 			}
 		}))
-		defer server.Close()
+		t.Cleanup(server.Close)
 		if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: "opaque"}); err != nil {
 			t.Fatal(err)
 		}
