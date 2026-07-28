@@ -167,8 +167,17 @@ func (h *compiledCLIHarness) writeConfigFile(t *testing.T, name string, data []b
 }
 
 type compiledSSHFixtureOptions struct {
-	Password       string
-	RejectSessions bool
+	Password                  string
+	RejectSessions            bool
+	UploadTarSuccessStdout    string
+	UploadTarSuccessStderr    string
+	DownloadTarSuccessStderr  string
+	DownloadFileSuccessStderr string
+	RunCommandContains        string
+	RunStdoutFragments        []string
+	RunStderrFragments        []string
+	RunExitStatus             uint32
+	RunDrainStdin             bool
 }
 
 type compiledSSHFixture struct {
@@ -317,13 +326,13 @@ func (f *compiledSSHFixture) serveConnection(raw net.Conn, serverConfig *gossh.S
 			continue
 		}
 		f.sessions.Add(1)
-		serveCompiledSSHSession(channel, channelRequests)
+		serveCompiledSSHSession(channel, channelRequests, f.options)
 	}
 	_ = serverConn.Close()
 	<-requestsDone
 }
 
-func serveCompiledSSHSession(channel gossh.Channel, requests <-chan *gossh.Request) {
+func serveCompiledSSHSession(channel gossh.Channel, requests <-chan *gossh.Request, options compiledSSHFixtureOptions) {
 	defer func() { _ = channel.Close() }()
 	for request := range requests {
 		if request.Type != "exec" {
@@ -336,9 +345,52 @@ func serveCompiledSSHSession(channel gossh.Channel, requests <-chan *gossh.Reque
 			return
 		}
 		_ = request.Reply(true, nil)
-		status := executeCompiledSSHCommand(channel, channel.Stderr(), payload.Command)
+		status, configured := executeConfiguredCompiledSSHRun(channel, channel.Stderr(), payload.Command, options)
+		if !configured {
+			status = executeCompiledSSHCommand(channel, channel.Stderr(), payload.Command)
+		}
+		if status == 0 {
+			_, _ = io.WriteString(channel, compiledSSHSuccessStdout(options, payload.Command))
+			_, _ = io.WriteString(channel.Stderr(), compiledSSHSuccessDiagnostic(options, payload.Command))
+		}
 		_, _ = channel.SendRequest("exit-status", false, gossh.Marshal(struct{ Status uint32 }{status}))
 		return
+	}
+}
+
+func executeConfiguredCompiledSSHRun(stdout io.ReadWriter, stderr io.Writer, command string, options compiledSSHFixtureOptions) (uint32, bool) {
+	if options.RunCommandContains == "" || !strings.Contains(command, options.RunCommandContains) {
+		return 0, false
+	}
+	if options.RunDrainStdin {
+		_, _ = io.Copy(io.Discard, stdout)
+	}
+	for _, fragment := range options.RunStdoutFragments {
+		_, _ = io.WriteString(stdout, fragment)
+	}
+	for _, fragment := range options.RunStderrFragments {
+		_, _ = io.WriteString(stderr, fragment)
+	}
+	return options.RunExitStatus, true
+}
+
+func compiledSSHSuccessStdout(options compiledSSHFixtureOptions, command string) string {
+	if strings.Contains(command, "tar -C ") && strings.Contains(command, " -xf -") {
+		return options.UploadTarSuccessStdout
+	}
+	return ""
+}
+
+func compiledSSHSuccessDiagnostic(options compiledSSHFixtureOptions, command string) string {
+	switch {
+	case strings.Contains(command, "tar -C ") && strings.Contains(command, " -xf -"):
+		return options.UploadTarSuccessStderr
+	case strings.Contains(command, "tar -C ") && strings.Contains(command, " -cf - ."):
+		return options.DownloadTarSuccessStderr
+	case strings.HasPrefix(strings.TrimSpace(command), "cat -- "):
+		return options.DownloadFileSuccessStderr
+	default:
+		return ""
 	}
 }
 
@@ -417,7 +469,7 @@ func executeCompiledSSHCommand(stdinStdout io.ReadWriter, stderr io.Writer, comm
 func receiveCompiledSSHFile(source io.ReadWriter, stderr io.Writer, path string) uint32 {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		_, _ = io.Copy(io.Discard, source)
-		_, _ = io.WriteString(stderr, "compiled fixture remote parent unavailable\n")
+		_, _ = io.WriteString(stderr, "permission denied: compiled fixture remote parent unavailable\n")
 		return 1
 	}
 	file, err := os.CreateTemp(filepath.Dir(path), ".compiled-ssh-upload-*")

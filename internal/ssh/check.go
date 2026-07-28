@@ -1,13 +1,13 @@
 package ssh
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
 	"ssm/internal/config"
+	"ssm/internal/machinecontract"
 )
 
 // CheckResult is the structured output of sshctl check for agents.
@@ -20,12 +20,8 @@ type CheckResult struct {
 	LatencyMS int64  `json:"latency_ms,omitempty"`
 	Hostname  string `json:"hostname,omitempty"`
 	Uname     string `json:"uname,omitempty"`
-	Error     string `json:"error,omitempty"`
-	Message   string `json:"message,omitempty"`
-	Hint      string `json:"hint,omitempty"`
-	Exit      int    `json:"exit"`
-	Stage     string `json:"stage,omitempty"`
-	Address   string `json:"address,omitempty"`
+	machinecontract.Metadata
+	Address string `json:"address,omitempty"`
 }
 
 // Check dials the host and runs a tiny probe (hostname; uname -sr).
@@ -49,17 +45,8 @@ func Check(c config.Connection, v *config.Vault) CheckResult {
 	res.LatencyMS = time.Since(start).Milliseconds()
 	if !run.OK {
 		res.OK = false
-		res.Error = run.Error
-		if res.Error == "" {
-			res.Error = ErrCodeRemote
-		}
-		res.Hint = run.Hint
-		res.Message = run.Message
-		res.Exit = run.Exit
-		res.Stage = run.Stage
-		if run.Stderr != "" {
-			res.Hint = strings.TrimSpace(run.Stderr) + "; " + res.Hint
-		}
+		failure := machinecontract.ClassifyCheck(run.failure, run.Stderr)
+		res.Metadata = failure.Metadata()
 		return res
 	}
 	lines := strings.Split(strings.TrimSpace(run.Stdout), "\n")
@@ -77,9 +64,23 @@ func Check(c config.Connection, v *config.Vault) CheckResult {
 // WriteCheckResult prints check output as key=value lines or JSON.
 func WriteCheckResult(res CheckResult, asJSON bool) {
 	if asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		_ = enc.Encode(res)
+		if res.OK {
+			_ = machinecontract.WriteJSON(res)
+		} else {
+			_ = machinecontract.WriteFailureJSON(res)
+		}
+		return
+	}
+	if !res.OK {
+		_ = machinecontract.RenderCheckFailure(
+			machinecontract.Streams{Stdout: os.Stdout, Stderr: os.Stderr},
+			machinecontract.CheckFailureView{
+				Alias: res.Alias, User: res.User, Host: res.Host, Port: res.Port,
+				Address: res.Address, LatencyMS: res.LatencyMS,
+				Hostname: res.Hostname, Uname: res.Uname,
+				Error: res.Error, Message: res.Message, Hint: res.Hint, Stage: res.Stage,
+			},
+		)
 		return
 	}
 	fmt.Printf("ok=%d\n", boolInt(res.OK))
@@ -98,18 +99,6 @@ func WriteCheckResult(res CheckResult, asJSON bool) {
 	}
 	if res.Uname != "" {
 		fmt.Printf("uname=%s\n", res.Uname)
-	}
-	if res.Error != "" {
-		fmt.Printf("error=%s\n", res.Error)
-	}
-	if res.Message != "" {
-		fmt.Printf("message=%s\n", res.Message)
-	}
-	if res.Hint != "" {
-		fmt.Printf("hint=%s\n", res.Hint)
-	}
-	if res.Stage != "" {
-		fmt.Printf("stage=%s\n", res.Stage)
 	}
 }
 

@@ -1,7 +1,6 @@
 package ssh
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,35 +9,32 @@ import (
 
 	"ssm/internal/cloud"
 	"ssm/internal/config"
+	"ssm/internal/machinecontract"
 )
 
 // DoctorReport is agent-oriented local + remote diagnostics.
 type DoctorReport struct {
-	OK            bool                `json:"ok"`
-	VersionHint   string              `json:"version_hint,omitempty"`
-	Vault         string              `json:"vault"` // present|missing
-	Sync          string              `json:"sync"`  // configured|missing
-	LocalVault    string              `json:"local_vault_state"`
-	RemoteVault   string              `json:"remote_vault_state"`
-	LastPull      string              `json:"last_pull,omitempty"`
-	LastPush      string              `json:"last_push,omitempty"`
-	Pending       bool                `json:"pending_changes"`
-	Hosts         int                 `json:"hosts"`
-	Redirects     int                 `json:"redirects"`
-	Reuse         string              `json:"reuse"` // on|off
-	Alias         string              `json:"alias,omitempty"`
-	ResolvedAlias string              `json:"resolved_alias,omitempty"`
-	Check         *CheckResult        `json:"check,omitempty"`
-	Deep          map[string]string   `json:"deep,omitempty"`
-	Error         string              `json:"error,omitempty"`
-	Message       string              `json:"message,omitempty"`
-	Hint          string              `json:"hint,omitempty"`
-	Exit          int                 `json:"exit"`
-	Stage         string              `json:"stage,omitempty"`
-	Candidates    []string            `json:"candidates,omitempty"`
-	MergeReport   config.MergeReport  `json:"merge_report"`
-	SyncConflict  *cloud.SyncConflict `json:"sync_conflict,omitempty"`
-	LatencyMS     int64               `json:"latency_ms,omitempty"`
+	OK            bool              `json:"ok"`
+	VersionHint   string            `json:"version_hint,omitempty"`
+	Vault         string            `json:"vault"` // present|missing
+	Sync          string            `json:"sync"`  // configured|missing
+	LocalVault    string            `json:"local_vault_state"`
+	RemoteVault   string            `json:"remote_vault_state"`
+	LastPull      string            `json:"last_pull,omitempty"`
+	LastPush      string            `json:"last_push,omitempty"`
+	Pending       bool              `json:"pending_changes"`
+	Hosts         int               `json:"hosts"`
+	Redirects     int               `json:"redirects"`
+	Reuse         string            `json:"reuse"` // on|off
+	Alias         string            `json:"alias,omitempty"`
+	ResolvedAlias string            `json:"resolved_alias,omitempty"`
+	Check         *CheckResult      `json:"check,omitempty"`
+	Deep          map[string]string `json:"deep,omitempty"`
+	machinecontract.Metadata
+	Candidates   []string            `json:"candidates,omitempty"`
+	MergeReport  config.MergeReport  `json:"merge_report"`
+	SyncConflict *cloud.SyncConflict `json:"sync_conflict,omitempty"`
+	LatencyMS    int64               `json:"latency_ms,omitempty"`
 }
 
 // Doctor gathers vault/sync status and optional remote check/deep probes.
@@ -91,11 +87,11 @@ func Doctor(v *config.Vault, alias string, deep bool) DoctorReport {
 	c, resolved, ok := config.ResolveAlias(v, alias)
 	if !ok {
 		rep.OK = false
-		rep.Error = ErrCodeAliasNotFound
-		rep.Message = "requested alias was not found"
-		rep.Hint = "use sshctl --json host list and retry with an exact alias"
-		rep.Exit = ExitConnectionFailed
-		rep.Stage = "lookup"
+		failure := machinecontract.Classify(machinecontract.DoctorAliasNotFound, machinecontract.Details{
+			Message: "requested alias was not found",
+			Alias:   alias,
+		})
+		rep.Metadata = failure.Metadata()
 		names := make([]string, 0, len(v.Connections))
 		for _, connection := range v.Connections {
 			names = append(names, connection.Name)
@@ -112,11 +108,7 @@ func Doctor(v *config.Vault, alias string, deep bool) DoctorReport {
 	rep.Check = &ch
 	if !ch.OK {
 		rep.OK = false
-		rep.Error = ch.Error
-		rep.Message = ch.Message
-		rep.Hint = ch.Hint
-		rep.Exit = ch.Exit
-		rep.Stage = ch.Stage
+		rep.Metadata = ch.Metadata
 		rep.LatencyMS = time.Since(start).Milliseconds()
 		return rep
 	}
@@ -165,9 +157,37 @@ func deepProbe(c config.Connection, v *config.Vault) map[string]string {
 // WriteDoctorReport prints doctor output.
 func WriteDoctorReport(rep DoctorReport, asJSON bool) {
 	if asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		_ = enc.Encode(rep)
+		if rep.OK {
+			_ = machinecontract.WriteJSON(rep)
+		} else {
+			_ = machinecontract.WriteFailureJSON(rep)
+		}
+		return
+	}
+	if !rep.OK {
+		conflicts := make([]machinecontract.DoctorMergeConflict, len(rep.MergeReport.Conflicts))
+		for i, conflict := range rep.MergeReport.Conflicts {
+			conflicts[i] = machinecontract.DoctorMergeConflict{
+				Kind: conflict.Kind, Name: conflict.Name, Winner: conflict.Winner,
+			}
+		}
+		var check *machinecontract.DoctorCheckView
+		if rep.Check != nil {
+			check = &machinecontract.DoctorCheckView{
+				OK: rep.Check.OK, Hostname: rep.Check.Hostname,
+				Uname: rep.Check.Uname, LatencyMS: rep.Check.LatencyMS,
+			}
+		}
+		_ = machinecontract.RenderDoctorFailure(
+			machinecontract.Streams{Stdout: os.Stdout, Stderr: os.Stderr},
+			machinecontract.DoctorFailureView{
+				Vault: rep.Vault, Sync: rep.Sync, LocalVault: rep.LocalVault, RemoteVault: rep.RemoteVault,
+				Pending: rep.Pending, Hosts: rep.Hosts, Redirects: rep.Redirects, Reuse: rep.Reuse,
+				Alias: rep.Alias, ResolvedAlias: rep.ResolvedAlias, Candidates: rep.Candidates,
+				MergeConflicts: conflicts, Check: check, Deep: rep.Deep,
+				Error: rep.Error, Message: rep.Message, Hint: rep.Hint, Stage: rep.Stage, LatencyMS: rep.LatencyMS,
+			},
+		)
 		return
 	}
 	fmt.Printf("ok=%d\n", boolInt(rep.OK))
@@ -205,18 +225,6 @@ func WriteDoctorReport(rep DoctorReport, asJSON bool) {
 	}
 	for k, val := range rep.Deep {
 		fmt.Printf("deep_%s=%s\n", k, val)
-	}
-	if rep.Error != "" {
-		fmt.Printf("error=%s\n", rep.Error)
-	}
-	if rep.Message != "" {
-		fmt.Printf("message=%s\n", rep.Message)
-	}
-	if rep.Hint != "" {
-		fmt.Printf("hint=%s\n", rep.Hint)
-	}
-	if rep.Stage != "" {
-		fmt.Printf("stage=%s\n", rep.Stage)
 	}
 	if rep.LatencyMS > 0 {
 		fmt.Printf("latency_ms=%d\n", rep.LatencyMS)

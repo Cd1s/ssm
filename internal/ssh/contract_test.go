@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"ssm/internal/config"
+	"ssm/internal/machinecontract"
 )
 
 func TestAliasMissContractMatchesMapAndDoctor(t *testing.T) {
@@ -11,13 +12,13 @@ func TestAliasMissContractMatchesMapAndDoctor(t *testing.T) {
 	mapResult := runMapJob(vault, MapJob{RequestedAlias: "missing", Command: "true"}, false)
 	doctorResult := Doctor(vault, "missing", false)
 
-	if mapResult.Error != ErrCodeAliasNotFound || doctorResult.Error != ErrCodeAliasNotFound {
+	if mapResult.Error != machinecontract.CodeAliasNotFound || doctorResult.Error != machinecontract.CodeAliasNotFound {
 		t.Fatalf("map=%q doctor=%q", mapResult.Error, doctorResult.Error)
 	}
-	if mapResult.Message == "" || mapResult.Hint == "" || mapResult.Exit != ExitConnectionFailed || mapResult.Stage != "lookup" {
+	if mapResult.Message == "" || mapResult.Hint == "" || mapResult.Exit != machinecontract.ExitConnectionFailed || mapResult.Stage != "lookup" {
 		t.Fatalf("map contract = %+v", mapResult)
 	}
-	if doctorResult.Message == "" || doctorResult.Hint == "" || doctorResult.Exit != ExitConnectionFailed || doctorResult.Stage != "lookup" {
+	if doctorResult.Message == "" || doctorResult.Hint == "" || doctorResult.Exit != machinecontract.ExitConnectionFailed || doctorResult.Stage != "lookup" {
 		t.Fatalf("doctor contract = %+v", doctorResult)
 	}
 	if len(doctorResult.Candidates) != 0 {
@@ -50,17 +51,17 @@ func TestDoctorReportsPersistedMergeConflictWithoutSecrets(t *testing.T) {
 
 func TestCanonicalErrorTaxonomyValuesAreStable(t *testing.T) {
 	want := map[string]string{
-		"alias":       ErrCodeAliasNotFound,
-		"arguments":   ErrCodeInvalidArgs,
-		"request":     ErrCodeInvalidReq,
-		"sync_pull":   ErrCodeSyncPull,
-		"sync_push":   ErrCodeSyncPush,
-		"host_key":    ErrCodeHostKey,
-		"auth":        ErrCodeAuth,
-		"interpreter": ErrCodeInterpreter,
-		"syntax":      ErrCodeScriptSyntax,
-		"remote":      ErrCodeRemote,
-		"transfer":    ErrCodeTransfer,
+		"alias":       machinecontract.CodeAliasNotFound,
+		"arguments":   machinecontract.CodeInvalidArgs,
+		"request":     machinecontract.CodeInvalidRequest,
+		"sync_pull":   machinecontract.CodeSyncPull,
+		"sync_push":   machinecontract.CodeSyncPush,
+		"host_key":    machinecontract.CodeHostKey,
+		"auth":        machinecontract.CodeAuth,
+		"interpreter": machinecontract.CodeInterpreter,
+		"syntax":      machinecontract.CodeScriptSyntax,
+		"remote":      machinecontract.CodeRemote,
+		"transfer":    machinecontract.CodeTransfer,
 	}
 	for name, value := range want {
 		if value == "" {

@@ -10,21 +10,22 @@ import (
 	"strings"
 
 	"ssm/internal/config"
+	"ssm/internal/machinecontract"
 )
 
 func UploadPathWithOptions(c config.Connection, v *config.Vault, localPath, remotePath string, opts UploadOptions) (TransferResult, error) {
 	info, err := os.Stat(localPath)
 	if err != nil {
-		return TransferResult{Stage: "local_read", Integrity: "not_checked", Resume: "unsupported"}, transferError("local_read_failed", "local_read", "verify the local path and read permissions", 0, err)
+		return TransferResult{Stage: "local_read", Integrity: "not_checked", Resume: "unsupported"}, transferError(machinecontract.TransferLocalRead, 0, err)
 	}
 	if info.Mode().IsRegular() {
 		return UploadFileWithOptions(c, v, localPath, remotePath, opts)
 	}
 	if !info.IsDir() {
-		return TransferResult{Stage: "local_read", Integrity: "not_checked", Resume: "unsupported"}, transferError("local_read_failed", "local_read", "use a regular file or directory", 0, fmt.Errorf("%s is not a regular file or directory", localPath))
+		return TransferResult{Stage: "local_read", Integrity: "not_checked", Resume: "unsupported"}, transferError(machinecontract.TransferDirectorySourceUnsupported, 0, fmt.Errorf("%s is not a regular file or directory", localPath))
 	}
 	if opts.VerifySHA256 || opts.Timeout > 0 || opts.ResumeVersion != "" {
-		return TransferResult{Stage: "validate", Integrity: "not_available", Resume: "unsupported"}, transferError("unsupported_transfer_option", "validate", "SHA-256, timeout, and resume v1 options support regular-file put only", 0, errors.New("directory transfer does not support requested reliability options"))
+		return TransferResult{Stage: "validate", Integrity: "not_available", Resume: "unsupported"}, transferError(machinecontract.TransferDirectoryOptionsUnsupported, 0, errors.New("directory transfer does not support requested reliability options"))
 	}
 	err = uploadDirTar(c, v, localPath, remotePath)
 	if err != nil {
@@ -77,7 +78,7 @@ func remoteIsDir(c config.Connection, v *config.Vault, remotePath string) (bool,
 	}
 }
 
-func uploadDirTar(c config.Connection, v *config.Vault, localDir, remoteDir string) error {
+func uploadDirTar(c config.Connection, v *config.Vault, localDir, remoteDir string) (resultErr error) {
 	client, err := dialSSH(c, v)
 	if err != nil {
 		return err
@@ -96,8 +97,25 @@ func uploadDirTar(c config.Connection, v *config.Vault, localDir, remoteDir stri
 	if err != nil {
 		return err
 	}
-	session.Stdout = os.Stdout
-	session.Stderr = os.Stderr
+	stdoutSpool, err := machinecontract.NewDiagnosticSpool(os.Stdout)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stdoutSpool.Close() }()
+	stderrSpool, err := machinecontract.NewDiagnosticSpool(os.Stderr)
+	if err != nil {
+		return errors.Join(err, stdoutSpool.Close())
+	}
+	defer func() { _ = stderrSpool.Close() }()
+	diagnostics := []*machinecontract.DiagnosticSpool{stdoutSpool, stderrSpool}
+	diagnosticsSucceeded := false
+	defer func() {
+		if replayErr := replayDiagnosticSpools(diagnosticsSucceeded, diagnostics...); resultErr == nil {
+			resultErr = replayErr
+		}
+	}()
+	session.Stdout = stdoutSpool
+	session.Stderr = stderrSpool
 	if err := session.Start(remoteCmd); err != nil {
 		return err
 	}
@@ -105,20 +123,27 @@ func uploadDirTar(c config.Connection, v *config.Vault, localDir, remoteDir stri
 	// Prefer system tar for correct metadata; fall back to pure Go walk+files.
 	tarCmd := exec.Command("tar", "-C", localDir, "-cf", "-", ".")
 	tarCmd.Stdout = stdin
-	tarCmd.Stderr = os.Stderr
+	tarCmd.Stderr = stderrSpool
 	if err := tarCmd.Run(); err != nil {
 		_ = stdin.Close()
-		_ = session.Close()
+		// Drain the failed tar session before falling back so diagnostics already
+		// emitted by the remote extractor retain their historical ordering and
+		// bytes. Its failure does not override a successful walk fallback.
+		_ = session.Wait()
 		// Fallback: recursive single-file upload
-		return uploadDirWalk(c, v, localDir, remoteDir)
+		resultErr = uploadDirWalk(c, v, localDir, remoteDir)
+		diagnosticsSucceeded = resultErr == nil
+		return resultErr
 	}
 	if err := stdin.Close(); err != nil {
 		return err
 	}
-	return session.Wait()
+	resultErr = session.Wait()
+	diagnosticsSucceeded = resultErr == nil
+	return resultErr
 }
 
-func downloadDirTar(c config.Connection, v *config.Vault, remoteDir, localDir string) error {
+func downloadDirTar(c config.Connection, v *config.Vault, remoteDir, localDir string) (resultErr error) {
 	if err := os.MkdirAll(localDir, 0o700); err != nil {
 		return err
 	}
@@ -139,10 +164,27 @@ func downloadDirTar(c config.Connection, v *config.Vault, remoteDir, localDir st
 	if err != nil {
 		return err
 	}
-	session.Stderr = os.Stderr
+	stderrSpool, err := machinecontract.NewDiagnosticSpool(os.Stderr)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stderrSpool.Close() }()
+	session.Stderr = stderrSpool
 	tarLocal.Stdin = stdout
-	tarLocal.Stdout = os.Stdout
-	tarLocal.Stderr = os.Stderr
+	stdoutSpool, err := machinecontract.NewDiagnosticSpool(os.Stdout)
+	if err != nil {
+		return errors.Join(err, stderrSpool.Close())
+	}
+	defer func() { _ = stdoutSpool.Close() }()
+	diagnostics := []*machinecontract.DiagnosticSpool{stdoutSpool, stderrSpool}
+	diagnosticsSucceeded := false
+	defer func() {
+		if replayErr := replayDiagnosticSpools(diagnosticsSucceeded, diagnostics...); resultErr == nil {
+			resultErr = replayErr
+		}
+	}()
+	tarLocal.Stdout = stdoutSpool
+	tarLocal.Stderr = stderrSpool
 
 	remoteCmd := fmt.Sprintf("tar -C %s -cf - .", ShellQuote(remoteDir))
 	if err := session.Start(remoteCmd); err != nil {
@@ -156,7 +198,9 @@ func downloadDirTar(c config.Connection, v *config.Vault, remoteDir, localDir st
 		_ = tarLocal.Process.Kill()
 		return err
 	}
-	return tarLocal.Wait()
+	resultErr = tarLocal.Wait()
+	diagnosticsSucceeded = resultErr == nil
+	return resultErr
 }
 
 func uploadDirWalk(c config.Connection, v *config.Vault, localDir, remoteDir string) error {
@@ -199,6 +243,14 @@ func LocalTreeFiles(dir string) ([]string, error) {
 		return nil
 	})
 	return out, err
+}
+
+func replayDiagnosticSpools(success bool, spools ...*machinecontract.DiagnosticSpool) error {
+	var result error
+	for _, spool := range spools {
+		result = errors.Join(result, spool.Replay(success))
+	}
+	return result
 }
 
 // Ensure no unused import if tar path always works — io used? remove if unused

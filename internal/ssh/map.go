@@ -1,12 +1,12 @@
 package ssh
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"sync"
 
 	"ssm/internal/config"
+	"ssm/internal/machinecontract"
 )
 
 // MapJob is one unit of parallel work: one host (+ optional script label).
@@ -60,15 +60,9 @@ func runMapJob(v *config.Vault, job MapJob, noReuse bool) RunResult {
 		if job.Input != "" {
 			remoteCommand = BuildScriptRemoteCommand(job.Command, job.Secrets)
 		}
-		return RunResult{
-			OK:            false,
+		result := RunResult{
 			Alias:         job.RequestedAlias,
 			ResolvedAlias: resolved,
-			Exit:          ExitConnectionFailed,
-			Error:         ErrCodeAliasNotFound,
-			Message:       "requested alias was not found",
-			Hint:          "use sshctl list --json; alias may have been renamed after migration",
-			Stage:         "lookup",
 			RemoteCommand: RedactSecrets(remoteCommand, job.Secrets),
 			ScriptLabel:   job.ScriptLabel,
 			Risk:          AssessRisk(firstNonEmptyString(job.RiskCommand, job.Command)),
@@ -76,6 +70,11 @@ func runMapJob(v *config.Vault, job MapJob, noReuse bool) RunResult {
 			InputBytes:    len(job.Input),
 			ScriptSHA256:  digestIfNotEmpty(job.Input),
 		}
+		applyRunFailure(&result, machinecontract.Classify(machinecontract.MapAliasNotFound, machinecontract.Details{
+			Message: "requested alias was not found",
+			Alias:   job.RequestedAlias,
+		}))
+		return result
 	}
 	if job.Input != "" && job.Preflight {
 		script := ScriptSpec{Label: job.ScriptLabel, Body: job.Input, Interpreter: job.Interpreter}
@@ -156,10 +155,26 @@ func digestIfNotEmpty(value string) string {
 // WriteMapResults prints map results as text table or JSON array.
 func WriteMapResults(results []RunResult, asJSON bool) {
 	if asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		_ = enc.Encode(results)
+		results = redactFailedMapResults(results)
+		_ = machinecontract.WriteJSON(results)
 		return
+	}
+	for _, result := range results {
+		if !result.OK {
+			views := make([]machinecontract.MapResultView, len(results))
+			for i, item := range results {
+				views[i] = machinecontract.MapResultView{
+					OK: item.OK, Alias: item.Alias, Script: item.ScriptLabel,
+					Exit: item.Exit, LatencyMS: item.LatencyMS, Error: item.Error,
+					Stdout: item.Stdout, Stderr: item.Stderr, SensitiveValues: item.sensitiveValues,
+				}
+			}
+			_ = machinecontract.RenderMapFailure(
+				machinecontract.Streams{Stdout: os.Stdout, Stderr: os.Stderr},
+				views,
+			)
+			return
+		}
 	}
 	// Stable display order already matches job order.
 	for _, r := range results {
@@ -167,18 +182,7 @@ func WriteMapResults(results []RunResult, asJSON bool) {
 		if r.ScriptLabel != "" {
 			label = r.Alias + "/" + r.ScriptLabel
 		}
-		status := "ok"
-		if !r.OK {
-			status = "fail"
-		}
-		err := r.Error
-		if err == "" && !r.OK {
-			err = fmt.Sprintf("exit_%d", r.Exit)
-		}
-		fmt.Printf("%s\t%s\texit=%d\tlatency_ms=%d", label, status, r.Exit, r.LatencyMS)
-		if err != "" {
-			fmt.Printf("\terror=%s", err)
-		}
+		fmt.Printf("%s\tok\texit=%d\tlatency_ms=%d", label, r.Exit, r.LatencyMS)
 		fmt.Println()
 		if r.Stdout != "" {
 			// Indent stdout blocks for readability
@@ -206,21 +210,34 @@ func WriteMapResults(results []RunResult, asJSON bool) {
 	fmt.Printf("summary\tok=%d\tfail=%d\ttotal=%d\n", okN, failN, len(results))
 }
 
+func redactFailedMapResults(results []RunResult) []RunResult {
+	var safe []RunResult
+	for i, result := range results {
+		if result.OK {
+			continue
+		}
+		if safe == nil {
+			safe = append([]RunResult(nil), results...)
+		}
+		safe[i] = redactRunFailure(result)
+	}
+	if safe != nil {
+		return safe
+	}
+	return results
+}
+
 func endsWithNL(s string) bool {
 	return len(s) > 0 && s[len(s)-1] == '\n'
 }
 
 // MapExitCode returns 0 only if every job succeeded.
 func MapExitCode(results []RunResult) int {
-	for _, r := range results {
-		if !r.OK {
-			if r.Exit != 0 {
-				return r.Exit
-			}
-			return 1
-		}
+	states := make([]machinecontract.ResultState, len(results))
+	for i, result := range results {
+		states[i] = machinecontract.ResultState{OK: result.OK, Exit: result.Exit}
 	}
-	return 0
+	return machinecontract.AggregateResultExit(states)
 }
 
 // DefaultMapWorkers returns concurrency from env or default 8.

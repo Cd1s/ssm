@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"ssm/internal/config"
+	"ssm/internal/machinecontract"
 	"ssm/internal/update"
 )
 
@@ -31,18 +32,18 @@ func main() {
 	defer func() {
 		if r := recover(); r != nil {
 			if machineJSON {
-				writeMachineError("internal", "ssm crashed", "retry with SSM_TRACE=1 outside machine mode and report the failure", "", 1, nil)
-				os.Exit(1)
+				os.Exit(machinecontract.WriteClassified(true, machinecontract.PanicFailure, machinecontract.Details{Message: "ssm crashed"}))
 			}
 			buf := make([]byte, 4096)
 			n := runtime.Stack(buf, false)
-			fmt.Fprintf(os.Stderr, "\n\033[1;31mssm crashed!\033[0m\n\n")
-			fmt.Fprintf(os.Stderr, "Version: %s\n", version)
-			fmt.Fprintf(os.Stderr, "OS:      %s/%s\n", runtime.GOOS, runtime.GOARCH)
-			fmt.Fprintf(os.Stderr, "Error:   %s\n\n", redactString(fmt.Sprint(r)))
-			fmt.Fprintf(os.Stderr, "Stack trace:\n%s\n\n", buf[:n])
-			fmt.Fprintf(os.Stderr, "Please include the info above when reporting this issue.\n")
-			os.Exit(1)
+			failure := machinecontract.Classify(machinecontract.PanicFailure, machinecontract.Details{
+				Message:  fmt.Sprint(r),
+				Version:  version,
+				Platform: runtime.GOOS + "/" + runtime.GOARCH,
+				Stack:    string(buf[:n]),
+			})
+			_ = machinecontract.WriteHuman(failure)
+			os.Exit(machinecontract.ProcessExit(failure))
 		}
 	}()
 
@@ -60,13 +61,11 @@ func main() {
 
 	args, err := parseGlobalArgs(os.Args[1:])
 	if err != nil {
-		printError(err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 
 	if len(args) < 1 {
-		writeCLIError("missing_command", "command required", "use ssm --help or sshctl --help", 2)
-		os.Exit(2)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.MissingCommand, machinecontract.Details{Message: "command required"}))
 	}
 
 	switch args[0] {
@@ -110,8 +109,7 @@ Cloud (optional):
 	case "update":
 		fmt.Println("Checking for updates...")
 		if err := update.Download(); err != nil {
-			printError(err)
-			os.Exit(1)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 		}
 		return
 	case "host", "hosts":
@@ -120,8 +118,9 @@ Cloud (optional):
 		runHostCommand(args[1:])
 	case "remove":
 		if len(args) < 2 {
-			fmt.Println("Usage: ssm remove <name>")
-			os.Exit(1)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
+				Message: "remove requires a name", Tool: "legacy_usage", Script: "remove",
+			}))
 		}
 		unlock()
 		runRemove(args[1])
@@ -131,13 +130,18 @@ Cloud (optional):
 			switch args[1] {
 			case "remove":
 				if len(args) < 3 {
-					fmt.Println("Usage: ssm keys remove <name>")
-					os.Exit(1)
+					os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
+						Message: "keys remove requires a name", Tool: "legacy_usage", Script: "keys_remove",
+					}))
 				}
 				runKeysRemove(args[2])
 			default:
-				fmt.Printf("Unknown keys command: %s\n", args[1])
-				os.Exit(1)
+				os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
+					Message: fmt.Sprintf("unknown keys command %q", args[1]),
+					Alias:   args[1],
+					Tool:    "legacy_unknown_command",
+					Script:  "keys",
+				}))
 			}
 		} else {
 			runKeysList()
@@ -148,8 +152,9 @@ Cloud (optional):
 		runList(jsonFlag)
 	case "exec", "run":
 		if len(args) < 2 {
-			fmt.Println("Usage: ssm exec <name> <command...>")
-			os.Exit(1)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
+				Message: "exec requires a name", Tool: "legacy_usage", Script: "exec",
+			}))
 		}
 		unlock()
 		spec, err := parseRemoteRunArgs(args[2:])
@@ -163,8 +168,9 @@ Cloud (optional):
 		runExecSpec(args[1], spec)
 	case "plan":
 		if len(args) < 2 {
-			fmt.Println("Usage: ssm plan <name> <command...>")
-			os.Exit(1)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
+				Message: "plan requires a name", Tool: "legacy_usage", Script: "plan",
+			}))
 		}
 		unlock()
 		spec, err := parseRemoteRunArgs(args[2:])
@@ -175,21 +181,24 @@ Cloud (optional):
 		runExecSpec(args[1], spec)
 	case "map":
 		if len(args) < 2 {
-			fmt.Println("Usage: ssm map <targets> [options] <command...>")
-			os.Exit(1)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
+				Message: "map requires targets", Tool: "legacy_usage", Script: "map",
+			}))
 		}
 		unlock()
 		runSSHCTLMap(args[1:])
 	case "check":
 		jsonFlag := false
 		if len(args) < 2 {
-			fmt.Println("Usage: ssm check <name> [--json]")
-			os.Exit(1)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
+				Message: "check requires a name", Tool: "legacy_usage", Script: "check",
+			}))
 		}
 		if len(args) >= 3 {
 			if args[2] != "--json" || len(args) > 3 {
-				fmt.Println("Usage: ssm check <name> [--json]")
-				os.Exit(1)
+				os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
+					Message: "invalid check arguments", Tool: "legacy_usage", Script: "check",
+				}))
 			}
 			jsonFlag = true
 		}
@@ -208,8 +217,9 @@ Cloud (optional):
 		runPutArgs(args[1:])
 	case "get":
 		if len(args) != 4 {
-			fmt.Println("Usage: ssm get <name> <remote> <local>")
-			os.Exit(1)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
+				Message: "invalid get arguments", Tool: "legacy_usage", Script: "get",
+			}))
 		}
 		unlock()
 		runGet(args[1], args[2], args[3])
@@ -235,12 +245,14 @@ Cloud (optional):
 		runRemoteHash()
 	default:
 		if machineJSON {
-			writeCLIError("unknown_command", fmt.Sprintf("unknown command %q", args[0]), "use ssm --help for available commands", 2)
-			os.Exit(2)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.UnknownSSMCommand, machinecontract.Details{Message: fmt.Sprintf("unknown command %q", args[0])}))
 		}
-		fmt.Printf("Unknown command: %s\n", args[0])
-		fmt.Println("Usage: ssm [host|remove|list|keys|exec|put|get|import-json|server|update|login|register|push|pull|pull-if-changed|remote-hash|logout]")
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(false, machinecontract.GenericFailure, machinecontract.Details{
+			Message: fmt.Sprintf("unknown command %q", args[0]),
+			Alias:   args[0],
+			Tool:    "legacy_unknown_command",
+			Script:  "ssm",
+		}))
 	}
 }
 
@@ -303,13 +315,13 @@ func unlock() {
 	if masterPassFile != "" {
 		data, err := os.ReadFile(masterPassFile)
 		if err != nil {
-			writeCLIError("master_pass_file_error", fmt.Sprintf("master pass file: %v", err), "use --master-pass-file or SSM_MASTER_PASS_FILE with a readable private file", 1)
-			os.Exit(1)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.MasterPassFileReadFailed, machinecontract.Details{
+				Message: fmt.Sprintf("master pass file: %v", err), Cause: err,
+			}))
 		}
 		pass := strings.TrimRight(string(data), "\r\n")
 		if pass == "" {
-			writeCLIError("master_pass_file_error", "master pass file is empty", "write the vault passphrase to the configured file", 1)
-			os.Exit(1)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.MasterPassFileEmpty, machinecontract.Details{Message: "master pass file is empty"}))
 		}
 
 		if !config.Exists() {
@@ -317,16 +329,14 @@ func unlock() {
 			unlockedVault = &config.Vault{}
 			if err := config.Save(unlockedVault, masterPass); err != nil {
 				unlockedVault = nil
-				writeCLIError("vault_error", err.Error(), "verify configuration directory permissions", 1)
-				os.Exit(1)
+				os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.VaultCreateFailed, machinecontract.Details{Cause: err}))
 			}
 			return
 		}
 
 		v, err := config.Load(pass)
 		if err != nil {
-			writeCLIError("vault_unlock_failed", err.Error(), "verify the master pass file belongs to this encrypted vault", 1)
-			os.Exit(1)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.VaultUnlockFailed, machinecontract.Details{Cause: err}))
 		}
 		masterPass = pass
 		unlockedVault = v
@@ -334,8 +344,7 @@ func unlock() {
 	}
 
 	if !config.Exists() {
-		writeCLIError("master_pass_file_required", "vault does not exist", "provide --master-pass-file or SSM_MASTER_PASS_FILE to create it non-interactively", 2)
-		os.Exit(2)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.MasterPassFileRequiredCreate, machinecontract.Details{Message: "vault does not exist"}))
 	}
 
 	settings := config.LoadSettings()
@@ -350,8 +359,7 @@ func unlock() {
 		}
 	}
 
-	writeCLIError("master_pass_file_required", "vault passphrase is required", "provide --master-pass-file or SSM_MASTER_PASS_FILE; credentials are never accepted inline", 2)
-	os.Exit(2)
+	os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.MasterPassFileRequiredExisting, machinecontract.Details{Message: "vault passphrase is required"}))
 }
 
 // loadVault consumes the vault already decrypted by unlock. Commands used to

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"ssm/internal/machinecontract"
 	"ssm/internal/ssh"
 )
 
@@ -340,21 +341,20 @@ func applyRunSpecEnv(spec remoteRunSpec) {
 }
 
 func exitRemoteRunArgError(tool, alias string, args []string, err error) {
+	failure := machinecontract.Classify(machinecontract.InvalidRunArguments, machinecontract.Details{
+		Cause: err,
+		Alias: alias,
+		Tool:  tool,
+	})
 	if hasJSONFlag(args) {
 		ssh.WriteRunResult(ssh.RunResult{
-			OK:    false,
-			Alias: alias,
-			Exit:  2,
-			Error: "invalid_arguments",
-			Hint:  redactError(err),
+			OK:             false,
+			Alias:          alias,
+			Exit:           machinecontract.ProcessExit(failure),
+			ResultMetadata: failure.ResultMetadata(),
 		}, true)
-		os.Exit(2)
+		os.Exit(machinecontract.ProcessExit(failure))
 	}
-	if alias != "" {
-		fmt.Fprintf(os.Stderr, "%s: error=invalid_arguments alias=%s\n", tool, alias)
-	} else {
-		fmt.Fprintf(os.Stderr, "%s: error=invalid_arguments\n", tool)
-	}
-	fmt.Fprintf(os.Stderr, "%s: %s\n", tool, redactError(err))
-	os.Exit(2)
+	_ = machinecontract.WriteHuman(failure)
+	os.Exit(machinecontract.ProcessExit(failure))
 }

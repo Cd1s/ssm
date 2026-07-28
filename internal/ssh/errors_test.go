@@ -11,12 +11,13 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 
 	"ssm/internal/config"
+	"ssm/internal/machinecontract"
 )
 
 func TestClassifyDialTimeout(t *testing.T) {
 	err := &net.OpError{Op: "dial", Net: "tcp", Err: timeoutError{}}
 	ce := ClassifyError(err, config.Connection{Name: "x", Host: "1.2.3.4", Port: 22})
-	if ce.Code != ErrCodeDialTimeout {
+	if ce.Code != machinecontract.CodeDialTimeout {
 		t.Fatalf("code=%s", ce.Code)
 	}
 	if !strings.Contains(ce.Hint, "quote") {
@@ -34,7 +35,7 @@ func TestClassifyHostKey(t *testing.T) {
 	ce := ClassifyError(errors.New("ssh: handshake failed: knownhosts: key mismatch"), config.Connection{
 		Name: "limee-hk", Host: "200.180.165.7", Port: 22,
 	})
-	if ce.Code != ErrCodeHostKey {
+	if ce.Code != machinecontract.CodeHostKey {
 		t.Fatalf("code=%s", ce.Code)
 	}
 	if !strings.Contains(ce.Hint, "host-key inspect") || strings.Contains(ce.Hint, "ssh-keyscan") {
@@ -44,14 +45,14 @@ func TestClassifyHostKey(t *testing.T) {
 
 func TestClassifyUnknownHostKeyRequiresExplicitAcceptance(t *testing.T) {
 	ce := ClassifyError(&knownhosts.KeyError{}, config.Connection{Name: "new-host", Host: "example.test", Port: 22})
-	if ce.Code != ErrCodeHostKeyUnknown || !strings.Contains(ce.Hint, "host-key inspect") || strings.Contains(ce.Hint, "ssh-keyscan") {
+	if ce.Code != machinecontract.CodeHostKeyUnknown || !strings.Contains(ce.Hint, "host-key inspect") || strings.Contains(ce.Hint, "ssh-keyscan") {
 		t.Fatalf("classified = %+v", ce)
 	}
 }
 
 func TestClassifyAuth(t *testing.T) {
 	ce := ClassifyError(errors.New("ssh: unable to authenticate, attempted methods [none publickey]"), config.Connection{Name: "a"})
-	if ce.Code != ErrCodeAuth {
+	if ce.Code != machinecontract.CodeAuth {
 		t.Fatalf("code=%s", ce.Code)
 	}
 }
@@ -76,12 +77,5 @@ func TestDialTimeoutEnv(t *testing.T) {
 	t.Setenv("SSM_DIAL_TIMEOUT", "3s")
 	if DialTimeout() != 3*time.Second {
 		t.Fatalf("got %v", DialTimeout())
-	}
-}
-
-func TestExitCodeForConnection(t *testing.T) {
-	err := ClassifyError(errors.New("dial tcp 1.2.3.4:22: i/o timeout"), config.Connection{Host: "1.2.3.4"})
-	if ExitCodeFor(err) != ExitConnectionFailed {
-		t.Fatalf("exit=%d", ExitCodeFor(err))
 	}
 }

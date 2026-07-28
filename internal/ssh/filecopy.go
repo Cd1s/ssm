@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"ssm/internal/config"
+	"ssm/internal/machinecontract"
 )
 
 type UploadOptions struct {
@@ -36,15 +37,16 @@ type TransferResult struct {
 }
 
 type TransferError struct {
-	Code      string
-	Stage     string
-	Hint      string
+	failure   machinecontract.Failure
 	BytesSent int64
 	Cause     error
 }
 
 func (e *TransferError) Error() string { return e.Cause.Error() }
 func (e *TransferError) Unwrap() error { return e.Cause }
+func (e *TransferError) ContractFailure() machinecontract.Failure {
+	return e.failure
+}
 
 func UploadFile(c config.Connection, v *config.Vault, localPath, remotePath string) error {
 	_, err := UploadFileWithOptions(c, v, localPath, remotePath, UploadOptions{})
@@ -58,28 +60,28 @@ func UploadFileWithOptions(c config.Connection, v *config.Vault, localPath, remo
 	result := TransferResult{Stage: "local_read", Integrity: "not_checked", Atomic: true, Resume: "unsupported"}
 	f, err := os.Open(localPath)
 	if err != nil {
-		return result, transferError("local_read_failed", "local_read", "verify the local path and read permissions", 0, err)
+		return result, transferError(machinecontract.TransferLocalRead, 0, err)
 	}
 	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {
-		return result, transferError("local_read_failed", "local_read", "verify the local file is readable", 0, err)
+		return result, transferError(machinecontract.TransferLocalFileStat, 0, err)
 	}
 	if !info.Mode().IsRegular() {
-		return result, transferError("local_read_failed", "local_read", "put integrity mode supports regular files", 0, fmt.Errorf("%s is not a regular file", localPath))
+		return result, transferError(machinecontract.TransferRegularFileRequired, 0, fmt.Errorf("%s is not a regular file", localPath))
 	}
 
 	localDigest := ""
 	if opts.VerifySHA256 {
 		h := sha256.New()
 		if _, err := io.Copy(h, f); err != nil {
-			return result, transferError("local_read_failed", "local_read", "read the local file successfully before retrying", 0, err)
+			return result, transferError(machinecontract.TransferIntegritySourceRead, 0, err)
 		}
 		localDigest = hex.EncodeToString(h.Sum(nil))
 		result.LocalSHA256 = localDigest
 		if _, err := f.Seek(0, io.SeekStart); err != nil {
-			return result, transferError("local_read_failed", "local_read", "use a seekable regular source file", 0, err)
+			return result, transferError(machinecontract.TransferSeekableSourceRequired, 0, err)
 		}
 	}
 
@@ -87,19 +89,19 @@ func UploadFileWithOptions(c config.Connection, v *config.Vault, localPath, remo
 	client, err := dialSSH(c, v)
 	if err != nil {
 		classified := ClassifyError(err, c)
-		return result, transferError(classified.Code, "dial", classified.Hint, 0, classified)
+		return result, transferClassifiedError(classified.Failure, 0, classified)
 	}
 	defer releaseClient(client, false)
 
 	session, err := client.NewSession()
 	if err != nil {
-		return result, transferError("session_failed", "dial", "retry after checking SSH session limits", 0, err)
+		return result, transferError(machinecontract.TransferSessionOpenFailed, 0, err)
 	}
 	defer session.Close()
 
 	stdin, err := session.StdinPipe()
 	if err != nil {
-		return result, transferError("remote_write_failed", "remote_write", "retry the upload; the final destination was not replaced", 0, err)
+		return result, transferError(machinecontract.TransferStdinOpenFailed, 0, err)
 	}
 	var stdout, stderr bytes.Buffer
 	session.Stdout = &stdout
@@ -107,7 +109,7 @@ func UploadFileWithOptions(c config.Connection, v *config.Vault, localPath, remo
 
 	cmd := uploadCommandWithIntegrity(remotePath, info.Mode(), info.Size(), localDigest)
 	if err := session.Start(cmd); err != nil {
-		return result, transferError("remote_write_failed", "remote_write", "remote temporary file was not published", 0, err)
+		return result, transferError(machinecontract.TransferStartFailed, 0, err)
 	}
 	var timedOut atomic.Bool
 	var timer *time.Timer
@@ -125,34 +127,34 @@ func UploadFileWithOptions(c config.Connection, v *config.Vault, localPath, remo
 		_ = stdin.Close()
 		_ = session.Close()
 		if timedOut.Load() {
-			return result, transferError("transfer_timeout", "timeout", "retry; the remote temporary file is cleaned and the final path is unchanged", written, copyErr)
+			return result, transferError(machinecontract.TransferTimedOut, written, copyErr)
 		}
-		return result, transferError("remote_write_failed", "remote_write", "retry; the remote temporary file is cleaned and the final path is unchanged", written, copyErr)
+		return result, transferError(machinecontract.TransferRemoteWriteFailed, written, copyErr)
 	}
 	if err := stdin.Close(); err != nil {
 		_ = session.Close()
-		return result, transferError("remote_write_failed", "remote_write", "retry; the final path was not replaced", written, err)
+		return result, transferError(machinecontract.TransferRemoteCloseFailed, written, err)
 	}
 	if err := session.Wait(); err != nil {
 		if timedOut.Load() {
-			return result, transferError("transfer_timeout", "timeout", "retry; the remote temporary file is cleaned and the final path is unchanged", written, err)
+			return result, transferError(machinecontract.TransferTimedOut, written, err)
 		}
 		if strings.Contains(stdout.String(), "SSM_INTEGRITY_MISMATCH") {
 			result.Stage = "integrity"
 			result.Integrity = "mismatch"
-			return result, transferError("integrity_failed", "integrity", "source and remote temporary file differ; nothing was published", written, errors.New("remote integrity verification failed"))
+			return result, transferError(machinecontract.TransferIntegrityMismatch, written, errors.New("remote integrity verification failed"))
 		}
 		message := strings.TrimSpace(stderr.String())
 		if message == "" {
 			message = err.Error()
 		}
-		return result, transferError("remote_write_failed", "remote_write", "check remote path permissions and available space; the final path was not replaced", written, errors.New(message))
+		return result, transferError(machinecontract.TransferRemotePermissionsFailed, written, errors.New(message))
 	}
 	remoteSize, remoteDigest, err := parseUploadReceipt(stdout.String())
 	if err != nil || remoteSize != info.Size() || (opts.VerifySHA256 && remoteDigest != localDigest) {
 		result.Stage = "integrity"
 		result.Integrity = "mismatch"
-		return result, transferError("integrity_failed", "integrity", "remote receipt did not match the local file; investigate the endpoint", written, errors.New("invalid remote integrity receipt"))
+		return result, transferError(machinecontract.TransferReceiptInvalid, written, errors.New("invalid remote integrity receipt"))
 	}
 	result.OK = true
 	result.Stage = "complete"
@@ -165,13 +167,17 @@ func UploadFileWithOptions(c config.Connection, v *config.Vault, localPath, remo
 	return result, nil
 }
 
-func transferError(code, stage, hint string, bytesSent int64, cause error) *TransferError {
-	return &TransferError{Code: code, Stage: stage, Hint: hint, BytesSent: bytesSent, Cause: cause}
+func transferError(kind machinecontract.Kind, bytesSent int64, cause error) *TransferError {
+	return transferClassifiedError(machinecontract.Classify(kind, machinecontract.Details{Cause: cause}), bytesSent, cause)
+}
+
+func transferClassifiedError(failure machinecontract.Failure, bytesSent int64, cause error) *TransferError {
+	return &TransferError{failure: failure, BytesSent: bytesSent, Cause: cause}
 }
 
 // DownloadFile copies remotePath from the server to localPath.
 // Parent directories of localPath are created as needed.
-func DownloadFile(c config.Connection, v *config.Vault, remotePath, localPath string) error {
+func DownloadFile(c config.Connection, v *config.Vault, remotePath, localPath string) (resultErr error) {
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o700); err != nil {
 		return fmt.Errorf("create local parent dir: %w", err)
 	}
@@ -205,7 +211,18 @@ func DownloadFile(c config.Connection, v *config.Vault, remotePath, localPath st
 	defer session.Close()
 
 	session.Stdout = tmp
-	session.Stderr = os.Stderr
+	sessionStderr, err := machinecontract.NewDiagnosticSpool(os.Stderr)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = sessionStderr.Close() }()
+	diagnosticsSucceeded := false
+	defer func() {
+		if replayErr := sessionStderr.Replay(diagnosticsSucceeded); resultErr == nil {
+			resultErr = replayErr
+		}
+	}()
+	session.Stderr = sessionStderr
 
 	cmd := downloadCommand(remotePath)
 	if err := session.Run(cmd); err != nil {
@@ -221,6 +238,7 @@ func DownloadFile(c config.Connection, v *config.Vault, remotePath, localPath st
 		return err
 	}
 	keepTemp = true // renamed into place; do not remove
+	diagnosticsSucceeded = true
 	return nil
 }
 

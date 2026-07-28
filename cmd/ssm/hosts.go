@@ -1,7 +1,7 @@
 package main
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +15,7 @@ import (
 
 	"ssm/internal/cloud"
 	"ssm/internal/config"
+	"ssm/internal/machinecontract"
 	agentssh "ssm/internal/ssh"
 )
 
@@ -76,46 +77,40 @@ type hostMutationResult struct {
 	Verification  *agentssh.CheckResult `json:"verification,omitempty"`
 }
 
-type hostCLIError struct {
-	Code    string `json:"error"`
-	Message string `json:"message"`
-	Hint    string `json:"hint"`
-	Exit    int    `json:"exit"`
-	Stage   string `json:"stage"`
+type hostVerificationFailure struct {
+	OK bool `json:"ok"`
+	machinecontract.Metadata
+	Action       string                `json:"action"`
+	Changed      bool                  `json:"changed"`
+	Applied      bool                  `json:"applied"`
+	Host         hostView              `json:"host"`
+	Verification *agentssh.CheckResult `json:"verification"`
+	SyncPending  bool                  `json:"sync_pending"`
 }
 
-func (e *hostCLIError) Error() string { return e.Message }
-
-func newHostError(code, format string, args ...any) error {
-	canonical, hint, stage, exit := hostErrorContract(code)
-	return &hostCLIError{Code: canonical, Message: fmt.Sprintf(format, args...), Hint: hint, Exit: exit, Stage: stage}
+type hostPushFailure struct {
+	OK bool `json:"ok"`
+	machinecontract.Metadata
+	Action       string                `json:"action"`
+	Changed      bool                  `json:"changed"`
+	Applied      bool                  `json:"applied"`
+	Pushed       bool                  `json:"pushed"`
+	Host         hostView              `json:"host"`
+	Verification *agentssh.CheckResult `json:"verification,omitempty"`
+	SyncPending  bool                  `json:"sync_pending"`
 }
 
-func hostErrorContract(code string) (canonical, hint, stage string, exit int) {
-	switch code {
-	case "invalid_args", "invalid_port", "invalid_auth", "invalid_key_name":
-		return agentssh.ErrCodeInvalidArgs, "review sshctl host --help and retry with explicit flags", "validate", 2
-	case "host_not_found", agentssh.ErrCodeAliasNotFound:
-		return agentssh.ErrCodeAliasNotFound, "use sshctl --json host list and retry with an exact alias", "lookup", agentssh.ExitConnectionFailed
-	case "sync_pull_failed":
-		return agentssh.ErrCodeSyncPull, "fix sync connectivity or retry explicitly with --offline", "sync_pull", 1
-	case "sync_push_failed":
-		return agentssh.ErrCodeSyncPush, "local changes remain pending; fix sync and retry push", "sync_push", 1
-	case "vault_error":
-		return code, "verify the encrypted vault and master pass file", "vault", 1
-	case "auth_required":
-		return code, "provide --key, --key-file, or --password-file", "validate", 2
-	case "confirmation_required":
-		return code, "review the alias and pass --yes explicitly", "validate", 2
-	default:
-		return code, "review the error and retry safely", "apply", 1
-	}
+var errHostHelp = errors.New("host command help")
+
+func newHostError(kind machinecontract.Kind, format string, args ...any) error {
+	failure := machinecontract.Classify(kind, machinecontract.Details{Message: fmt.Sprintf(format, args...)})
+	return machinecontract.NewClassifiedError(failure)
 }
 
 func parseHostCommandArgs(args []string) (hostCommandOptions, error) {
 	opts := hostCommandOptions{asJSON: machineJSON}
 	if len(args) == 0 {
-		return opts, newHostError("invalid_args", "missing host action")
+		return opts, newHostError(machinecontract.HostInvalidArguments, "missing host action")
 	}
 	opts.action = args[0]
 	if opts.action == "get" {
@@ -156,7 +151,7 @@ func parseHostCommandArgs(args []string) (hostCommandOptions, error) {
 			}
 			port, err := strconv.Atoi(value)
 			if err != nil || port < 1 || port > 65535 {
-				return opts, newHostError("invalid_port", "port must be an integer from 1 to 65535")
+				return opts, newHostError(machinecontract.HostInvalidArguments, "port must be an integer from 1 to 65535")
 			}
 			opts.port = optionalInt{value: port, set: true}
 		case matchesValueFlag(arg, "--user"):
@@ -196,12 +191,12 @@ func parseHostCommandArgs(args []string) (hostCommandOptions, error) {
 			}
 			opts.newKeyName = optionalString{value: value, set: true}
 		case arg == "-h" || arg == "--help":
-			return opts, newHostError("help", "host command help")
+			return opts, errHostHelp
 		case strings.HasPrefix(arg, "-"):
-			return opts, newHostError("invalid_args", "unknown host option %q", arg)
+			return opts, newHostError(machinecontract.HostInvalidArguments, "unknown host option %q", arg)
 		default:
 			if opts.alias != "" {
-				return opts, newHostError("invalid_args", "unexpected positional argument; values must follow named options")
+				return opts, newHostError(machinecontract.HostInvalidArguments, "unexpected positional argument; values must follow named options")
 			}
 			opts.alias = arg
 		}
@@ -223,7 +218,7 @@ func readFlagValue(args []string, i *int, name string) (string, error) {
 		return strings.TrimPrefix(arg, name+"="), nil
 	}
 	if *i+1 >= len(args) {
-		return "", newHostError("invalid_args", "%s requires a value", name)
+		return "", newHostError(machinecontract.HostInvalidArguments, "%s requires a value", name)
 	}
 	(*i)++
 	return args[*i], nil
@@ -233,37 +228,37 @@ func validateHostCommandOptions(opts hostCommandOptions) error {
 	switch opts.action {
 	case "list":
 		if opts.alias != "" || opts.filter.set || opts.hasMutationOptions() || opts.confirm || opts.pruneKey || opts.verify || opts.push {
-			return newHostError("invalid_args", "host list only accepts --json and --offline")
+			return newHostError(machinecontract.HostInvalidArguments, "host list only accepts --json and --offline")
 		}
 		return nil
 	case "search":
 		if opts.alias == "" && !opts.filter.set {
-			return newHostError("invalid_args", "host search requires a query or --filter")
+			return newHostError(machinecontract.HostInvalidArguments, "host search requires a query or --filter")
 		}
 		if opts.alias != "" && opts.filter.set {
-			return newHostError("invalid_args", "host search accepts either a query or --filter, not both")
+			return newHostError(machinecontract.HostInvalidArguments, "host search accepts either a query or --filter, not both")
 		}
 		if opts.hasMutationOptions() || opts.confirm || opts.pruneKey || opts.verify || opts.push {
-			return newHostError("invalid_args", "host search accepts only a query, --json, and --offline")
+			return newHostError(machinecontract.HostInvalidArguments, "host search accepts only a query, --json, and --offline")
 		}
 		return nil
 	case "show":
 		if opts.alias == "" {
-			return newHostError("invalid_args", "host show requires an alias")
+			return newHostError(machinecontract.HostInvalidArguments, "host show requires an alias")
 		}
 		if opts.hasMutationOptions() || opts.confirm || opts.pruneKey || opts.verify || opts.push {
-			return newHostError("invalid_args", "host show only accepts an alias, --json, and --offline")
+			return newHostError(machinecontract.HostInvalidArguments, "host show only accepts an alias, --json, and --offline")
 		}
 		return nil
 	case "add", "update", "upsert":
 		if opts.alias == "" {
-			return newHostError("invalid_args", "host %s requires an alias", opts.action)
+			return newHostError(machinecontract.HostInvalidArguments, "host %s requires an alias", opts.action)
 		}
 		if opts.confirm || opts.pruneKey {
-			return newHostError("invalid_args", "--yes and --prune-key are only valid for host remove")
+			return newHostError(machinecontract.HostInvalidArguments, "--yes and --prune-key are only valid for host remove")
 		}
 		if opts.push && !opts.verify {
-			return newHostError("invalid_args", "--push requires --verify so an unverified host change cannot be published")
+			return newHostError(machinecontract.HostInvalidArguments, "--push requires --verify so an unverified host change cannot be published")
 		}
 		authFlags := 0
 		for _, set := range []bool{opts.passwordFile.set, opts.keyName.set, opts.keyFile.set} {
@@ -272,39 +267,39 @@ func validateHostCommandOptions(opts hostCommandOptions) error {
 			}
 		}
 		if authFlags > 1 {
-			return newHostError("invalid_auth", "use exactly one of --password-file, --key, or --key-file")
+			return newHostError(machinecontract.HostInvalidArguments, "use exactly one of --password-file, --key, or --key-file")
 		}
 		if opts.newKeyName.set && !opts.keyFile.set {
-			return newHostError("invalid_args", "--key-name requires --key-file")
+			return newHostError(machinecontract.HostInvalidArguments, "--key-name requires --key-file")
 		}
 		if opts.newKeyName.set && strings.TrimSpace(opts.newKeyName.value) == "" {
-			return newHostError("invalid_key_name", "--key-name must not be empty")
+			return newHostError(machinecontract.HostInvalidArguments, "--key-name must not be empty")
 		}
 		if opts.action == "add" || opts.action == "upsert" {
 			if !opts.host.set || !opts.user.set {
-				return newHostError("invalid_args", "host %s requires --host and --user", opts.action)
+				return newHostError(machinecontract.HostInvalidArguments, "host %s requires --host and --user", opts.action)
 			}
 		}
 		if opts.action == "add" && authFlags == 0 {
-			return newHostError("auth_required", "host add requires --password-file, --key, or --key-file")
+			return newHostError(machinecontract.HostAuthenticationRequired, "host add requires --password-file, --key, or --key-file")
 		}
 		if opts.action == "update" && !opts.hasMutationOptions() {
-			return newHostError("invalid_args", "host update requires at least one field option")
+			return newHostError(machinecontract.HostInvalidArguments, "host update requires at least one field option")
 		}
 		return nil
 	case "remove":
 		if opts.alias == "" {
-			return newHostError("invalid_args", "host remove requires an alias")
+			return newHostError(machinecontract.HostInvalidArguments, "host remove requires an alias")
 		}
 		if opts.hasMutationOptions() || opts.verify || opts.push {
-			return newHostError("invalid_args", "host remove only accepts --yes, --prune-key, and --json")
+			return newHostError(machinecontract.HostInvalidArguments, "host remove only accepts --yes, --prune-key, and --json")
 		}
 		if !opts.confirm {
-			return newHostError("confirmation_required", "host remove requires --yes")
+			return newHostError(machinecontract.HostConfirmationRequired, "host remove requires --yes")
 		}
 		return nil
 	default:
-		return newHostError("invalid_args", "unknown host action %q", opts.action)
+		return newHostError(machinecontract.HostInvalidArguments, "unknown host action %q", opts.action)
 	}
 }
 
@@ -316,22 +311,19 @@ func (o hostCommandOptions) hasMutationOptions() bool {
 func runHostCommand(args []string) {
 	opts, err := parseHostCommandArgs(args)
 	if err != nil {
-		if ce, ok := err.(*hostCLIError); ok && ce.Code == "help" {
+		if errors.Is(err, errHostHelp) {
 			hostCommandUsage()
 			return
 		}
-		writeHostCommandError(opts.asJSON || hasJSONFlag(args), err)
-		os.Exit(2)
+		os.Exit(machinecontract.WriteMetadataError(opts.asJSON || hasJSONFlag(args), err, machinecontract.HostInternalFailure))
 	}
 
 	if err := refreshHostVault(opts.offline); err != nil {
-		writeHostCommandError(opts.asJSON, newHostError("sync_pull_failed", "%s; retry only with --offline if stale local state is acceptable", redactError(err)))
-		os.Exit(1)
+		os.Exit(machinecontract.WriteMetadataError(opts.asJSON, newHostError(machinecontract.HostSyncPullFailed, "%s; retry only with --offline if stale local state is acceptable", redactError(err)), machinecontract.HostInternalFailure))
 	}
 	v, err := loadVault()
 	if err != nil {
-		writeHostCommandError(opts.asJSON, newHostError("vault_error", "%s", redactError(err)))
-		os.Exit(1)
+		os.Exit(machinecontract.WriteMetadataError(opts.asJSON, newHostError(machinecontract.HostVaultFailed, "%s", redactError(err)), machinecontract.HostInternalFailure))
 	}
 
 	switch opts.action {
@@ -353,8 +345,7 @@ func runHostCommand(args []string) {
 	case "show":
 		idx := exactConnectionIndex(v, opts.alias)
 		if idx < 0 {
-			writeHostCommandError(opts.asJSON, newHostError("alias_not_found", "host %q not found", opts.alias))
-			os.Exit(1)
+			os.Exit(machinecontract.WriteMetadataError(opts.asJSON, newHostError(machinecontract.HostAliasNotFound, "host %q not found", opts.alias), machinecontract.HostInternalFailure))
 		}
 		writeHostView(newHostView(v.Connections[idx]), opts.asJSON)
 		return
@@ -362,39 +353,35 @@ func runHostCommand(args []string) {
 
 	updated, result, err := mutateHost(v, opts)
 	if err != nil {
-		writeHostCommandError(opts.asJSON, err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteMetadataError(opts.asJSON, err, machinecontract.HostInternalFailure))
 	}
 	if opts.verify {
 		idx := exactConnectionIndex(updated, opts.alias)
 		if idx < 0 {
-			writeHostCommandError(opts.asJSON, newHostError("internal", "candidate host disappeared before verification"))
-			os.Exit(1)
+			os.Exit(machinecontract.WriteMetadataError(opts.asJSON, newHostError(machinecontract.HostInternalFailure, "candidate host disappeared before verification"), machinecontract.HostInternalFailure))
 		}
 		verification := agentssh.Check(updated.Connections[idx], updated)
 		verification.Alias = opts.alias
 		result.Verification = &verification
 		if !verification.OK {
-			writeHostVerificationFailure(result, opts.asJSON)
-			os.Exit(agentssh.ExitConnectionFailed)
+			failure, document := hostVerificationFailureFor(result)
+			os.Exit(machinecontract.WriteFailure(opts.asJSON, failure, document))
 		}
 	}
 	if result.Changed {
 		if err := appendHostMutation(v, updated, &result); err != nil {
-			writeHostCommandError(opts.asJSON, newHostError("transaction_error", "%s", redactError(err)))
-			os.Exit(1)
+			os.Exit(machinecontract.WriteMetadataError(opts.asJSON, newHostError(machinecontract.HostTransactionFailed, "%s", redactError(err)), machinecontract.HostInternalFailure))
 		}
 		if err := config.Save(updated, masterPass); err != nil {
-			writeHostCommandError(opts.asJSON, newHostError("vault_error", "%s", redactError(err)))
-			os.Exit(1)
+			os.Exit(machinecontract.WriteMetadataError(opts.asJSON, newHostError(machinecontract.HostVaultFailed, "%s", redactError(err)), machinecontract.HostInternalFailure))
 		}
 	}
 	result.Applied = true
 	if opts.push {
 		remaining, err := pushTransactions(result.TransactionID)
 		if err != nil {
-			writeHostPushFailure(result, opts.asJSON, err)
-			os.Exit(1)
+			failure, document := hostPushFailureFor(result, err)
+			os.Exit(machinecontract.WriteFailure(opts.asJSON, failure, document))
 		}
 		result.Pushed = true
 		result.SyncPending = remaining
@@ -430,7 +417,7 @@ func mutateHost(v *config.Vault, opts hostCommandOptions) (*config.Vault, hostMu
 
 	if opts.action == "remove" {
 		if idx < 0 {
-			return nil, hostMutationResult{}, newHostError("alias_not_found", "host %q not found", opts.alias)
+			return nil, hostMutationResult{}, newHostError(machinecontract.HostAliasNotFound, "host %q not found", opts.alias)
 		}
 		removed := updated.Connections[idx]
 		updated.Connections = append(updated.Connections[:idx], updated.Connections[idx+1:]...)
@@ -445,13 +432,13 @@ func mutateHost(v *config.Vault, opts hostCommandOptions) (*config.Vault, hostMu
 
 	exists := idx >= 0
 	if opts.action == "add" && exists {
-		return nil, hostMutationResult{}, newHostError("host_exists", "host %q already exists; use host upsert or update", opts.alias)
+		return nil, hostMutationResult{}, newHostError(machinecontract.HostAlreadyExists, "host %q already exists; use host upsert or update", opts.alias)
 	}
 	if opts.action == "update" && !exists {
-		return nil, hostMutationResult{}, newHostError("alias_not_found", "host %q not found; use host upsert or add", opts.alias)
+		return nil, hostMutationResult{}, newHostError(machinecontract.HostAliasNotFound, "host %q not found; use host upsert or add", opts.alias)
 	}
 	if !exists && !safeHostAliasPattern.MatchString(opts.alias) {
-		return nil, hostMutationResult{}, newHostError("invalid_alias", "new aliases must match [A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+		return nil, hostMutationResult{}, newHostError(machinecontract.HostInvalidAlias, "new aliases must match [A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 	}
 
 	conn := config.Connection{Name: opts.alias, Port: 22}
@@ -487,7 +474,7 @@ func mutateHost(v *config.Vault, opts hostCommandOptions) (*config.Vault, hostMu
 	case opts.keyName.set:
 		name := strings.TrimSpace(opts.keyName.value)
 		if name == "" || updated.GetKey(name) == nil {
-			return nil, hostMutationResult{}, newHostError("key_not_found", "saved key %q not found", name)
+			return nil, hostMutationResult{}, newHostError(machinecontract.HostSavedKeyNotFound, "saved key %q not found", name)
 		}
 		conn.KeyName = name
 		conn.Password = ""
@@ -587,7 +574,7 @@ func searchHostViews(v *config.Vault, query string) []hostView {
 
 func writeHostSearch(query string, matches []hostView, asJSON bool) {
 	if asJSON {
-		writeHostJSON(struct {
+		writeMachineValue(struct {
 			OK        bool       `json:"ok"`
 			Query     string     `json:"query"`
 			Count     int        `json:"count"`
@@ -603,28 +590,28 @@ func writeHostSearch(query string, matches []hostView, asJSON bool) {
 
 func validateManagedConnection(c config.Connection, v *config.Vault) error {
 	if strings.TrimSpace(c.Host) == "" {
-		return newHostError("invalid_host", "host address must not be empty")
+		return newHostError(machinecontract.HostInvalidAddress, "host address must not be empty")
 	}
 	if c.Host != strings.TrimSpace(c.Host) || strings.ContainsAny(c.Host, " \t\r\n/@") || strings.Contains(c.Host, "://") {
-		return newHostError("invalid_host", "host must be a hostname or unbracketed IP address without user, scheme, path, or whitespace")
+		return newHostError(machinecontract.HostInvalidAddress, "host must be a hostname or unbracketed IP address without user, scheme, path, or whitespace")
 	}
 	if strings.HasPrefix(c.Host, "[") || strings.HasSuffix(c.Host, "]") {
-		return newHostError("invalid_host", "IPv6 addresses must be unbracketed")
+		return newHostError(machinecontract.HostInvalidAddress, "IPv6 addresses must be unbracketed")
 	}
 	if strings.TrimSpace(c.User) == "" || strings.ContainsAny(c.User, " \t\r\n") || hasControlCharacter(c.User) {
-		return newHostError("invalid_user", "SSH user must not be empty or contain whitespace/control characters")
+		return newHostError(machinecontract.HostInvalidUser, "SSH user must not be empty or contain whitespace/control characters")
 	}
 	if c.Port < 1 || c.Port > 65535 {
-		return newHostError("invalid_port", "port must be from 1 to 65535")
+		return newHostError(machinecontract.HostApplyInvalidArguments, "port must be from 1 to 65535")
 	}
 	if hasControlCharacter(c.Group) {
-		return newHostError("invalid_group", "group must not contain control characters")
+		return newHostError(machinecontract.HostInvalidGroup, "group must not contain control characters")
 	}
 	if c.Password == "" && c.KeyName == "" {
-		return newHostError("auth_required", "host requires password or key authentication")
+		return newHostError(machinecontract.HostApplyAuthenticationRequired, "host requires password or key authentication")
 	}
 	if c.KeyName != "" && v.GetKey(c.KeyName) == nil {
-		return newHostError("key_not_found", "saved key %q not found", c.KeyName)
+		return newHostError(machinecontract.HostSavedKeyNotFound, "saved key %q not found", c.KeyName)
 	}
 	return nil
 }
@@ -640,18 +627,18 @@ func hasControlCharacter(value string) bool {
 
 func loadPasswordFile(path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
-		return "", newHostError("invalid_args", "--password-file requires a path")
+		return "", newHostError(machinecontract.HostApplyInvalidArguments, "--password-file requires a path")
 	}
 	data, err := readHostCredentialFile(path)
 	if err != nil {
-		return "", newHostError("password_file_error", "read password file: %s", redactError(err))
+		return "", newHostError(machinecontract.HostPasswordFileFailed, "read password file: %s", redactError(err))
 	}
 	password := strings.TrimRight(string(data), "\r\n")
 	if password == "" {
-		return "", newHostError("password_file_error", "password file is empty")
+		return "", newHostError(machinecontract.HostPasswordFileFailed, "password file is empty")
 	}
 	if strings.IndexByte(password, 0) >= 0 {
-		return "", newHostError("password_file_error", "password file contains a NUL byte")
+		return "", newHostError(machinecontract.HostPasswordFileFailed, "password file contains a NUL byte")
 	}
 	return password, nil
 }
@@ -659,18 +646,18 @@ func loadPasswordFile(path string) (string, error) {
 func installHostKey(v *config.Vault, current config.Connection, opts hostCommandOptions) (string, bool, error) {
 	path := strings.TrimSpace(opts.keyFile.value)
 	if path == "" {
-		return "", false, newHostError("invalid_args", "--key-file requires a path")
+		return "", false, newHostError(machinecontract.HostApplyInvalidArguments, "--key-file requires a path")
 	}
 	data, err := readHostCredentialFile(path)
 	if err != nil {
-		return "", false, newHostError("key_file_error", "read key file: %s", redactError(err))
+		return "", false, newHostError(machinecontract.HostKeyFileFailed, "read key file: %s", redactError(err))
 	}
 	material := strings.TrimSpace(string(data))
 	if material == "" {
-		return "", false, newHostError("invalid_key", "key file is empty")
+		return "", false, newHostError(machinecontract.HostInvalidKey, "key file is empty")
 	}
 	if _, err := gossh.ParsePrivateKey([]byte(material)); err != nil {
-		return "", false, newHostError("invalid_key", "key file is not an unencrypted SSH private key: %s", redactError(err))
+		return "", false, newHostError(machinecontract.HostInvalidKey, "key file is not an unencrypted SSH private key: %s", redactError(err))
 	}
 
 	name := strings.TrimSpace(opts.newKeyName.value)
@@ -682,7 +669,7 @@ func installHostKey(v *config.Vault, current config.Connection, opts hostCommand
 		}
 	}
 	if !safeHostAliasPattern.MatchString(name) {
-		return "", false, newHostError("invalid_key_name", "new key names must match [A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+		return "", false, newHostError(machinecontract.HostApplyInvalidArguments, "new key names must match [A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 	}
 
 	for i := range v.Keys {
@@ -693,10 +680,10 @@ func installHostKey(v *config.Vault, current config.Connection, opts hostCommand
 			return name, false, nil
 		}
 		if current.KeyName != name {
-			return "", false, newHostError("key_conflict", "saved key %q already has different material; choose a new --key-name", name)
+			return "", false, newHostError(machinecontract.HostKeyConflict, "saved key %q already has different material; choose a new --key-name", name)
 		}
 		if keyReferenceCountExcept(v, name, current.Name) > 0 {
-			return "", false, newHostError("key_conflict", "saved key %q is shared and has different material; choose a new --key-name", name)
+			return "", false, newHostError(machinecontract.HostKeyConflict, "saved key %q is shared and has different material; choose a new --key-name", name)
 		}
 		v.Keys[i].PrivateKey = material
 		return name, false, nil
@@ -765,7 +752,7 @@ func newHostView(c config.Connection) hostView {
 
 func writeHostList(hosts []hostView, asJSON bool) {
 	if asJSON {
-		writeHostJSON(hosts)
+		writeMachineValue(hosts)
 		return
 	}
 	for _, h := range hosts {
@@ -775,7 +762,7 @@ func writeHostList(hosts []hostView, asJSON bool) {
 
 func writeHostView(h hostView, asJSON bool) {
 	if asJSON {
-		writeHostJSON(h)
+		writeMachineValue(h)
 		return
 	}
 	fmt.Printf("%s\t%s@%s:%d\tauth=%s", h.Name, h.User, h.Host, h.Port, h.Auth)
@@ -790,87 +777,41 @@ func writeHostView(h hostView, asJSON bool) {
 
 func writeHostMutationResult(result hostMutationResult, asJSON bool) {
 	if asJSON {
-		writeHostJSON(result)
+		writeMachineValue(result)
 		return
 	}
 	fmt.Printf("host %s: %s (changed=%t, sync_pending=%t)\n", result.Host.Name, result.Action, result.Changed, result.SyncPending)
 }
 
-func writeHostVerificationFailure(result hostMutationResult, asJSON bool) {
-	if asJSON {
-		writeHostJSON(struct {
-			OK           bool                  `json:"ok"`
-			Error        string                `json:"error"`
-			Message      string                `json:"message"`
-			Hint         string                `json:"hint"`
-			Exit         int                   `json:"exit"`
-			Stage        string                `json:"stage"`
-			Action       string                `json:"action"`
-			Changed      bool                  `json:"changed"`
-			Applied      bool                  `json:"applied"`
-			Host         hostView              `json:"host"`
-			Verification *agentssh.CheckResult `json:"verification"`
-			SyncPending  bool                  `json:"sync_pending"`
-		}{
-			OK: false, Error: "verification_failed", Message: "candidate host failed SSH verification; vault was not changed",
-			Hint: "inspect verification.error and fix the candidate before retrying", Exit: agentssh.ExitConnectionFailed, Stage: "verify",
-			Action: "not_applied", Changed: result.Changed, Applied: false, Host: result.Host,
-			Verification: result.Verification, SyncPending: false,
-		})
-		return
-	}
-	fmt.Fprintf(os.Stderr, "ssm: error=verification_failed alias=%s\nError: candidate host failed SSH verification; vault was not changed\n", result.Host.Name)
+func hostVerificationFailureFor(result hostMutationResult) (machinecontract.Failure, hostVerificationFailure) {
+	verificationError := ""
 	if result.Verification != nil {
-		fmt.Fprintf(os.Stderr, "ssm: verification_error=%s\n", result.Verification.Error)
+		verificationError = result.Verification.Error
 	}
+	failure := machinecontract.Classify(machinecontract.HostVerificationFailed, machinecontract.Details{
+		Message:           "candidate host failed SSH verification; vault was not changed",
+		Alias:             result.Host.Name,
+		VerificationError: verificationError,
+	})
+	document := hostVerificationFailure{
+		OK: false, Metadata: failure.Metadata(),
+		Action: "not_applied", Changed: result.Changed, Applied: false, Host: result.Host,
+		Verification: result.Verification, SyncPending: false,
+	}
+	return failure, document
 }
 
-func writeHostPushFailure(result hostMutationResult, asJSON bool, err error) {
-	if asJSON {
-		writeHostJSON(struct {
-			OK           bool                  `json:"ok"`
-			Error        string                `json:"error"`
-			Message      string                `json:"message"`
-			Hint         string                `json:"hint"`
-			Exit         int                   `json:"exit"`
-			Stage        string                `json:"stage"`
-			Action       string                `json:"action"`
-			Changed      bool                  `json:"changed"`
-			Applied      bool                  `json:"applied"`
-			Pushed       bool                  `json:"pushed"`
-			Host         hostView              `json:"host"`
-			Verification *agentssh.CheckResult `json:"verification,omitempty"`
-			SyncPending  bool                  `json:"sync_pending"`
-		}{
-			OK: false, Error: agentssh.ErrCodeSyncPush, Message: redactError(err),
-			Hint: "local changes remain pending; fix sync and retry push", Exit: 1, Stage: "sync_push", Action: result.Action,
-			Changed: result.Changed, Applied: true, Pushed: false, Host: result.Host,
-			Verification: result.Verification, SyncPending: true,
-		})
-		return
+func hostPushFailureFor(result hostMutationResult, err error) (machinecontract.Failure, hostPushFailure) {
+	failure := machinecontract.Classify(machinecontract.HostPushFailed, machinecontract.Details{
+		Cause: err,
+		Alias: result.Host.Name,
+	})
+	document := hostPushFailure{
+		OK: false, Metadata: failure.Metadata(), Action: result.Action,
+		Changed: result.Changed, Applied: true, Pushed: false, Host: result.Host,
+		Verification: result.Verification, SyncPending: true,
 	}
-	fmt.Fprintf(os.Stderr, "ssm: error=sync_push_failed alias=%s\nError: %s\nssm: hint=local change remains pending; fix sync and retry sshctl push\n", result.Host.Name, redactError(err))
-}
-
-func writeHostCommandError(asJSON bool, err error) {
-	ce, ok := err.(*hostCLIError)
-	if !ok {
-		ce = newHostError("internal", "%s", redactError(err)).(*hostCLIError)
-	}
-	if asJSON {
-		writeHostJSON(struct {
-			OK bool `json:"ok"`
-			*hostCLIError
-		}{OK: false, hostCLIError: ce})
-		return
-	}
-	fmt.Fprintf(os.Stderr, "ssm: error=%s stage=%s\nError: %s\nssm: hint=%s\n", ce.Code, ce.Stage, ce.Message, ce.Hint)
-}
-
-func writeHostJSON(value any) {
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(value)
+	return failure, document
 }
 
 func hasJSONFlag(args []string) bool {

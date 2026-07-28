@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"ssm/internal/machinecontract"
 	"ssm/internal/ssh"
 )
 
@@ -80,13 +81,13 @@ func runArgvStream(alias string, opts runStreamOptions, input io.Reader, output 
 	pullIfChanged()
 	v, err := loadVault()
 	if err != nil {
-		_ = writeStreamError(output, "vault_unlock_failed", err.Error(), "verify the master pass file belongs to this encrypted vault", "vault", 1)
-		return 1
+		failure := machinecontract.Classify(machinecontract.StreamVaultUnlockFailed, machinecontract.Details{Cause: err})
+		_ = machinecontract.WriteFailureNDJSON(output, failure)
+		return machinecontract.ProcessExit(failure)
 	}
 
 	scanner := bufio.NewScanner(input)
 	scanner.Buffer(make([]byte, 4096), maxArgvStreamLineBytes+1)
-	encoder := json.NewEncoder(output)
 	lastRefresh := time.Now()
 	exitCode := 0
 
@@ -98,15 +99,17 @@ func runArgvStream(alias string, opts runStreamOptions, input io.Reader, output 
 		if opts.refresh > 0 && time.Since(lastRefresh) >= opts.refresh {
 			changed, refreshErr := refreshVaultIfChangedResult()
 			if refreshErr != nil {
-				_ = writeStreamError(output, "sync_pull_failed", refreshErr.Error(), "fix sync connectivity or restart explicitly with --offline", "sync_pull", 1)
-				return 1
+				failure := machinecontract.Classify(machinecontract.StreamSyncPullFailed, machinecontract.Details{Cause: refreshErr})
+				_ = machinecontract.WriteFailureNDJSON(output, failure)
+				return machinecontract.ProcessExit(failure)
 			}
 			if changed {
 				ssh.ClosePool()
 				v, err = loadVault()
 				if err != nil {
-					_ = writeStreamError(output, "vault_unlock_failed", err.Error(), "verify the master pass file belongs to this encrypted vault", "vault", 1)
-					return 1
+					failure := machinecontract.Classify(machinecontract.StreamVaultUnlockFailed, machinecontract.Details{Cause: err})
+					_ = machinecontract.WriteFailureNDJSON(output, failure)
+					return machinecontract.ProcessExit(failure)
 				}
 			}
 			lastRefresh = time.Now()
@@ -114,10 +117,11 @@ func runArgvStream(alias string, opts runStreamOptions, input io.Reader, output 
 
 		argv, decodeErr := decodeArgvStreamLine(line)
 		if decodeErr != nil {
-			if err := writeStreamError(output, "invalid_request", decodeErr.Error(), "send one non-empty JSON string array per line", "decode", 2); err != nil {
-				return 1
+			failure := machinecontract.Classify(machinecontract.StreamDecodeFailed, machinecontract.Details{Cause: decodeErr})
+			if err := machinecontract.WriteFailureNDJSON(output, failure); err != nil {
+				return machinecontract.ProcessExit(machinecontract.Classify(machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 			}
-			exitCode = 2
+			exitCode = machinecontract.ProcessExit(failure)
 			continue
 		}
 		spec := remoteRunSpec{
@@ -128,23 +132,22 @@ func runArgvStream(alias string, opts runStreamOptions, input io.Reader, output 
 			Mode:     "argv",
 		}
 		result := executeRunSpec(v, alias, spec)
-		if err := encoder.Encode(result); err != nil {
-			return 1
+		if err := ssh.WriteRunResultNDJSON(output, result); err != nil {
+			return machinecontract.ProcessExit(machinecontract.Classify(machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 		}
 		if !result.OK {
-			if result.Exit != 0 {
-				exitCode = result.Exit
-			} else {
-				exitCode = 1
-			}
-			if result.Error == ssh.ErrCodeAliasNotFound {
+			exitCode = machinecontract.ResultExit(machinecontract.ResultState{OK: result.OK, Exit: result.Exit})
+			if result.Error == machinecontract.CodeAliasNotFound {
 				return exitCode
 			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		_ = writeStreamError(output, "invalid_request", "stream line exceeds 1 MiB or could not be read", "send smaller argv arrays", "read", 2)
-		return 2
+		failure := machinecontract.Classify(machinecontract.StreamReadFailed, machinecontract.Details{
+			Message: "stream line exceeds 1 MiB or could not be read",
+		})
+		_ = machinecontract.WriteFailureNDJSON(output, failure)
+		return machinecontract.ProcessExit(failure)
 	}
 	return exitCode
 }
@@ -171,17 +174,6 @@ func decodeArgvStreamLine(line []byte) ([]string, error) {
 		}
 	}
 	return argv, nil
-}
-
-func writeStreamError(output io.Writer, code, message, hint, stage string, exit int) error {
-	return json.NewEncoder(output).Encode(machineErrorOutput{
-		OK:      false,
-		Error:   code,
-		Message: redactString(message),
-		Hint:    redactString(hint),
-		Stage:   stage,
-		Exit:    exit,
-	})
 }
 
 func exitRunArgvStream(alias string, opts runStreamOptions) {

@@ -4,18 +4,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
 	"ssm/internal/cloud"
 	"ssm/internal/config"
-)
-
-var (
-	redactAssignmentPattern = regexp.MustCompile(`(?i)(["']?\b(?:password|passwd|pass|token|secret|private_key)\b["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)`)
-	redactBearerPattern     = regexp.MustCompile(`(?i)(["']?\bauthorization\b["']?\s*:\s*["']?bearer\s+)(?:"[^"]*"|'[^']*'|[^\s,}]+)`)
-	privateKeyBlockPattern  = regexp.MustCompile(`(?is)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----`)
+	"ssm/internal/machinecontract"
 )
 
 func runSSHCTL(args []string) {
@@ -24,8 +18,7 @@ func runSSHCTL(args []string) {
 	}
 	parsed, err := parseGlobalArgs(args)
 	if err != nil {
-		writeCLIError("invalid_arguments", err.Error(), "run sshctl --help for supported global options", 2)
-		os.Exit(2)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.InvalidGlobalArguments, machinecontract.Details{Cause: err}))
 	}
 	args = parsed
 
@@ -38,8 +31,7 @@ func runSSHCTL(args []string) {
 
 	if len(args) == 0 {
 		if machineJSON {
-			writeCLIError("invalid_arguments", "sshctl command is required", "run sshctl --help for available commands", 2)
-			os.Exit(2)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.SSHCTLCommandRequired, machinecontract.Details{Message: "sshctl command is required"}))
 		}
 		sshctlUsage()
 		return
@@ -90,8 +82,7 @@ func runSSHCTL(args []string) {
 		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
 		alias, runArgs, err := splitRunAlias(args[1:])
 		if err != nil {
-			writeCLIError("missing_alias", err.Error(), "use sshctl --json run <exact-alias> --argv <command> [args...]", 2)
-			os.Exit(2)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.RunAliasRequired, machinecontract.Details{Cause: err}))
 		}
 		unlock()
 		runSSHCTLRun(alias, runArgs)
@@ -99,8 +90,7 @@ func runSSHCTL(args []string) {
 		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
 		alias, runArgs, err := splitRunAlias(args[1:])
 		if err != nil {
-			writeCLIError("missing_alias", err.Error(), "use sshctl --json plan <exact-alias> --argv <command> [args...]", 2)
-			os.Exit(2)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.PlanAliasRequired, machinecontract.Details{Cause: err}))
 		}
 		unlock()
 		runSSHCTLPlan(alias, runArgs)
@@ -116,8 +106,7 @@ func runSSHCTL(args []string) {
 	case "check":
 		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
 		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
-			writeCLIError("missing_alias", "check requires an exact host alias", "use sshctl --json check <exact-alias>", 2)
-			os.Exit(2)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.CheckAliasRequired, machinecontract.Details{Message: "check requires an exact host alias"}))
 		}
 		jsonFlag := machineJSON
 		switch len(args) {
@@ -152,8 +141,7 @@ func runSSHCTL(args []string) {
 		unlock()
 		runRedirect(args[1:])
 	case "shell":
-		writeCLIError("unsupported_command", "interactive shell support has been removed", "use sshctl run with --argv or a script source", 2)
-		os.Exit(2)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.UnsupportedInteractiveShell, machinecontract.Details{Message: "interactive shell support has been removed"}))
 	case "status":
 		if len(args) == 2 && args[1] == "--offline" {
 			offlineMode = true
@@ -178,8 +166,7 @@ func runSSHCTL(args []string) {
 		sshctlUsage()
 	default:
 		if len(args) == 1 {
-			writeCLIError("unknown_command", fmt.Sprintf("unknown command %q", args[0]), "use sshctl run <alias> --argv <command> or sshctl --help", 2)
-			os.Exit(2)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.UnknownSSHCTLCommand, machinecontract.Details{Message: fmt.Sprintf("unknown command %q", args[0])}))
 		}
 		unlock()
 		runSSHCTLRun(args[0], args[1:])
@@ -189,8 +176,7 @@ func runSSHCTL(args []string) {
 func runSSHCTLRun(alias string, cmdArgs []string) {
 	if streamOpts, stream, err := parseRunStreamArgs(cmdArgs); stream {
 		if err != nil {
-			writeCLIError("invalid_arguments", err.Error(), "use sshctl run <alias> --stream [--refresh 30s]", 2)
-			os.Exit(2)
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.InvalidStreamArguments, machinecontract.Details{Cause: err}))
 		}
 		exitRunArgvStream(alias, streamOpts)
 	}
@@ -222,9 +208,6 @@ func runSSHCTLPlan(alias string, cmdArgs []string) {
 	}
 	machineJSON = machineJSON || spec.JSON
 	spec.Plan = true
-	if !spec.JSON {
-		// plan defaults to structured text; --json still works
-	}
 	runExecSpec(alias, spec)
 }
 
@@ -279,8 +262,16 @@ func runSSHCTLDoctor(args []string) {
 			os.Exit(0)
 		default:
 			if strings.HasPrefix(args[i], "-") {
-				fmt.Fprintf(os.Stderr, "sshctl doctor: unknown option %s\n", args[i])
-				sshctlUsageExit()
+				asJSON = asJSON || hasJSONFlag(args)
+				exit := machinecontract.WriteClassified(asJSON, machinecontract.InvalidSSHCTLArguments, machinecontract.Details{
+					Message: fmt.Sprintf("unknown doctor option %q", args[i]),
+					Alias:   args[i],
+					Tool:    "doctor_unknown_option",
+				})
+				if !asJSON {
+					sshctlUsage()
+				}
+				os.Exit(exit)
 			}
 			if alias != "" {
 				sshctlUsageExit()
@@ -295,8 +286,7 @@ func runSSHCTLList() {
 	pullIfChanged()
 	v, err := loadVault()
 	if err != nil {
-		printError(err)
-		os.Exit(1)
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 	for _, c := range v.Connections {
 		fmt.Printf("%s\t%s@%s:%d\n", c.Name, c.User, c.Host, c.Port)
@@ -305,6 +295,26 @@ func runSSHCTLList() {
 	for old, neu := range r {
 		fmt.Printf("%s\t->\t%s\n", old, neu)
 	}
+}
+
+type statusResult struct {
+	OK         bool                  `json:"ok"`
+	Version    string                `json:"version"`
+	Hosts      int                   `json:"hosts"`
+	Vault      string                `json:"vault"`
+	Sync       string                `json:"sync"`
+	Redirects  int                   `json:"redirects"`
+	Reuse      string                `json:"reuse"`
+	ReuseScope string                `json:"reuse_scope"`
+	LastPull   string                `json:"last_pull,omitempty"`
+	LastPush   string                `json:"last_push,omitempty"`
+	LastSync   string                `json:"last_sync,omitempty"`
+	Freshness  string                `json:"freshness"`
+	Remote     string                `json:"remote_state"`
+	Pending    bool                  `json:"pending_changes"`
+	Mutations  []pendingMutationView `json:"pending_mutations"`
+	Offline    bool                  `json:"offline"`
+	CacheAge   int64                 `json:"cache_age_seconds,omitempty"`
 }
 
 func runSSHCTLStatus() {
@@ -356,28 +366,18 @@ func runSSHCTLStatus() {
 		}
 	}
 	if machineJSON {
-		writeMachineValue(struct {
-			OK         bool                  `json:"ok"`
-			Version    string                `json:"version"`
-			Hosts      int                   `json:"hosts"`
-			Vault      string                `json:"vault"`
-			Sync       string                `json:"sync"`
-			Redirects  int                   `json:"redirects"`
-			Reuse      string                `json:"reuse"`
-			ReuseScope string                `json:"reuse_scope"`
-			LastPull   string                `json:"last_pull,omitempty"`
-			LastPush   string                `json:"last_push,omitempty"`
-			LastSync   string                `json:"last_sync,omitempty"`
-			Freshness  string                `json:"freshness"`
-			Remote     string                `json:"remote_state"`
-			Pending    bool                  `json:"pending_changes"`
-			Mutations  []pendingMutationView `json:"pending_mutations"`
-			Offline    bool                  `json:"offline"`
-			CacheAge   int64                 `json:"cache_age_seconds,omitempty"`
-		}{OK: err == nil, Version: version, Hosts: count, Vault: vaultStatus, Sync: cloudStatus, Redirects: len(config.LoadRedirects()), Reuse: reuse, ReuseScope: "process", LastPull: settings.LastPull, LastPush: settings.LastPush, LastSync: lastSync, Freshness: freshness, Remote: remoteState, Pending: pending, Mutations: pendingMutations, Offline: offlineMode, CacheAge: cacheAge})
-		if err != nil {
-			os.Exit(1)
+		result := statusResult{
+			OK: err == nil, Version: version, Hosts: count, Vault: vaultStatus, Sync: cloudStatus,
+			Redirects: len(config.LoadRedirects()), Reuse: reuse, ReuseScope: "process",
+			LastPull: settings.LastPull, LastPush: settings.LastPush, LastSync: lastSync,
+			Freshness: freshness, Remote: remoteState, Pending: pending, Mutations: pendingMutations,
+			Offline: offlineMode, CacheAge: cacheAge,
 		}
+		if err != nil {
+			failure := machinecontract.Classify(machinecontract.GenericFailure, machinecontract.Details{Cause: err})
+			os.Exit(machinecontract.WriteFailure(true, failure, result))
+		}
+		writeMachineValue(result)
 		return
 	}
 	fmt.Printf("version=%s\nhosts=%d\nvault=%s\nsync=%s\nredirects=%d\nreuse=%s\nreuse_scope=process\nfreshness=%s\nremote_state=%s\npending_changes=%t\noffline=%t\ncache_age_seconds=%d\n",
@@ -452,34 +452,18 @@ Env: SSM_TRACE=1  SSM_TIMEOUT=10s  SSM_REUSE=0  SSM_FORWARD_STDIN=1
 
 func sshctlUsageExit() {
 	if machineJSON {
-		writeMachineError("invalid_arguments", "invalid sshctl arguments", "run sshctl --help for usage", "", 2, nil)
-		os.Exit(2)
+		os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidSSHCTLArguments, machinecontract.Details{Message: "invalid sshctl arguments"}))
 	}
 	sshctlUsage()
-	os.Exit(2)
+	os.Exit(machinecontract.ProcessExit(machinecontract.Classify(machinecontract.InvalidSSHCTLArguments, machinecontract.Details{Message: "invalid sshctl arguments"})))
 }
 
 func redactError(err error) string {
-	if err == nil {
-		return ""
-	}
-	return redactString(err.Error())
+	return machinecontract.RedactError(err)
 }
 
 func redactString(value string) string {
-	out := privateKeyBlockPattern.ReplaceAllString(value, "<redacted-private-key>")
-	out = redactBearerPattern.ReplaceAllString(out, "${1}***")
-	out = redactAssignmentPattern.ReplaceAllString(out, "${1}<redacted>")
-	out = strings.ReplaceAll(out, "-----BEGIN OPENSSH PRIVATE KEY-----", "<redacted-private-key>")
-	return out
-}
-
-func printError(err error) {
-	if machineJSON {
-		writeMachineError("internal", redactError(err), "", "", 1, nil)
-		return
-	}
-	fmt.Fprintf(os.Stderr, "Error: %s\n", redactError(err))
+	return machinecontract.RedactString(value)
 }
 
 // splitRunAlias accepts the canonical global form (`sshctl --json run host`)
