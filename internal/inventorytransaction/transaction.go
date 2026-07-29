@@ -1130,9 +1130,9 @@ func loadPublishingIntent() (publishingIntent, error) {
 	if err != nil {
 		return publishingIntent{}, err
 	}
-	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
+		_ = file.Close()
 		return publishingIntent{}, err
 	}
 	data, err := readPublishingIntentDocument(file, info.Size())
@@ -1176,16 +1176,22 @@ func loadPublishingIntent() (publishingIntent, error) {
 	}
 }
 
-func readPublishingIntentDocument(reader io.Reader, size int64) ([]byte, error) {
+// readPublishingIntentDocument owns reader and closes it before returning.
+func readPublishingIntentDocument(reader io.ReadCloser, size int64) ([]byte, error) {
 	if size < 0 || size > maxPublishingIntentDocumentBytes {
+		_ = reader.Close()
 		return nil, errInvalidPublishingIntentDocument
 	}
 	data, err := io.ReadAll(io.LimitReader(reader, maxPublishingIntentDocumentBytes+1))
+	closeErr := reader.Close()
 	if err != nil {
 		return nil, err
 	}
 	if len(data) > maxPublishingIntentDocumentBytes {
 		return nil, errInvalidPublishingIntentDocument
+	}
+	if closeErr != nil {
+		return nil, closeErr
 	}
 	return data, nil
 }

@@ -3,6 +3,7 @@ package inventorytransaction
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -344,13 +345,14 @@ func TestReadPublishingIntentDocumentRejectsGrowthAfterStat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open initial publishing intent: %v", err)
 	}
-	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
+		_ = file.Close()
 		t.Fatalf("stat initial publishing intent: %v", err)
 	}
 	appender, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0) //nolint:gosec // path is beneath the test-owned temporary directory
 	if err != nil {
+		_ = file.Close()
 		t.Fatalf("open publishing intent appender: %v", err)
 	}
 	if _, err := appender.Write([]byte("  ")); err != nil {
@@ -363,39 +365,43 @@ func TestReadPublishingIntentDocumentRejectsGrowthAfterStat(t *testing.T) {
 
 	_, err = readPublishingIntentDocument(file, info.Size())
 	if err == nil || err.Error() != "publishing intent document is invalid" {
+		_ = file.Close()
 		t.Fatalf("post-stat growth error = %v, want constant invalid-document error", err)
+	}
+	if _, err := file.Stat(); !errors.Is(err, os.ErrClosed) {
+		_ = file.Close()
+		t.Fatalf("grown publishing intent remains open after rejection: %v", err)
 	}
 }
 
-func TestReadPublishingIntentDocumentUsesOpenedFileAcrossReplacement(t *testing.T) {
+func TestReadPublishingIntentDocumentClosesOpenedFileBeforeReturn(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "publishing-intent.json")
-	original := []byte(`{"version":2}`)
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatalf("write original publishing intent: %v", err)
+	document := []byte(`{"version":2}`)
+	if err := os.WriteFile(path, document, 0o600); err != nil {
+		t.Fatalf("write publishing intent: %v", err)
 	}
 	file, err := os.Open(path) //nolint:gosec // path is beneath the test-owned temporary directory
 	if err != nil {
-		t.Fatalf("open original publishing intent: %v", err)
+		t.Fatalf("open publishing intent: %v", err)
 	}
-	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
-		t.Fatalf("stat original publishing intent: %v", err)
-	}
-	replacement := filepath.Join(filepath.Dir(path), "replacement.json")
-	if err := os.WriteFile(replacement, bytes.Repeat([]byte("x"), 512*1024+1), 0o600); err != nil {
-		t.Fatalf("write replacement publishing intent: %v", err)
-	}
-	if err := os.Rename(replacement, path); err != nil {
-		t.Fatalf("replace publishing intent path: %v", err)
+		_ = file.Close()
+		t.Fatalf("stat publishing intent: %v", err)
 	}
 
 	data, err := readPublishingIntentDocument(file, info.Size())
 	if err != nil {
-		t.Fatalf("read opened publishing intent after path replacement: %v", err)
+		_ = file.Close()
+		t.Fatalf("read publishing intent: %v", err)
 	}
-	if !bytes.Equal(data, original) {
-		t.Fatal("publishing intent read switched to a replacement path")
+	if !bytes.Equal(data, document) {
+		_ = file.Close()
+		t.Fatal("publishing intent read changed document bytes")
+	}
+	if _, err := file.Stat(); !errors.Is(err, os.ErrClosed) {
+		_ = file.Close()
+		t.Fatalf("publishing intent file remains open after read: %v", err)
 	}
 }
 
