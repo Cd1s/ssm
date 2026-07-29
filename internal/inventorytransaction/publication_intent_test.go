@@ -3,7 +3,6 @@ package inventorytransaction
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -368,10 +367,7 @@ func TestReadPublishingIntentDocumentRejectsGrowthAfterStat(t *testing.T) {
 		_ = file.Close()
 		t.Fatalf("post-stat growth error = %v, want constant invalid-document error", err)
 	}
-	if _, err := file.Stat(); !errors.Is(err, os.ErrClosed) {
-		_ = file.Close()
-		t.Fatalf("grown publishing intent remains open after rejection: %v", err)
-	}
+	assertPublishingIntentFileClosed(t, file, "grown publishing intent remains open after rejection")
 }
 
 func TestReadPublishingIntentDocumentClosesOpenedFileBeforeReturn(t *testing.T) {
@@ -399,10 +395,7 @@ func TestReadPublishingIntentDocumentClosesOpenedFileBeforeReturn(t *testing.T) 
 		_ = file.Close()
 		t.Fatal("publishing intent read changed document bytes")
 	}
-	if _, err := file.Stat(); !errors.Is(err, os.ErrClosed) {
-		_ = file.Close()
-		t.Fatalf("publishing intent file remains open after read: %v", err)
-	}
+	assertPublishingIntentFileClosed(t, file, "publishing intent file remains open after read")
 }
 
 func TestLoadPublishingIntentRejectsResourceBudgetsBeforeVersionDispatch(t *testing.T) {

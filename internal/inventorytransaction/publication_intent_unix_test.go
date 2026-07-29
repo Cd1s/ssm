@@ -4,10 +4,20 @@ package inventorytransaction
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
+
+func assertPublishingIntentFileClosed(t *testing.T, file *os.File, failure string) {
+	t.Helper()
+	if _, err := file.Stat(); !errors.Is(err, os.ErrClosed) && !errors.Is(err, syscall.EBADF) {
+		_ = file.Close()
+		t.Fatalf("%s: %v", failure, err)
+	}
+}
 
 func TestReadPublishingIntentDocumentUsesOpenedFileAcrossReplacement(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "publishing-intent.json")

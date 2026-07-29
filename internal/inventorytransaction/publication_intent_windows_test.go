@@ -4,12 +4,23 @@ package inventorytransaction
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"golang.org/x/sys/windows"
+
 	"ssm/internal/config"
 )
+
+func assertPublishingIntentFileClosed(t *testing.T, file *os.File, failure string) {
+	t.Helper()
+	if _, err := file.Stat(); !errors.Is(err, windows.ERROR_INVALID_HANDLE) {
+		_ = file.Close()
+		t.Fatalf("%s: %v", failure, err)
+	}
+}
 
 func TestReadPublishingIntentDocumentClosesBeforePrivateAtomicReplacement(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "publishing-intent.json")
