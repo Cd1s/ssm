@@ -667,25 +667,24 @@ func nonEmptyCompiledLines(value string) []string {
 	return lines
 }
 
-func assertCompiledNDJSONResults(t *testing.T, result compiledCLIResult, wantLines int, wantOK bool) []map[string]any {
+func assertTwoCompiledNDJSONSuccesses(t *testing.T, result compiledCLIResult) {
 	t.Helper()
 	if result.ProcessExit != 0 || result.Stderr != "" {
 		t.Fatalf("compiled NDJSON process contract failed; output=%s", compiledOutputIdentity(result))
 	}
 	lines := nonEmptyCompiledLines(result.Stdout)
-	if len(lines) != wantLines {
-		t.Fatalf("NDJSON line count = %d, want %d; output=%s", len(lines), wantLines, compiledOutputIdentity(result))
+	if len(lines) != 2 {
+		t.Fatalf("NDJSON line count = %d, want 2; output=%s", len(lines), compiledOutputIdentity(result))
 	}
 	values := make([]map[string]any, len(lines))
 	for i, line := range lines {
 		if err := json.Unmarshal([]byte(line), &values[i]); err != nil {
 			t.Fatalf("decode NDJSON line %d: %v; output=%s", i, err, compiledOutputIdentity(result))
 		}
-		if got, ok := values[i]["ok"].(bool); !ok || got != wantOK {
-			t.Fatalf("NDJSON line %d ok = %v, want %t; output=%s", i, values[i]["ok"], wantOK, compiledOutputIdentity(result))
+		if got, ok := values[i]["ok"].(bool); !ok || !got {
+			t.Fatalf("NDJSON line %d ok = %v, want true; output=%s", i, values[i]["ok"], compiledOutputIdentity(result))
 		}
 	}
-	return values
 }
 
 func assertCompiledTransferSnapshot(t *testing.T, result compiledCLIResult, want map[string]any) {
@@ -2601,25 +2600,20 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		}
 	})
 
-	t.Run("BC-3 stream startup failure is ordinary indented JSON", func(t *testing.T) {
+	t.Run("BC-3 stream startup failure migrates to compact NDJSON", func(t *testing.T) {
 		cli := newCompiledCLIHarness(t)
 		sync := newCompiledSyncFixture(t)
 		sync.SetStatus(t, "HEAD", 500)
 		cli.SaveVault(t, &config.Vault{})
 		cli.SaveCloud(t, sync.URL(), "ISSUE17_STREAM_TOKEN_CANARY")
-		result := cli.RunWithHeldOpenStdin(t, "sshctl", "--json", "run", "missing", "--stream", "--refresh=0")
+		result := cli.RunWithHeldOpenStdin(t, "sshctl", "--json", "run", "missing", "--stream", "--refresh=30s")
 		assertNoCompiledCanaryLeak(t, result, map[string]string{
 			"token":               "ISSUE17_STREAM_TOKEN_CANARY",
 			"passphrase":          cli.passphrase,
 			"passphrase_fragment": "MASTER_PASSPHRASE",
 		})
-		assertCompiledMachineContract(t, result, compiledMachineContract{
-			OK: false, Error: "sync_pull_failed", Stage: "sync_pull", JSONExit: 1, ProcessExit: 1,
-			Hint:   "fix sync connectivity or retry explicitly with --offline",
-			Absent: []string{"alias", "candidates"},
-		})
-		if lines := nonEmptyCompiledLines(result.Stdout); len(lines) <= 1 {
-			t.Fatalf("startup failure lines = %d, want indented multi-line JSON; output=%s", len(lines), compiledOutputIdentity(result))
+		if result.ProcessExit != 1 || result.Stdout != compiledBC3NewStartupFailure || result.Stderr != "" {
+			t.Fatalf("BC-3 startup migration failed; output=%s", compiledOutputIdentity(result))
 		}
 	})
 
@@ -2859,7 +2853,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		}
 	})
 
-	t.Run("BC-6 zero refresh remains valid online and refreshes only at startup", func(t *testing.T) {
+	t.Run("BC-6 zero refresh is rejected online before refresh or SSH", func(t *testing.T) {
 		cli := newCompiledCLIHarness(t)
 		sync := newCompiledSyncFixture(t)
 		sshLeakCanary := "ISSUE17_ZERO_REFRESH_SSH_OUTPUT_CANARY"
@@ -2875,12 +2869,14 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 			"ssh_auth":    sshLeakCanary,
 			"cloud_value": cloudLeakCanary,
 		})
-		assertCompiledNDJSONResults(t, result, 2, true)
-		if got := sync.MethodCount("HEAD"); got != 1 {
-			t.Fatalf("zero-refresh HEAD count = %d, want startup-only count 1", got)
+		if result.ProcessExit != 2 || result.Stdout != compiledBC6NewZeroOnline || result.Stderr != "" {
+			t.Fatalf("BC-6 zero online migration failed; output=%s", compiledOutputIdentity(result))
 		}
-		if connections, sessions := server.ConnectionCount(), server.SessionCount(); connections != 1 || sessions != 2 {
-			t.Fatalf("zero-refresh SSH counts connections=%d sessions=%d, want 1 and 2", connections, sessions)
+		if got := sync.MethodCount("HEAD"); got != 0 {
+			t.Fatalf("zero-refresh HEAD count = %d, want 0", got)
+		}
+		if connections, sessions := server.ConnectionCount(), server.SessionCount(); connections != 0 || sessions != 0 {
+			t.Fatalf("zero-refresh SSH counts connections=%d sessions=%d, want 0 and 0", connections, sessions)
 		}
 	})
 
