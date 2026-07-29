@@ -84,6 +84,7 @@ func TestCompiledCLIBuildArgs(t *testing.T) {
 	want := []string{
 		"build",
 		"-buildvcs=false",
+		"-tags=compiled_cli_contract",
 		"-ldflags", updateLDFlags,
 		"-o", outputPath,
 		".",
@@ -113,7 +114,14 @@ func TestCompiledCLITestMainPushHelperBypassesBuild(t *testing.T) {
 }
 
 func compiledCLIBuildArgs(updateLDFlags, outputPath string) []string {
-	return []string{"build", "-buildvcs=false", "-ldflags", updateLDFlags, "-o", outputPath, "."}
+	return []string{
+		"build",
+		"-buildvcs=false",
+		"-tags=compiled_cli_contract",
+		"-ldflags", updateLDFlags,
+		"-o", outputPath,
+		".",
+	}
 }
 
 func runCompiledCLITestMain(m *testing.M) (exitCode int) {
@@ -628,14 +636,6 @@ func assertCompiledJSONSuccess(t *testing.T, result compiledCLIResult) map[strin
 	return value
 }
 
-func assertCompiledExactMachineOutput(t *testing.T, result compiledCLIResult, want string) {
-	t.Helper()
-	if result.ProcessExit != 0 || result.Stderr != "" || result.Stdout != want {
-		t.Fatalf("compiled exact machine output contract failed; output=%s", compiledOutputIdentity(result))
-	}
-	decodeExactlyOneJSONObject(t, result.Stdout)
-}
-
 func assertCompiledEmptyJSONArraySuccess(t *testing.T, result compiledCLIResult) []any {
 	t.Helper()
 	if result.ProcessExit != 0 || result.Stderr != "" {
@@ -898,17 +898,64 @@ func parseCompiledPendingTransactionViews(value map[string]any) ([]pendingMutati
 		if !ok {
 			return nil, fmt.Errorf("pending mutation %d has unexpected type", i)
 		}
-		if got, want := sortedCompiledJSONFields(mutation), []string{"alias", "created_at", "id", "operation"}; !reflect.DeepEqual(got, want) {
+		wantFields := []string{"alias", "created_at", "id", "operation"}
+		if _, hasAliases := mutation["aliases"]; hasAliases {
+			wantFields = []string{"aliases", "connections", "created_at", "id", "keys", "operation"}
+		} else if _, hasKeyName := mutation["key_name"]; hasKeyName {
+			wantFields = []string{"created_at", "id", "key_name", "keys", "operation"}
+		}
+		if got := sortedCompiledJSONFields(mutation); !reflect.DeepEqual(got, wantFields) {
 			return nil, fmt.Errorf("pending mutation %d field set changed", i)
 		}
 		for field, destination := range map[string]*string{
-			"id": &transactions[i].ID, "alias": &transactions[i].Alias,
+			"id":        &transactions[i].ID,
 			"operation": &transactions[i].Operation, "created_at": &transactions[i].CreatedAt,
 		} {
 			*destination, ok = mutation[field].(string)
 			if !ok {
 				return nil, fmt.Errorf("pending mutation %d field %q has unexpected type", i, field)
 			}
+		}
+		if alias, exists := mutation["alias"]; exists {
+			transactions[i].Alias, ok = alias.(string)
+			if !ok {
+				return nil, fmt.Errorf("pending mutation %d alias has unexpected type", i)
+			}
+		}
+		if keyName, exists := mutation["key_name"]; exists {
+			transactions[i].KeyName, ok = keyName.(string)
+			if !ok {
+				return nil, fmt.Errorf("pending mutation %d key_name has unexpected type", i)
+			}
+		}
+		if rawAliases, exists := mutation["aliases"]; exists {
+			aliases, ok := rawAliases.([]any)
+			if !ok {
+				return nil, fmt.Errorf("pending mutation %d aliases has unexpected type", i)
+			}
+			transactions[i].Aliases = make([]string, len(aliases))
+			for aliasIndex, alias := range aliases {
+				transactions[i].Aliases[aliasIndex], ok = alias.(string)
+				if !ok {
+					return nil, fmt.Errorf("pending mutation %d alias %d has unexpected type", i, aliasIndex)
+				}
+			}
+		}
+		if connections, exists := mutation["connections"]; exists {
+			value, numberOK := connections.(float64)
+			if !numberOK {
+				return nil, fmt.Errorf("pending mutation %d connections has unexpected type", i)
+			}
+			count := int(value)
+			transactions[i].Connections = &count
+		}
+		if keys, exists := mutation["keys"]; exists {
+			value, numberOK := keys.(float64)
+			if !numberOK {
+				return nil, fmt.Errorf("pending mutation %d keys has unexpected type", i)
+			}
+			count := int(value)
+			transactions[i].Keys = &count
 		}
 	}
 	return transactions, nil
@@ -978,14 +1025,20 @@ type compiledInventoryIdentity struct {
 }
 
 type compiledMutationIdentity struct {
-	ID         string                      `safe:"id"`
-	Alias      string                      `safe:"alias"`
-	Operation  string                      `safe:"operation"`
-	CreatedAt  string                      `safe:"created_at"`
-	Before     *compiledConnectionIdentity `safe:"before"`
-	After      *compiledConnectionIdentity `safe:"after"`
-	KeysBefore []compiledKeyIdentity       `safe:"keys_before"`
-	KeysAfter  []compiledKeyIdentity       `safe:"keys_after"`
+	ID              string                      `safe:"id"`
+	Alias           string                      `safe:"alias"`
+	Aliases         []string                    `safe:"aliases"`
+	KeyName         string                      `safe:"key_name"`
+	Operation       string                      `safe:"operation"`
+	CreatedAt       string                      `safe:"created_at"`
+	Before          *compiledConnectionIdentity `safe:"before"`
+	After           *compiledConnectionIdentity `safe:"after"`
+	KeysBefore      []compiledKeyIdentity       `safe:"keys_before"`
+	KeysAfter       []compiledKeyIdentity       `safe:"keys_after"`
+	BulkBefore      *compiledInventoryIdentity  `safe:"bulk_before"`
+	BulkAfter       *compiledInventoryIdentity  `safe:"bulk_after"`
+	ConnectionCount int                         `safe:"connection_count"`
+	KeyCount        int                         `safe:"key_count"`
 }
 
 type compiledVaultIdentity struct {
@@ -1027,7 +1080,8 @@ func TestCompiledVaultPublicationIdentityCoversPersistedFields(t *testing.T) {
 		"Connections", "Keys",
 	})
 	assertCompiledPersistedFields(t, reflect.TypeOf(config.PendingMutation{}), []string{
-		"ID", "Alias", "Operation", "CreatedAt", "Before", "After", "KeysBefore", "KeysAfter",
+		"ID", "Alias", "Aliases", "KeyName", "Operation", "CreatedAt", "Before", "After",
+		"KeysBefore", "KeysAfter", "BulkBefore", "BulkAfter", "ConnectionCount", "KeyCount",
 	})
 
 	passphrase := "ISSUE17_NORMALIZATION_PASSPHRASE_CANARY"
@@ -1058,8 +1112,16 @@ func TestCompiledVaultPublicationIdentityCoversPersistedFields(t *testing.T) {
 				Keys:        []config.SSHKey{beforeKey},
 			},
 			PendingMutations: []config.PendingMutation{{
-				ID: "tx_normalized", Alias: after.Name, Operation: "updated", CreatedAt: "2026-01-02T03:04:05Z",
+				ID: "tx_normalized", Alias: after.Name, Aliases: []string{before.Name, after.Name},
+				KeyName: "normalized-key", Operation: "updated", CreatedAt: "2026-01-02T03:04:05Z",
 				Before: &before, After: &after, KeysBefore: []config.SSHKey{beforeKey}, KeysAfter: []config.SSHKey{afterKey},
+				BulkBefore: &config.InventorySnapshot{
+					Connections: []config.Connection{before}, Keys: []config.SSHKey{beforeKey},
+				},
+				BulkAfter: &config.InventorySnapshot{
+					Connections: []config.Connection{after}, Keys: []config.SSHKey{afterKey},
+				},
+				ConnectionCount: 2, KeyCount: 1,
 			}},
 		}
 	}
@@ -1088,6 +1150,8 @@ func TestCompiledVaultPublicationIdentityCoversPersistedFields(t *testing.T) {
 		{path: "pending mutation order", mutate: func(v *config.Vault) { v.PendingMutations = append(v.PendingMutations, v.PendingMutations[0]) }},
 		{path: "pending mutation id", mutate: func(v *config.Vault) { v.PendingMutations[0].ID = "tx_changed" }},
 		{path: "pending mutation alias", mutate: func(v *config.Vault) { v.PendingMutations[0].Alias = "changed" }},
+		{path: "pending mutation aliases", mutate: func(v *config.Vault) { v.PendingMutations[0].Aliases[0] = "changed" }},
+		{path: "pending mutation key name", mutate: func(v *config.Vault) { v.PendingMutations[0].KeyName = "changed" }},
 		{path: "pending mutation operation", mutate: func(v *config.Vault) { v.PendingMutations[0].Operation = "changed" }},
 		{path: "pending mutation state", mutate: func(v *config.Vault) { v.PendingMutations[0].CreatedAt = "2026-02-03T04:05:06Z" }},
 		{path: "pending mutation before presence", mutate: func(v *config.Vault) { v.PendingMutations[0].Before = nil }},
@@ -1096,6 +1160,10 @@ func TestCompiledVaultPublicationIdentityCoversPersistedFields(t *testing.T) {
 		{path: "pending mutation after", mutate: func(v *config.Vault) { v.PendingMutations[0].After.Group = "changed" }},
 		{path: "pending mutation keys before", mutate: func(v *config.Vault) { v.PendingMutations[0].KeysBefore[0].Name = "changed" }},
 		{path: "pending mutation keys after", mutate: func(v *config.Vault) { v.PendingMutations[0].KeysAfter[0].Name = "changed" }},
+		{path: "pending mutation bulk before", mutate: func(v *config.Vault) { v.PendingMutations[0].BulkBefore.Connections[0].Host = "192.0.2.84" }},
+		{path: "pending mutation bulk after", mutate: func(v *config.Vault) { v.PendingMutations[0].BulkAfter.Keys[0].Name = "changed" }},
+		{path: "pending mutation connection count", mutate: func(v *config.Vault) { v.PendingMutations[0].ConnectionCount++ }},
+		{path: "pending mutation key count", mutate: func(v *config.Vault) { v.PendingMutations[0].KeyCount++ }},
 	}
 	baseline := identity(fixture())
 	for _, test := range tests {
@@ -1144,27 +1212,47 @@ func compiledVaultSafeIdentity(value *config.Vault) compiledVaultIdentity {
 		Keys:        compiledKeyIdentities(value.Keys),
 	}
 	if value.PendingBase != nil {
-		identity.PendingBase = &compiledInventoryIdentity{
-			Connections: compiledConnectionIdentities(value.PendingBase.Connections),
-			Keys:        compiledKeyIdentities(value.PendingBase.Keys),
-		}
+		identity.PendingBase = compiledOptionalInventoryIdentity(value.PendingBase)
 	}
 	if value.PendingMutations != nil {
 		identity.PendingMutations = make([]compiledMutationIdentity, len(value.PendingMutations))
 		for i, mutation := range value.PendingMutations {
 			identity.PendingMutations[i] = compiledMutationIdentity{
-				ID:         mutation.ID,
-				Alias:      mutation.Alias,
-				Operation:  mutation.Operation,
-				CreatedAt:  mutation.CreatedAt,
-				Before:     compiledOptionalConnectionIdentity(mutation.Before),
-				After:      compiledOptionalConnectionIdentity(mutation.After),
-				KeysBefore: compiledKeyIdentities(mutation.KeysBefore),
-				KeysAfter:  compiledKeyIdentities(mutation.KeysAfter),
+				ID:              mutation.ID,
+				Alias:           mutation.Alias,
+				Aliases:         compiledStringIdentity(mutation.Aliases),
+				KeyName:         mutation.KeyName,
+				Operation:       mutation.Operation,
+				CreatedAt:       mutation.CreatedAt,
+				Before:          compiledOptionalConnectionIdentity(mutation.Before),
+				After:           compiledOptionalConnectionIdentity(mutation.After),
+				KeysBefore:      compiledKeyIdentities(mutation.KeysBefore),
+				KeysAfter:       compiledKeyIdentities(mutation.KeysAfter),
+				BulkBefore:      compiledOptionalInventoryIdentity(mutation.BulkBefore),
+				BulkAfter:       compiledOptionalInventoryIdentity(mutation.BulkAfter),
+				ConnectionCount: mutation.ConnectionCount,
+				KeyCount:        mutation.KeyCount,
 			}
 		}
 	}
 	return identity
+}
+
+func compiledStringIdentity(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	return append([]string{}, values...)
+}
+
+func compiledOptionalInventoryIdentity(value *config.InventorySnapshot) *compiledInventoryIdentity {
+	if value == nil {
+		return nil
+	}
+	return &compiledInventoryIdentity{
+		Connections: compiledConnectionIdentities(value.Connections),
+		Keys:        compiledKeyIdentities(value.Keys),
+	}
 }
 
 func compiledConnectionIdentities(values []config.Connection) []compiledConnectionIdentity {
@@ -2299,6 +2387,11 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 	t.Run("stream refresh failure is the triggering line's only terminal result", func(t *testing.T) {
 		streamCLI := newCompiledCLIHarness(t)
 		sync := newCompiledSyncFixture(t)
+		start := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+		sync.SetClock(t, start)
+		// Initialization reads the clock for local facts and the next deadline.
+		// The third read proves the child scanned the triggering line and entered BeforeLine.
+		sync.BlockClockRequest(t, 3)
 		sync.SetRemote(t, []byte("unused-opaque-blob"), "stream-current")
 		sync.SetStatusAfter(t, "HEAD", 1, 500)
 		streamCLI.SaveVault(t, &config.Vault{})
@@ -2306,18 +2399,42 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		streamCLI.SaveRemoteETag(t, "stream-current")
 		contract := reviewedCompiledMachineContract(t, "stream_refresh_failed")
 		input, writer := io.Pipe()
+		writeDone := make(chan error, 1)
 		go func() {
-			time.Sleep(500 * time.Millisecond)
-			_, _ = io.WriteString(writer, "[\"true\"]\n[\"true\"]\n")
-			_ = writer.Close()
+			if _, err := io.WriteString(writer, "[\"true\"]\n[\"true\"]\n"); err != nil {
+				writeDone <- err
+				return
+			}
+			if err := sync.WaitForClockBarrier(); err != nil {
+				_ = writer.CloseWithError(err)
+				writeDone <- err
+				return
+			}
+			sync.SetClock(t, start.Add(time.Millisecond))
+			sync.ReleaseClockBarrier()
+			writeDone <- writer.Close()
 		}()
 		result := streamCLI.runWithStdin(
 			t,
 			contract.Executable,
 			input,
-			map[string]string{"SSM_MASTER_PASS_FILE": streamCLI.passPath},
+			map[string]string{
+				"SSM_MASTER_PASS_FILE":        streamCLI.passPath,
+				"SSM_COMPILED_TEST_CLOCK_URL": sync.ClockURL(),
+			},
 			contract.Args...,
 		)
+		if err := <-writeDone; err != nil {
+			t.Fatalf("write synchronized stream input: %v", err)
+		}
+		if got := sync.ClockReads(); !reflect.DeepEqual(got, []time.Time{
+			start,
+			start,
+			start.Add(time.Millisecond),
+			start.Add(time.Millisecond),
+		}) {
+			t.Fatalf("stream refresh clock reads = %v, want exact startup and due transition", got)
+		}
 		assertNoCompiledCanaryLeak(t, result, map[string]string{"token": "ISSUE17_STREAM_REFRESH_TOKEN_CANARY"})
 		assertCompiledMachineContract(t, result, contract)
 		if lines := nonEmptyCompiledLines(result.Stdout); len(lines) != 1 {
@@ -2325,6 +2442,11 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		}
 		if got := sync.MethodCount("HEAD"); got != 2 {
 			t.Fatalf("stream refresh HEAD count = %d, want 2", got)
+		}
+		for _, method := range []string{"GET", "PUT"} {
+			if got := sync.MethodCount(method); got != 0 {
+				t.Fatalf("stream refresh %s count = %d, want 0", method, got)
+			}
 		}
 	})
 
@@ -2617,8 +2739,8 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		}
 	})
 
-	t.Run("BC-4 legacy mutations persist directly with their current publication effects", func(t *testing.T) {
-		t.Run("legacy remove auto-pushes without a transaction", func(t *testing.T) {
+	t.Run("BC-4 legacy mutations move from characterized direct save to pending review", func(t *testing.T) {
+		t.Run("legacy remove keeps compatibility output and appends without publication", func(t *testing.T) {
 			cli := newCompiledCLIHarness(t)
 			sync := newCompiledSyncFixture(t)
 			removedPassword := "ISSUE17_LEGACY_REMOVE_PASSWORD_CANARY"
@@ -2638,11 +2760,6 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 			}
 			preservedKey := config.SSHKey{Name: "preserved-key", PrivateKey: preservedPrivateKey}
 			pendingBase, pendingMutations := compiledLegacyPendingLedger()
-			want := &config.Vault{
-				Connections: []config.Connection{preservedConnection, preservedKeyConnection},
-				Keys:        []config.SSHKey{preservedKey},
-				PendingBase: pendingBase, PendingMutations: pendingMutations,
-			}
 			starting := &config.Vault{
 				Connections: []config.Connection{removedConnection, preservedConnection, preservedKeyConnection},
 				Keys:        []config.SSHKey{preservedKey},
@@ -2664,28 +2781,25 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 				"token":                      "ISSUE17_LEGACY_REMOVE_TOKEN_CANARY",
 				"passphrase":                 cli.passphrase,
 			})
-			if got := sync.MethodCount("PUT"); got != 1 {
-				t.Fatalf("legacy remove PUT count = %d, want 1", got)
+			if got := sync.MethodCount("PUT"); got != 0 {
+				t.Fatalf("reviewed legacy remove PUT count = %d, want 0", got)
 			}
-			if got := sync.MethodCount("HEAD"); got != 2 {
-				t.Fatalf("legacy remove HEAD count = %d, want 2", got)
+			if got := sync.MethodCount("HEAD"); got != 1 {
+				t.Fatalf("reviewed legacy remove HEAD count = %d, want refresh-only count 1", got)
 			}
 			if got := sync.MethodCount("GET"); got != 1 {
 				t.Fatalf("legacy remove GET count = %d, want 1", got)
 			}
-			assertCompiledEncryptedPublication(t, sync.UploadedBlob(), cli.passphrase, map[string]string{
-				"removed_password":           removedPassword,
-				"preserved_password":         preservedPassword,
-				"private_key":                preservedPrivateKey,
-				"ledger_base_password":       "ISSUE17_LEGACY_LEDGER_BASE_PASSWORD_CANARY",
-				"ledger_updated_password":    "ISSUE17_LEGACY_LEDGER_UPDATED_PASSWORD_CANARY",
-				"ledger_base_private_key":    "ISSUE17_LEGACY_LEDGER_BASE_PRIVATE_KEY_CANARY",
-				"ledger_pending_private_key": "ISSUE17_LEGACY_LEDGER_PENDING_PRIVATE_KEY_CANARY",
-			}, want)
-			assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), want)
+			local := cli.LoadVaultIdentity(t)
+			if len(local.Connections) != 2 || len(local.Keys) != 1 ||
+				local.PendingBase == nil || len(local.PendingMutations) != 3 ||
+				local.PendingMutations[2].Alias != removedConnection.Name ||
+				local.PendingMutations[2].Operation != "removed" {
+				t.Fatal("reviewed legacy remove did not preserve the existing ledger and append exactly once")
+			}
 		})
 
-		t.Run("legacy key remove auto-pushes without a transaction", func(t *testing.T) {
+		t.Run("legacy key remove keeps compatibility output and appends without publication", func(t *testing.T) {
 			cli := newCompiledCLIHarness(t)
 			sync := newCompiledSyncFixture(t)
 			removedKey := "ISSUE17_LEGACY_PRIVATE_KEY_CANARY"
@@ -2697,11 +2811,6 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 			}
 			unrelatedKey := config.SSHKey{Name: "unrelated-key", PrivateKey: preservedKey}
 			pendingBase, pendingMutations := compiledLegacyPendingLedger()
-			want := &config.Vault{
-				Connections: []config.Connection{connection},
-				Keys:        []config.SSHKey{unrelatedKey},
-				PendingBase: pendingBase, PendingMutations: pendingMutations,
-			}
 			starting := &config.Vault{
 				Connections: []config.Connection{connection},
 				Keys: []config.SSHKey{
@@ -2726,29 +2835,26 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 				"token":                      "ISSUE17_LEGACY_KEY_TOKEN_CANARY",
 				"passphrase":                 cli.passphrase,
 			})
-			if got := sync.MethodCount("PUT"); got != 1 {
-				t.Fatalf("legacy key remove PUT count = %d, want 1", got)
+			if got := sync.MethodCount("PUT"); got != 0 {
+				t.Fatalf("reviewed legacy key remove PUT count = %d, want 0", got)
 			}
-			if got := sync.MethodCount("HEAD"); got != 2 {
-				t.Fatalf("legacy key remove HEAD count = %d, want 2", got)
+			if got := sync.MethodCount("HEAD"); got != 1 {
+				t.Fatalf("reviewed legacy key remove HEAD count = %d, want refresh-only count 1", got)
 			}
 			if got := sync.MethodCount("GET"); got != 1 {
 				t.Fatalf("legacy key remove GET count = %d, want 1", got)
 			}
-			assertCompiledEncryptedPublication(t, sync.UploadedBlob(), cli.passphrase, map[string]string{
-				"removed_private_key":        removedKey,
-				"preserved_private_key":      preservedKey,
-				"password":                   password,
-				"ledger_base_password":       "ISSUE17_LEGACY_LEDGER_BASE_PASSWORD_CANARY",
-				"ledger_updated_password":    "ISSUE17_LEGACY_LEDGER_UPDATED_PASSWORD_CANARY",
-				"ledger_base_private_key":    "ISSUE17_LEGACY_LEDGER_BASE_PRIVATE_KEY_CANARY",
-				"ledger_pending_private_key": "ISSUE17_LEGACY_LEDGER_PENDING_PRIVATE_KEY_CANARY",
-			}, want)
-			assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), want)
+			local := cli.LoadVaultIdentity(t)
+			if len(local.Connections) != 1 || len(local.Keys) != 1 ||
+				local.PendingBase == nil || len(local.PendingMutations) != 3 ||
+				local.PendingMutations[2].KeyName != "legacy-key" ||
+				local.PendingMutations[2].Operation != "saved_key_removed" {
+				t.Fatal("reviewed saved-key removal did not preserve the existing ledger and append exactly once")
+			}
 		})
 
 		for _, mode := range []string{"merge", "replace"} {
-			t.Run("import "+mode+" saves without publication or transaction", func(t *testing.T) {
+			t.Run("import "+mode+" appends one bulk transaction without publication", func(t *testing.T) {
 				cli := newCompiledCLIHarness(t)
 				sync := newCompiledSyncFixture(t)
 				starting := compiledLegacyImportStartingVault()
@@ -2777,7 +2883,13 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 					"passphrase":           cli.passphrase,
 				})
 				action := mode + "d"
-				assertCompiledExactMachineOutput(t, result, "{\n  \"ok\": true,\n  \"action\": \""+action+"\",\n  \"connections\": 1,\n  \"keys\": 0\n}\n")
+				value := assertCompiledJSONSuccess(t, result)
+				if value["action"] != action || value["connections"] != float64(1) ||
+					value["keys"] != float64(0) || value["sync_pending"] != true ||
+					value["applied"] != true || value["pushed"] != false {
+					t.Fatalf("reviewed import receipt changed; output=%s", compiledOutputIdentity(result))
+				}
+				transactionID := compiledTransactionID(t, value, result)
 				if got := sync.MethodCount("PUT"); got != 0 {
 					t.Fatalf("legacy import %s PUT count = %d, want 0", mode, got)
 				}
@@ -2791,16 +2903,29 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 					Name: "imported-" + mode, Host: "192.0.2.60", Port: 22, User: "runner",
 					Password: importPassword, Group: "imported",
 				}
-				want := starting
+				wantConnections := 1
+				wantKeys := 0
 				if mode == "merge" {
-					want.Connections = append(want.Connections, imported)
-					want.PendingBase = nil
-					want.PendingMutations = nil
-				} else {
-					want.Connections = []config.Connection{imported}
-					want.Keys = nil
+					wantConnections = len(starting.Connections) + 1
+					wantKeys = len(starting.Keys)
 				}
-				assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), want)
+				local := cli.LoadVaultIdentity(t)
+				wantAffectedAliases := 1
+				if mode == "replace" {
+					wantAffectedAliases = len(starting.Connections) + 1
+				}
+				foundImportedAlias := false
+				for _, alias := range local.PendingMutations[2].Aliases {
+					foundImportedAlias = foundImportedAlias || alias == imported.Name
+				}
+				if len(local.Connections) != wantConnections || len(local.Keys) != wantKeys ||
+					local.PendingBase == nil || len(local.PendingMutations) != 3 ||
+					local.PendingMutations[2].ID != transactionID ||
+					local.PendingMutations[2].Operation != "import_"+action ||
+					len(local.PendingMutations[2].Aliases) != wantAffectedAliases ||
+					!foundImportedAlias {
+					t.Fatal("reviewed import did not preserve the existing ledger and append one atomic bulk transaction")
+				}
 			})
 		}
 	})

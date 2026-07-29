@@ -1,11 +1,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
-	"ssm/internal/config"
+	"ssm/internal/inventorytransaction"
 	"ssm/internal/machinecontract"
 )
 
@@ -34,26 +35,24 @@ func runKeysRemove(name string) {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 
-	found := -1
-	for i, k := range v.Keys {
-		if k.Name == name {
-			found = i
-			break
+	result, err := inventorytransaction.New(inventorytransaction.Options{
+		MasterPass: masterPass,
+	}).RemoveSavedKey(v, name)
+	if err != nil {
+		var notFound *inventorytransaction.SavedKeyNotFoundError
+		if errors.As(err, &notFound) {
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
+				Message: fmt.Sprintf("key %q not found", name),
+				Alias:   name,
+				Tool:    "legacy_not_found",
+				Script:  "key",
+			}))
 		}
-	}
-	if found == -1 {
-		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
-			Message: fmt.Sprintf("key %q not found", name),
-			Alias:   name,
-			Tool:    "legacy_not_found",
-			Script:  "key",
-		}))
-	}
-
-	v.Keys = append(v.Keys[:found], v.Keys[found+1:]...)
-	if err := config.Save(v, masterPass); err != nil {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
-	autoPushOpaque()
+	if machineJSON {
+		writeMachineValue(result)
+		return
+	}
 	fmt.Printf("Key \"%s\" removed.\n", name)
 }

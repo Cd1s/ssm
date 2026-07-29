@@ -39,14 +39,20 @@ type InventorySnapshot struct {
 }
 
 type PendingMutation struct {
-	ID         string      `json:"id"`
-	Alias      string      `json:"alias"`
-	Operation  string      `json:"operation"`
-	CreatedAt  string      `json:"created_at"`
-	Before     *Connection `json:"before,omitempty"`
-	After      *Connection `json:"after,omitempty"`
-	KeysBefore []SSHKey    `json:"keys_before"`
-	KeysAfter  []SSHKey    `json:"keys_after"`
+	ID              string             `json:"id"`
+	Alias           string             `json:"alias"`
+	Aliases         []string           `json:"aliases,omitempty"`
+	KeyName         string             `json:"key_name,omitempty"`
+	Operation       string             `json:"operation"`
+	CreatedAt       string             `json:"created_at"`
+	Before          *Connection        `json:"before,omitempty"`
+	After           *Connection        `json:"after,omitempty"`
+	KeysBefore      []SSHKey           `json:"keys_before"`
+	KeysAfter       []SSHKey           `json:"keys_after"`
+	BulkBefore      *InventorySnapshot `json:"bulk_before,omitempty"`
+	BulkAfter       *InventorySnapshot `json:"bulk_after,omitempty"`
+	ConnectionCount int                `json:"connection_count,omitempty"`
+	KeyCount        int                `json:"key_count,omitempty"`
 }
 
 type MergeConflict struct {

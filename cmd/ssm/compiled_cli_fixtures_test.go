@@ -30,6 +30,8 @@ import (
 
 var compiledUpdateServer *compiledUpdateFixture
 
+const compiledTestClockPath = "/test-clock"
+
 type compiledSyncFixture struct {
 	server *httptest.Server
 
@@ -40,6 +42,14 @@ type compiledSyncFixture struct {
 	statusAfter  map[string]compiledSyncStatusAfter
 	methodCounts map[string]int
 	uploadedBlob []byte
+	clock        time.Time
+	clockReads   []time.Time
+
+	clockRequestCount int
+	clockBarrierAt    int
+	clockBarrierReady chan struct{}
+	clockBarrierDone  chan struct{}
+	clockReleaseOnce  sync.Once
 }
 
 type compiledSyncStatusAfter struct {
@@ -50,16 +60,42 @@ type compiledSyncStatusAfter struct {
 func newCompiledSyncFixture(t *testing.T) *compiledSyncFixture {
 	t.Helper()
 	fixture := &compiledSyncFixture{
-		methodStatus: map[string]int{},
-		statusAfter:  map[string]compiledSyncStatusAfter{},
-		methodCounts: map[string]int{},
+		methodStatus:      map[string]int{},
+		statusAfter:       map[string]compiledSyncStatusAfter{},
+		methodCounts:      map[string]int{},
+		clockBarrierReady: make(chan struct{}),
+		clockBarrierDone:  make(chan struct{}),
 	}
 	fixture.server = httptest.NewServer(http.HandlerFunc(fixture.serveHTTP))
-	t.Cleanup(fixture.server.Close)
+	t.Cleanup(func() {
+		fixture.ReleaseClockBarrier()
+		fixture.server.Close()
+	})
 	return fixture
 }
 
 func (f *compiledSyncFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == compiledTestClockPath {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"fixture method rejected"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		f.mu.Lock()
+		f.clockRequestCount++
+		requestCount := f.clockRequestCount
+		barrierAt := f.clockBarrierAt
+		f.mu.Unlock()
+		if requestCount == barrierAt {
+			close(f.clockBarrierReady)
+			<-f.clockBarrierDone
+		}
+		f.mu.Lock()
+		now := f.clock
+		f.clockReads = append(f.clockReads, now)
+		f.mu.Unlock()
+		_, _ = io.WriteString(w, strconv.FormatInt(now.UnixNano(), 10))
+		return
+	}
 	if r.URL.Path != "/sync" {
 		http.NotFound(w, r)
 		return
@@ -108,6 +144,46 @@ func (f *compiledSyncFixture) serveHTTP(w http.ResponseWriter, r *http.Request) 
 
 func (f *compiledSyncFixture) URL() string {
 	return f.server.URL
+}
+
+func (f *compiledSyncFixture) ClockURL() string {
+	return f.server.URL + compiledTestClockPath
+}
+
+func (f *compiledSyncFixture) SetClock(t *testing.T, now time.Time) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clock = now
+}
+
+func (f *compiledSyncFixture) BlockClockRequest(t *testing.T, requestCount int) {
+	t.Helper()
+	if requestCount <= 0 {
+		t.Fatalf("compiled clock barrier request count = %d, want positive", requestCount)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clockBarrierAt = requestCount
+}
+
+func (f *compiledSyncFixture) WaitForClockBarrier() error {
+	select {
+	case <-f.clockBarrierReady:
+		return nil
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("compiled child did not reach the clock barrier")
+	}
+}
+
+func (f *compiledSyncFixture) ReleaseClockBarrier() {
+	f.clockReleaseOnce.Do(func() { close(f.clockBarrierDone) })
+}
+
+func (f *compiledSyncFixture) ClockReads() []time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]time.Time(nil), f.clockReads...)
 }
 
 func (f *compiledSyncFixture) SetRemote(t *testing.T, blob []byte, etag string) {

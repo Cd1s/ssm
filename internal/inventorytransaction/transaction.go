@@ -79,6 +79,56 @@ type MutationReceipt struct {
 	Verification  *agentssh.CheckResult `json:"verification,omitempty"`
 }
 
+// SavedKeyMutationReceipt is the stable secret-free result of one reviewed
+// saved-key removal.
+type SavedKeyMutationReceipt struct {
+	OK            bool   `json:"ok"`
+	Action        string `json:"action"`
+	KeyName       string `json:"key_name"`
+	Keys          int    `json:"keys"`
+	SyncPending   bool   `json:"sync_pending"`
+	Applied       bool   `json:"applied"`
+	Pushed        bool   `json:"pushed"`
+	TransactionID string `json:"transaction_id"`
+}
+
+// SavedKeyNotFoundError lets compatibility adapters preserve their established
+// not-found rendering without reconstructing saved-key lookup policy.
+type SavedKeyNotFoundError struct {
+	Name string
+}
+
+func (e *SavedKeyNotFoundError) Error() string {
+	return fmt.Sprintf("key %q not found", e.Name)
+}
+
+// ImportReceipt is the stable secret-free result of one reviewed bulk import.
+type ImportReceipt struct {
+	OK            bool                   `json:"ok"`
+	Action        string                 `json:"action"`
+	Connections   int                    `json:"connections"`
+	Keys          int                    `json:"keys"`
+	Aliases       []string               `json:"aliases"`
+	Conflicts     []config.MergeConflict `json:"conflicts,omitempty"`
+	SyncPending   bool                   `json:"sync_pending"`
+	Applied       bool                   `json:"applied"`
+	Pushed        bool                   `json:"pushed"`
+	TransactionID string                 `json:"transaction_id"`
+}
+
+// MergeReportError identifies the compatible merge-report persistence stage.
+type MergeReportError struct {
+	Err error
+}
+
+func (e *MergeReportError) Error() string {
+	return fmt.Sprintf("save merge report: %v", e.Err)
+}
+
+func (e *MergeReportError) Unwrap() error {
+	return e.Err
+}
+
 // VerificationError keeps the safe candidate receipt available to the command
 // renderer while guaranteeing the candidate was not persisted.
 type VerificationError struct {
@@ -188,6 +238,193 @@ func (t *Transaction) ApplyHost(before *config.Vault, change HostChange) (Mutati
 	}
 	receipt.Applied = true
 	return receipt, nil
+}
+
+// RemoveSavedKey validates references, appends, and persists one reviewed
+// saved-key removal. Referenced keys remain unchanged.
+func (t *Transaction) RemoveSavedKey(before *config.Vault, name string) (SavedKeyMutationReceipt, error) {
+	if err := validateLedger(before); err != nil {
+		return SavedKeyMutationReceipt{}, fmt.Errorf("saved-key transaction: %w", err)
+	}
+	if before.GetKey(name) == nil {
+		return SavedKeyMutationReceipt{}, &SavedKeyNotFoundError{Name: name}
+	}
+	references := make([]string, 0)
+	for _, connection := range before.Connections {
+		if connection.KeyName == name {
+			references = append(references, connection.Name)
+		}
+	}
+	sort.Strings(references)
+	if len(references) > 0 {
+		return SavedKeyMutationReceipt{}, fmt.Errorf(
+			"saved key %q is still referenced by aliases %s",
+			name,
+			strings.Join(references, ", "),
+		)
+	}
+
+	after := cloneVault(before)
+	if !removeKeyByName(after, name) {
+		return SavedKeyMutationReceipt{}, &SavedKeyNotFoundError{Name: name}
+	}
+	id, err := t.newID()
+	if err != nil {
+		return SavedKeyMutationReceipt{}, fmt.Errorf("saved-key transaction: %w", err)
+	}
+	if after.PendingBase == nil {
+		if len(after.PendingMutations) != 0 {
+			return SavedKeyMutationReceipt{}, fmt.Errorf("saved-key transaction: pending mutations require a pending base")
+		}
+		after.PendingBase = snapshotInventory(before)
+	}
+	after.PendingMutations = append(after.PendingMutations, config.PendingMutation{
+		ID: id, KeyName: name, Operation: "saved_key_removed",
+		CreatedAt:  t.now().UTC().Format(time.RFC3339Nano),
+		KeysBefore: append([]config.SSHKey(nil), before.Keys...),
+		KeysAfter:  append([]config.SSHKey(nil), after.Keys...),
+		KeyCount:   1,
+	})
+	if err := config.Save(after, t.masterPass); err != nil {
+		return SavedKeyMutationReceipt{}, fmt.Errorf("save saved-key transaction: %w", err)
+	}
+	return SavedKeyMutationReceipt{
+		OK: true, Action: "saved_key_removed", KeyName: name, Keys: 1,
+		SyncPending: true, Applied: true, TransactionID: id,
+	}, nil
+}
+
+// ApplyImport validates the complete imported inventory and persists it as one
+// atomic bulk transaction.
+func (t *Transaction) ApplyImport(before, imported *config.Vault, replace bool) (ImportReceipt, error) {
+	if err := validateLedger(before); err != nil {
+		return ImportReceipt{}, fmt.Errorf("import transaction: %w", err)
+	}
+	if err := validateImportInventory(imported); err != nil {
+		return ImportReceipt{}, err
+	}
+
+	after := cloneVault(before)
+	report := config.MergeReport{Conflicts: []config.MergeConflict{}}
+	if replace {
+		after.Connections = append([]config.Connection(nil), imported.Connections...)
+		after.Keys = append([]config.SSHKey(nil), imported.Keys...)
+	} else {
+		merged, mergeReport := config.MergeVaultsWithReport(
+			inventoryOnly(before),
+			inventoryOnly(imported),
+		)
+		after.Connections = merged.Connections
+		after.Keys = merged.Keys
+		report = mergeReport
+	}
+
+	id, err := t.newID()
+	if err != nil {
+		return ImportReceipt{}, fmt.Errorf("import transaction: %w", err)
+	}
+	if after.PendingBase == nil {
+		if len(after.PendingMutations) != 0 {
+			return ImportReceipt{}, fmt.Errorf("import transaction: pending mutations require a pending base")
+		}
+		after.PendingBase = snapshotInventory(before)
+	}
+	aliases := affectedConnectionAliases(before.Connections, after.Connections)
+	affectedKeys := len(changedKeyNames(before.Keys, after.Keys))
+	action := "merged"
+	if replace {
+		action = "replaced"
+	}
+	after.PendingMutations = append(after.PendingMutations, config.PendingMutation{
+		ID: id, Aliases: aliases, Operation: "import_" + action,
+		CreatedAt:       t.now().UTC().Format(time.RFC3339Nano),
+		KeysBefore:      append([]config.SSHKey(nil), before.Keys...),
+		KeysAfter:       append([]config.SSHKey(nil), after.Keys...),
+		BulkBefore:      snapshotInventory(before),
+		BulkAfter:       snapshotInventory(after),
+		ConnectionCount: len(aliases),
+		KeyCount:        affectedKeys,
+	})
+	if !replace {
+		if err := config.SaveMergeReport(report); err != nil {
+			return ImportReceipt{}, &MergeReportError{Err: err}
+		}
+	}
+	if err := config.Save(after, t.masterPass); err != nil {
+		return ImportReceipt{}, fmt.Errorf("save import transaction: %w", err)
+	}
+	return ImportReceipt{
+		OK: true, Action: action, Connections: len(imported.Connections),
+		Keys: len(imported.Keys), Aliases: aliases, Conflicts: report.Conflicts,
+		SyncPending: true, Applied: true, TransactionID: id,
+	}, nil
+}
+
+func affectedConnectionAliases(before, after []config.Connection) []string {
+	beforeByAlias := make(map[string]config.Connection, len(before))
+	afterByAlias := make(map[string]config.Connection, len(after))
+	aliases := make(map[string]bool, len(before)+len(after))
+	for _, connection := range before {
+		beforeByAlias[connection.Name] = connection
+		aliases[connection.Name] = true
+	}
+	for _, connection := range after {
+		afterByAlias[connection.Name] = connection
+		aliases[connection.Name] = true
+	}
+	affected := make([]string, 0, len(aliases))
+	for alias := range aliases {
+		previous, hadPrevious := beforeByAlias[alias]
+		next, hasNext := afterByAlias[alias]
+		if hadPrevious != hasNext || previous != next {
+			affected = append(affected, alias)
+		}
+	}
+	sort.Strings(affected)
+	return affected
+}
+
+func validateImportInventory(imported *config.Vault) error {
+	if imported == nil {
+		return fmt.Errorf("import inventory is required")
+	}
+	keys := make(map[string]bool, len(imported.Keys))
+	for _, key := range imported.Keys {
+		if strings.TrimSpace(key.Name) == "" {
+			return fmt.Errorf("imported saved key name must not be empty")
+		}
+		if keys[key.Name] {
+			return fmt.Errorf("imported saved key %q is duplicated", key.Name)
+		}
+		keys[key.Name] = true
+	}
+	aliases := make(map[string]bool, len(imported.Connections))
+	for _, connection := range imported.Connections {
+		if strings.TrimSpace(connection.Name) == "" {
+			return fmt.Errorf("imported alias must not be empty")
+		}
+		if aliases[connection.Name] {
+			return fmt.Errorf("imported alias %q is duplicated", connection.Name)
+		}
+		aliases[connection.Name] = true
+		if strings.TrimSpace(connection.Host) == "" || strings.TrimSpace(connection.User) == "" {
+			return fmt.Errorf("imported alias %q requires host and user", connection.Name)
+		}
+		if connection.Port < 1 || connection.Port > 65535 {
+			return fmt.Errorf("imported alias %q has invalid port", connection.Name)
+		}
+		if connection.Password == "" && connection.KeyName == "" {
+			return fmt.Errorf("imported alias %q has no supported auth material", connection.Name)
+		}
+		if connection.KeyName != "" && !keys[connection.KeyName] {
+			return fmt.Errorf(
+				"imported alias %q references missing saved key %q",
+				connection.Name,
+				connection.KeyName,
+			)
+		}
+	}
+	return nil
 }
 
 func (t *Transaction) newID() (string, error) {
@@ -502,10 +739,14 @@ func View(connection config.Connection) HostView {
 
 // MutationView is the stable, secret-free public view of a pending mutation.
 type MutationView struct {
-	ID        string `json:"id"`
-	Alias     string `json:"alias"`
-	Operation string `json:"operation"`
-	CreatedAt string `json:"created_at"`
+	ID          string   `json:"id"`
+	Alias       string   `json:"alias,omitempty"`
+	Aliases     []string `json:"aliases,omitempty"`
+	KeyName     string   `json:"key_name,omitempty"`
+	Operation   string   `json:"operation"`
+	CreatedAt   string   `json:"created_at"`
+	Connections *int     `json:"connections,omitempty"`
+	Keys        *int     `json:"keys,omitempty"`
 }
 
 // PublicationReceipt is the stable secret-free result of an explicit reviewed
@@ -584,10 +825,19 @@ func (t *Transaction) Publish(v *config.Vault, only string) (PublicationReceipt,
 func mutationViews(mutations []config.PendingMutation) []MutationView {
 	views := make([]MutationView, 0, len(mutations))
 	for _, mutation := range mutations {
-		views = append(views, MutationView{
-			ID: mutation.ID, Alias: mutation.Alias,
-			Operation: mutation.Operation, CreatedAt: mutation.CreatedAt,
-		})
+		view := MutationView{
+			ID: mutation.ID, Alias: mutation.Alias, Aliases: mutation.Aliases,
+			KeyName: mutation.KeyName, Operation: mutation.Operation,
+			CreatedAt: mutation.CreatedAt,
+		}
+		if mutation.BulkAfter != nil {
+			connections, keys := mutation.ConnectionCount, mutation.KeyCount
+			view.Connections, view.Keys = &connections, &keys
+		} else if mutation.KeyName != "" {
+			keys := mutation.KeyCount
+			view.Keys = &keys
+		}
+		views = append(views, view)
 	}
 	return views
 }
@@ -595,11 +845,16 @@ func mutationViews(mutations []config.PendingMutation) []MutationView {
 // Dependency is a safe explanation of one pending prerequisite. It contains no
 // connection credentials or saved-key material.
 type Dependency struct {
-	ID        string
-	Alias     string
-	Operation string
-	KeyName   string
-	Reason    string
+	ID          string
+	Alias       string
+	Aliases     []string
+	Operation   string
+	CreatedAt   string
+	KeyName     string
+	Connections int
+	Keys        int
+	Bulk        bool
+	Reason      string
 }
 
 // DependencyError reports the complete deterministic prerequisite set for one
@@ -618,13 +873,29 @@ func (e *DependencyError) Error() string {
 	for _, dependency := range e.Required {
 		fmt.Fprintf(
 			&message,
-			` id=%q alias=%q operation=%q`,
+			` id=%q`,
 			dependency.ID,
-			dependency.Alias,
+		)
+		if dependency.Alias != "" {
+			fmt.Fprintf(&message, ` alias=%q`, dependency.Alias)
+		}
+		if len(dependency.Aliases) > 0 {
+			fmt.Fprintf(&message, ` aliases=%q`, strings.Join(dependency.Aliases, ","))
+		}
+		fmt.Fprintf(
+			&message,
+			` operation=%q created_at=%q`,
 			dependency.Operation,
+			dependency.CreatedAt,
 		)
 		if dependency.KeyName != "" {
 			fmt.Fprintf(&message, ` key_name=%q`, dependency.KeyName)
+		}
+		if dependency.Bulk || dependency.Connections > 0 {
+			fmt.Fprintf(&message, ` connections=%d`, dependency.Connections)
+		}
+		if dependency.Bulk || dependency.Keys > 0 {
+			fmt.Fprintf(&message, ` keys=%d`, dependency.Keys)
 		}
 		fmt.Fprintf(&message, ` reason=%q;`, dependency.Reason)
 	}
@@ -734,8 +1005,10 @@ func dependencies(mutations []config.PendingMutation, selectedIndex int) []Depen
 			}
 			mutation := mutations[edge.index]
 			required[edge.index] = Dependency{
-				ID: mutation.ID, Alias: mutation.Alias, Operation: mutation.Operation,
-				KeyName: edge.keyName, Reason: edge.reason,
+				ID: mutation.ID, Alias: mutation.Alias, Aliases: mutation.Aliases,
+				Operation: mutation.Operation, CreatedAt: mutation.CreatedAt,
+				KeyName: edge.keyName, Connections: mutation.ConnectionCount,
+				Keys: mutation.KeyCount, Bulk: mutation.BulkAfter != nil, Reason: edge.reason,
 			}
 		}
 	}
@@ -758,7 +1031,11 @@ func directDependencyEdges(mutations []config.PendingMutation, selectedIndex int
 	required := make([]dependencyEdge, 0)
 	for i := 0; i < selectedIndex; i++ {
 		earlier := mutations[i]
-		if earlier.Alias == selected.Alias {
+		if selected.BulkAfter != nil || earlier.BulkAfter != nil {
+			required = append(required, dependencyEdge{index: i, reason: "inventory_order"})
+			continue
+		}
+		if earlier.Alias != "" && earlier.Alias == selected.Alias {
 			required = append(required, dependencyEdge{index: i, reason: "alias_order"})
 			continue
 		}
@@ -865,16 +1142,23 @@ func keyByName(keys []config.SSHKey, name string) *config.SSHKey {
 }
 
 func applyMutation(v *config.Vault, mutation config.PendingMutation) {
-	idx := exactConnectionIndex(v, mutation.Alias)
-	switch {
-	case mutation.After == nil:
-		if idx >= 0 {
-			v.Connections = append(v.Connections[:idx], v.Connections[idx+1:]...)
+	if mutation.BulkAfter != nil {
+		v.Connections = append([]config.Connection(nil), mutation.BulkAfter.Connections...)
+		v.Keys = append([]config.SSHKey(nil), mutation.BulkAfter.Keys...)
+		return
+	}
+	if mutation.KeyName == "" {
+		idx := exactConnectionIndex(v, mutation.Alias)
+		switch {
+		case mutation.After == nil:
+			if idx >= 0 {
+				v.Connections = append(v.Connections[:idx], v.Connections[idx+1:]...)
+			}
+		case idx >= 0:
+			v.Connections[idx] = *mutation.After
+		default:
+			v.Connections = append(v.Connections, *mutation.After)
 		}
-	case idx >= 0:
-		v.Connections[idx] = *mutation.After
-	default:
-		v.Connections = append(v.Connections, *mutation.After)
 	}
 	applyKeyDelta(v, mutation.KeysBefore, mutation.KeysAfter)
 	sort.SliceStable(v.Connections, func(i, j int) bool {
