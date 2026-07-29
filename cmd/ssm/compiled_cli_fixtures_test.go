@@ -78,6 +78,10 @@ func (f *compiledSyncFixture) serveHTTP(w http.ResponseWriter, r *http.Request) 
 
 	switch r.Method {
 	case http.MethodHead:
+		if status == http.StatusOK && len(f.remoteBlob) == 0 && f.remoteETag == "" {
+			http.NotFound(w, r)
+			return
+		}
 		if f.remoteETag != "" {
 			w.Header().Set("ETag", `"`+f.remoteETag+`"`)
 		}
@@ -97,7 +101,9 @@ func (f *compiledSyncFixture) serveHTTP(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		f.uploadedBlob = append([]byte(nil), body...)
-		if f.remoteETag != "" {
+		if status == http.StatusOK {
+			f.remoteBlob = append([]byte(nil), body...)
+			f.remoteETag = compiledOpaqueIdentity(body)
 			w.Header().Set("ETag", `"`+f.remoteETag+`"`)
 		}
 		w.WriteHeader(status)

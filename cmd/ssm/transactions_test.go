@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -170,7 +169,7 @@ func TestScopedPushDoesNotPublishUnrelatedPendingMutation(t *testing.T) {
 		if err != nil {
 			t.Errorf("read upload: %v", err)
 		}
-		w.Header().Set("ETag", `"scoped-etag"`)
+		w.Header().Set("ETag", `"`+compiledOpaqueIdentity(uploaded)+`"`)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -307,7 +306,7 @@ func TestScopedPushRemoteFailureRestoresExactPendingLedger(t *testing.T) {
 	}
 }
 
-func TestPushAllPublishesExactPrePersistedFinalizedVault(t *testing.T) {
+func TestPushAllPersistsIntentBeforePUTAndFinalizesAfterConfirmation(t *testing.T) {
 	home := t.TempDir()
 	setTestHome(t, home)
 	pass := "ISSUE20_SUCCESS_PASSPHRASE_CANARY"   //nolint:gosec // test-only vault passphrase
@@ -331,23 +330,34 @@ func TestPushAllPublishesExactPrePersistedFinalizedVault(t *testing.T) {
 	}
 
 	type publicationObservation struct {
-		uploaded  []byte
-		persisted []byte
-		err       error
+		uploaded    []byte
+		persisted   []byte
+		intentAtPUT []byte
+		err         error
 	}
 	observed := make(chan publicationObservation, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead && r.URL.Path == "/sync" {
+			http.NotFound(w, r)
+			return
+		}
 		observation := publicationObservation{}
 		if r.Method != http.MethodPut || r.URL.Path != "/sync" {
-			observation.err = fmt.Errorf("request = %s %s, want PUT /sync", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
 		} else {
 			observation.uploaded, observation.err = io.ReadAll(r.Body)
 			if observation.err == nil {
 				observation.persisted, observation.err = os.ReadFile(config.Path())
 			}
+			if observation.err == nil {
+				observation.intentAtPUT, observation.err = os.ReadFile(
+					filepath.Join(config.Dir(), "publishing-intent.json"),
+				)
+			}
 		}
 		observed <- observation
-		w.Header().Set("ETag", `"finalized-success"`)
+		w.Header().Set("ETag", `"`+compiledOpaqueIdentity(observation.uploaded)+`"`)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -377,28 +387,54 @@ func TestPushAllPublishesExactPrePersistedFinalizedVault(t *testing.T) {
 		if strings.Contains(string(observation.uploaded), canary) {
 			t.Fatalf("successful push exposed %s plaintext in transport", label)
 		}
+		if strings.Contains(string(observation.intentAtPUT), canary) {
+			t.Fatalf("successful push exposed %s in publishing intent", label)
+		}
 	}
-	if !bytes.Equal(observation.uploaded, observation.persisted) {
-		t.Fatal("--all did not publish the exact opaque vault bytes persisted before PUT")
+	if bytes.Equal(observation.uploaded, observation.persisted) {
+		t.Fatal("--all marked the local ledger published before target confirmation")
 	}
-	plaintext, decryptErr := securevault.Decrypt(observation.persisted, pass)
+	persistedPlaintext, decryptErr := securevault.Decrypt(observation.persisted, pass)
 	if decryptErr != nil {
 		t.Fatal(decryptErr)
 	}
 	var persistedAtPUT config.Vault
-	if unmarshalErr := json.Unmarshal(plaintext, &persistedAtPUT); unmarshalErr != nil {
+	if unmarshalErr := json.Unmarshal(persistedPlaintext, &persistedAtPUT); unmarshalErr != nil {
+		t.Fatal(unmarshalErr)
+	}
+	if !reflect.DeepEqual(&persistedAtPUT, original) {
+		t.Fatal("local vault did not retain the exact pending ledger until target confirmation")
+	}
+	plaintext, decryptErr := securevault.Decrypt(observation.uploaded, pass)
+	if decryptErr != nil {
+		t.Fatal(decryptErr)
+	}
+	var published config.Vault
+	if unmarshalErr := json.Unmarshal(plaintext, &published); unmarshalErr != nil {
 		t.Fatal(unmarshalErr)
 	}
 	wantFinalized := &config.Vault{Connections: []config.Connection{alpha, beta}}
-	if !reflect.DeepEqual(&persistedAtPUT, wantFinalized) {
-		t.Fatalf("vault at PUT was not finalized: got=%+v want=%+v", &persistedAtPUT, wantFinalized)
+	if !reflect.DeepEqual(&published, wantFinalized) {
+		t.Fatal("published target was not the exact finalized projection")
 	}
-	after, readErr := os.ReadFile(config.Path())
-	if readErr != nil {
-		t.Fatal(readErr)
+	var intent map[string]any
+	if err := json.Unmarshal(observation.intentAtPUT, &intent); err != nil {
+		t.Fatalf("decode intent persisted before PUT: %v", err)
 	}
-	if !bytes.Equal(after, observation.persisted) {
-		t.Fatal("local vault was saved again after the successful PUT")
+	ids, ok := intent["transaction_ids"].([]any)
+	if !ok || len(ids) != 2 || ids[0] != "tx_alpha" || ids[1] != "tx_beta" ||
+		intent["target_encrypted_blob_identity"] != compiledOpaqueIdentity(observation.uploaded) {
+		t.Fatal("intent did not bind the exact ordered scope and target before PUT")
+	}
+	after, loadErr := config.Load(pass)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if !reflect.DeepEqual(after, wantFinalized) {
+		t.Fatal("confirmed target did not finalize the exact local transaction IDs")
+	}
+	if _, err := os.Stat(filepath.Join(config.Dir(), "publishing-intent.json")); !os.IsNotExist(err) {
+		t.Fatalf("confirmed publishing intent still exists: %v", err)
 	}
 	for _, transactionID := range []string{"tx_alpha", "tx_beta"} {
 		if !strings.Contains(string(output), transactionID) {

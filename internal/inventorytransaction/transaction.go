@@ -6,9 +6,12 @@ package inventorytransaction
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -25,6 +28,10 @@ import (
 const maxHostCredentialBytes = 1 << 20
 
 var safeHostAliasPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+
+// publicationFaultInjection is enabled only in the compiled test binary
+// through a linker value. Production builds ignore the test environment seam.
+var publicationFaultInjection string
 
 // HostAction identifies one modern reviewed host mutation.
 type HostAction string
@@ -519,6 +526,42 @@ type PublicationReceipt struct {
 	Remaining []MutationView `json:"remaining_mutations"`
 }
 
+// PublicationRecovery is the additive, secret-free status projection of one
+// outstanding durable publishing intent.
+type PublicationRecovery struct {
+	State                string   `json:"state"`
+	Scope                string   `json:"scope"`
+	TransactionIDs       []string `json:"transaction_ids"`
+	PrerequisiteExists   bool     `json:"prerequisite_remote_exists"`
+	PrerequisiteIdentity string   `json:"prerequisite_remote_identity,omitempty"`
+	TargetIdentity       string   `json:"target_encrypted_blob_identity"`
+	ObservedExists       bool     `json:"observed_remote_exists,omitempty"`
+	ObservedIdentity     string   `json:"observed_remote_identity,omitempty"`
+}
+
+type publishingIntent struct {
+	Version              int            `json:"version"`
+	State                string         `json:"state"`
+	Scope                string         `json:"scope"`
+	TransactionIDs       []string       `json:"transaction_ids"`
+	Transactions         []MutationView `json:"transactions"`
+	PrerequisiteExists   bool           `json:"prerequisite_remote_exists"`
+	PrerequisiteIdentity string         `json:"prerequisite_remote_identity,omitempty"`
+	TargetIdentity       string         `json:"target_encrypted_blob_identity"`
+	ObservedExists       bool           `json:"observed_remote_exists,omitempty"`
+	ObservedIdentity     string         `json:"observed_remote_identity,omitempty"`
+	CreatedAt            string         `json:"created_at"`
+}
+
+const (
+	publishingIntentVersion  = 1
+	intentPrepared           = "prepared"
+	intentReady              = "ready"
+	intentAmbiguous          = "ambiguous"
+	intentDivergent          = "divergent"
+	intentFinalizationFailed = "finalization_failed"
+)
+
 // Pending returns stable secret-free pending views in ledger order.
 func Pending(v *config.Vault) []MutationView {
 	if v == nil {
@@ -527,25 +570,33 @@ func Pending(v *config.Vault) []MutationView {
 	return mutationViews(v.PendingMutations)
 }
 
-// Publish performs secret-free dependency preflight, exact projection, local
-// pre-persistence, opaque publication, and the bounded compatibility rollback
-// retained until durable intent reconciliation is implemented.
+// Publish performs secret-free dependency preflight, exact projection, durable
+// intent persistence, opaque publication, target confirmation, and exact local
+// finalization. Pending IDs are never removed before target equality.
 func (t *Transaction) Publish(v *config.Vault, only string) (PublicationReceipt, error) {
 	if t.sync == nil {
 		return PublicationReceipt{}, fmt.Errorf("sync transaction is required for publication")
 	}
-	originalBlob, originalBlobErr := os.ReadFile(config.Path())
-	originalBlobExists := originalBlobErr == nil
-	if originalBlobErr != nil && !os.IsNotExist(originalBlobErr) {
-		return PublicationReceipt{}, originalBlobErr
+	reconciled, recovery, err := t.reconcilePublishingIntent()
+	if err != nil {
+		return PublicationReceipt{}, err
 	}
-	restoreOriginal := func() {
-		if originalBlobExists {
-			_ = config.WritePrivateFile(config.Path(), originalBlob)
-		}
+	if recovery != nil && recovery.State == "confirmed" {
+		return reconciled, nil
 	}
 
-	projection, err := project(v, only)
+	publicationOnly := only
+	var projection projection
+	if recovery != nil && recovery.State == "pending" {
+		projection, err = projectTransactionIDs(v, recovery.TransactionIDs)
+		if recovery.Scope == "only" && len(recovery.TransactionIDs) == 1 {
+			publicationOnly = recovery.TransactionIDs[0]
+		} else {
+			publicationOnly = ""
+		}
+	} else {
+		projection, err = project(v, only)
+	}
 	if err != nil {
 		return PublicationReceipt{}, err
 	}
@@ -553,32 +604,340 @@ func (t *Transaction) Publish(v *config.Vault, only string) (PublicationReceipt,
 	if err != nil {
 		return PublicationReceipt{}, err
 	}
-	localAfter := cloneVault(v)
-	markPublished(localAfter, projection.Selected, projection.Vault)
-	if len(projection.Selected) > 0 {
-		if err := config.Save(localAfter, t.masterPass); err != nil {
+	if len(projection.Selected) == 0 {
+		if publicationOnly == "" {
+			blob, err = os.ReadFile(config.Path())
+			if err != nil {
+				return PublicationReceipt{}, err
+			}
+		}
+		if _, err := t.sync.PushBlob(blob); err != nil {
 			return PublicationReceipt{}, err
 		}
+		return publicationReceipt(publicationOnly, projection.Selected, v), nil
 	}
-	if only == "" {
-		blob, err = os.ReadFile(config.Path())
-		if err != nil {
-			restoreOriginal()
-			return PublicationReceipt{}, err
-		}
+
+	scope := "all"
+	if publicationOnly != "" {
+		scope = "only"
 	}
-	if _, err := t.sync.PushBlob(blob); err != nil {
-		restoreOriginal()
+	intent := publishingIntent{
+		Version:        publishingIntentVersion,
+		State:          intentPrepared,
+		Scope:          scope,
+		TargetIdentity: synctransaction.PublicationTargetIdentity(blob),
+		CreatedAt:      t.now().UTC().Format(time.RFC3339Nano),
+	}
+	for _, mutation := range projection.Selected {
+		intent.TransactionIDs = append(intent.TransactionIDs, mutation.ID)
+	}
+	intent.Transactions = mutationViews(projection.Selected)
+	cached, err := t.sync.CachedPublicationPrerequisite()
+	if err != nil {
 		return PublicationReceipt{}, err
 	}
+	intent.PrerequisiteExists = cached.Exists
+	intent.PrerequisiteIdentity = cached.Value
+
+	if err := injectPublicationFault("before_intent_persist"); err != nil {
+		return PublicationReceipt{}, err
+	}
+	if err := savePublishingIntent(intent); err != nil {
+		return PublicationReceipt{}, err
+	}
+	if err := injectPublicationFault("after_intent_persist"); err != nil {
+		return PublicationReceipt{}, err
+	}
+
+	prepared, err := t.sync.PreparePublication(blob)
+	if err != nil {
+		_ = clearPublishingIntent()
+		return PublicationReceipt{}, err
+	}
+	intent.State = intentReady
+	intent.PrerequisiteExists = prepared.Prerequisite.Exists
+	intent.PrerequisiteIdentity = prepared.Prerequisite.Value
+	if err := savePublishingIntent(intent); err != nil {
+		return PublicationReceipt{}, err
+	}
+	if err := injectPublicationFault("after_prerequisite_persist"); err != nil {
+		return PublicationReceipt{}, err
+	}
+	if err := injectPublicationFault("before_request_send"); err != nil {
+		return PublicationReceipt{}, err
+	}
+
+	remote, err := t.sync.SendPublication(blob, prepared)
+	if err != nil {
+		switch {
+		case errors.Is(err, synctransaction.ErrPushNotSent),
+			errors.Is(err, synctransaction.ErrPushRejected):
+			_ = clearPublishingIntent()
+		case errors.Is(err, synctransaction.ErrPushAmbiguous):
+			intent.State = intentAmbiguous
+			_ = savePublishingIntent(intent)
+		case errors.Is(err, synctransaction.ErrConflict):
+			intent.State = intentDivergent
+			intent.ObservedExists = remote.Exists
+			intent.ObservedIdentity = remote.Value
+			_ = savePublishingIntent(intent)
+		}
+		return PublicationReceipt{}, err
+	}
+	if remote.Value != intent.TargetIdentity {
+		return PublicationReceipt{}, fmt.Errorf("%w: target identity was not confirmed", synctransaction.ErrConflict)
+	}
+	if err := injectPublicationFault("after_response_receipt"); err != nil {
+		return PublicationReceipt{}, err
+	}
+	receipt, err := t.finalizePublishingIntent(intent)
+	if err != nil {
+		intent.State = intentFinalizationFailed
+		_ = savePublishingIntent(intent)
+		return PublicationReceipt{}, err
+	}
+	return receipt, nil
+}
+
+// ReconcilePublishingIntent resolves durable recovery state for status without
+// retrying a PUT or absorbing any newly pending mutation.
+func (t *Transaction) ReconcilePublishingIntent() (*PublicationRecovery, error) {
+	_, recovery, err := t.reconcilePublishingIntent()
+	return recovery, err
+}
+
+func (t *Transaction) reconcilePublishingIntent() (PublicationReceipt, *PublicationRecovery, error) {
+	intent, err := loadPublishingIntent()
+	if err != nil {
+		if os.IsNotExist(err) {
+			return PublicationReceipt{}, nil, nil
+		}
+		return PublicationReceipt{}, nil, err
+	}
+	if intent.State == intentPrepared {
+		if err := clearPublishingIntent(); err != nil {
+			return PublicationReceipt{}, recoveryView(intent, "pending"), err
+		}
+		return PublicationReceipt{}, recoveryView(intent, "pending"), nil
+	}
+	if intent.State == intentFinalizationFailed {
+		receipt, err := t.finalizePublishingIntent(intent)
+		if err != nil {
+			_ = savePublishingIntent(intent)
+			return PublicationReceipt{}, recoveryView(intent, intentFinalizationFailed), err
+		}
+		return receipt, recoveryView(intent, "confirmed"), nil
+	}
+	if t.sync.Offline() {
+		return PublicationReceipt{}, recoveryView(intent, intent.State), nil
+	}
+
+	remote, err := t.sync.ObservePublicationIdentity()
+	if err != nil {
+		return PublicationReceipt{}, recoveryView(intent, intent.State), err
+	}
+	target := synctransaction.BlobIdentity{Exists: true, Value: intent.TargetIdentity}
+	prerequisite := synctransaction.BlobIdentity{
+		Exists: intent.PrerequisiteExists,
+		Value:  intent.PrerequisiteIdentity,
+	}
+	switch {
+	case equalBlobIdentity(remote, target):
+		receipt, err := t.finalizePublishingIntent(intent)
+		if err != nil {
+			intent.State = intentFinalizationFailed
+			_ = savePublishingIntent(intent)
+			return PublicationReceipt{}, recoveryView(intent, "finalization_failed"), err
+		}
+		return receipt, recoveryView(intent, "confirmed"), nil
+	case equalBlobIdentity(remote, prerequisite):
+		if err := clearPublishingIntent(); err != nil {
+			return PublicationReceipt{}, recoveryView(intent, "pending"), err
+		}
+		return PublicationReceipt{}, recoveryView(intent, "pending"), nil
+	default:
+		intent.State = intentDivergent
+		intent.ObservedExists = remote.Exists
+		intent.ObservedIdentity = remote.Value
+		if err := savePublishingIntent(intent); err != nil {
+			return PublicationReceipt{}, recoveryView(intent, intentDivergent), err
+		}
+		return PublicationReceipt{}, recoveryView(intent, intentDivergent),
+			fmt.Errorf("%w: remote publication identity is neither prerequisite nor target", synctransaction.ErrConflict)
+	}
+}
+
+func (t *Transaction) finalizePublishingIntent(intent publishingIntent) (PublicationReceipt, error) {
+	current, err := config.Load(t.masterPass)
+	if err != nil {
+		return PublicationReceipt{}, fmt.Errorf("load pending publication for finalization: %w", err)
+	}
+	projection, err := projectTransactionIDs(current, intent.TransactionIDs)
+	if err != nil {
+		return PublicationReceipt{}, err
+	}
+	localAfter := cloneVault(current)
+	if len(projection.Selected) > 0 {
+		if err := injectPublicationFault("before_local_finalization"); err != nil {
+			return PublicationReceipt{}, err
+		}
+		markPublished(localAfter, projection.Selected, projection.Vault)
+		if err := config.Save(localAfter, t.masterPass); err != nil {
+			return PublicationReceipt{}, fmt.Errorf("finalize confirmed publication: %w", err)
+		}
+		if err := injectPublicationFault("after_local_finalization"); err != nil {
+			return PublicationReceipt{}, err
+		}
+	}
+	t.sync.ConfirmPublication(intent.TargetIdentity)
+	if err := clearPublishingIntent(); err != nil {
+		return PublicationReceipt{}, fmt.Errorf("clear finalized publishing intent: %w", err)
+	}
+	only := ""
+	if intent.Scope == "only" && len(intent.TransactionIDs) == 1 {
+		only = intent.TransactionIDs[0]
+	}
+	receipt := publicationReceipt(only, projection.Selected, localAfter)
+	if len(projection.Selected) == 0 {
+		receipt.Preflight = append([]MutationView(nil), intent.Transactions...)
+	}
+	return receipt, nil
+}
+
+func publicationReceipt(only string, selected []config.PendingMutation, localAfter *config.Vault) PublicationReceipt {
 	scope := "all"
 	if only != "" {
 		scope = "only"
 	}
 	return PublicationReceipt{
 		OK: true, Action: "pushed", Scope: scope, Only: only,
-		Preflight: mutationViews(projection.Selected), Remaining: Pending(localAfter),
-	}, nil
+		Preflight: mutationViews(selected), Remaining: Pending(localAfter),
+	}
+}
+
+func equalBlobIdentity(left, right synctransaction.BlobIdentity) bool {
+	return left.Exists == right.Exists && (!left.Exists || left.Value == right.Value)
+}
+
+func publishingIntentPath() string {
+	return filepath.Join(config.Dir(), "publishing-intent.json")
+}
+
+func savePublishingIntent(intent publishingIntent) error {
+	if err := validatePublishingIntent(intent); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(intent, "", "  ")
+	if err != nil {
+		return err
+	}
+	return config.WritePrivateFile(publishingIntentPath(), append(data, '\n'))
+}
+
+func loadPublishingIntent() (publishingIntent, error) {
+	data, err := os.ReadFile(publishingIntentPath()) //nolint:gosec // fixed private recovery path under the SSM config directory
+	if err != nil {
+		return publishingIntent{}, err
+	}
+	var intent publishingIntent
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&intent); err != nil {
+		return publishingIntent{}, fmt.Errorf("decode publishing intent: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return publishingIntent{}, fmt.Errorf("decode publishing intent: trailing data")
+	}
+	if err := validatePublishingIntent(intent); err != nil {
+		return publishingIntent{}, err
+	}
+	return intent, nil
+}
+
+func validatePublishingIntent(intent publishingIntent) error {
+	if intent.Version != publishingIntentVersion {
+		return fmt.Errorf("unsupported publishing intent version %d", intent.Version)
+	}
+	switch intent.State {
+	case intentPrepared, intentReady, intentAmbiguous, intentDivergent, intentFinalizationFailed:
+	default:
+		return fmt.Errorf("invalid publishing intent state %q", intent.State)
+	}
+	if intent.Scope != "all" && intent.Scope != "only" {
+		return fmt.Errorf("invalid publishing intent scope %q", intent.Scope)
+	}
+	if len(intent.TransactionIDs) == 0 {
+		return fmt.Errorf("publishing intent requires transaction IDs")
+	}
+	if intent.Scope == "only" && len(intent.TransactionIDs) != 1 {
+		return fmt.Errorf("only publishing intent requires exactly one transaction ID")
+	}
+	if len(intent.Transactions) != len(intent.TransactionIDs) {
+		return fmt.Errorf("publishing intent transaction metadata is incomplete")
+	}
+	seen := make(map[string]bool, len(intent.TransactionIDs))
+	for index, id := range intent.TransactionIDs {
+		if id == "" || seen[id] {
+			return fmt.Errorf("publishing intent transaction IDs are invalid")
+		}
+		if intent.Transactions[index].ID != id {
+			return fmt.Errorf("publishing intent transaction metadata order changed")
+		}
+		seen[id] = true
+	}
+	if !opaqueIdentityPattern.MatchString(intent.TargetIdentity) {
+		return fmt.Errorf("publishing intent target identity is invalid")
+	}
+	if intent.PrerequisiteExists && !opaqueIdentityPattern.MatchString(intent.PrerequisiteIdentity) {
+		return fmt.Errorf("publishing intent prerequisite identity is invalid")
+	}
+	if !intent.PrerequisiteExists && intent.PrerequisiteIdentity != "" {
+		return fmt.Errorf("absent publishing intent prerequisite has an identity")
+	}
+	if intent.ObservedExists && !opaqueIdentityPattern.MatchString(intent.ObservedIdentity) {
+		return fmt.Errorf("publishing intent observed identity is invalid")
+	}
+	if !intent.ObservedExists && intent.ObservedIdentity != "" {
+		return fmt.Errorf("absent publishing intent observation has an identity")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, intent.CreatedAt); err != nil {
+		return fmt.Errorf("publishing intent creation time is invalid")
+	}
+	return nil
+}
+
+var opaqueIdentityPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+func clearPublishingIntent() error {
+	return config.RemovePrivateFile(publishingIntentPath())
+}
+
+func recoveryView(intent publishingIntent, state string) *PublicationRecovery {
+	return &PublicationRecovery{
+		State: state, Scope: intent.Scope,
+		TransactionIDs:       append([]string(nil), intent.TransactionIDs...),
+		PrerequisiteExists:   intent.PrerequisiteExists,
+		PrerequisiteIdentity: intent.PrerequisiteIdentity,
+		TargetIdentity:       intent.TargetIdentity,
+		ObservedExists:       intent.ObservedExists,
+		ObservedIdentity:     intent.ObservedIdentity,
+	}
+}
+
+func injectPublicationFault(point string) error {
+	if publicationFaultInjection != "enabled" {
+		return nil
+	}
+	switch os.Getenv("SSM_TEST_PUBLICATION_FAULT") {
+	case point:
+		os.Exit(86)
+	case point + "_error":
+		return fmt.Errorf("test publication fault at %s", point)
+	default:
+		return nil
+	}
+	return nil
 }
 
 func mutationViews(mutations []config.PendingMutation) []MutationView {
@@ -671,6 +1030,44 @@ func project(v *config.Vault, only string) (projection, error) {
 		selected = append(selected, v.PendingMutations[selectedIndex])
 	}
 
+	projected := &config.Vault{
+		Connections: append([]config.Connection(nil), v.PendingBase.Connections...),
+		Keys:        append([]config.SSHKey(nil), v.PendingBase.Keys...),
+	}
+	for _, mutation := range selected {
+		applyMutation(projected, mutation)
+	}
+	return projection{Vault: projected, Selected: selected}, nil
+}
+
+func projectTransactionIDs(v *config.Vault, ids []string) (projection, error) {
+	if err := validateLedger(v); err != nil {
+		return projection{}, err
+	}
+	selected := make([]config.PendingMutation, 0, len(ids))
+	previousIndex := -1
+	missing := 0
+	for _, id := range ids {
+		index := pendingIndex(v.PendingMutations, id)
+		if index < 0 {
+			missing++
+			continue
+		}
+		if index <= previousIndex {
+			return projection{}, fmt.Errorf("publishing intent transaction order changed")
+		}
+		previousIndex = index
+		selected = append(selected, v.PendingMutations[index])
+	}
+	if missing == len(ids) {
+		return projection{Vault: inventoryOnly(v)}, nil
+	}
+	if missing != 0 {
+		return projection{}, fmt.Errorf("publishing intent transaction set was partially finalized")
+	}
+	if v.PendingBase == nil {
+		return projection{}, fmt.Errorf("publishing intent transactions require a pending base")
+	}
 	projected := &config.Vault{
 		Connections: append([]config.Connection(nil), v.PendingBase.Connections...),
 		Keys:        append([]config.SSHKey(nil), v.PendingBase.Keys...),

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -60,7 +61,48 @@ var (
 	ErrUnconfigured  = errors.New("not logged in (run: ssm login)")
 	ErrRefresh       = errors.New("sync refresh failed")
 	ErrConflict      = errors.New("sync conflict")
+	ErrPushNotSent   = errors.New("publication request was not sent")
+	ErrPushRejected  = errors.New("publication request was explicitly rejected")
+	ErrPushAmbiguous = errors.New("publication commit is ambiguous")
 )
+
+// BlobIdentity is a secret-free opaque identity observation. Exists makes a
+// missing first-push prerequisite an exact state rather than an empty string.
+type BlobIdentity struct {
+	Exists bool
+	Value  string
+}
+
+func (identity BlobIdentity) equal(other BlobIdentity) bool {
+	return identity.Exists == other.Exists && (!identity.Exists || identity.Value == other.Value)
+}
+
+// PreparedPublication binds the exact remote prerequisite observed after the
+// preliminary intent to the locally known encrypted target identity. Callers
+// persist this confirmed plan before PUT.
+type PreparedPublication struct {
+	Prerequisite BlobIdentity
+	Target       string
+}
+
+var publicationIdentityPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// PublicationTargetIdentity computes the safe identity of exact encrypted
+// bytes before any network access.
+func PublicationTargetIdentity(blob []byte) string {
+	return opaqueIdentity(blob)
+}
+
+// CachedPublicationPrerequisite returns the last confirmed remote identity
+// without configuration parsing or network access. An empty cache represents
+// the compatible first-push prerequisite state.
+func (t *Transaction) CachedPublicationPrerequisite() (BlobIdentity, error) {
+	cached := cachedRemoteIdentity()
+	if cached != "" && !publicationIdentityPattern.MatchString(cached) {
+		return BlobIdentity{}, fmt.Errorf("%w: cached remote identity is unsupported", ErrRefresh)
+	}
+	return BlobIdentity{Exists: cached != "", Value: cached}, nil
+}
 
 type Facts struct {
 	Configuration ConfigurationState
@@ -95,6 +137,12 @@ func New(opts Options) *Transaction {
 		now = time.Now
 	}
 	return &Transaction{offline: opts.Offline, invalidate: opts.Invalidate, now: now}
+}
+
+// Offline reports whether this transaction is forbidden from consulting sync
+// configuration or transport.
+func (t *Transaction) Offline() bool {
+	return t.offline
 }
 
 func (t *Transaction) configuration() (*cloud.CloudConfig, ConfigurationState, error) {
@@ -245,6 +293,142 @@ func (t *Transaction) RemoteIdentity() (string, error) {
 		return "", fmt.Errorf("%w: remote identity was not read", ErrRefresh)
 	}
 	return etag, nil
+}
+
+// PreparePublication performs push preflight and returns only safe opaque
+// identities. Callers must durably persist their exact scope and this plan
+// before SendPublication.
+func (t *Transaction) PreparePublication(blob []byte) (PreparedPublication, error) {
+	facts := t.localFacts()
+	cfg, state, err := t.configuration()
+	if err != nil {
+		return PreparedPublication{}, err
+	}
+	if state != ConfigurationConfigured {
+		return PreparedPublication{}, ErrUnconfigured
+	}
+	target := opaqueIdentity(blob)
+	remote, err := cloud.InspectRemoteBlob(cfg)
+	if err != nil {
+		return PreparedPublication{}, fmt.Errorf("%w: remote push preflight did not complete", ErrRefresh)
+	}
+	prerequisite := BlobIdentity{Exists: remote.Exists, Value: remote.Value}
+	if prerequisite.Exists && !publicationIdentityPattern.MatchString(prerequisite.Value) {
+		return PreparedPublication{}, fmt.Errorf("%w: remote identity is unsupported", ErrRefresh)
+	}
+	if facts.RemoteETag != "" && !publicationIdentityPattern.MatchString(facts.RemoteETag) {
+		return PreparedPublication{}, fmt.Errorf("%w: cached remote identity is unsupported", ErrRefresh)
+	}
+	if facts.RemoteETag != "" {
+		if !prerequisite.Exists {
+			return PreparedPublication{}, fmt.Errorf("%w: remote push prerequisite disappeared", ErrRefresh)
+		}
+		if prerequisite.Value != facts.RemoteETag && target != facts.RemoteETag {
+			conflict := SyncConflict{
+				DetectedAt: t.now().UTC().Format(time.RFC3339),
+				LocalETag:  target, RemoteETag: prerequisite.Value, CachedETag: facts.RemoteETag,
+			}
+			if err := preserveConflict(conflict); err != nil {
+				return PreparedPublication{}, fmt.Errorf("%w: conflict evidence could not be preserved", ErrRefresh)
+			}
+			return PreparedPublication{}, fmt.Errorf("%w: local and remote opaque blobs diverged", ErrConflict)
+		}
+	}
+	return PreparedPublication{Prerequisite: prerequisite, Target: target}, nil
+}
+
+// ObservePublicationIdentity returns the exact current remote identity state
+// used by publishing-intent reconciliation.
+func (t *Transaction) ObservePublicationIdentity() (BlobIdentity, error) {
+	cfg, state, err := t.configuration()
+	if err != nil {
+		return BlobIdentity{}, err
+	}
+	if state != ConfigurationConfigured {
+		return BlobIdentity{}, ErrUnconfigured
+	}
+	remote, err := cloud.InspectRemoteBlob(cfg)
+	if err != nil {
+		return BlobIdentity{}, fmt.Errorf("%w: remote publication identity was not read", ErrRefresh)
+	}
+	identity := BlobIdentity{Exists: remote.Exists, Value: remote.Value}
+	if identity.Exists && !publicationIdentityPattern.MatchString(identity.Value) {
+		return BlobIdentity{}, fmt.Errorf("%w: remote identity is unsupported", ErrRefresh)
+	}
+	return identity, nil
+}
+
+// SendPublication verifies that the prerequisite has not changed, then sends
+// the exact opaque target. It does not commit sync metadata; the inventory
+// owner does that only after target equality and local finalization.
+func (t *Transaction) SendPublication(blob []byte, prepared PreparedPublication) (BlobIdentity, error) {
+	if opaqueIdentity(blob) != prepared.Target {
+		return BlobIdentity{}, fmt.Errorf("%w: prepared target identity changed", ErrPushNotSent)
+	}
+	current, err := t.ObservePublicationIdentity()
+	if err != nil {
+		return BlobIdentity{}, fmt.Errorf("%w: %v", ErrPushNotSent, err)
+	}
+	target := BlobIdentity{Exists: true, Value: prepared.Target}
+	if current.equal(target) {
+		return current, nil
+	}
+	if !current.equal(prepared.Prerequisite) {
+		_ = t.preservePublicationConflict(prepared, current)
+		return current, fmt.Errorf("%w: remote publication identity diverged", ErrConflict)
+	}
+
+	cfg, state, err := t.configuration()
+	if err != nil {
+		return BlobIdentity{}, fmt.Errorf("%w: %v", ErrPushNotSent, err)
+	}
+	if state != ConfigurationConfigured {
+		return BlobIdentity{}, fmt.Errorf("%w: %v", ErrPushNotSent, ErrUnconfigured)
+	}
+	identity, observed, err := cloud.PushBlobObserved(cfg, blob)
+	if err != nil {
+		switch {
+		case cloud.PushFailureIsExplicit(err):
+			return BlobIdentity{}, fmt.Errorf("%w: %v", ErrPushRejected, err)
+		case cloud.PushFailureIsAmbiguous(err):
+			return BlobIdentity{}, fmt.Errorf("%w: %v", ErrPushAmbiguous, err)
+		default:
+			return BlobIdentity{}, fmt.Errorf("%w: %v", ErrPushNotSent, err)
+		}
+	}
+	committed := BlobIdentity{Exists: true, Value: identity}
+	if !observed || !publicationIdentityPattern.MatchString(identity) {
+		committed, err = t.ObservePublicationIdentity()
+		if err != nil {
+			return BlobIdentity{}, fmt.Errorf("%w: response identity could not be reconciled", ErrPushAmbiguous)
+		}
+	}
+	if !committed.equal(target) {
+		_ = t.preservePublicationConflict(prepared, committed)
+		return committed, fmt.Errorf("%w: remote publication identity diverged", ErrConflict)
+	}
+	return committed, nil
+}
+
+func (t *Transaction) preservePublicationConflict(prepared PreparedPublication, remote BlobIdentity) error {
+	cached := ""
+	if prepared.Prerequisite.Exists {
+		cached = prepared.Prerequisite.Value
+	}
+	observed := ""
+	if remote.Exists {
+		observed = remote.Value
+	}
+	return preserveConflict(SyncConflict{
+		DetectedAt: t.now().UTC().Format(time.RFC3339),
+		LocalETag:  prepared.Target, RemoteETag: observed, CachedETag: cached,
+	})
+}
+
+// ConfirmPublication records best-effort sync metadata after the inventory
+// owner has confirmed target equality and finalized the exact local IDs.
+func (t *Transaction) ConfirmPublication(target string) {
+	t.commitSuccess("push", target)
 }
 
 func (t *Transaction) PushBlob(blob []byte) (Facts, error) {

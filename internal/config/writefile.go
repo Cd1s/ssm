@@ -29,11 +29,19 @@ func WritePrivateFile(path string, data []byte) error {
 			_ = os.Remove(tmpPath)
 		}
 	}()
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := privatepath.RestrictFile(tmpPath); err != nil {
+		_ = tmp.Close()
+		return err
+	}
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(0600); err != nil {
+	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		return err
 	}
@@ -46,6 +54,22 @@ func WritePrivateFile(path string, data []byte) error {
 	if err := privatepath.RestrictFile(path); err != nil {
 		return err
 	}
+	if err := syncPrivateDirectory(filepath.Dir(path)); err != nil {
+		return err
+	}
 	committed = true
 	return nil
+}
+
+// RemovePrivateFile durably removes one private sidecar. A missing sidecar is
+// already the requested state.
+func RemovePrivateFile(path string) error {
+	err := os.Remove(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return syncPrivateDirectory(filepath.Dir(path))
 }

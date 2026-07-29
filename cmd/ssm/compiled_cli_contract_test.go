@@ -137,7 +137,7 @@ func runCompiledCLITestMain(m *testing.M) (exitCode int) {
 	}
 	ssmPath := filepath.Join(buildDir, "ssm"+extension)
 	updateLDFlags := fmt.Sprintf(
-		"-X=ssm/internal/update.apiBaseURL=%s -X=ssm/internal/update.downloadBaseURL=%s",
+		"-X=ssm/internal/update.apiBaseURL=%s -X=ssm/internal/update.downloadBaseURL=%s -X=ssm/internal/inventorytransaction.publicationFaultInjection=enabled",
 		compiledUpdateServer.URL(), compiledUpdateServer.URL(),
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), compiledCLIBuildTimeout)
@@ -391,19 +391,20 @@ func (h *compiledCLIHarness) VaultBlob(t *testing.T) []byte {
 
 func isolatedCompiledCLIEnvironmentWith(home, temp string, overrides map[string]string) []string {
 	blocked := map[string]bool{
-		"HOME":                 true,
-		"USERPROFILE":          true,
-		"XDG_CONFIG_HOME":      true,
-		"TMPDIR":               true,
-		"TMP":                  true,
-		"TEMP":                 true,
-		"SSM_MASTER_PASS_FILE": true,
-		"SSM_UPDATE_REPO":      true,
-		"SSM_TRACE":            true,
-		"SSM_TIMEOUT":          true,
-		"SSM_DIAL_TIMEOUT":     true,
-		"SSM_REUSE":            true,
-		"SSM_FORWARD_STDIN":    true,
+		"HOME":                       true,
+		"USERPROFILE":                true,
+		"XDG_CONFIG_HOME":            true,
+		"TMPDIR":                     true,
+		"TMP":                        true,
+		"TEMP":                       true,
+		"SSM_MASTER_PASS_FILE":       true,
+		"SSM_UPDATE_REPO":            true,
+		"SSM_TRACE":                  true,
+		"SSM_TIMEOUT":                true,
+		"SSM_DIAL_TIMEOUT":           true,
+		"SSM_REUSE":                  true,
+		"SSM_FORWARD_STDIN":          true,
+		"SSM_TEST_PUBLICATION_FAULT": true,
 	}
 	for key := range overrides {
 		blocked[key] = true
@@ -2422,7 +2423,7 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		}
 
 		sync := newCompiledSyncFixture(t)
-		sync.SetRemote(t, nil, "scoped-push")
+		sync.SetRemote(t, nil, strings.Repeat("a", 64))
 		scopedCloudCanary := "ISSUE17_SCOPED_PUSH_CLOUD_OUTPUT_CANARY"
 		mutationCLI.SaveCloud(t, sync.URL(), scopedCloudCanary)
 		pushed := mutationCLI.Run(t, "sshctl", nil, "--json", "push", "--only", betaID)
@@ -3659,7 +3660,7 @@ func TestCompiledConfirmedSyncMetadataFailuresRemainSuccessful(t *testing.T) {
 					}},
 				}
 				cli.SaveVault(t, starting)
-				sync.SetRemote(t, nil, "confirmed-public-put")
+				sync.SetRemote(t, nil, strings.Repeat("b", 64))
 				cli.SaveCloud(t, sync.URL(), tokenCanary)
 				configDir := filepath.Join(cli.home, ".config", "ssm")
 				if err := os.Mkdir(filepath.Join(configDir, "remote.etag"), 0o700); err != nil {
@@ -3694,8 +3695,8 @@ func TestCompiledConfirmedSyncMetadataFailuresRemainSuccessful(t *testing.T) {
 				if got := sync.MethodCount(http.MethodPut); got != 1 {
 					t.Fatalf("confirmed push PUT count = %d, want 1", got)
 				}
-				if got := sync.MethodCount(http.MethodHead); got != 0 {
-					t.Fatalf("confirmed push HEAD count = %d, want 0 without cached identity", got)
+				if got := sync.MethodCount(http.MethodHead); got != 2 {
+					t.Fatalf("confirmed push HEAD count = %d, want 2 for durable prerequisite and pre-send verification", got)
 				}
 				finalized := &config.Vault{Connections: []config.Connection{connection}}
 				assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), finalized)
