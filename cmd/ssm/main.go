@@ -17,6 +17,7 @@ var (
 	masterPassFile string
 	offlineMode    bool
 	unlockedVault  *config.Vault
+	streamMachine  bool
 	version        = "1.4.3"
 )
 
@@ -31,6 +32,10 @@ func isSSHCTLInvocation(path string) bool {
 func main() {
 	defer func() {
 		if r := recover(); r != nil {
+			if streamMachine {
+				failure := machinecontract.Classify(machinecontract.PanicFailure, machinecontract.Details{Message: "ssm crashed"})
+				os.Exit(writeStreamFailure(os.Stdout, failure))
+			}
 			if machineJSON {
 				os.Exit(machinecontract.WriteClassified(true, machinecontract.PanicFailure, machinecontract.Details{Message: "ssm crashed"}))
 			}
@@ -504,16 +509,29 @@ func checkUpdate() {
 }
 
 func unlock() {
+	failure, failed := unlockVault()
+	if failed {
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+	}
+}
+
+// unlockVault performs the non-interactive vault initialization without
+// choosing a renderer. Normal commands and run --stream render the same
+// classified failure through their respective machine-contract framing.
+func unlockVault() (machinecontract.Failure, bool) {
 	if masterPassFile != "" {
 		data, err := os.ReadFile(masterPassFile)
 		if err != nil {
-			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.MasterPassFileReadFailed, machinecontract.Details{
+			return machinecontract.Classify(machinecontract.MasterPassFileReadFailed, machinecontract.Details{
 				Message: fmt.Sprintf("master pass file: %v", err), Cause: err,
-			}))
+			}), true
 		}
 		pass := strings.TrimRight(string(data), "\r\n")
 		if pass == "" {
-			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.MasterPassFileEmpty, machinecontract.Details{Message: "master pass file is empty"}))
+			return machinecontract.Classify(
+				machinecontract.MasterPassFileEmpty,
+				machinecontract.Details{Message: "master pass file is empty"},
+			), true
 		}
 
 		if !config.Exists() {
@@ -521,22 +539,25 @@ func unlock() {
 			unlockedVault = &config.Vault{}
 			if err := config.Save(unlockedVault, masterPass); err != nil {
 				unlockedVault = nil
-				os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.VaultCreateFailed, machinecontract.Details{Cause: err}))
+				return machinecontract.Classify(machinecontract.VaultCreateFailed, machinecontract.Details{Cause: err}), true
 			}
-			return
+			return machinecontract.Failure{}, false
 		}
 
 		v, err := config.Load(pass)
 		if err != nil {
-			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.VaultUnlockFailed, machinecontract.Details{Cause: err}))
+			return machinecontract.Classify(machinecontract.VaultUnlockFailed, machinecontract.Details{Cause: err}), true
 		}
 		masterPass = pass
 		unlockedVault = v
-		return
+		return machinecontract.Failure{}, false
 	}
 
 	if !config.Exists() {
-		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.MasterPassFileRequiredCreate, machinecontract.Details{Message: "vault does not exist"}))
+		return machinecontract.Classify(
+			machinecontract.MasterPassFileRequiredCreate,
+			machinecontract.Details{Message: "vault does not exist"},
+		), true
 	}
 
 	settings := config.LoadSettings()
@@ -545,13 +566,16 @@ func unlock() {
 			if v, err := config.Load(cached); err == nil {
 				masterPass = cached
 				unlockedVault = v
-				return
+				return machinecontract.Failure{}, false
 			}
 			config.ClearPasswordCache()
 		}
 	}
 
-	os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.MasterPassFileRequiredExisting, machinecontract.Details{Message: "vault passphrase is required"}))
+	return machinecontract.Classify(
+		machinecontract.MasterPassFileRequiredExisting,
+		machinecontract.Details{Message: "vault passphrase is required"},
+	), true
 }
 
 // loadVault consumes the vault already decrypted by unlock. Commands used to

@@ -81,10 +81,12 @@ func runSSHCTL(args []string) {
 		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
 		alias, runArgs, err := splitRunAlias(args[1:])
 		if err != nil {
+			if runStreamRequested(args[1:]) {
+				exitStreamFailure(machinecontract.Classify(machinecontract.RunAliasRequired, machinecontract.Details{Cause: err}))
+			}
 			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.RunAliasRequired, machinecontract.Details{Cause: err}))
 		}
-		unlock()
-		runSSHCTLRun(alias, runArgs)
+		runSSHCTLRunInvocation(alias, runArgs)
 	case "plan":
 		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
 		alias, runArgs, err := splitRunAlias(args[1:])
@@ -167,18 +169,32 @@ func runSSHCTL(args []string) {
 		if len(args) == 1 {
 			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.UnknownSSHCTLCommand, machinecontract.Details{Message: fmt.Sprintf("unknown command %q", args[0])}))
 		}
-		unlock()
-		runSSHCTLRun(args[0], args[1:])
+		runSSHCTLRunInvocation(args[0], args[1:])
 	}
 }
 
-func runSSHCTLRun(alias string, cmdArgs []string) {
-	if streamOpts, stream, err := parseRunStreamArgs(cmdArgs); stream {
+func runSSHCTLRunInvocation(alias string, cmdArgs []string) {
+	streamOpts, stream, err := parseRunStreamArgs(cmdArgs)
+	if stream {
+		machineJSON = true
+		streamMachine = true
 		if err != nil {
-			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.InvalidStreamArguments, machinecontract.Details{Cause: err}))
+			exitStreamFailure(machinecontract.Classify(machinecontract.InvalidStreamArguments, machinecontract.Details{Cause: err}))
 		}
-		exitRunArgvStream(alias, streamOpts)
+		streamTransaction, err := syncTransaction(false).BeginStream(streamOpts.refresh)
+		if err != nil {
+			exitStreamFailure(machinecontract.Classify(machinecontract.InvalidStreamArguments, machinecontract.Details{Cause: err}))
+		}
+		if failure, failed := unlockVault(); failed {
+			exitStreamFailure(failure)
+		}
+		exitRunArgvStream(alias, streamTransaction)
 	}
+	unlock()
+	runSSHCTLRun(alias, cmdArgs)
+}
+
+func runSSHCTLRun(alias string, cmdArgs []string) {
 	spec, err := parseRemoteRunArgs(cmdArgs)
 	if err != nil {
 		if err.Error() == "help" {
@@ -194,6 +210,16 @@ func runSSHCTLRun(alias string, cmdArgs []string) {
 		return
 	}
 	runExecSpec(alias, spec)
+}
+
+func runStreamRequested(args []string) bool {
+	filtered := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg != "--json" {
+			filtered = append(filtered, arg)
+		}
+	}
+	return len(filtered) > 0 && filtered[0] == "--stream"
 }
 
 func runSSHCTLPlan(alias string, cmdArgs []string) {
