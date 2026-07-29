@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"ssm/internal/config"
+	"ssm/internal/inventorytransaction"
 	"ssm/internal/machinecontract"
 	"ssm/internal/synctransaction"
 )
@@ -341,7 +342,7 @@ func runSSHCTLStatus() {
 	pending := false
 	pendingMutations := []pendingMutationView{}
 	if v != nil {
-		pendingMutations = pendingMutationViews(v)
+		pendingMutations = inventorytransaction.Pending(v)
 		pending = len(pendingMutations) > 0
 	}
 	if syncFacts.Freshness == synctransaction.FreshnessLocalAhead {

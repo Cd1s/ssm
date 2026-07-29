@@ -3,24 +3,17 @@ package main
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 
-	gossh "golang.org/x/crypto/ssh"
-
 	"ssm/internal/config"
+	"ssm/internal/inventorytransaction"
 	"ssm/internal/machinecontract"
 	agentssh "ssm/internal/ssh"
 	"ssm/internal/synctransaction"
 )
-
-const maxHostCredentialBytes = 1 << 20
-
-var safeHostAliasPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 type optionalString struct {
 	value string
@@ -52,29 +45,8 @@ type hostCommandOptions struct {
 	push         bool
 }
 
-type hostView struct {
-	Name    string `json:"name"`
-	Host    string `json:"host"`
-	Port    int    `json:"port"`
-	User    string `json:"user"`
-	Group   string `json:"group,omitempty"`
-	Auth    string `json:"auth"`
-	KeyName string `json:"key_name,omitempty"`
-}
-
-type hostMutationResult struct {
-	OK            bool                  `json:"ok"`
-	Action        string                `json:"action"`
-	Changed       bool                  `json:"changed"`
-	Host          hostView              `json:"host"`
-	KeyAdded      string                `json:"key_added,omitempty"`
-	KeyPruned     string                `json:"key_pruned,omitempty"`
-	SyncPending   bool                  `json:"sync_pending"`
-	Applied       bool                  `json:"applied"`
-	Pushed        bool                  `json:"pushed"`
-	TransactionID string                `json:"transaction_id,omitempty"`
-	Verification  *agentssh.CheckResult `json:"verification,omitempty"`
-}
+type hostView = inventorytransaction.HostView
+type hostMutationResult = inventorytransaction.MutationReceipt
 
 type hostVerificationFailure struct {
 	OK bool `json:"ok"`
@@ -333,7 +305,7 @@ func runHostCommand(args []string) {
 	case "list":
 		views := make([]hostView, len(v.Connections))
 		for i, c := range v.Connections {
-			views[i] = newHostView(c)
+			views[i] = inventorytransaction.View(c)
 		}
 		writeHostList(views, opts.asJSON)
 		return
@@ -350,36 +322,21 @@ func runHostCommand(args []string) {
 		if idx < 0 {
 			os.Exit(machinecontract.WriteMetadataError(opts.asJSON, newHostError(machinecontract.HostAliasNotFound, "host %q not found", opts.alias), machinecontract.HostInternalFailure))
 		}
-		writeHostView(newHostView(v.Connections[idx]), opts.asJSON)
+		writeHostView(inventorytransaction.View(v.Connections[idx]), opts.asJSON)
 		return
 	}
 
-	updated, result, err := mutateHost(v, opts)
+	result, err := inventorytransaction.New(inventorytransaction.Options{
+		MasterPass: masterPass,
+	}).ApplyHost(v, hostChangeFromOptions(opts))
 	if err != nil {
-		os.Exit(machinecontract.WriteMetadataError(opts.asJSON, err, machinecontract.HostInternalFailure))
-	}
-	if opts.verify {
-		idx := exactConnectionIndex(updated, opts.alias)
-		if idx < 0 {
-			os.Exit(machinecontract.WriteMetadataError(opts.asJSON, newHostError(machinecontract.HostInternalFailure, "candidate host disappeared before verification"), machinecontract.HostInternalFailure))
-		}
-		verification := agentssh.Check(updated.Connections[idx], updated)
-		verification.Alias = opts.alias
-		result.Verification = &verification
-		if !verification.OK {
-			failure, document := hostVerificationFailureFor(result)
+		var verificationFailure *inventorytransaction.VerificationError
+		if errors.As(err, &verificationFailure) {
+			failure, document := hostVerificationFailureFor(verificationFailure.Receipt)
 			os.Exit(machinecontract.WriteFailure(opts.asJSON, failure, document))
 		}
+		os.Exit(machinecontract.WriteMetadataError(opts.asJSON, err, machinecontract.HostInternalFailure))
 	}
-	if result.Changed {
-		if err := appendHostMutation(v, updated, &result); err != nil {
-			os.Exit(machinecontract.WriteMetadataError(opts.asJSON, newHostError(machinecontract.HostTransactionFailed, "%s", redactError(err)), machinecontract.HostInternalFailure))
-		}
-		if err := config.Save(updated, masterPass); err != nil {
-			os.Exit(machinecontract.WriteMetadataError(opts.asJSON, newHostError(machinecontract.HostVaultFailed, "%s", redactError(err)), machinecontract.HostInternalFailure))
-		}
-	}
-	result.Applied = true
 	if opts.push {
 		remaining, err := pushTransactions(result.TransactionID)
 		if err != nil {
@@ -392,138 +349,41 @@ func runHostCommand(args []string) {
 	writeHostMutationResult(result, opts.asJSON)
 }
 
+func hostChangeFromOptions(opts hostCommandOptions) inventorytransaction.HostChange {
+	change := inventorytransaction.HostChange{
+		Action:   inventorytransaction.HostAction(opts.action),
+		Alias:    opts.alias,
+		PruneKey: opts.pruneKey,
+		Verify:   opts.verify,
+	}
+	change.Host = optionalStringPointer(opts.host)
+	change.Port = optionalIntPointer(opts.port)
+	change.User = optionalStringPointer(opts.user)
+	change.Group = optionalStringPointer(opts.group)
+	change.PasswordFile = optionalStringPointer(opts.passwordFile)
+	change.SavedKey = optionalStringPointer(opts.keyName)
+	change.KeyFile = optionalStringPointer(opts.keyFile)
+	change.KeyName = optionalStringPointer(opts.newKeyName)
+	return change
+}
+
+func optionalStringPointer(value optionalString) *string {
+	if !value.set {
+		return nil
+	}
+	return &value.value
+}
+
+func optionalIntPointer(value optionalInt) *int {
+	if !value.set {
+		return nil
+	}
+	return &value.value
+}
+
 func refreshHostVault(offline bool) error {
 	_, err := syncTransaction(offline).Refresh()
 	return err
-}
-
-func mutateHost(v *config.Vault, opts hostCommandOptions) (*config.Vault, hostMutationResult, error) {
-	updated := cloneVault(v)
-	idx := exactConnectionIndex(updated, opts.alias)
-
-	if opts.action == "remove" {
-		if idx < 0 {
-			return nil, hostMutationResult{}, newHostError(machinecontract.HostAliasNotFound, "host %q not found", opts.alias)
-		}
-		removed := updated.Connections[idx]
-		updated.Connections = append(updated.Connections[:idx], updated.Connections[idx+1:]...)
-		result := hostMutationResult{OK: true, Action: "removed", Changed: true, Host: newHostView(removed), SyncPending: true}
-		if opts.pruneKey && removed.KeyName != "" && keyReferenceCount(updated, removed.KeyName) == 0 {
-			if removeKeyByName(updated, removed.KeyName) {
-				result.KeyPruned = removed.KeyName
-			}
-		}
-		return updated, result, nil
-	}
-
-	exists := idx >= 0
-	if opts.action == "add" && exists {
-		return nil, hostMutationResult{}, newHostError(machinecontract.HostAlreadyExists, "host %q already exists; use host upsert or update", opts.alias)
-	}
-	if opts.action == "update" && !exists {
-		return nil, hostMutationResult{}, newHostError(machinecontract.HostAliasNotFound, "host %q not found; use host upsert or add", opts.alias)
-	}
-	if !exists && !safeHostAliasPattern.MatchString(opts.alias) {
-		return nil, hostMutationResult{}, newHostError(machinecontract.HostInvalidAlias, "new aliases must match [A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-	}
-
-	conn := config.Connection{Name: opts.alias, Port: 22}
-	if exists {
-		conn = updated.Connections[idx]
-		if conn.Port == 0 {
-			conn.Port = 22
-		}
-	}
-	before := conn
-	if opts.host.set {
-		conn.Host = strings.TrimSpace(opts.host.value)
-	}
-	if opts.port.set {
-		conn.Port = opts.port.value
-	}
-	if opts.user.set {
-		conn.User = strings.TrimSpace(opts.user.value)
-	}
-	if opts.group.set {
-		conn.Group = strings.TrimSpace(opts.group.value)
-	}
-
-	keyAdded := ""
-	switch {
-	case opts.passwordFile.set:
-		password, err := loadPasswordFile(opts.passwordFile.value)
-		if err != nil {
-			return nil, hostMutationResult{}, err
-		}
-		conn.Password = password
-		conn.KeyName = ""
-	case opts.keyName.set:
-		name := strings.TrimSpace(opts.keyName.value)
-		if name == "" || updated.GetKey(name) == nil {
-			return nil, hostMutationResult{}, newHostError(machinecontract.HostSavedKeyNotFound, "saved key %q not found", name)
-		}
-		conn.KeyName = name
-		conn.Password = ""
-	case opts.keyFile.set:
-		name, added, err := installHostKey(updated, conn, opts)
-		if err != nil {
-			return nil, hostMutationResult{}, err
-		}
-		conn.KeyName = name
-		conn.Password = ""
-		if added {
-			keyAdded = name
-		}
-	}
-
-	if err := validateManagedConnection(conn, updated); err != nil {
-		return nil, hostMutationResult{}, err
-	}
-	if exists {
-		updated.Connections[idx] = conn
-	} else {
-		updated.Connections = append(updated.Connections, conn)
-	}
-
-	changed := !exists || before != conn || !equalSSHKeys(v.Keys, updated.Keys)
-	action := "created"
-	if exists && changed {
-		action = "updated"
-	} else if exists {
-		action = "unchanged"
-	}
-	return updated, hostMutationResult{
-		OK:          true,
-		Action:      action,
-		Changed:     changed,
-		Host:        newHostView(conn),
-		KeyAdded:    keyAdded,
-		SyncPending: true,
-	}, nil
-}
-
-func equalSSHKeys(a, b []config.SSHKey) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func cloneVault(v *config.Vault) *config.Vault {
-	if v == nil {
-		return &config.Vault{}
-	}
-	return &config.Vault{
-		Connections:      append([]config.Connection(nil), v.Connections...),
-		Keys:             append([]config.SSHKey(nil), v.Keys...),
-		PendingBase:      v.PendingBase,
-		PendingMutations: append([]config.PendingMutation(nil), v.PendingMutations...),
-	}
 }
 
 func exactConnectionIndex(v *config.Vault, alias string) int {
@@ -551,7 +411,7 @@ func searchHostViews(v *config.Vault, query string) []hostView {
 			}
 		}
 		if matched {
-			views = append(views, newHostView(connection))
+			views = append(views, inventorytransaction.View(connection))
 		}
 	}
 	sort.Slice(views, func(i, j int) bool { return views[i].Name < views[j].Name })
@@ -572,168 +432,6 @@ func writeHostSearch(query string, matches []hostView, asJSON bool) {
 	for _, match := range matches {
 		writeHostView(match, false)
 	}
-}
-
-func validateManagedConnection(c config.Connection, v *config.Vault) error {
-	if strings.TrimSpace(c.Host) == "" {
-		return newHostError(machinecontract.HostInvalidAddress, "host address must not be empty")
-	}
-	if c.Host != strings.TrimSpace(c.Host) || strings.ContainsAny(c.Host, " \t\r\n/@") || strings.Contains(c.Host, "://") {
-		return newHostError(machinecontract.HostInvalidAddress, "host must be a hostname or unbracketed IP address without user, scheme, path, or whitespace")
-	}
-	if strings.HasPrefix(c.Host, "[") || strings.HasSuffix(c.Host, "]") {
-		return newHostError(machinecontract.HostInvalidAddress, "IPv6 addresses must be unbracketed")
-	}
-	if strings.TrimSpace(c.User) == "" || strings.ContainsAny(c.User, " \t\r\n") || hasControlCharacter(c.User) {
-		return newHostError(machinecontract.HostInvalidUser, "SSH user must not be empty or contain whitespace/control characters")
-	}
-	if c.Port < 1 || c.Port > 65535 {
-		return newHostError(machinecontract.HostApplyInvalidArguments, "port must be from 1 to 65535")
-	}
-	if hasControlCharacter(c.Group) {
-		return newHostError(machinecontract.HostInvalidGroup, "group must not contain control characters")
-	}
-	if c.Password == "" && c.KeyName == "" {
-		return newHostError(machinecontract.HostApplyAuthenticationRequired, "host requires password or key authentication")
-	}
-	if c.KeyName != "" && v.GetKey(c.KeyName) == nil {
-		return newHostError(machinecontract.HostSavedKeyNotFound, "saved key %q not found", c.KeyName)
-	}
-	return nil
-}
-
-func hasControlCharacter(value string) bool {
-	for _, r := range value {
-		if r < 0x20 || r == 0x7f {
-			return true
-		}
-	}
-	return false
-}
-
-func loadPasswordFile(path string) (string, error) {
-	if strings.TrimSpace(path) == "" {
-		return "", newHostError(machinecontract.HostApplyInvalidArguments, "--password-file requires a path")
-	}
-	data, err := readHostCredentialFile(path)
-	if err != nil {
-		return "", newHostError(machinecontract.HostPasswordFileFailed, "read password file: %s", redactError(err))
-	}
-	password := strings.TrimRight(string(data), "\r\n")
-	if password == "" {
-		return "", newHostError(machinecontract.HostPasswordFileFailed, "password file is empty")
-	}
-	if strings.IndexByte(password, 0) >= 0 {
-		return "", newHostError(machinecontract.HostPasswordFileFailed, "password file contains a NUL byte")
-	}
-	return password, nil
-}
-
-func installHostKey(v *config.Vault, current config.Connection, opts hostCommandOptions) (string, bool, error) {
-	path := strings.TrimSpace(opts.keyFile.value)
-	if path == "" {
-		return "", false, newHostError(machinecontract.HostApplyInvalidArguments, "--key-file requires a path")
-	}
-	data, err := readHostCredentialFile(path)
-	if err != nil {
-		return "", false, newHostError(machinecontract.HostKeyFileFailed, "read key file: %s", redactError(err))
-	}
-	material := strings.TrimSpace(string(data))
-	if material == "" {
-		return "", false, newHostError(machinecontract.HostInvalidKey, "key file is empty")
-	}
-	if _, err := gossh.ParsePrivateKey([]byte(material)); err != nil {
-		return "", false, newHostError(machinecontract.HostInvalidKey, "key file is not an unencrypted SSH private key: %s", redactError(err))
-	}
-
-	name := strings.TrimSpace(opts.newKeyName.value)
-	if name == "" {
-		if current.KeyName != "" {
-			name = current.KeyName
-		} else {
-			name = opts.alias
-		}
-	}
-	if !safeHostAliasPattern.MatchString(name) {
-		return "", false, newHostError(machinecontract.HostApplyInvalidArguments, "new key names must match [A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-	}
-
-	for i := range v.Keys {
-		if v.Keys[i].Name != name {
-			continue
-		}
-		if strings.TrimSpace(v.Keys[i].PrivateKey) == material {
-			return name, false, nil
-		}
-		if current.KeyName != name {
-			return "", false, newHostError(machinecontract.HostKeyConflict, "saved key %q already has different material; choose a new --key-name", name)
-		}
-		if keyReferenceCountExcept(v, name, current.Name) > 0 {
-			return "", false, newHostError(machinecontract.HostKeyConflict, "saved key %q is shared and has different material; choose a new --key-name", name)
-		}
-		v.Keys[i].PrivateKey = material
-		return name, false, nil
-	}
-
-	v.Keys = append(v.Keys, config.SSHKey{Name: name, PrivateKey: material})
-	return name, true, nil
-}
-
-func readHostCredentialFile(path string) ([]byte, error) {
-	f, err := os.Open(path) //nolint:gosec // credential files are explicit CLI inputs
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	data, err := io.ReadAll(io.LimitReader(f, maxHostCredentialBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > maxHostCredentialBytes {
-		return nil, fmt.Errorf("credential file exceeds %d bytes", maxHostCredentialBytes)
-	}
-	return data, nil
-}
-
-func keyReferenceCount(v *config.Vault, name string) int {
-	return keyReferenceCountExcept(v, name, "")
-}
-
-func keyReferenceCountExcept(v *config.Vault, name, exceptAlias string) int {
-	count := 0
-	for _, c := range v.Connections {
-		if c.Name != exceptAlias && c.KeyName == name {
-			count++
-		}
-	}
-	return count
-}
-
-func removeKeyByName(v *config.Vault, name string) bool {
-	for i := range v.Keys {
-		if v.Keys[i].Name == name {
-			v.Keys = append(v.Keys[:i], v.Keys[i+1:]...)
-			return true
-		}
-	}
-	return false
-}
-
-func newHostView(c config.Connection) hostView {
-	port := c.Port
-	if port == 0 {
-		port = 22
-	}
-	auth := "none"
-	switch {
-	case c.KeyName != "" && c.Password != "":
-		auth = "key+password"
-	case c.KeyName != "":
-		auth = "key"
-	case c.Password != "":
-		auth = "password"
-	}
-	return hostView{Name: c.Name, Host: c.Host, Port: port, User: c.User, Group: c.Group, Auth: auth, KeyName: c.KeyName}
 }
 
 func writeHostList(hosts []hostView, asJSON bool) {
