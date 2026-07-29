@@ -572,8 +572,12 @@ func Pending(v *config.Vault) []MutationView {
 
 // Publish performs secret-free dependency preflight, exact projection, durable
 // intent persistence, opaque publication, target confirmation, and exact local
-// finalization. Pending IDs are never removed before target equality.
-func (t *Transaction) Publish(v *config.Vault, only string) (PublicationReceipt, error) {
+// finalization under an active cross-process publication session. Pending IDs
+// are never removed before target equality.
+func (s *PublicationSession) Publish(t *Transaction, v *config.Vault, only string) (PublicationReceipt, error) {
+	if !s.active() {
+		return PublicationReceipt{}, fmt.Errorf("active publication session is required")
+	}
 	if t.sync == nil {
 		return PublicationReceipt{}, fmt.Errorf("sync transaction is required for publication")
 	}
@@ -600,21 +604,12 @@ func (t *Transaction) Publish(v *config.Vault, only string) (PublicationReceipt,
 	if err != nil {
 		return PublicationReceipt{}, err
 	}
+	if len(projection.Selected) == 0 {
+		return publicationReceipt(publicationOnly, projection.Selected, v), nil
+	}
 	blob, err := config.EncryptVault(projection.Vault, t.masterPass)
 	if err != nil {
 		return PublicationReceipt{}, err
-	}
-	if len(projection.Selected) == 0 {
-		if publicationOnly == "" {
-			blob, err = os.ReadFile(config.Path())
-			if err != nil {
-				return PublicationReceipt{}, err
-			}
-		}
-		if _, err := t.sync.PushBlob(blob); err != nil {
-			return PublicationReceipt{}, err
-		}
-		return publicationReceipt(publicationOnly, projection.Selected, v), nil
 	}
 
 	scope := "all"
@@ -702,6 +697,11 @@ func (t *Transaction) Publish(v *config.Vault, only string) (PublicationReceipt,
 // ReconcilePublishingIntent resolves durable recovery state for status without
 // retrying a PUT or absorbing any newly pending mutation.
 func (t *Transaction) ReconcilePublishingIntent() (*PublicationRecovery, error) {
+	session, err := BeginPublication()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = session.Close() }()
 	_, recovery, err := t.reconcilePublishingIntent()
 	return recovery, err
 }

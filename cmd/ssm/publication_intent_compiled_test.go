@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,248 @@ import (
 	"ssm/internal/config"
 	"ssm/internal/privatepath"
 )
+
+func TestBarePushRequiresExplicitScope(t *testing.T) {
+	cli := newCompiledCLIHarness(t)
+	sync := newCompiledSyncFixture(t)
+	cli.SaveCloud(t, sync.URL(), "ISSUE23_BARE_PUSH_TOKEN_CANARY")
+	missingPass := filepath.Join(cli.temp, "missing-master.pass")
+
+	const wantPushFailure = "{\n" +
+		"  \"ok\": false,\n" +
+		"  \"error\": \"invalid_arguments\",\n" +
+		"  \"message\": \"push requires --all or --only \\u003ctransaction-id\\u003e\",\n" +
+		"  \"hint\": \"inspect pending_mutations with sshctl --json status\",\n" +
+		"  \"exit\": 2\n" +
+		"}\n"
+	for _, test := range []struct {
+		name       string
+		executable string
+		stdin      []byte
+		args       []string
+		want       string
+	}{
+		{
+			name: "direct ssm", executable: "ssm",
+			args: []string{"--json", "push"}, want: wantPushFailure,
+		},
+		{
+			name: "sshctl compatibility name", executable: "sshctl",
+			args: []string{"--json", "push"}, want: wantPushFailure,
+		},
+		{
+			name: "typed request cannot bypass explicit scope", executable: "sshctl",
+			stdin: []byte("{\"version\":1,\"op\":\"push\"}\n"),
+			args:  []string{"request", "-"},
+			want: "{\n" +
+				"  \"ok\": false,\n" +
+				"  \"error\": \"invalid_request\",\n" +
+				"  \"message\": \"unsupported request op \\\"push\\\"\",\n" +
+				"  \"hint\": \"use run, plan, check, doctor, put, get, or host.list/search/show/add/update/upsert/remove\",\n" +
+				"  \"exit\": 2\n" +
+				"}\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := cli.RunWithEnv(t, test.executable, test.stdin, map[string]string{
+				"SSM_MASTER_PASS_FILE": missingPass,
+			}, test.args...)
+			if result.ProcessExit != 2 || result.Stdout != test.want || result.Stderr != "" {
+				t.Fatalf("bare push rejection changed; output=%s", compiledOutputIdentity(result))
+			}
+			decodeExactlyOneJSONObject(t, result.Stdout)
+		})
+	}
+	if got := sync.MethodCount(http.MethodHead); got != 0 {
+		t.Fatalf("bare push HEAD count = %d, want 0", got)
+	}
+	if got := sync.MethodCount(http.MethodGet); got != 0 {
+		t.Fatalf("bare push GET count = %d, want 0", got)
+	}
+	if got := sync.MethodCount(http.MethodPut); got != 0 {
+		t.Fatalf("bare push PUT count = %d, want 0", got)
+	}
+}
+
+func TestConcurrentScopedPublicationsSerializeAcrossProcesses(t *testing.T) {
+	cli := newCompiledCLIHarness(t)
+	const (
+		alphaID = "tx_12121212121212121212121212121212"
+		betaID  = "tx_34343434343434343434343434343434"
+	)
+	alpha := config.Connection{ //nolint:gosec // test-only fake credential canary
+		Name: "alpha", Host: "alpha.example", Port: 22, User: "root",
+		Password: "ISSUE23_CONCURRENT_ALPHA_PASSWORD_CANARY",
+	}
+	beta := config.Connection{ //nolint:gosec // test-only fake credential canary
+		Name: "beta", Host: "beta.example", Port: 22, User: "root",
+		Password: "ISSUE23_CONCURRENT_BETA_PASSWORD_CANARY",
+	}
+	cli.SaveVault(t, &config.Vault{
+		Connections: []config.Connection{alpha, beta},
+		PendingBase: &config.InventorySnapshot{},
+		PendingMutations: []config.PendingMutation{
+			{
+				ID: alphaID, Alias: alpha.Name, Operation: "created",
+				CreatedAt: "2026-07-29T00:00:10Z", After: &alpha,
+			},
+			{
+				ID: betaID, Alias: beta.Name, Operation: "created",
+				CreatedAt: "2026-07-29T00:00:11Z", After: &beta,
+			},
+		},
+	})
+	sync := newPublicationSyncFixture(t)
+	prerequisiteBlob := encryptCompiledVault(t, cli, &config.Vault{})
+	sync.setRemote(prerequisiteBlob)
+	cli.SaveRemoteETag(t, compiledOpaqueIdentity(prerequisiteBlob))
+	cli.SaveCloud(t, sync.server.URL, "ISSUE23_CONCURRENT_TOKEN_CANARY")
+	releaseFirst := sync.holdFirstBeforeCommit()
+
+	first := startCompiledPublication(t, cli, alphaID)
+	waitPublicationEvent(t, sync.requestRead, "first scoped PUT body")
+	headCountWhileFirstHeld := sync.headCount()
+drainFirstRequests:
+	for {
+		select {
+		case <-sync.nextRequest:
+		default:
+			break drainFirstRequests
+		}
+	}
+
+	second := startCompiledPublication(t, cli, betaID)
+	secondReachedRemote := false
+	select {
+	case <-sync.nextRequest:
+		secondReachedRemote = true
+	case <-time.After(2 * time.Second):
+	}
+	close(releaseFirst)
+	firstResult := waitCompiledPublication(t, first)
+	secondResult := waitCompiledPublication(t, second)
+	if secondReachedRemote {
+		t.Fatal("second scoped publication reached remote transport while the first held publication lock")
+	}
+	if got := sync.headCount(); got < headCountWhileFirstHeld {
+		t.Fatalf("serialized scoped publication HEAD count = %d, want at least %d", got, headCountWhileFirstHeld)
+	}
+	firstValue := assertCompiledJSONSuccess(t, firstResult)
+	secondValue := assertCompiledJSONSuccess(t, secondResult)
+	assertCompiledSinglePreflightID(t, firstValue, alphaID)
+	assertCompiledSinglePreflightID(t, secondValue, betaID)
+
+	if got := sync.putCount(); got != 2 {
+		t.Fatalf("serialized scoped publication PUT count = %d, want 2", got)
+	}
+	committed := sync.committedBlobs()
+	if len(committed) != 2 {
+		t.Fatalf("serialized remote commit count = %d, want 2", len(committed))
+	}
+	assertCompiledEncryptedPublication(t, committed[0], cli.passphrase, nil, &config.Vault{
+		Connections: []config.Connection{alpha},
+	})
+	wantRemote := &config.Vault{Connections: []config.Connection{alpha, beta}}
+	assertCompiledEncryptedPublication(t, committed[1], cli.passphrase, nil, wantRemote)
+	assertCompiledEncryptedPublication(t, sync.remote(), cli.passphrase, nil, wantRemote)
+	assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), wantRemote)
+
+	intentPath := filepath.Join(cli.home, ".config", "ssm", "publishing-intent.json")
+	if _, err := os.Stat(intentPath); !os.IsNotExist(err) {
+		t.Fatalf("serialized publication left or corrupted intent sidecar: %v", err)
+	}
+	lockPath := filepath.Join(cli.home, ".config", "ssm", "publication.lock")
+	if err := privatepath.VerifyFile(lockPath); err != nil {
+		t.Fatalf("publication lock path is not private: %v", err)
+	}
+}
+
+func TestPublicationLockContentionFailsBeforeUnlockOrMutation(t *testing.T) {
+	cli := newCompiledCLIHarness(t)
+	const (
+		alphaID = "tx_56565656565656565656565656565656"
+		betaID  = "tx_78787878787878787878787878787878"
+	)
+	alpha := config.Connection{ //nolint:gosec // test-only fake credential canary
+		Name: "alpha", Host: "alpha.example", Port: 22, User: "root",
+		Password: "ISSUE23_BUSY_ALPHA_PASSWORD_CANARY",
+	}
+	beta := config.Connection{ //nolint:gosec // test-only fake credential canary
+		Name: "beta", Host: "beta.example", Port: 22, User: "root",
+		Password: "ISSUE23_BUSY_BETA_PASSWORD_CANARY",
+	}
+	cli.SaveVault(t, &config.Vault{
+		Connections: []config.Connection{alpha, beta},
+		PendingBase: &config.InventorySnapshot{},
+		PendingMutations: []config.PendingMutation{
+			{
+				ID: alphaID, Alias: alpha.Name, Operation: "created",
+				CreatedAt: "2026-07-29T00:00:12Z", After: &alpha,
+			},
+			{
+				ID: betaID, Alias: beta.Name, Operation: "created",
+				CreatedAt: "2026-07-29T00:00:13Z", After: &beta,
+			},
+		},
+	})
+	sync := newPublicationSyncFixture(t)
+	prerequisiteBlob := encryptCompiledVault(t, cli, &config.Vault{})
+	sync.setRemote(prerequisiteBlob)
+	cli.SaveRemoteETag(t, compiledOpaqueIdentity(prerequisiteBlob))
+	cli.SaveCloud(t, sync.server.URL, "ISSUE23_BUSY_TOKEN_CANARY")
+	releaseFirst := sync.holdFirstBeforeCommit()
+
+	first := startCompiledPublication(t, cli, alphaID)
+	waitPublicationEvent(t, sync.requestRead, "held scoped PUT body")
+	intentPath := filepath.Join(cli.home, ".config", "ssm", "publishing-intent.json")
+	intentBefore, err := os.ReadFile(intentPath) //nolint:gosec // fixed path under test-owned compiled CLI home
+	if err != nil {
+		t.Fatalf("read held publication intent: %v", err)
+	}
+	vaultPath := filepath.Join(cli.home, ".config", "ssm", "connections.enc")
+	vaultBefore, err := os.ReadFile(vaultPath) //nolint:gosec // fixed path under test-owned compiled CLI home
+	if err != nil {
+		t.Fatalf("read held publication ledger: %v", err)
+	}
+	headsBefore, putsBefore := sync.headCount(), sync.putCount()
+
+	busy := cli.RunWithEnv(t, "sshctl", nil, map[string]string{
+		"SSM_MASTER_PASS_FILE": filepath.Join(cli.temp, "missing-during-contention.pass"),
+	}, "--json", "push", "--only", betaID)
+	assertCompiledMachineContract(t, busy, compiledMachineContract{
+		OK: false, Error: "sync_push_failed", JSONExit: 1, ProcessExit: 1,
+		Hint: "local vault remains pending; fix sync and retry push",
+	})
+	if !strings.Contains(busy.Stdout, "publication is busy") ||
+		strings.Contains(busy.Stdout, "master pass file") {
+		t.Fatalf("publication contention did not fail canonically before unlock; output=%s", compiledOutputIdentity(busy))
+	}
+	if got := sync.headCount(); got != headsBefore {
+		t.Fatalf("busy publication HEAD count = %d, want %d", got, headsBefore)
+	}
+	if got := sync.putCount(); got != putsBefore {
+		t.Fatalf("busy publication PUT count = %d, want %d", got, putsBefore)
+	}
+	intentAfter, err := os.ReadFile(intentPath) //nolint:gosec // fixed path under test-owned compiled CLI home
+	if err != nil {
+		t.Fatalf("read publication intent after contention: %v", err)
+	}
+	if !bytes.Equal(intentAfter, intentBefore) {
+		t.Fatal("busy publication mutated the held publishing intent")
+	}
+	vaultAfter, err := os.ReadFile(vaultPath) //nolint:gosec // fixed path under test-owned compiled CLI home
+	if err != nil {
+		t.Fatalf("read publication ledger after contention: %v", err)
+	}
+	if !bytes.Equal(vaultAfter, vaultBefore) {
+		t.Fatal("busy publication mutated the pending ledger")
+	}
+
+	close(releaseFirst)
+	firstResult := waitCompiledPublication(t, first)
+	firstValue := assertCompiledJSONSuccess(t, firstResult)
+	assertCompiledSinglePreflightID(t, firstValue, alphaID)
+}
 
 func TestPublicationIntentCrashMatrix(t *testing.T) {
 	t.Run("after intent persistence before request send", func(t *testing.T) {
@@ -276,6 +519,10 @@ func TestPublicationIntentCrashMatrix(t *testing.T) {
 
 		if got := sync.putCount(); got != 1 {
 			t.Fatalf("sent request count = %d, want 1", got)
+		}
+		lockPath := filepath.Join(cli.home, ".config", "ssm", "publication.lock")
+		if err := privatepath.VerifyFile(lockPath); err != nil {
+			t.Fatalf("crashed publication lock path is not private: %v", err)
 		}
 		assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), original)
 		status := cli.Run(t, "sshctl", nil, "--json", "status")
@@ -683,6 +930,37 @@ func killCompiledPublication(t *testing.T, running *runningCompiledPublication) 
 	}
 }
 
+func waitCompiledPublication(t *testing.T, running *runningCompiledPublication) compiledCLIResult {
+	t.Helper()
+	err := running.command.Wait()
+	processExit := 0
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("wait for compiled publication: %v", err)
+		}
+		processExit = exitErr.ExitCode()
+	}
+	result := compiledCLIResult{
+		ProcessExit: processExit,
+		Stdout:      running.stdout.String(),
+		Stderr:      running.stderr.String(),
+	}
+	return result
+}
+
+func assertCompiledSinglePreflightID(t *testing.T, value map[string]any, want string) {
+	t.Helper()
+	preflight, ok := value["preflight"].([]any)
+	if !ok || len(preflight) != 1 {
+		t.Fatalf("publication preflight = %v, want one transaction", value["preflight"])
+	}
+	transaction, ok := preflight[0].(map[string]any)
+	if !ok || transaction["id"] != want {
+		t.Fatalf("publication preflight transaction = %v, want id %s", preflight[0], want)
+	}
+}
+
 func waitPublicationEvent(t *testing.T, event <-chan struct{}, label string) {
 	t.Helper()
 	select {
@@ -697,13 +975,17 @@ type publicationSyncFixture struct {
 
 	mu               sync.Mutex
 	remoteBlob       []byte
+	committed        [][]byte
 	heads            int
 	puts             int
 	loseNextResponse bool
 	requestRead      chan struct{}
+	requestReadOnce  sync.Once
+	nextRequest      chan struct{}
 	remoteCommitted  chan struct{}
 	blockDone        chan struct{}
 	blockPreCommit   bool
+	releasePreCommit chan struct{}
 	blockPostCommit  bool
 	rejectNextPut    bool
 }
@@ -726,7 +1008,14 @@ func (f *publicationSyncFixture) serveHTTP(w http.ResponseWriter, r *http.Reques
 		f.mu.Lock()
 		f.heads++
 		blob := append([]byte(nil), f.remoteBlob...)
+		nextRequest := f.nextRequest
 		f.mu.Unlock()
+		if nextRequest != nil {
+			select {
+			case nextRequest <- struct{}{}:
+			default:
+			}
+		}
 		if len(blob) == 0 {
 			http.NotFound(w, r)
 			return
@@ -744,6 +1033,7 @@ func (f *publicationSyncFixture) serveHTTP(w http.ResponseWriter, r *http.Reques
 		blockPreCommit := f.blockPreCommit
 		requestRead := f.requestRead
 		blockDone := f.blockDone
+		releasePreCommit := f.releasePreCommit
 		reject := f.rejectNextPut
 		f.rejectNextPut = false
 		f.mu.Unlock()
@@ -752,16 +1042,22 @@ func (f *publicationSyncFixture) serveHTTP(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		if requestRead != nil {
-			close(requestRead)
+			f.requestReadOnce.Do(func() { close(requestRead) })
 		}
 		if blockPreCommit {
-			<-r.Context().Done()
-			close(blockDone)
-			return
+			select {
+			case <-releasePreCommit:
+			case <-r.Context().Done():
+				if blockDone != nil {
+					close(blockDone)
+				}
+				return
+			}
 		}
 
 		f.mu.Lock()
 		f.remoteBlob = append([]byte(nil), blob...)
+		f.committed = append(f.committed, append([]byte(nil), blob...))
 		loseResponse := f.loseNextResponse
 		f.loseNextResponse = false
 		blockPostCommit := f.blockPostCommit
@@ -807,6 +1103,16 @@ func (f *publicationSyncFixture) remote() []byte {
 	return append([]byte(nil), f.remoteBlob...)
 }
 
+func (f *publicationSyncFixture) committedBlobs() [][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	blobs := make([][]byte, len(f.committed))
+	for i := range f.committed {
+		blobs[i] = append([]byte(nil), f.committed[i]...)
+	}
+	return blobs
+}
+
 func (f *publicationSyncFixture) putCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -824,7 +1130,19 @@ func (f *publicationSyncFixture) blockBeforeCommit() {
 	defer f.mu.Unlock()
 	f.blockPreCommit = true
 	f.requestRead = make(chan struct{})
+	f.requestReadOnce = sync.Once{}
 	f.blockDone = make(chan struct{})
+}
+
+func (f *publicationSyncFixture) holdFirstBeforeCommit() chan struct{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.blockPreCommit = true
+	f.requestRead = make(chan struct{})
+	f.requestReadOnce = sync.Once{}
+	f.nextRequest = make(chan struct{}, 1)
+	f.releasePreCommit = make(chan struct{})
+	return f.releasePreCommit
 }
 
 func (f *publicationSyncFixture) blockAfterCommit() {

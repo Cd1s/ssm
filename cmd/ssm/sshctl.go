@@ -353,9 +353,10 @@ func runSSHCTLStatus() {
 		Sync:       syncTransaction(false),
 	}).ReconcilePublishingIntent()
 	if recoveryErr == nil {
-		if recovery != nil && recovery.State == "confirmed" {
-			invalidateVaultCache()
-		}
+		// Reconciliation waits for any in-flight publisher. Discard the vault
+		// snapshot loaded before that wait so status cannot report its stale
+		// pending ledger after the other process finalizes.
+		invalidateVaultCache()
 		pullIfChanged()
 	}
 	count := 0
