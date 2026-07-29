@@ -2515,10 +2515,9 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		}
 	})
 
-	t.Run("BC-2 cross-alias saved-key publication is currently permitted", func(t *testing.T) {
+	t.Run("BC-2 old cross-alias projection is characterized and new dependency is rejected", func(t *testing.T) {
 		cli := newCompiledCLIHarness(t)
 		sync := newCompiledSyncFixture(t)
-		sync.SetRemote(t, nil, "bc2-upload")
 		keyCanary := "ISSUE17_CROSS_ALIAS_PRIVATE_KEY_CANARY"
 		bc2CloudCanary := "ISSUE17_BC2_CLOUD_OUTPUT_CANARY"
 		key := config.SSHKey{Name: "shared-key", PrivateKey: keyCanary}
@@ -2535,6 +2534,11 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		})
 		cli.SaveCloud(t, sync.URL(), bc2CloudCanary)
 
+		oldAllowedProjection := &config.Vault{Connections: []config.Connection{beta}}
+		if oldAllowedProjection.Connections[0].KeyName != key.Name ||
+			len(oldAllowedProjection.Keys) != 0 {
+			t.Fatal("BC-2 old same-alias-only projection fixture no longer characterizes the dangling saved-key reference")
+		}
 		result := cli.Run(t, "sshctl", nil, "--json", "push", "--only", "tx_beta")
 		assertNoCompiledCanaryLeak(t, result, map[string]string{
 			"private_key":         keyCanary,
@@ -2542,25 +2546,29 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 			"passphrase":          cli.passphrase,
 			"passphrase_fragment": "MASTER_PASSPHRASE",
 		})
-		value := assertCompiledJSONSuccess(t, result)
-		assertCompiledStringField(t, value, "scope", "only", result)
-		assertCompiledStringField(t, value, "transaction_id", "tx_beta", result)
-		if got := sync.MethodCount("PUT"); got != 1 {
-			t.Fatalf("sync PUT count = %d, want 1", got)
+		assertCompiledMachineContract(t, result, compiledMachineContract{
+			OK: false, Error: "sync_push_failed", JSONExit: 1, ProcessExit: 1,
+			Hint:   "local vault remains pending; fix sync and retry push",
+			Absent: []string{"stage", "alias", "candidates"},
+		})
+		for _, safe := range []string{"tx_alpha", "alpha", "created", key.Name, "saved_key_create"} {
+			if !strings.Contains(result.Stdout, safe) {
+				t.Fatalf("BC-2 dependency failure omitted safe prerequisite %q; output=%s", safe, compiledOutputIdentity(result))
+			}
 		}
-		assertCompiledVaultIdentity(
-			t,
-			decodeCompiledVaultIdentity(t, sync.UploadedBlob(), cli.passphrase),
-			&config.Vault{Connections: []config.Connection{beta}},
-		)
+		for _, method := range []string{http.MethodHead, http.MethodGet, http.MethodPut} {
+			if got := sync.MethodCount(method); got != 0 {
+				t.Fatalf("BC-2 rejected dependency %s count = %d, want 0", method, got)
+			}
+		}
 		assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), &config.Vault{
 			Connections: []config.Connection{alpha, beta},
 			Keys:        []config.SSHKey{key},
-			PendingBase: &config.InventorySnapshot{Connections: []config.Connection{beta}},
-			PendingMutations: []config.PendingMutation{{
-				ID: "tx_alpha", Alias: alpha.Name, Operation: "created", CreatedAt: "2026-01-01T00:00:00Z",
-				After: &alpha, KeysAfter: []config.SSHKey{key},
-			}},
+			PendingBase: &config.InventorySnapshot{},
+			PendingMutations: []config.PendingMutation{
+				{ID: "tx_alpha", Alias: alpha.Name, Operation: "created", CreatedAt: "2026-01-01T00:00:00Z", After: &alpha, KeysAfter: []config.SSHKey{key}},
+				{ID: "tx_beta", Alias: beta.Name, Operation: "created", CreatedAt: "2026-01-01T00:00:01Z", After: &beta, KeysBefore: []config.SSHKey{key}, KeysAfter: []config.SSHKey{key}},
+			},
 		})
 
 		sameAliasCLI := newCompiledCLIHarness(t)

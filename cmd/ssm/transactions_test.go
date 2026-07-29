@@ -17,6 +17,7 @@ import (
 
 	"ssm/internal/cloud"
 	"ssm/internal/config"
+	"ssm/internal/inventorytransaction"
 	securevault "ssm/internal/vault"
 )
 
@@ -142,18 +143,17 @@ func TestScopedPushDoesNotPublishUnrelatedPendingMutation(t *testing.T) {
 	t.Cleanup(func() { masterPass = previousPass })
 
 	base := &config.Vault{Connections: []config.Connection{{Name: "base", Host: "base.example", Port: 22, User: "root", Password: "base-secret"}}}
-	withAlpha := cloneVault(base)
-	withAlpha.Connections = append(withAlpha.Connections, config.Connection{Name: "alpha", Host: "alpha.example", Port: 22, User: "root", Password: "alpha-secret"})
-	alphaResult := hostMutationResult{Changed: true, Action: "created", Host: newHostView(withAlpha.Connections[1])}
-	if err := appendHostMutation(base, withAlpha, &alphaResult); err != nil {
-		t.Fatal(err)
-	}
-
-	withBeta := cloneVault(withAlpha)
-	withBeta.Connections = append(withBeta.Connections, config.Connection{Name: "beta", Host: "beta.example", Port: 22, User: "root", Password: "beta-secret"})
-	betaResult := hostMutationResult{Changed: true, Action: "created", Host: newHostView(withBeta.Connections[2])}
-	if err := appendHostMutation(withAlpha, withBeta, &betaResult); err != nil {
-		t.Fatal(err)
+	alpha := config.Connection{Name: "alpha", Host: "alpha.example", Port: 22, User: "root", Password: "alpha-secret"}
+	beta := config.Connection{Name: "beta", Host: "beta.example", Port: 22, User: "root", Password: "beta-secret"}
+	withBeta := &config.Vault{
+		Connections: []config.Connection{base.Connections[0], alpha, beta},
+		PendingBase: &config.InventorySnapshot{
+			Connections: append([]config.Connection(nil), base.Connections...),
+		},
+		PendingMutations: []config.PendingMutation{
+			{ID: "tx_alpha", Alias: alpha.Name, Operation: "created", CreatedAt: "2026-07-29T00:00:00Z", After: &alpha},
+			{ID: "tx_beta", Alias: beta.Name, Operation: "created", CreatedAt: "2026-07-29T00:00:01Z", After: &beta},
+		},
 	}
 	if err := config.Save(withBeta, masterPass); err != nil {
 		t.Fatal(err)
@@ -178,7 +178,7 @@ func TestScopedPushDoesNotPublishUnrelatedPendingMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := pushTransactionScope(betaResult.TransactionID)
+	result, err := pushTransactionScope("tx_beta")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ func TestScopedPushDoesNotPublishUnrelatedPendingMutation(t *testing.T) {
 	if exactConnectionIndex(local, "alpha") < 0 || exactConnectionIndex(local, "beta") < 0 {
 		t.Fatalf("local inventory lost pending changes: %+v", local.Connections)
 	}
-	if len(local.PendingMutations) != 1 || local.PendingMutations[0].ID != alphaResult.TransactionID {
+	if len(local.PendingMutations) != 1 || local.PendingMutations[0].ID != "tx_alpha" {
 		t.Fatalf("remaining mutations = %+v", local.PendingMutations)
 	}
 }
@@ -413,7 +413,7 @@ func TestPendingMutationViewsDoNotRevealSecrets(t *testing.T) {
 		After:     &config.Connection{Name: "prod", Password: "must-not-leak"},
 		KeysAfter: []config.SSHKey{{Name: "deploy", PrivateKey: "private-material"}},
 	}}}
-	encoded, err := json.Marshal(pendingMutationViews(v))
+	encoded, err := json.Marshal(inventorytransaction.Pending(v))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,7 +430,7 @@ func TestScopedPushRejectsDependentAliasTransaction(t *testing.T) {
 			{ID: "tx_second", Alias: "same", Operation: "updated"},
 		},
 	}
-	if _, _, err := publishProjection(v, "tx_second"); err == nil || !strings.Contains(err.Error(), "depends on earlier") {
+	if _, err := inventorytransaction.Preflight(v, "tx_second"); err == nil || !strings.Contains(err.Error(), "requires pending") {
 		t.Fatalf("dependency error = %v", err)
 	}
 }

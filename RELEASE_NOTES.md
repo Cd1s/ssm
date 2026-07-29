@@ -1,5 +1,20 @@
 # Release Notes Draft
 
+## v2.0.0 (draft)
+
+### Reviewed saved-key publication
+
+- `push --only <transaction-id>` now rejects unsatisfied cross-alias saved-key
+  create, replace, rename, delete, prune, and reference prerequisites before
+  any sync request.
+- The safe failure message lists every required stable transaction ID in
+  ledger order with alias, operation, key name, and reason. Publish those IDs
+  explicitly in order, then retry the original transaction; SSM never adds
+  prerequisites or unrelated pending mutations to the selected scope.
+- Modern direct and request-v1 host mutations retain their existing encrypted
+  vault/ledger schema, transaction ID format, and typed success fields. Legacy
+  removal and import behavior remains unchanged pending its separate migration.
+
 ## v1.4.3
 
 ### Fast agent execution

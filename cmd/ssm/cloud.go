@@ -10,6 +10,7 @@ import (
 
 	"ssm/internal/cloud"
 	"ssm/internal/config"
+	"ssm/internal/inventorytransaction"
 	"ssm/internal/machinecontract"
 	"ssm/internal/ssh"
 	"ssm/internal/synctransaction"
@@ -134,14 +135,8 @@ func runLogout() {
 	fmt.Println("Logged out.")
 }
 
-type pushResult struct {
-	OK        bool                  `json:"ok"`
-	Action    string                `json:"action"`
-	Scope     string                `json:"scope"`
-	Only      string                `json:"transaction_id,omitempty"`
-	Preflight []pendingMutationView `json:"preflight"`
-	Remaining []pendingMutationView `json:"remaining_mutations"`
-}
+type pendingMutationView = inventorytransaction.MutationView
+type pushResult = inventorytransaction.PublicationReceipt
 
 func runPush(args []string) {
 	only := ""
@@ -200,55 +195,10 @@ func pushTransactionScope(only string) (pushResult, error) {
 	if err != nil {
 		return pushResult{}, err
 	}
-	originalBlob, originalBlobErr := os.ReadFile(config.Path())
-	originalBlobExists := originalBlobErr == nil
-	if originalBlobErr != nil && !os.IsNotExist(originalBlobErr) {
-		return pushResult{}, originalBlobErr
-	}
-	restoreOriginal := func() {
-		if originalBlobExists {
-			_ = config.WritePrivateFile(config.Path(), originalBlob)
-		}
-	}
-	projected, selected, err := publishProjection(v, only)
-	if err != nil {
-		return pushResult{}, err
-	}
-	blob, err := config.EncryptVault(projected, masterPass)
-	if err != nil {
-		return pushResult{}, err
-	}
-	localAfter := cloneVault(v)
-	markPublished(localAfter, selected, projected)
-	if len(selected) > 0 {
-		if err := config.Save(localAfter, masterPass); err != nil {
-			return pushResult{}, err
-		}
-	}
-	if only == "" {
-		blob, err = os.ReadFile(config.Path())
-		if err != nil {
-			restoreOriginal()
-			return pushResult{}, err
-		}
-	}
-	if _, err = syncTransaction(false).PushBlob(blob); err != nil {
-		restoreOriginal()
-		return pushResult{}, err
-	}
-	scope := "all"
-	if only != "" {
-		scope = "only"
-	}
-	return pushResult{OK: true, Action: "pushed", Scope: scope, Only: only, Preflight: mutationViews(selected), Remaining: pendingMutationViews(localAfter)}, nil
-}
-
-func mutationViews(mutations []config.PendingMutation) []pendingMutationView {
-	views := make([]pendingMutationView, 0, len(mutations))
-	for _, mutation := range mutations {
-		views = append(views, pendingMutationView{ID: mutation.ID, Alias: mutation.Alias, Operation: mutation.Operation, CreatedAt: mutation.CreatedAt})
-	}
-	return views
+	return inventorytransaction.New(inventorytransaction.Options{
+		MasterPass: masterPass,
+		Sync:       syncTransaction(false),
+	}).Publish(v, only)
 }
 
 func runRemoteHash() {
