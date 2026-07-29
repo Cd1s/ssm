@@ -833,12 +833,22 @@ type publishingIntentTransactionV1Legacy struct {
 const (
 	publishingIntentVersion   = 2
 	publishingIntentV1Version = 1
-	intentPrepared            = "prepared"
-	intentReady               = "ready"
-	intentAmbiguous           = "ambiguous"
-	intentDivergent           = "divergent"
-	intentFinalizationFailed  = "finalization_failed"
+	// A canonical v2 intent at the 1,024-transaction ceiling is below 256
+	// KiB and uses at most 7,192 JSON tokens. The larger byte/token budgets
+	// retain migration headroom for v1's deprecated diagnostics. V1's deepest
+	// known shape is four containers, so 16 levels also leaves 4x headroom.
+	maxPublishingIntentDocumentBytes = 512 * 1024
+	maxPublishingIntentJSONDepth     = 16
+	maxPublishingIntentJSONTokens    = 32 * 1024
+	maxPublishingIntentTransactions  = 1024
+	intentPrepared                   = "prepared"
+	intentReady                      = "ready"
+	intentAmbiguous                  = "ambiguous"
+	intentDivergent                  = "divergent"
+	intentFinalizationFailed         = "finalization_failed"
 )
+
+var errInvalidPublishingIntentDocument = errors.New("publishing intent document is invalid")
 
 // Pending returns stable secret-free pending views in ledger order.
 func Pending(v *config.Vault) []MutationView {
@@ -1108,11 +1118,24 @@ func savePublishingIntent(intent publishingIntent) error {
 	if err != nil {
 		return err
 	}
-	return config.WritePrivateFile(publishingIntentPath(), append(data, '\n'))
+	data = append(data, '\n')
+	if len(data) > maxPublishingIntentDocumentBytes {
+		return errInvalidPublishingIntentDocument
+	}
+	return config.WritePrivateFile(publishingIntentPath(), data)
 }
 
 func loadPublishingIntent() (publishingIntent, error) {
-	data, err := os.ReadFile(publishingIntentPath()) //nolint:gosec // fixed private recovery path under the SSM config directory
+	file, err := os.Open(publishingIntentPath()) //nolint:gosec // fixed private recovery path under the SSM config directory
+	if err != nil {
+		return publishingIntent{}, err
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return publishingIntent{}, err
+	}
+	data, err := readPublishingIntentDocument(file, info.Size())
 	if err != nil {
 		return publishingIntent{}, err
 	}
@@ -1153,27 +1176,42 @@ func loadPublishingIntent() (publishingIntent, error) {
 	}
 }
 
+func readPublishingIntentDocument(reader io.Reader, size int64) ([]byte, error) {
+	if size < 0 || size > maxPublishingIntentDocumentBytes {
+		return nil, errInvalidPublishingIntentDocument
+	}
+	data, err := io.ReadAll(io.LimitReader(reader, maxPublishingIntentDocumentBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxPublishingIntentDocumentBytes {
+		return nil, errInvalidPublishingIntentDocument
+	}
+	return data, nil
+}
+
 func decodePublishingIntent(data []byte, target any, strict bool) error {
 	if err := validateUniqueJSONMembers(data); err != nil {
-		return errors.New("publishing intent document is invalid")
+		return errInvalidPublishingIntentDocument
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	if strict {
 		decoder.DisallowUnknownFields()
 	}
 	if err := decoder.Decode(target); err != nil {
-		return errors.New("publishing intent document is invalid")
+		return errInvalidPublishingIntentDocument
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
-		return errors.New("publishing intent document is invalid")
+		return errInvalidPublishingIntentDocument
 	}
 	return nil
 }
 
 func validateUniqueJSONMembers(data []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
-	if err := consumeUniqueJSONValue(decoder); err != nil {
+	budget := uniqueJSONBudget{}
+	if err := consumeUniqueJSONValue(decoder, &budget, 0); err != nil {
 		return err
 	}
 	if _, err := decoder.Token(); err != io.EOF {
@@ -1182,8 +1220,24 @@ func validateUniqueJSONMembers(data []byte) error {
 	return nil
 }
 
-func consumeUniqueJSONValue(decoder *json.Decoder) error {
+type uniqueJSONBudget struct {
+	tokens int
+}
+
+func (budget *uniqueJSONBudget) nextToken(decoder *json.Decoder) (json.Token, error) {
+	if budget.tokens >= maxPublishingIntentJSONTokens {
+		return nil, errors.New("JSON document has too many tokens")
+	}
 	token, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	budget.tokens++
+	return token, nil
+}
+
+func consumeUniqueJSONValue(decoder *json.Decoder, budget *uniqueJSONBudget, depth int) error {
+	token, err := budget.nextToken(decoder)
 	if err != nil {
 		return err
 	}
@@ -1191,11 +1245,14 @@ func consumeUniqueJSONValue(decoder *json.Decoder) error {
 	if !ok {
 		return nil
 	}
+	if depth >= maxPublishingIntentJSONDepth {
+		return errors.New("JSON document nesting is too deep")
+	}
 	switch delimiter {
 	case '{':
 		members := make(map[string]struct{})
 		for decoder.More() {
-			token, err := decoder.Token()
+			token, err := budget.nextToken(decoder)
 			if err != nil {
 				return err
 			}
@@ -1207,20 +1264,20 @@ func consumeUniqueJSONValue(decoder *json.Decoder) error {
 				return errors.New("JSON object contains a duplicate member")
 			}
 			members[member] = struct{}{}
-			if err := consumeUniqueJSONValue(decoder); err != nil {
+			if err := consumeUniqueJSONValue(decoder, budget, depth+1); err != nil {
 				return err
 			}
 		}
 	case '[':
 		for decoder.More() {
-			if err := consumeUniqueJSONValue(decoder); err != nil {
+			if err := consumeUniqueJSONValue(decoder, budget, depth+1); err != nil {
 				return err
 			}
 		}
 	default:
 		return errors.New("JSON value delimiter is invalid")
 	}
-	_, err = decoder.Token()
+	_, err = budget.nextToken(decoder)
 	return err
 }
 
@@ -1266,6 +1323,10 @@ func validatePublishingIntent(intent publishingIntent) error {
 	}
 	if intent.Scope != "all" && intent.Scope != "only" {
 		return errors.New("publishing intent scope is invalid")
+	}
+	if len(intent.TransactionIDs) > maxPublishingIntentTransactions ||
+		len(intent.Transactions) > maxPublishingIntentTransactions {
+		return errInvalidPublishingIntentDocument
 	}
 	if len(intent.TransactionIDs) == 0 {
 		return errors.New("publishing intent requires transaction IDs")

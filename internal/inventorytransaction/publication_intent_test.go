@@ -2,9 +2,12 @@ package inventorytransaction
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -184,6 +187,266 @@ func TestDecodePublishingIntentRejectsTrailingData(t *testing.T) {
 	}
 }
 
+func TestDecodePublishingIntentBoundsNestingDepth(t *testing.T) {
+	const wantDepth = 16
+	if maxPublishingIntentJSONDepth != wantDepth {
+		t.Fatalf("publishing intent JSON depth = %d, want reviewed %d", maxPublishingIntentJSONDepth, wantDepth)
+	}
+	tests := []struct {
+		name    string
+		depth   int
+		wantErr bool
+	}{
+		{name: "under", depth: wantDepth - 1},
+		{name: "exact", depth: wantDepth},
+		{name: "over", depth: wantDepth + 1, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			data := []byte(strings.Repeat("[", test.depth) + "0" + strings.Repeat("]", test.depth))
+			var value any
+			err := decodePublishingIntent(data, &value, false)
+			if test.wantErr {
+				if err == nil || err.Error() != "publishing intent document is invalid" {
+					t.Fatalf("depth error = %v, want constant invalid-document error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decode depth %d: %v", test.depth, err)
+			}
+		})
+	}
+}
+
+func TestDecodePublishingIntentBoundsTotalJSONTokens(t *testing.T) {
+	const wantTokens = 32 * 1024
+	if maxPublishingIntentJSONTokens != wantTokens {
+		t.Fatalf("publishing intent JSON token limit = %d, want reviewed %d", maxPublishingIntentJSONTokens, wantTokens)
+	}
+	tests := []struct {
+		name    string
+		data    func(int) []byte
+		count   int
+		wantErr bool
+	}{
+		{name: "array under", data: jsonArrayWithNulls, count: wantTokens - 3},
+		{name: "array exact", data: jsonArrayWithNulls, count: wantTokens - 2},
+		{name: "array over", data: jsonArrayWithNulls, count: wantTokens - 1, wantErr: true},
+		{name: "object under", data: jsonObjectWithMembers, count: (wantTokens-2)/2 - 1},
+		{name: "object exact", data: jsonObjectWithMembers, count: (wantTokens - 2) / 2},
+		{name: "object over", data: jsonObjectWithMembers, count: (wantTokens-2)/2 + 1, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var value any
+			err := decodePublishingIntent(test.data(test.count), &value, false)
+			if test.wantErr {
+				if err == nil || err.Error() != "publishing intent document is invalid" {
+					t.Fatalf("token-budget error = %v, want constant invalid-document error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decode JSON within token budget: %v", err)
+			}
+		})
+	}
+}
+
+func TestDecodePublishingIntentRejectsBudgetsBeforeTypedDecode(t *testing.T) {
+	const (
+		maxJSONDepth  = 16
+		maxJSONTokens = 32 * 1024
+	)
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{
+			name: "too deep",
+			data: []byte(strings.Repeat("[", maxJSONDepth+1) + "null" + strings.Repeat("]", maxJSONDepth+1)),
+		},
+		{name: "too wide", data: jsonArrayWithNulls(maxJSONTokens)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			target := typedDecodeCanary{}
+			err := decodePublishingIntent(test.data, &target, false)
+			if err == nil || err.Error() != "publishing intent document is invalid" {
+				t.Fatalf("resource error = %v, want constant invalid-document error", err)
+			}
+			if target.called {
+				t.Fatal("resource-exhausting document reached typed JSON decoding")
+			}
+		})
+	}
+}
+
+func TestLoadPublishingIntentBoundsDocumentBytes(t *testing.T) {
+	const wantDocumentBytes = 512 * 1024
+	if maxPublishingIntentDocumentBytes != wantDocumentBytes {
+		t.Fatalf("publishing intent document limit = %d, want reviewed %d", maxPublishingIntentDocumentBytes, wantDocumentBytes)
+	}
+
+	intentPath := usePublishingIntentTestHome(t)
+	base := []byte(`{
+  "version": 2,
+  "state": "ready",
+  "scope": "only",
+  "transaction_ids": ["tx_23232323232323232323232323232323"],
+  "transactions": [{
+    "operation": "created",
+    "created_at": "2026-07-29T00:00:23Z"
+  }],
+  "prerequisite_remote_exists": false,
+  "target_encrypted_blob_identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}`)
+	tests := []struct {
+		name    string
+		size    int
+		wantErr bool
+	}{
+		{name: "under", size: wantDocumentBytes - 1},
+		{name: "exact", size: wantDocumentBytes},
+		{name: "over", size: wantDocumentBytes + 1, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			document := append([]byte(nil), base...)
+			document = append(document, bytes.Repeat([]byte(" "), test.size-len(document))...)
+			if err := config.WritePrivateFile(intentPath, document); err != nil {
+				t.Fatalf("write boundary publishing intent: %v", err)
+			}
+
+			_, err := loadPublishingIntent()
+			if test.wantErr {
+				if err == nil || err.Error() != "publishing intent document is invalid" {
+					t.Fatalf("oversize error = %v, want constant invalid-document error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("load %d-byte publishing intent: %v", test.size, err)
+			}
+		})
+	}
+}
+
+func TestReadPublishingIntentDocumentRejectsGrowthAfterStat(t *testing.T) {
+	const wantDocumentBytes = 512 * 1024
+	path := filepath.Join(t.TempDir(), "publishing-intent.json")
+	before := bytes.Repeat([]byte(" "), wantDocumentBytes-1)
+	if err := os.WriteFile(path, before, 0o600); err != nil {
+		t.Fatalf("write initial publishing intent: %v", err)
+	}
+	file, err := os.Open(path) //nolint:gosec // path is beneath the test-owned temporary directory
+	if err != nil {
+		t.Fatalf("open initial publishing intent: %v", err)
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatalf("stat initial publishing intent: %v", err)
+	}
+	appender, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0) //nolint:gosec // path is beneath the test-owned temporary directory
+	if err != nil {
+		t.Fatalf("open publishing intent appender: %v", err)
+	}
+	if _, err := appender.Write([]byte("  ")); err != nil {
+		_ = appender.Close()
+		t.Fatalf("grow publishing intent after stat: %v", err)
+	}
+	if err := appender.Close(); err != nil {
+		t.Fatalf("close publishing intent appender: %v", err)
+	}
+
+	_, err = readPublishingIntentDocument(file, info.Size())
+	if err == nil || err.Error() != "publishing intent document is invalid" {
+		t.Fatalf("post-stat growth error = %v, want constant invalid-document error", err)
+	}
+}
+
+func TestReadPublishingIntentDocumentUsesOpenedFileAcrossReplacement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "publishing-intent.json")
+	original := []byte(`{"version":2}`)
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatalf("write original publishing intent: %v", err)
+	}
+	file, err := os.Open(path) //nolint:gosec // path is beneath the test-owned temporary directory
+	if err != nil {
+		t.Fatalf("open original publishing intent: %v", err)
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatalf("stat original publishing intent: %v", err)
+	}
+	replacement := filepath.Join(filepath.Dir(path), "replacement.json")
+	if err := os.WriteFile(replacement, bytes.Repeat([]byte("x"), 512*1024+1), 0o600); err != nil {
+		t.Fatalf("write replacement publishing intent: %v", err)
+	}
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatalf("replace publishing intent path: %v", err)
+	}
+
+	data, err := readPublishingIntentDocument(file, info.Size())
+	if err != nil {
+		t.Fatalf("read opened publishing intent after path replacement: %v", err)
+	}
+	if !bytes.Equal(data, original) {
+		t.Fatal("publishing intent read switched to a replacement path")
+	}
+}
+
+func TestLoadPublishingIntentRejectsResourceBudgetsBeforeVersionDispatch(t *testing.T) {
+	const (
+		maxDocumentBytes = 512 * 1024
+		maxJSONDepth     = 16
+		maxJSONTokens    = 32 * 1024
+	)
+	intentPath := usePublishingIntentTestHome(t)
+	unsupported := []byte(`{"version":99}`)
+	oversized := append([]byte(nil), unsupported...)
+	oversized = append(oversized, bytes.Repeat([]byte(" "), maxDocumentBytes+1-len(oversized))...)
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{name: "oversized", data: oversized},
+		{
+			name: "too deep",
+			data: []byte(`{"version":99,"resource":` +
+				strings.Repeat("[", maxJSONDepth) + "null" + strings.Repeat("]", maxJSONDepth) + `}`),
+		},
+		{
+			name: "too wide",
+			data: append(
+				append([]byte(`{"version":99,"resource":`), jsonArrayWithNulls(maxJSONTokens)...),
+				'}',
+			),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := config.WritePrivateFile(intentPath, test.data); err != nil {
+				t.Fatalf("write unsupported resource publishing intent: %v", err)
+			}
+			_, err := loadPublishingIntent()
+			if err == nil || err.Error() != "publishing intent document is invalid" {
+				t.Fatalf("resource error = %v, want invalid-document before unsupported-version dispatch", err)
+			}
+			after, readErr := os.ReadFile(intentPath) //nolint:gosec // fixed path beneath the test-owned home
+			if readErr != nil {
+				t.Fatalf("read rejected resource publishing intent: %v", readErr)
+			}
+			if !bytes.Equal(after, test.data) {
+				t.Fatal("resource rejection rewrote or removed the unsupported-version sidecar")
+			}
+		})
+	}
+}
+
 func TestValidatePublishingIntentUsesConstantSecretSafeErrors(t *testing.T) {
 	valid := publishingIntent{
 		Version:        publishingIntentVersion,
@@ -294,6 +557,67 @@ func TestValidatePublishingIntentUsesConstantSecretSafeErrors(t *testing.T) {
 				t.Fatal("validation error exposed an untrusted sidecar value")
 			}
 		})
+	}
+}
+
+func TestPublishingIntentBoundsTransactionCount(t *testing.T) {
+	const wantTransactions = 1024
+	if maxPublishingIntentTransactions != wantTransactions {
+		t.Fatalf("publishing intent transaction limit = %d, want reviewed %d", maxPublishingIntentTransactions, wantTransactions)
+	}
+	tests := []struct {
+		name    string
+		count   int
+		wantErr bool
+	}{
+		{name: "under", count: wantTransactions - 1},
+		{name: "exact", count: wantTransactions},
+		{name: "over", count: wantTransactions + 1, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			intent := publishingIntentWithTransactions(test.count)
+			err := validatePublishingIntent(intent)
+			if test.wantErr {
+				if err == nil || err.Error() != "publishing intent document is invalid" {
+					t.Fatalf("transaction-count error = %v, want constant invalid-document error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("validate %d-transaction publishing intent: %v", test.count, err)
+			}
+		})
+	}
+
+	intentPath := usePublishingIntentTestHome(t)
+	document, err := json.MarshalIndent(publishingIntentWithTransactions(wantTransactions), "", "  ")
+	if err != nil {
+		t.Fatalf("marshal maximum publishing intent: %v", err)
+	}
+	document = append(document, '\n')
+	if len(document) > 256*1024 {
+		t.Fatalf("maximum canonical v2 publishing intent = %d bytes, want at most 256 KiB", len(document))
+	}
+	if err := config.WritePrivateFile(intentPath, document); err != nil {
+		t.Fatalf("write maximum publishing intent: %v", err)
+	}
+	if _, err := loadPublishingIntent(); err != nil {
+		t.Fatalf("load maximum publishing intent: %v", err)
+	}
+}
+
+func TestSavePublishingIntentRejectsOversizeCanonicalDocumentBeforeWrite(t *testing.T) {
+	intentPath := usePublishingIntentTestHome(t)
+	intent := publishingIntentWithTransactions(1)
+	intent.TransactionIDs[0] = strings.Repeat("x", 512*1024)
+
+	err := savePublishingIntent(intent)
+	if err == nil || err.Error() != "publishing intent document is invalid" {
+		t.Fatalf("oversize save error = %v, want constant invalid-document error", err)
+	}
+	if _, statErr := os.Stat(intentPath); !os.IsNotExist(statErr) {
+		t.Fatalf("oversize save created a publishing intent: %v", statErr)
 	}
 }
 
@@ -484,4 +808,60 @@ func usePublishingIntentTestHome(t *testing.T) string {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	return filepath.Join(home, ".config", "ssm", "publishing-intent.json")
+}
+
+func jsonArrayWithNulls(values int) []byte {
+	var document strings.Builder
+	document.Grow(2 + values*5)
+	document.WriteByte('[')
+	for index := 0; index < values; index++ {
+		if index > 0 {
+			document.WriteByte(',')
+		}
+		document.WriteString("null")
+	}
+	document.WriteByte(']')
+	return []byte(document.String())
+}
+
+func jsonObjectWithMembers(members int) []byte {
+	var document strings.Builder
+	document.Grow(2 + members*16)
+	document.WriteByte('{')
+	for index := 0; index < members; index++ {
+		if index > 0 {
+			document.WriteByte(',')
+		}
+		document.WriteString(`"member_`)
+		document.WriteString(strconv.Itoa(index))
+		document.WriteString(`":null`)
+	}
+	document.WriteByte('}')
+	return []byte(document.String())
+}
+
+func publishingIntentWithTransactions(count int) publishingIntent {
+	intent := publishingIntent{
+		Version:        publishingIntentVersion,
+		State:          intentReady,
+		Scope:          "all",
+		TargetIdentity: strings.Repeat("a", 64),
+	}
+	for index := 0; index < count; index++ {
+		intent.TransactionIDs = append(intent.TransactionIDs, fmt.Sprintf("tx_%032x", index))
+		intent.Transactions = append(intent.Transactions, publishingIntentTransaction{
+			Operation: "saved_key_removed",
+			CreatedAt: "2026-07-29T00:00:23.123456789Z",
+		})
+	}
+	return intent
+}
+
+type typedDecodeCanary struct {
+	called bool
+}
+
+func (canary *typedDecodeCanary) UnmarshalJSON([]byte) error {
+	canary.called = true
+	return nil
 }

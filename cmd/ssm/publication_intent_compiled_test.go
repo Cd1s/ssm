@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -85,13 +86,68 @@ func TestBarePushRequiresExplicitScope(t *testing.T) {
 }
 
 func TestMaliciousPublishingIntentDocumentsFailClosedWithoutLeaksOrSideEffects(t *testing.T) {
-	const transactionID = "tx_23232323232323232323232323232323"
+	const (
+		transactionID          = "tx_23232323232323232323232323232323"
+		resourceIdentityCanary = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	)
 	fixtures := []struct {
 		name        string
 		data        []byte
 		canaries    map[string]string
 		wantMessage string
 	}{
+		{
+			name: "version one oversized document",
+			data: oversizedCompiledPublishingIntent(1, transactionID),
+			canaries: map[string]string{
+				"observed identity": resourceIdentityCanary,
+			},
+			wantMessage: "publishing intent document is invalid",
+		},
+		{
+			name: "version two oversized document",
+			data: oversizedCompiledPublishingIntent(2, transactionID),
+			canaries: map[string]string{
+				"observed identity": resourceIdentityCanary,
+			},
+			wantMessage: "publishing intent document is invalid",
+		},
+		{
+			name: "version one too-deep document",
+			data: deepCompiledPublishingIntent(1, transactionID, "ISSUE23_V1_DEEP_MEMBER_CANARY"),
+			canaries: map[string]string{
+				"observed identity": resourceIdentityCanary,
+				"deep member":       "ISSUE23_V1_DEEP_MEMBER_CANARY",
+			},
+			wantMessage: "publishing intent document is invalid",
+		},
+		{
+			name: "version two too-deep document",
+			data: deepCompiledPublishingIntent(2, transactionID, "ISSUE23_V2_DEEP_MEMBER_CANARY"),
+			canaries: map[string]string{
+				"observed identity": resourceIdentityCanary,
+				"deep member":       "ISSUE23_V2_DEEP_MEMBER_CANARY",
+			},
+			wantMessage: "publishing intent document is invalid",
+		},
+		{
+			name: "version one too-wide document",
+			data: wideCompiledPublishingIntent(1, transactionID, "ISSUE23_V1_WIDE_MEMBER_CANARY"),
+			canaries: map[string]string{
+				"observed identity": resourceIdentityCanary,
+				"wide member":       "ISSUE23_V1_WIDE_MEMBER_CANARY",
+			},
+			wantMessage: "publishing intent document is invalid",
+		},
+		{
+			name: "version two too-wide document",
+			data: wideCompiledPublishingIntent(2, transactionID, "ISSUE23_V2_WIDE_MEMBER_CANARY"),
+			canaries: map[string]string{
+				"observed identity": resourceIdentityCanary,
+				"wide member":       "ISSUE23_V2_WIDE_MEMBER_CANARY",
+			},
+			wantMessage: "publishing intent document is invalid",
+		},
 		{
 			name: "version one duplicate members",
 			data: []byte(`{
@@ -258,6 +314,10 @@ func TestMaliciousPublishingIntentDocumentsFailClosedWithoutLeaksOrSideEffects(t
 						}
 					}
 					assertNoCompiledCanaryLeak(t, result, fixture.canaries)
+					assertNoCompiledCanaryLeak(t, result, map[string]string{ //nolint:gosec // test-only fake credential canaries must remain absent
+						"ledger password": "ISSUE23_MALICIOUS_SIDECAR_LEDGER_PASSWORD_CANARY",
+						"sync token":      "ISSUE23_MALICIOUS_SIDECAR_TOKEN_CANARY",
+					})
 
 					intentAfter, err := os.ReadFile(intentPath) //nolint:gosec // fixed path beneath the test-owned compiled CLI home
 					if err != nil {
@@ -278,6 +338,77 @@ func TestMaliciousPublishingIntentDocumentsFailClosedWithoutLeaksOrSideEffects(t
 			}
 		})
 	}
+}
+
+func oversizedCompiledPublishingIntent(version int, transactionID string) []byte {
+	const maxDocumentBytes = 512 * 1024
+	document := compiledPublishingIntentResourceBase(version, transactionID)
+	return append(document, bytes.Repeat([]byte(" "), maxDocumentBytes+1-len(document))...)
+}
+
+func deepCompiledPublishingIntent(version int, transactionID, canary string) []byte {
+	const maxJSONDepth = 16
+	value := strings.Repeat("[", maxJSONDepth) + "null" + strings.Repeat("]", maxJSONDepth)
+	return addCompiledPublishingIntentResourceMember(
+		compiledPublishingIntentResourceBase(version, transactionID),
+		canary,
+		value,
+	)
+}
+
+func wideCompiledPublishingIntent(version int, transactionID, canary string) []byte {
+	const maxJSONTokens = 32 * 1024
+	return addCompiledPublishingIntentResourceMember(
+		compiledPublishingIntentResourceBase(version, transactionID),
+		canary,
+		compiledNullJSONArray(maxJSONTokens),
+	)
+}
+
+func compiledPublishingIntentResourceBase(version int, transactionID string) []byte {
+	transactionIDField := ""
+	topLevelCreatedAt := ""
+	if version == 1 {
+		transactionIDField = `"id":"` + transactionID + `",`
+		topLevelCreatedAt = `,"created_at":"2026-07-29T00:00:24Z"`
+	}
+	return []byte(`{
+  "version":` + strconv.Itoa(version) + `,
+  "state":"ready",
+  "scope":"only",
+  "transaction_ids":["` + transactionID + `"],
+  "transactions":[{
+    ` + transactionIDField + `
+    "operation":"created",
+    "created_at":"2026-07-29T00:00:23Z"
+  }],
+  "prerequisite_remote_exists":false,
+  "target_encrypted_blob_identity":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "observed_remote_exists":true,
+  "observed_remote_identity":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"` + topLevelCreatedAt + `
+}
+`)
+}
+
+func addCompiledPublishingIntentResourceMember(document []byte, name, value string) []byte {
+	trimmed := bytes.TrimSpace(document)
+	result := append([]byte(nil), trimmed[:len(trimmed)-1]...)
+	result = append(result, []byte(`,"`+name+`":`+value+`}`+"\n")...)
+	return result
+}
+
+func compiledNullJSONArray(values int) string {
+	var document strings.Builder
+	document.Grow(2 + values*5)
+	document.WriteByte('[')
+	for index := 0; index < values; index++ {
+		if index > 0 {
+			document.WriteByte(',')
+		}
+		document.WriteString("null")
+	}
+	document.WriteByte(']')
+	return document.String()
 }
 
 func TestConcurrentScopedPublicationsSerializeAcrossProcesses(t *testing.T) {
