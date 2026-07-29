@@ -291,31 +291,6 @@ func (t *Transaction) PushBlob(blob []byte) (Facts, error) {
 	return facts, nil
 }
 
-// AutoPushBlob preserves the legacy automatic-publication switch while
-// keeping the decision inside the transaction. Explicit PushBlob ignores that
-// switch.
-func (t *Transaction) AutoPushBlob(blob []byte) (Facts, error) {
-	if !config.LoadSettings().AutoSync {
-		facts := t.localFacts()
-		_, state, err := t.configuration()
-		facts.Configuration = state
-		facts.Offline = t.offline
-		if err != nil {
-			return facts, err
-		}
-		switch state {
-		case ConfigurationOffline:
-			facts = markOffline(facts)
-		case ConfigurationUnconfigured:
-			facts.Remote = RemoteNotConfigured
-		case ConfigurationConfigured:
-			facts.Remote = RemoteAutoSyncDisabled
-		}
-		return facts, nil
-	}
-	return t.PushBlob(blob)
-}
-
 func opaqueIdentity(blob []byte) string {
 	sum := sha256.Sum256(blob)
 	return hex.EncodeToString(sum[:])

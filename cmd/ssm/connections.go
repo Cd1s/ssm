@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"ssm/internal/config"
+	"ssm/internal/inventorytransaction"
 	"ssm/internal/machinecontract"
 	"ssm/internal/ssh"
 )
@@ -63,27 +64,28 @@ func runRemove(name string) {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 
-	found := -1
-	for i, c := range v.Connections {
-		if c.Name == name {
-			found = i
-			break
+	result, err := inventorytransaction.New(inventorytransaction.Options{
+		MasterPass: masterPass,
+	}).ApplyHost(v, inventorytransaction.HostChange{
+		Action: inventorytransaction.HostRemove,
+		Alias:  name,
+	})
+	if err != nil {
+		if failure, ok := machinecontract.FailureFromError(err); ok &&
+			failure.Error == machinecontract.CodeAliasNotFound {
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
+				Message: fmt.Sprintf("connection %q not found", name),
+				Alias:   name,
+				Tool:    "legacy_not_found",
+				Script:  "connection",
+			}))
 		}
-	}
-	if found == -1 {
-		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
-			Message: fmt.Sprintf("connection %q not found", name),
-			Alias:   name,
-			Tool:    "legacy_not_found",
-			Script:  "connection",
-		}))
-	}
-
-	v.Connections = append(v.Connections[:found], v.Connections[found+1:]...)
-	if err := config.Save(v, masterPass); err != nil {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
-	autoPushOpaque()
+	if machineJSON {
+		writeMachineValue(result)
+		return
+	}
 	fmt.Printf("Connection \"%s\" removed.\n", name)
 }
 
@@ -565,31 +567,19 @@ func runImportJSON(args []string) {
 	if err != nil {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
-	conflicts := []config.MergeConflict{}
-	if opts.replace {
-		current.Connections = imported.Connections
-		current.Keys = imported.Keys
-	} else {
-		var report config.MergeReport
-		current, report = config.MergeVaultsWithReport(current, imported)
-		conflicts = report.Conflicts
-		if err := config.SaveMergeReport(report); err != nil {
+	result, err := inventorytransaction.New(inventorytransaction.Options{
+		MasterPass: masterPass,
+	}).ApplyImport(current, imported, opts.replace)
+	if err != nil {
+		var mergeReportError *inventorytransaction.MergeReportError
+		if errors.As(err, &mergeReportError) {
 			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.MergeReportFailed, machinecontract.Details{Cause: err}))
 		}
-	}
-
-	if err := config.Save(current, masterPass); err != nil {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 
 	if machineJSON {
-		writeMachineValue(struct {
-			OK          bool                   `json:"ok"`
-			Action      string                 `json:"action"`
-			Connections int                    `json:"connections"`
-			Keys        int                    `json:"keys"`
-			Conflicts   []config.MergeConflict `json:"conflicts,omitempty"`
-		}{OK: true, Action: map[bool]string{true: "replaced", false: "merged"}[opts.replace], Connections: len(imported.Connections), Keys: len(imported.Keys), Conflicts: conflicts})
+		writeMachineValue(result)
 		return
 	}
 	fmt.Printf("Imported %d connections and %d keys.\n", len(imported.Connections), len(imported.Keys))

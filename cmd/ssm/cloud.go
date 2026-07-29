@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"ssm/internal/cloud"
-	"ssm/internal/config"
 	"ssm/internal/inventorytransaction"
 	"ssm/internal/machinecontract"
 	"ssm/internal/synctransaction"
@@ -176,7 +175,29 @@ func runPush(args []string) {
 	}
 	fmt.Printf("push scope=%s\n", result.Scope)
 	for _, mutation := range result.Preflight {
-		fmt.Printf("publish transaction=%s alias=%s operation=%s\n", mutation.ID, mutation.Alias, mutation.Operation)
+		switch {
+		case mutation.Alias != "":
+			fmt.Printf("publish transaction=%s alias=%s operation=%s\n", mutation.ID, mutation.Alias, mutation.Operation)
+		case len(mutation.Aliases) > 0 && mutation.Connections != nil && mutation.Keys != nil:
+			fmt.Printf(
+				"publish transaction=%s aliases=%s operation=%s connections=%d keys=%d\n",
+				mutation.ID,
+				strings.Join(mutation.Aliases, ","),
+				mutation.Operation,
+				*mutation.Connections,
+				*mutation.Keys,
+			)
+		case mutation.KeyName != "" && mutation.Keys != nil:
+			fmt.Printf(
+				"publish transaction=%s key_name=%s operation=%s keys=%d\n",
+				mutation.ID,
+				mutation.KeyName,
+				mutation.Operation,
+				*mutation.Keys,
+			)
+		default:
+			fmt.Printf("publish transaction=%s operation=%s\n", mutation.ID, mutation.Operation)
+		}
 	}
 	fmt.Println("Vault pushed to cloud.")
 }
@@ -284,12 +305,4 @@ func syncTransaction(commandOffline bool) *synctransaction.Transaction {
 		Offline:    offlineMode || commandOffline,
 		Invalidate: invalidateVaultCache,
 	})
-}
-
-func autoPushOpaque() {
-	blob, err := os.ReadFile(config.Path())
-	if err != nil {
-		return
-	}
-	_, _ = syncTransaction(false).AutoPushBlob(blob)
 }
