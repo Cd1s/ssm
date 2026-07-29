@@ -264,6 +264,135 @@ func TestPublicationLockContentionFailsBeforeUnlockOrMutation(t *testing.T) {
 	assertCompiledSinglePreflightID(t, firstValue, alphaID)
 }
 
+func TestPublicationIntentOmitsSavedKeyNamesAcrossDurableWindows(t *testing.T) {
+	const (
+		transactionID         = "tx_23232323232323232323232323232323"
+		savedKeyNameCanary    = "ISSUE23_SAVED_KEY_NAME_CANARY"
+		privateKeyMaterial    = "ISSUE23_SAVED_KEY_PRIVATE_MATERIAL_CANARY"
+		savedKeyOperationTime = "2026-07-29T00:00:23Z"
+	)
+	tests := []struct {
+		name      string
+		wantState string
+		run       func(*testing.T, *compiledCLIHarness, *publicationSyncFixture) compiledCLIResult
+	}{
+		{
+			name: "prepared",
+			run: func(t *testing.T, cli *compiledCLIHarness, _ *publicationSyncFixture) compiledCLIResult {
+				return cli.RunWithEnv(t, "sshctl", nil, map[string]string{
+					"SSM_TEST_PUBLICATION_FAULT": "after_intent_persist",
+				}, "--json", "push", "--only", transactionID)
+			},
+			wantState: "prepared",
+		},
+		{
+			name: "ambiguous",
+			run: func(t *testing.T, cli *compiledCLIHarness, sync *publicationSyncFixture) compiledCLIResult {
+				sync.dropNextResponse()
+				return cli.Run(t, "sshctl", nil, "--json", "push", "--only", transactionID)
+			},
+			wantState: "ambiguous",
+		},
+		{
+			name: "finalization failed",
+			run: func(t *testing.T, cli *compiledCLIHarness, _ *publicationSyncFixture) compiledCLIResult {
+				return cli.RunWithEnv(t, "sshctl", nil, map[string]string{
+					"SSM_TEST_PUBLICATION_FAULT": "before_local_finalization_error",
+				}, "--json", "push", "--only", transactionID)
+			},
+			wantState: "finalization_failed",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cli := newCompiledCLIHarness(t)
+			savedKey := config.SSHKey{Name: savedKeyNameCanary, PrivateKey: privateKeyMaterial}
+			cli.SaveVault(t, &config.Vault{
+				PendingBase: &config.InventorySnapshot{Keys: []config.SSHKey{savedKey}},
+				PendingMutations: []config.PendingMutation{{
+					ID: transactionID, KeyName: savedKeyNameCanary, Operation: "saved_key_removed",
+					CreatedAt: savedKeyOperationTime, KeysBefore: []config.SSHKey{savedKey}, KeyCount: 1,
+				}},
+			})
+			sync := newPublicationSyncFixture(t)
+			prerequisiteBlob := encryptCompiledVault(t, cli, &config.Vault{Keys: []config.SSHKey{savedKey}})
+			sync.setRemote(prerequisiteBlob)
+			cli.SaveRemoteETag(t, compiledOpaqueIdentity(prerequisiteBlob))
+			cli.SaveCloud(t, sync.server.URL, "ISSUE23_SAVED_KEY_TOKEN_CANARY")
+
+			pendingStatus := assertCompiledJSONSuccess(
+				t,
+				cli.Run(t, "sshctl", nil, "--offline", "--json", "status"),
+			)
+			pending, ok := pendingStatus["pending_mutations"].([]any)
+			if !ok || len(pending) != 1 {
+				t.Fatal("saved-key removal did not remain publicly reviewable")
+			}
+			pendingView, ok := pending[0].(map[string]any)
+			if !ok || pendingView["key_name"] != savedKeyNameCanary ||
+				pendingView["operation"] != "saved_key_removed" || pendingView["keys"] != float64(1) {
+				t.Fatal("public pending view lost the #24 saved-key diagnostics")
+			}
+
+			failed := test.run(t, cli, sync)
+			if failed.ProcessExit == 0 {
+				t.Fatalf("%s publication unexpectedly succeeded: %s", test.name, compiledOutputIdentity(failed))
+			}
+			intentPath := filepath.Join(cli.home, ".config", "ssm", "publishing-intent.json")
+			intentBytes, err := os.ReadFile(intentPath) //nolint:gosec // fixed path beneath the test-owned compiled CLI home
+			if err != nil {
+				t.Fatalf("read %s publishing intent: %v", test.name, err)
+			}
+			for label, canary := range map[string]string{
+				"saved-key name":       savedKeyNameCanary,
+				"private-key material": privateKeyMaterial,
+			} {
+				if bytes.Contains(intentBytes, []byte(canary)) {
+					t.Fatalf("%s publishing intent exposed %s", test.name, label)
+				}
+			}
+
+			var intent map[string]any
+			if err := json.Unmarshal(intentBytes, &intent); err != nil {
+				t.Fatalf("decode %s publishing intent: %v", test.name, err)
+			}
+			if intent["version"] != float64(2) || intent["state"] != test.wantState {
+				t.Fatalf("%s publishing intent version/state = %v/%v, want 2/%s", test.name, intent["version"], intent["state"], test.wantState)
+			}
+			transactions, ok := intent["transactions"].([]any)
+			if !ok || len(transactions) != 1 {
+				t.Fatalf("%s publishing intent transaction projection = %v, want one", test.name, intent["transactions"])
+			}
+			transaction, ok := transactions[0].(map[string]any)
+			if !ok || !reflect.DeepEqual(sortedCompiledJSONFields(transaction), []string{"created_at", "operation"}) ||
+				transaction["operation"] != "saved_key_removed" ||
+				transaction["created_at"] != savedKeyOperationTime {
+				t.Fatalf("%s publishing intent transaction projection exceeded its minimum schema", test.name)
+			}
+
+			putsBeforeRetry := sync.putCount()
+			retried := cli.Run(t, "sshctl", nil, "--json", "push", "--only", transactionID)
+			retryValue := assertCompiledJSONSuccess(t, retried)
+			preflight, ok := retryValue["preflight"].([]any)
+			if !ok || len(preflight) != 1 {
+				t.Fatal("reconciled publication lost its public preflight")
+			}
+			preflightView, ok := preflight[0].(map[string]any)
+			if !ok || preflightView["key_name"] != savedKeyNameCanary ||
+				preflightView["operation"] != "saved_key_removed" || preflightView["keys"] != float64(1) {
+				t.Fatal("public publication preflight lost the #24 saved-key diagnostics")
+			}
+			wantRetryPUTs := putsBeforeRetry
+			if test.wantState == "prepared" {
+				wantRetryPUTs++
+			}
+			if got := sync.putCount(); got != wantRetryPUTs {
+				t.Fatalf("%s reconciliation PUT count = %d, want %d", test.name, got, wantRetryPUTs)
+			}
+		})
+	}
+}
+
 func TestPublicationIntentCrashMatrix(t *testing.T) {
 	t.Run("after intent persistence before request send", func(t *testing.T) {
 		cli := newCompiledCLIHarness(t)
@@ -319,9 +448,8 @@ func TestPublicationIntentCrashMatrix(t *testing.T) {
 			t.Fatalf("decode persisted publishing intent: %v", err)
 		}
 		if got, want := sortedCompiledJSONFields(encodedIntent), []string{
-			"created_at", "prerequisite_remote_exists", "prerequisite_remote_identity",
-			"scope", "state", "target_encrypted_blob_identity", "transaction_ids",
-			"transactions", "version",
+			"prerequisite_remote_exists", "prerequisite_remote_identity", "scope", "state",
+			"target_encrypted_blob_identity", "transaction_ids", "transactions", "version",
 		}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("publishing intent fields = %v, want safe allowlist %v", got, want)
 		}

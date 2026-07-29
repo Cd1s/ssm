@@ -781,26 +781,62 @@ type PublicationRecovery struct {
 }
 
 type publishingIntent struct {
-	Version              int            `json:"version"`
-	State                string         `json:"state"`
-	Scope                string         `json:"scope"`
-	TransactionIDs       []string       `json:"transaction_ids"`
-	Transactions         []MutationView `json:"transactions"`
-	PrerequisiteExists   bool           `json:"prerequisite_remote_exists"`
-	PrerequisiteIdentity string         `json:"prerequisite_remote_identity,omitempty"`
-	TargetIdentity       string         `json:"target_encrypted_blob_identity"`
-	ObservedExists       bool           `json:"observed_remote_exists,omitempty"`
-	ObservedIdentity     string         `json:"observed_remote_identity,omitempty"`
-	CreatedAt            string         `json:"created_at"`
+	Version              int                           `json:"version"`
+	State                string                        `json:"state"`
+	Scope                string                        `json:"scope"`
+	TransactionIDs       []string                      `json:"transaction_ids"`
+	Transactions         []publishingIntentTransaction `json:"transactions"`
+	PrerequisiteExists   bool                          `json:"prerequisite_remote_exists"`
+	PrerequisiteIdentity string                        `json:"prerequisite_remote_identity,omitempty"`
+	TargetIdentity       string                        `json:"target_encrypted_blob_identity"`
+	ObservedExists       bool                          `json:"observed_remote_exists,omitempty"`
+	ObservedIdentity     string                        `json:"observed_remote_identity,omitempty"`
+}
+
+// publishingIntentTransaction is the minimum receipt metadata that can outlive
+// local finalization. TransactionIDs remain the reconciliation authority.
+type publishingIntentTransaction struct {
+	Operation string `json:"operation"`
+	CreatedAt string `json:"created_at"`
+}
+
+// publishingIntentV1 exists only to strictly decode and sanitize sidecars
+// written before the private projection was separated from MutationView.
+type publishingIntentV1 struct {
+	Version              int                                   `json:"version"`
+	State                string                                `json:"state"`
+	Scope                string                                `json:"scope"`
+	TransactionIDs       []string                              `json:"transaction_ids"`
+	Transactions         []publishingIntentTransactionV1Legacy `json:"transactions"`
+	PrerequisiteExists   bool                                  `json:"prerequisite_remote_exists"`
+	PrerequisiteIdentity string                                `json:"prerequisite_remote_identity,omitempty"`
+	TargetIdentity       string                                `json:"target_encrypted_blob_identity"`
+	ObservedExists       bool                                  `json:"observed_remote_exists,omitempty"`
+	ObservedIdentity     string                                `json:"observed_remote_identity,omitempty"`
+	CreatedAt            string                                `json:"created_at"`
+}
+
+// publishingIntentTransactionV1Legacy is the complete known v1 transaction
+// schema. Deprecated fields are decoded only so they can be discarded.
+type publishingIntentTransactionV1Legacy struct {
+	ID          string   `json:"id"`
+	Alias       string   `json:"alias,omitempty"`
+	Aliases     []string `json:"aliases,omitempty"`
+	KeyName     string   `json:"key_name,omitempty"`
+	Operation   string   `json:"operation"`
+	CreatedAt   string   `json:"created_at"`
+	Connections *int     `json:"connections,omitempty"`
+	Keys        *int     `json:"keys,omitempty"`
 }
 
 const (
-	publishingIntentVersion  = 1
-	intentPrepared           = "prepared"
-	intentReady              = "ready"
-	intentAmbiguous          = "ambiguous"
-	intentDivergent          = "divergent"
-	intentFinalizationFailed = "finalization_failed"
+	publishingIntentVersion   = 2
+	publishingIntentV1Version = 1
+	intentPrepared            = "prepared"
+	intentReady               = "ready"
+	intentAmbiguous           = "ambiguous"
+	intentDivergent           = "divergent"
+	intentFinalizationFailed  = "finalization_failed"
 )
 
 // Pending returns stable secret-free pending views in ledger order.
@@ -862,12 +898,11 @@ func (s *PublicationSession) Publish(t *Transaction, v *config.Vault, only strin
 		State:          intentPrepared,
 		Scope:          scope,
 		TargetIdentity: synctransaction.PublicationTargetIdentity(blob),
-		CreatedAt:      t.now().UTC().Format(time.RFC3339Nano),
 	}
 	for _, mutation := range projection.Selected {
 		intent.TransactionIDs = append(intent.TransactionIDs, mutation.ID)
 	}
-	intent.Transactions = mutationViews(projection.Selected)
+	intent.Transactions = publishingIntentTransactions(projection.Selected)
 	cached, err := t.sync.CachedPublicationPrerequisite()
 	if err != nil {
 		return PublicationReceipt{}, err
@@ -1040,7 +1075,7 @@ func (t *Transaction) finalizePublishingIntent(intent publishingIntent) (Publica
 	}
 	receipt := publicationReceipt(only, projection.Selected, localAfter)
 	if len(projection.Selected) == 0 {
-		receipt.Preflight = append([]MutationView(nil), intent.Transactions...)
+		receipt.Preflight = publishingIntentMutationViews(intent.Transactions, intent.TransactionIDs)
 	}
 	return receipt, nil
 }
@@ -1080,18 +1115,85 @@ func loadPublishingIntent() (publishingIntent, error) {
 	if err != nil {
 		return publishingIntent{}, err
 	}
-	var intent publishingIntent
+	var header struct {
+		Version int `json:"version"`
+	}
+	if err := decodePublishingIntent(data, &header, false); err != nil {
+		return publishingIntent{}, err
+	}
+	switch header.Version {
+	case publishingIntentVersion:
+		var intent publishingIntent
+		if err := decodePublishingIntent(data, &intent, true); err != nil {
+			return publishingIntent{}, err
+		}
+		if err := validatePublishingIntent(intent); err != nil {
+			return publishingIntent{}, err
+		}
+		return intent, nil
+	case publishingIntentV1Version:
+		var legacy publishingIntentV1
+		if err := decodePublishingIntent(data, &legacy, true); err != nil {
+			return publishingIntent{}, err
+		}
+		intent, err := sanitizePublishingIntentV1(legacy)
+		if err != nil {
+			return publishingIntent{}, err
+		}
+		if err := validatePublishingIntent(intent); err != nil {
+			return publishingIntent{}, err
+		}
+		if err := savePublishingIntent(intent); err != nil {
+			return publishingIntent{}, fmt.Errorf("sanitize version 1 publishing intent: %w", err)
+		}
+		return intent, nil
+	default:
+		return publishingIntent{}, fmt.Errorf("unsupported publishing intent version %d", header.Version)
+	}
+}
+
+func decodePublishingIntent(data []byte, target any, strict bool) error {
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&intent); err != nil {
-		return publishingIntent{}, fmt.Errorf("decode publishing intent: %w", err)
+	if strict {
+		decoder.DisallowUnknownFields()
+	}
+	if err := decoder.Decode(target); err != nil {
+		return fmt.Errorf("decode publishing intent: %w", err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
-		return publishingIntent{}, fmt.Errorf("decode publishing intent: trailing data")
+		return fmt.Errorf("decode publishing intent: trailing data")
 	}
-	if err := validatePublishingIntent(intent); err != nil {
-		return publishingIntent{}, err
+	return nil
+}
+
+func sanitizePublishingIntentV1(legacy publishingIntentV1) (publishingIntent, error) {
+	if len(legacy.Transactions) != len(legacy.TransactionIDs) {
+		return publishingIntent{}, fmt.Errorf("publishing intent transaction metadata is incomplete")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, legacy.CreatedAt); err != nil {
+		return publishingIntent{}, fmt.Errorf("publishing intent creation time is invalid")
+	}
+	for index, transaction := range legacy.Transactions {
+		if transaction.ID != legacy.TransactionIDs[index] {
+			return publishingIntent{}, fmt.Errorf("publishing intent transaction metadata order changed")
+		}
+	}
+	intent := publishingIntent{
+		Version:              publishingIntentVersion,
+		State:                legacy.State,
+		Scope:                legacy.Scope,
+		TransactionIDs:       append([]string(nil), legacy.TransactionIDs...),
+		PrerequisiteExists:   legacy.PrerequisiteExists,
+		PrerequisiteIdentity: legacy.PrerequisiteIdentity,
+		TargetIdentity:       legacy.TargetIdentity,
+		ObservedExists:       legacy.ObservedExists,
+		ObservedIdentity:     legacy.ObservedIdentity,
+	}
+	for _, transaction := range legacy.Transactions {
+		intent.Transactions = append(intent.Transactions, publishingIntentTransaction{
+			Operation: transaction.Operation, CreatedAt: transaction.CreatedAt,
+		})
 	}
 	return intent, nil
 }
@@ -1122,8 +1224,11 @@ func validatePublishingIntent(intent publishingIntent) error {
 		if id == "" || seen[id] {
 			return fmt.Errorf("publishing intent transaction IDs are invalid")
 		}
-		if intent.Transactions[index].ID != id {
-			return fmt.Errorf("publishing intent transaction metadata order changed")
+		if !validPublishingIntentOperation(intent.Transactions[index].Operation) {
+			return fmt.Errorf("publishing intent transaction operation is invalid")
+		}
+		if _, err := time.Parse(time.RFC3339Nano, intent.Transactions[index].CreatedAt); err != nil {
+			return fmt.Errorf("publishing intent transaction creation time is invalid")
 		}
 		seen[id] = true
 	}
@@ -1142,10 +1247,16 @@ func validatePublishingIntent(intent publishingIntent) error {
 	if !intent.ObservedExists && intent.ObservedIdentity != "" {
 		return fmt.Errorf("absent publishing intent observation has an identity")
 	}
-	if _, err := time.Parse(time.RFC3339Nano, intent.CreatedAt); err != nil {
-		return fmt.Errorf("publishing intent creation time is invalid")
-	}
 	return nil
+}
+
+func validPublishingIntentOperation(operation string) bool {
+	switch operation {
+	case "created", "updated", "removed", "saved_key_removed", "import_merged", "import_replaced":
+		return true
+	default:
+		return false
+	}
 }
 
 var opaqueIdentityPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -1197,6 +1308,26 @@ func mutationViews(mutations []config.PendingMutation) []MutationView {
 			view.Keys = &keys
 		}
 		views = append(views, view)
+	}
+	return views
+}
+
+func publishingIntentTransactions(mutations []config.PendingMutation) []publishingIntentTransaction {
+	transactions := make([]publishingIntentTransaction, 0, len(mutations))
+	for _, mutation := range mutations {
+		transactions = append(transactions, publishingIntentTransaction{
+			Operation: mutation.Operation, CreatedAt: mutation.CreatedAt,
+		})
+	}
+	return transactions
+}
+
+func publishingIntentMutationViews(transactions []publishingIntentTransaction, transactionIDs []string) []MutationView {
+	views := make([]MutationView, 0, len(transactions))
+	for index, transaction := range transactions {
+		views = append(views, MutationView{
+			ID: transactionIDs[index], Operation: transaction.Operation, CreatedAt: transaction.CreatedAt,
+		})
 	}
 	return views
 }
