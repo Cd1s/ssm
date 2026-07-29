@@ -145,7 +145,7 @@ func runCompiledCLITestMain(m *testing.M) (exitCode int) {
 	}
 	ssmPath := filepath.Join(buildDir, "ssm"+extension)
 	updateLDFlags := fmt.Sprintf(
-		"-X=ssm/internal/update.apiBaseURL=%s -X=ssm/internal/update.downloadBaseURL=%s",
+		"-X=ssm/internal/update.apiBaseURL=%s -X=ssm/internal/update.downloadBaseURL=%s -X=ssm/internal/inventorytransaction.publicationFaultInjection=enabled",
 		compiledUpdateServer.URL(), compiledUpdateServer.URL(),
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), compiledCLIBuildTimeout)
@@ -399,19 +399,20 @@ func (h *compiledCLIHarness) VaultBlob(t *testing.T) []byte {
 
 func isolatedCompiledCLIEnvironmentWith(home, temp string, overrides map[string]string) []string {
 	blocked := map[string]bool{
-		"HOME":                 true,
-		"USERPROFILE":          true,
-		"XDG_CONFIG_HOME":      true,
-		"TMPDIR":               true,
-		"TMP":                  true,
-		"TEMP":                 true,
-		"SSM_MASTER_PASS_FILE": true,
-		"SSM_UPDATE_REPO":      true,
-		"SSM_TRACE":            true,
-		"SSM_TIMEOUT":          true,
-		"SSM_DIAL_TIMEOUT":     true,
-		"SSM_REUSE":            true,
-		"SSM_FORWARD_STDIN":    true,
+		"HOME":                       true,
+		"USERPROFILE":                true,
+		"XDG_CONFIG_HOME":            true,
+		"TMPDIR":                     true,
+		"TMP":                        true,
+		"TEMP":                       true,
+		"SSM_MASTER_PASS_FILE":       true,
+		"SSM_UPDATE_REPO":            true,
+		"SSM_TRACE":                  true,
+		"SSM_TIMEOUT":                true,
+		"SSM_DIAL_TIMEOUT":           true,
+		"SSM_REUSE":                  true,
+		"SSM_FORWARD_STDIN":          true,
+		"SSM_TEST_PUBLICATION_FAULT": true,
 	}
 	for key := range overrides {
 		blocked[key] = true
@@ -2543,7 +2544,7 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		}
 
 		sync := newCompiledSyncFixture(t)
-		sync.SetRemote(t, nil, "scoped-push")
+		sync.SetRemote(t, nil, strings.Repeat("a", 64))
 		scopedCloudCanary := "ISSUE17_SCOPED_PUSH_CLOUD_OUTPUT_CANARY"
 		mutationCLI.SaveCloud(t, sync.URL(), scopedCloudCanary)
 		pushed := mutationCLI.Run(t, "sshctl", nil, "--json", "push", "--only", betaID)
@@ -2930,13 +2931,25 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		}
 	})
 
-	t.Run("BC-5 bare and empty-ledger push both publish the full blob", func(t *testing.T) {
-		for _, args := range [][]string{{"--json", "push"}, {"--json", "push", "--all"}} {
-			name := "bare"
-			if len(args) == 3 {
-				name = "explicit-all"
-			}
-			t.Run(name, func(t *testing.T) {
+	t.Run("BC-5 empty explicit push scopes are successful no-ops", func(t *testing.T) {
+		const selectedID = "tx_05050505050505050505050505050505"
+		for _, test := range []struct {
+			name     string
+			args     []string
+			scope    string
+			selected string
+		}{
+			{
+				name: "explicit all", args: []string{"--json", "push", "--all"},
+				scope: "all",
+			},
+			{
+				name:  "selected transaction absent from empty pending set",
+				args:  []string{"--json", "push", "--only", selectedID},
+				scope: "only", selected: selectedID,
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
 				cli := newCompiledCLIHarness(t)
 				sync := newCompiledSyncFixture(t)
 				sync.SetRemote(t, nil, "empty-ledger")
@@ -2958,21 +2971,32 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 				}
 				cli.SaveVault(t, want)
 				cli.SaveCloud(t, sync.URL(), cloudLeakCanary)
-				result := cli.Run(t, "sshctl", nil, args...)
+				result := cli.Run(t, "sshctl", nil, test.args...)
 				value := assertCompiledJSONSuccess(t, result)
-				assertCompiledStringField(t, value, "scope", "all", result)
+				assertCompiledStringField(t, value, "scope", test.scope, result)
+				if test.selected != "" {
+					assertCompiledStringField(t, value, "transaction_id", test.selected, result)
+				}
+				if preflight, ok := value["preflight"].([]any); !ok || len(preflight) != 0 {
+					t.Fatalf("empty push preflight = %v, want []", value["preflight"])
+				}
+				if remaining, ok := value["remaining_mutations"].([]any); !ok || len(remaining) != 0 {
+					t.Fatalf("empty push remaining_mutations = %v, want []", value["remaining_mutations"])
+				}
 				assertNoCompiledCanaryLeak(t, result, map[string]string{
 					"vault_value": vaultLeakCanary,
 					"saved_key":   savedKeyLeakCanary,
 					"cloud_value": cloudLeakCanary,
 				})
-				if got := sync.MethodCount("PUT"); got != 1 {
-					t.Fatalf("%s push PUT count = %d, want 1", name, got)
+				for _, method := range []string{http.MethodHead, http.MethodGet, http.MethodPut} {
+					if got := sync.MethodCount(method); got != 0 {
+						t.Fatalf("%s push %s count = %d, want 0", test.name, method, got)
+					}
 				}
-				assertCompiledEncryptedPublication(t, sync.UploadedBlob(), cli.passphrase, map[string]string{
-					"vault_value": vaultLeakCanary,
-					"saved_key":   savedKeyLeakCanary,
-				}, want)
+				intentPath := filepath.Join(cli.home, ".config", "ssm", "publishing-intent.json")
+				if _, err := os.Stat(intentPath); !os.IsNotExist(err) {
+					t.Fatalf("empty push created publishing intent: %v", err)
+				}
 				assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), want)
 			})
 		}
@@ -3339,9 +3363,17 @@ func TestCompiledSyncStateMatrix(t *testing.T) {
 
 	t.Run("present invalid configuration is one failure across inventory families", func(t *testing.T) {
 		cli := newCompiledCLIHarness(t)
-		cli.SaveVault(t, &config.Vault{Connections: []config.Connection{{
+		alpha := config.Connection{
 			Name: "alpha", Host: "192.0.2.20", Port: 22, User: "runner", Password: "fixture-only",
-		}}})
+		}
+		cli.SaveVault(t, &config.Vault{
+			Connections: []config.Connection{alpha},
+			PendingBase: &config.InventorySnapshot{},
+			PendingMutations: []config.PendingMutation{{
+				ID: "tx_invalid_configuration", Alias: alpha.Name, Operation: "created",
+				CreatedAt: "2026-07-29T00:00:20Z", After: &alpha,
+			}},
+		})
 		cli.writeConfigFile(t, "cloud.json", []byte(`{"server":"https://sync.invalid","token":"MATRIX_SECRET"`))
 
 		commands := []struct {
@@ -3555,13 +3587,24 @@ func TestCompiledSyncStateMatrix(t *testing.T) {
 	t.Run("explicit push preserves two-sided conflict without PUT or local overwrite", func(t *testing.T) {
 		cli := newCompiledCLIHarness(t)
 		sync := newCompiledSyncFixture(t)
-		cli.SaveVault(t, &config.Vault{Connections: []config.Connection{{ //nolint:gosec // test-only fake credential canary
+		local := config.Connection{ //nolint:gosec // test-only fake credential canary
 			Name: "local", Host: "192.0.2.31", Port: 22, User: "runner", Password: "PUSH_LOCAL_SECRET",
-		}}})
+		}
+		cli.SaveVault(t, &config.Vault{
+			Connections: []config.Connection{local},
+			PendingBase: &config.InventorySnapshot{},
+			PendingMutations: []config.PendingMutation{{
+				ID: "tx_push_conflict", Alias: local.Name, Operation: "created",
+				CreatedAt: "2026-07-29T00:00:21Z", After: &local,
+			}},
+		})
 		localBlob := cli.VaultBlob(t)
-		sync.SetRemote(t, []byte("different opaque encrypted remote blob"), "push-remote-current")
+		remoteBlob := []byte("different opaque encrypted remote blob")
+		remoteIdentity := compiledOpaqueIdentity(remoteBlob)
+		cachedIdentity := strings.Repeat("1", 64)
+		sync.SetRemote(t, remoteBlob, remoteIdentity)
 		cli.SaveCloud(t, sync.URL(), "PUSH_CONFIG_SECRET")
-		cli.SaveRemoteETag(t, "push-remote-previous")
+		cli.SaveRemoteETag(t, cachedIdentity)
 
 		result := cli.Run(t, "sshctl", nil, "--json", "push", "--all")
 		assertNoCompiledCanaryLeak(t, result, map[string]string{ //nolint:gosec // test-only fake credential canaries
@@ -3594,8 +3637,7 @@ func TestCompiledSyncStateMatrix(t *testing.T) {
 		if err := json.Unmarshal(evidenceData, &evidence); err != nil {
 			t.Fatalf("decode explicit push conflict evidence: %v", err)
 		}
-		wantLocal := fmt.Sprintf("%x", sha256.Sum256(localBlob))
-		if evidence.Local != wantLocal || evidence.Remote != "push-remote-current" || evidence.Cached != "push-remote-previous" {
+		if len(evidence.Local) != 64 || evidence.Remote != remoteIdentity || evidence.Cached != cachedIdentity {
 			t.Fatalf("explicit push conflict identities = %+v", evidence)
 		}
 	})
@@ -3780,7 +3822,7 @@ func TestCompiledConfirmedSyncMetadataFailuresRemainSuccessful(t *testing.T) {
 					}},
 				}
 				cli.SaveVault(t, starting)
-				sync.SetRemote(t, nil, "confirmed-public-put")
+				sync.SetRemote(t, nil, strings.Repeat("b", 64))
 				cli.SaveCloud(t, sync.URL(), tokenCanary)
 				configDir := filepath.Join(cli.home, ".config", "ssm")
 				if err := os.Mkdir(filepath.Join(configDir, "remote.etag"), 0o700); err != nil {
@@ -3815,8 +3857,8 @@ func TestCompiledConfirmedSyncMetadataFailuresRemainSuccessful(t *testing.T) {
 				if got := sync.MethodCount(http.MethodPut); got != 1 {
 					t.Fatalf("confirmed push PUT count = %d, want 1", got)
 				}
-				if got := sync.MethodCount(http.MethodHead); got != 0 {
-					t.Fatalf("confirmed push HEAD count = %d, want 0 without cached identity", got)
+				if got := sync.MethodCount(http.MethodHead); got != 2 {
+					t.Fatalf("confirmed push HEAD count = %d, want 2 for durable prerequisite and pre-send verification", got)
 				}
 				finalized := &config.Vault{Connections: []config.Connection{connection}}
 				assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), finalized)

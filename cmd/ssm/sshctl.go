@@ -326,28 +326,39 @@ func runSSHCTLList() {
 }
 
 type statusResult struct {
-	OK         bool                          `json:"ok"`
-	Version    string                        `json:"version"`
-	Hosts      int                           `json:"hosts"`
-	Vault      string                        `json:"vault"`
-	Sync       string                        `json:"sync"`
-	Redirects  int                           `json:"redirects"`
-	Reuse      string                        `json:"reuse"`
-	ReuseScope string                        `json:"reuse_scope"`
-	LastPull   string                        `json:"last_pull,omitempty"`
-	LastPush   string                        `json:"last_push,omitempty"`
-	LastSync   string                        `json:"last_sync,omitempty"`
-	Freshness  string                        `json:"freshness"`
-	Remote     string                        `json:"remote_state"`
-	Pending    bool                          `json:"pending_changes"`
-	Mutations  []pendingMutationView         `json:"pending_mutations"`
-	Offline    bool                          `json:"offline"`
-	CacheAge   int64                         `json:"cache_age_seconds,omitempty"`
-	Conflict   *synctransaction.SyncConflict `json:"sync_conflict,omitempty"`
+	OK         bool                                      `json:"ok"`
+	Version    string                                    `json:"version"`
+	Hosts      int                                       `json:"hosts"`
+	Vault      string                                    `json:"vault"`
+	Sync       string                                    `json:"sync"`
+	Redirects  int                                       `json:"redirects"`
+	Reuse      string                                    `json:"reuse"`
+	ReuseScope string                                    `json:"reuse_scope"`
+	LastPull   string                                    `json:"last_pull,omitempty"`
+	LastPush   string                                    `json:"last_push,omitempty"`
+	LastSync   string                                    `json:"last_sync,omitempty"`
+	Freshness  string                                    `json:"freshness"`
+	Remote     string                                    `json:"remote_state"`
+	Pending    bool                                      `json:"pending_changes"`
+	Mutations  []pendingMutationView                     `json:"pending_mutations"`
+	Offline    bool                                      `json:"offline"`
+	CacheAge   int64                                     `json:"cache_age_seconds,omitempty"`
+	Conflict   *synctransaction.SyncConflict             `json:"sync_conflict,omitempty"`
+	Recovery   *inventorytransaction.PublicationRecovery `json:"publication_recovery,omitempty"`
 }
 
 func runSSHCTLStatus() {
-	pullIfChanged()
+	recovery, recoveryErr := inventorytransaction.New(inventorytransaction.Options{
+		MasterPass: masterPass,
+		Sync:       syncTransaction(false),
+	}).ReconcilePublishingIntent()
+	if recoveryErr == nil {
+		// Reconciliation waits for any in-flight publisher. Discard the vault
+		// snapshot loaded before that wait so status cannot report its stale
+		// pending ledger after the other process finalizes.
+		invalidateVaultCache()
+		pullIfChanged()
+	}
 	count := 0
 	v, err := loadVault()
 	if err == nil {
@@ -379,11 +390,16 @@ func runSSHCTLStatus() {
 	remoteState := string(syncFacts.Remote)
 	if machineJSON {
 		result := statusResult{
-			OK: err == nil, Version: version, Hosts: count, Vault: vaultStatus, Sync: cloudStatus,
+			OK: err == nil && recoveryErr == nil, Version: version, Hosts: count, Vault: vaultStatus, Sync: cloudStatus,
 			Redirects: len(config.LoadRedirects()), Reuse: reuse, ReuseScope: "process",
 			LastPull: syncFacts.LastPull, LastPush: syncFacts.LastPush, LastSync: syncFacts.LastSync,
 			Freshness: freshness, Remote: remoteState, Pending: pending, Mutations: pendingMutations,
 			Offline: syncFacts.Offline, CacheAge: syncFacts.CacheAge, Conflict: syncFacts.Conflict,
+			Recovery: recovery,
+		}
+		if recoveryErr != nil {
+			failure := machinecontract.ClassifySyncFailure(recoveryErr, machinecontract.SyncPushFailed)
+			os.Exit(machinecontract.WriteFailure(true, failure, result))
 		}
 		if err != nil {
 			failure := machinecontract.Classify(machinecontract.GenericFailure, machinecontract.Details{Cause: err})
@@ -391,6 +407,10 @@ func runSSHCTLStatus() {
 		}
 		writeMachineValue(result)
 		return
+	}
+	if recoveryErr != nil {
+		failure := machinecontract.ClassifySyncFailure(recoveryErr, machinecontract.SyncPushFailed)
+		os.Exit(machinecontract.WriteFailure(false, failure, failure))
 	}
 	fmt.Printf("version=%s\nhosts=%d\nvault=%s\nsync=%s\nredirects=%d\nreuse=%s\nreuse_scope=process\nfreshness=%s\nremote_state=%s\npending_changes=%t\noffline=%t\ncache_age_seconds=%d\n",
 		version, count, vaultStatus, cloudStatus, len(config.LoadRedirects()), reuse, freshness, remoteState, pending, syncFacts.Offline, syncFacts.CacheAge)

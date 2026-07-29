@@ -164,8 +164,19 @@ func runPush(args []string) {
 	if all && only != "" {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.PushScopeConflict, machinecontract.Details{Message: "--all and --only are mutually exclusive"}))
 	}
+	if !all && !seenOnly {
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.PushArgumentsInvalid, machinecontract.Details{
+			Message: "push requires --all or --only <transaction-id>",
+		}))
+	}
+	session, err := inventorytransaction.BeginPublication()
+	if err != nil {
+		failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPushFailed)
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+	}
+	defer func() { _ = session.Close() }()
 	unlock()
-	result, err := pushTransactionScope(only)
+	result, err := pushTransactionScopeInSession(session, only)
 	if err != nil {
 		failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPushFailed)
 		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
@@ -212,14 +223,24 @@ func pushTransactions(only string) (bool, error) {
 }
 
 func pushTransactionScope(only string) (pushResult, error) {
+	session, err := inventorytransaction.BeginPublication()
+	if err != nil {
+		return pushResult{}, err
+	}
+	defer func() { _ = session.Close() }()
+	return pushTransactionScopeInSession(session, only)
+}
+
+func pushTransactionScopeInSession(session *inventorytransaction.PublicationSession, only string) (pushResult, error) {
 	v, err := loadVault()
 	if err != nil {
 		return pushResult{}, err
 	}
-	return inventorytransaction.New(inventorytransaction.Options{
+	transaction := inventorytransaction.New(inventorytransaction.Options{
 		MasterPass: masterPass,
 		Sync:       syncTransaction(false),
-	}).Publish(v, only)
+	})
+	return session.Publish(transaction, v, only)
 }
 
 func runRemoteHash() {

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,6 +21,36 @@ type CloudConfig struct {
 	Server string `json:"server"`
 	Token  string `json:"token"`
 	Email  string `json:"email,omitempty"`
+}
+
+// RemoteBlobIdentity is an opaque service observation. Exists distinguishes an
+// absent remote blob from a service-provided empty identity.
+type RemoteBlobIdentity struct {
+	Exists bool
+	Value  string
+}
+
+type pushFailure struct {
+	err       error
+	explicit  bool
+	ambiguous bool
+}
+
+func (e *pushFailure) Error() string { return e.err.Error() }
+func (e *pushFailure) Unwrap() error { return e.err }
+
+// PushFailureIsExplicit reports that the service returned a rejection and
+// therefore the attempted PUT did not commit.
+func PushFailureIsExplicit(err error) bool {
+	var failure *pushFailure
+	return errors.As(err, &failure) && failure.explicit
+}
+
+// PushFailureIsAmbiguous reports that request transmission may have reached
+// the service but no definitive response was received.
+func PushFailureIsAmbiguous(err error) bool {
+	var failure *pushFailure
+	return errors.As(err, &failure) && failure.ambiguous
 }
 
 var httpClient = &http.Client{Timeout: 15 * time.Second}
@@ -79,15 +110,28 @@ func Login(server, email, password string) (string, error) {
 // or local transaction metadata; sync metadata commits belong to
 // internal/synctransaction.
 func PushBlob(cfg *CloudConfig, data []byte) (string, error) {
-	if err := requireToken(cfg); err != nil {
+	etag, observed, err := PushBlobObserved(cfg, data)
+	if err != nil {
 		return "", err
+	}
+	if !observed {
+		etag = hashBytes(data)
+	}
+	return etag, nil
+}
+
+// PushBlobObserved publishes opaque bytes and distinguishes a service-provided
+// remote identity from the legacy local-hash fallback used by PushBlob.
+func PushBlobObserved(cfg *CloudConfig, data []byte) (string, bool, error) {
+	if err := requireToken(cfg); err != nil {
+		return "", false, err
 	}
 	server := strings.TrimRight(cfg.Server, "/")
 
 	req, err := http.NewRequest("PUT", server+"/sync", bytes.NewReader(data))
 	if err != nil {
 		config.Debug("push: request error: %v", err)
-		return "", err
+		return "", false, &pushFailure{err: err}
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	req.Header.Set("Content-Type", "application/octet-stream")
@@ -95,20 +139,20 @@ func PushBlob(cfg *CloudConfig, data []byte) (string, error) {
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		config.Debug("push: connection failed: %v", err)
-		return "", fmt.Errorf("connection failed: %w", err)
+		return "", false, &pushFailure{
+			err:       fmt.Errorf("connection failed: %w", err),
+			ambiguous: true,
+		}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		config.Debug("push: server error %d", resp.StatusCode)
-		return "", parseError(resp)
+		return "", false, &pushFailure{err: parseError(resp), explicit: true}
 	}
 	etag := strings.Trim(resp.Header.Get("ETag"), `"`)
-	if etag == "" {
-		etag = hashBytes(data)
-	}
 	config.Debug("push: success")
-	return etag, nil
+	return etag, etag != "", nil
 }
 
 // Pull atomically replaces the local encrypted vault with opaque response
@@ -169,29 +213,45 @@ func Pull(cfg *CloudConfig) (string, error) {
 }
 
 func RemoteETag(cfg *CloudConfig) (string, error) {
-	if err := requireToken(cfg); err != nil {
+	identity, err := InspectRemoteBlob(cfg)
+	if err != nil {
 		return "", err
+	}
+	if !identity.Exists {
+		return "", fmt.Errorf("no vault found on server (run: ssm push)")
+	}
+	return identity.Value, nil
+}
+
+// InspectRemoteBlob observes the current opaque remote identity without
+// treating a missing first-push target as a transport failure.
+func InspectRemoteBlob(cfg *CloudConfig) (RemoteBlobIdentity, error) {
+	if err := requireToken(cfg); err != nil {
+		return RemoteBlobIdentity{}, err
 	}
 	server := strings.TrimRight(cfg.Server, "/")
 	req, err := http.NewRequest("HEAD", server+"/sync", nil)
 	if err != nil {
-		return "", err
+		return RemoteBlobIdentity{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("connection failed: %w", err)
+		return RemoteBlobIdentity{}, fmt.Errorf("connection failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == 404 {
-		return "", fmt.Errorf("no vault found on server (run: ssm push)")
+		return RemoteBlobIdentity{}, nil
 	}
 	if resp.StatusCode != 200 {
-		return "", parseError(resp)
+		return RemoteBlobIdentity{}, parseError(resp)
 	}
-	return strings.Trim(resp.Header.Get("ETag"), `"`), nil
+	return RemoteBlobIdentity{
+		Exists: true,
+		Value:  strings.Trim(resp.Header.Get("ETag"), `"`),
+	}, nil
 }
 
 func parseTokenResponse(resp *http.Response) (string, error) {
