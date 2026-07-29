@@ -893,7 +893,12 @@ func (s *PublicationSession) Publish(t *Transaction, v *config.Vault, only strin
 		return PublicationReceipt{}, err
 	}
 	if len(projection.Selected) == 0 {
-		return publicationReceipt(publicationOnly, projection.Selected, v), nil
+		if err := t.sync.VerifyEmptyPublication(); err != nil {
+			return PublicationReceipt{}, err
+		}
+		receipt := publicationReceipt(publicationOnly, projection.Selected, v)
+		receipt.Action = "noop"
+		return receipt, nil
 	}
 	blob, err := config.EncryptVault(projection.Vault, t.masterPass)
 	if err != nil {
@@ -1527,7 +1532,7 @@ func Preflight(v *config.Vault, only string) ([]Dependency, error) {
 	if err := validateLedger(v); err != nil {
 		return nil, err
 	}
-	if only == "" || len(v.PendingMutations) == 0 {
+	if only == "" {
 		return []Dependency{}, nil
 	}
 	selectedIndex := pendingIndex(v.PendingMutations, only)

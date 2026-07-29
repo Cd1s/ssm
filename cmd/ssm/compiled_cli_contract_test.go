@@ -2806,7 +2806,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 			removedKey := "ISSUE17_LEGACY_PRIVATE_KEY_CANARY"
 			preservedKey := "ISSUE17_LEGACY_UNRELATED_PRIVATE_KEY_CANARY"
 			password := "ISSUE17_LEGACY_UNRELATED_PASSWORD_CANARY"
-			connection := config.Connection{
+			connection := config.Connection{ //nolint:gosec // test-only fake credential canary
 				Name: "legacy-unrelated", Host: "192.0.2.53", Port: 2203, User: "unrelated-user",
 				Password: password, KeyName: "unrelated-key", Group: "unrelated-group",
 			}
@@ -2931,75 +2931,134 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		}
 	})
 
-	t.Run("BC-5 empty explicit push scopes are successful no-ops", func(t *testing.T) {
-		const selectedID = "tx_05050505050505050505050505050505"
-		for _, test := range []struct {
-			name     string
-			args     []string
-			scope    string
-			selected string
-		}{
-			{
-				name: "explicit all", args: []string{"--json", "push", "--all"},
-				scope: "all",
-			},
-			{
-				name:  "selected transaction absent from empty pending set",
-				args:  []string{"--json", "push", "--only", selectedID},
-				scope: "only", selected: selectedID,
-			},
-		} {
-			t.Run(test.name, func(t *testing.T) {
-				cli := newCompiledCLIHarness(t)
-				sync := newCompiledSyncFixture(t)
-				sync.SetRemote(t, nil, "empty-ledger")
-				vaultLeakCanary := "ISSUE17_EMPTY_LEDGER_VAULT_OUTPUT_CANARY"
-				savedKeyLeakCanary := "ISSUE17_EMPTY_LEDGER_SAVED_KEY_OUTPUT_CANARY"
-				cloudLeakCanary := "ISSUE17_EMPTY_LEDGER_CLOUD_OUTPUT_CANARY"
-				want := &config.Vault{
-					Connections: []config.Connection{
-						{
-							Name: "empty-ledger-password", Host: "192.0.2.54", Port: 2204, User: "password-user",
-							Password: vaultLeakCanary, Group: "password-group",
-						},
-						{
-							Name: "empty-ledger-key-reference", Host: "192.0.2.55", Port: 2205, User: "key-user",
-							KeyName: "empty-ledger-key", Group: "key-group",
-						},
-					},
-					Keys: []config.SSHKey{{Name: "empty-ledger-key", PrivateKey: savedKeyLeakCanary}},
-				}
-				cli.SaveVault(t, want)
-				cli.SaveCloud(t, sync.URL(), cloudLeakCanary)
-				result := cli.Run(t, "sshctl", nil, test.args...)
-				value := assertCompiledJSONSuccess(t, result)
-				assertCompiledStringField(t, value, "scope", test.scope, result)
-				if test.selected != "" {
-					assertCompiledStringField(t, value, "transaction_id", test.selected, result)
-				}
-				if preflight, ok := value["preflight"].([]any); !ok || len(preflight) != 0 {
-					t.Fatalf("empty push preflight = %v, want []", value["preflight"])
-				}
-				if remaining, ok := value["remaining_mutations"].([]any); !ok || len(remaining) != 0 {
-					t.Fatalf("empty push remaining_mutations = %v, want []", value["remaining_mutations"])
-				}
-				assertNoCompiledCanaryLeak(t, result, map[string]string{
-					"vault_value": vaultLeakCanary,
-					"saved_key":   savedKeyLeakCanary,
-					"cloud_value": cloudLeakCanary,
-				})
-				for _, method := range []string{http.MethodHead, http.MethodGet, http.MethodPut} {
-					if got := sync.MethodCount(method); got != 0 {
-						t.Fatalf("%s push %s count = %d, want 0", test.name, method, got)
-					}
-				}
-				intentPath := filepath.Join(cli.home, ".config", "ssm", "publishing-intent.json")
-				if _, err := os.Stat(intentPath); !os.IsNotExist(err) {
-					t.Fatalf("empty push created publishing intent: %v", err)
-				}
-				assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), want)
+	t.Run("BC-5 exact scopes replace bare and empty-ledger full-blob publication", func(t *testing.T) {
+		t.Run("bare push rejects before unlock and transport", func(t *testing.T) {
+			cli := newCompiledCLIHarness(t)
+			sync := newCompiledSyncFixture(t)
+			cli.SaveCloud(t, sync.URL(), "ISSUE25_BC5_BARE_TOKEN_CANARY")
+			result := cli.RunWithEnv(t, "ssm", nil, map[string]string{
+				"SSM_MASTER_PASS_FILE": filepath.Join(cli.temp, "missing-master.pass"),
+			}, "--json", "push")
+			assertCompiledMachineContract(t, result, compiledMachineContract{
+				OK: false, Error: "invalid_arguments",
+				Hint:     "inspect pending_mutations with sshctl --json status",
+				JSONExit: 2, ProcessExit: 2,
 			})
-		}
+			for _, method := range []string{http.MethodHead, http.MethodGet, http.MethodPut} {
+				if got := sync.MethodCount(method); got != 0 {
+					t.Fatalf("bare push %s count = %d, want 0", method, got)
+				}
+			}
+		})
+
+		t.Run("non-empty all publishes one exact transaction set", func(t *testing.T) {
+			cli := newCompiledCLIHarness(t)
+			sync := newCompiledSyncFixture(t)
+			connection := config.Connection{ //nolint:gosec // test-only fake credential canary
+				Name: "bc5-all", Host: "192.0.2.54", Port: 2204, User: "runner",
+				Password: "ISSUE25_BC5_ALL_PASSWORD_CANARY",
+			}
+			cli.SaveVault(t, &config.Vault{
+				Connections: []config.Connection{connection},
+				PendingBase: &config.InventorySnapshot{},
+				PendingMutations: []config.PendingMutation{{
+					ID: "tx_05050505050505050505050505050505", Alias: connection.Name,
+					Operation: "created", CreatedAt: "2026-07-29T00:00:05Z", After: &connection,
+				}},
+			})
+			prerequisite := encryptCompiledVault(t, cli, &config.Vault{})
+			prerequisiteIdentity := compiledOpaqueIdentity(prerequisite)
+			sync.SetRemote(t, prerequisite, prerequisiteIdentity)
+			cli.SaveRemoteETag(t, prerequisiteIdentity)
+			cli.SaveCloud(t, sync.URL(), "ISSUE25_BC5_ALL_TOKEN_CANARY")
+			result := cli.Run(t, "sshctl", nil, "--json", "push", "--all")
+			value := assertCompiledJSONSuccess(t, result)
+			assertCompiledStringField(t, value, "action", "pushed", result)
+			assertCompiledStringField(t, value, "scope", "all", result)
+			if sync.MethodCount(http.MethodHead) != 2 ||
+				sync.MethodCount(http.MethodGet) != 0 ||
+				sync.MethodCount(http.MethodPut) != 1 {
+				t.Fatalf(
+					"non-empty all requests HEAD=%d GET=%d PUT=%d, want 2/0/1",
+					sync.MethodCount(http.MethodHead),
+					sync.MethodCount(http.MethodGet),
+					sync.MethodCount(http.MethodPut),
+				)
+			}
+			assertCompiledEncryptedPublication(t, sync.UploadedBlob(), cli.passphrase, map[string]string{ //nolint:gosec // test-only fake credential canary
+				"vault": connection.Password,
+			}, &config.Vault{Connections: []config.Connection{connection}})
+		})
+
+		t.Run("identical empty ledger is explicit machine and human no-op", func(t *testing.T) {
+			cli := newCompiledCLIHarness(t)
+			sync := newCompiledSyncFixture(t)
+			vaultLeakCanary := "ISSUE25_BC5_EMPTY_PASSWORD_CANARY"   //nolint:gosec // test-only fake credential canary
+			want := &config.Vault{Connections: []config.Connection{{ //nolint:gosec // test-only fake credential canary
+				Name: "bc5-empty", Host: "192.0.2.55", Port: 2205, User: "runner",
+				Password: vaultLeakCanary,
+			}}}
+			cli.SaveVault(t, want)
+			localBlob := cli.VaultBlob(t)
+			localIdentity := compiledOpaqueIdentity(localBlob)
+			sync.SetRemote(t, localBlob, localIdentity)
+			cli.SaveRemoteETag(t, localIdentity)
+			cli.SaveCloud(t, sync.URL(), "ISSUE25_BC5_EMPTY_TOKEN_CANARY")
+
+			machine := cli.Run(t, "sshctl", nil, "--json", "push", "--all")
+			value := assertCompiledJSONSuccess(t, machine)
+			assertCompiledStringField(t, value, "action", "noop", machine)
+			assertCompiledStringField(t, value, "scope", "all", machine)
+			human := cli.Run(t, "ssm", nil, "push", "--all")
+			assertCompiledHumanSuccess(
+				t,
+				human,
+				"No pending transactions; local, cached, and remote encrypted vault identities are identical.",
+			)
+			assertNoCompiledCanaryLeak(t, machine, map[string]string{"vault": vaultLeakCanary}) //nolint:gosec // test-only fake credential canary
+			assertNoCompiledCanaryLeak(t, human, map[string]string{"vault": vaultLeakCanary})   //nolint:gosec // test-only fake credential canary
+			if sync.MethodCount(http.MethodHead) != 2 ||
+				sync.MethodCount(http.MethodGet) != 0 ||
+				sync.MethodCount(http.MethodPut) != 0 {
+				t.Fatalf(
+					"empty no-op requests HEAD=%d GET=%d PUT=%d, want 2/0/0",
+					sync.MethodCount(http.MethodHead),
+					sync.MethodCount(http.MethodGet),
+					sync.MethodCount(http.MethodPut),
+				)
+			}
+			assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), want)
+		})
+
+		t.Run("empty-ledger divergence is stable safe failure", func(t *testing.T) {
+			cli := newCompiledCLIHarness(t)
+			sync := newCompiledSyncFixture(t)
+			cli.SaveVault(t, &config.Vault{})
+			localBlob := cli.VaultBlob(t)
+			localIdentity := compiledOpaqueIdentity(localBlob)
+			remoteBlob := []byte("ISSUE25_BC5_DIVERGENT_OPAQUE_REMOTE")
+			sync.SetRemote(t, remoteBlob, compiledOpaqueIdentity(remoteBlob))
+			cli.SaveRemoteETag(t, localIdentity)
+			cli.SaveCloud(t, sync.URL(), "ISSUE25_BC5_DIVERGENT_TOKEN_CANARY")
+			result := cli.Run(t, "sshctl", nil, "--json", "push", "--all")
+			assertCompiledMachineContract(t, result, compiledMachineContract{
+				OK: false, Error: "sync_conflict", Stage: "sync_compare",
+				Hint: emptyLedgerRecoveryHint, JSONExit: 1, ProcessExit: 1,
+			})
+			if sync.MethodCount(http.MethodHead) != 1 ||
+				sync.MethodCount(http.MethodGet) != 0 ||
+				sync.MethodCount(http.MethodPut) != 0 {
+				t.Fatalf(
+					"empty divergence requests HEAD=%d GET=%d PUT=%d, want 1/0/0",
+					sync.MethodCount(http.MethodHead),
+					sync.MethodCount(http.MethodGet),
+					sync.MethodCount(http.MethodPut),
+				)
+			}
+			if after := cli.VaultBlob(t); !bytes.Equal(after, localBlob) {
+				t.Fatal("empty-ledger divergence changed local encrypted bytes")
+			}
+		})
 	})
 
 	t.Run("BC-6 zero refresh is rejected online before refresh or SSH", func(t *testing.T) {

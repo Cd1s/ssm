@@ -71,6 +71,12 @@ func TestMachineContractMatrix(t *testing.T) {
 			hint: "local and remote blobs were preserved; inspect sshctl --offline --json doctor, then explicitly pull or push after review", exit: 1,
 		},
 		{
+			name: "empty-ledger sync conflict", kind: EmptyLedgerSyncConflict,
+			details: Details{Message: "empty ledger diverged"},
+			code:    "sync_conflict", stage: "sync_compare",
+			hint: "review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull to adopt remote, then reapply retained local inventory with ssm --offline --json import-json <reviewed-file> --merge or --replace --yes and publish only its transaction", exit: 1,
+		},
+		{
 			name: "sync pull", kind: SyncPullFailed,
 			details: Details{Message: "pull failed"},
 			code:    "sync_pull_failed", stage: "sync_pull", hint: "fix sync connectivity or retry explicitly with --offline", exit: 1,
@@ -890,6 +896,10 @@ func TestClassifySyncFailureUsesCanonicalPolicy(t *testing.T) {
 		},
 		{
 			name: "conflict overrides command fallback", err: synctransaction.ErrConflict,
+			fallback: SyncPushFailed, wantCode: "sync_conflict", wantStage: "sync_compare",
+		},
+		{
+			name: "empty-ledger conflict uses reviewed recovery", err: synctransaction.ErrEmptyLedgerDivergence,
 			fallback: SyncPushFailed, wantCode: "sync_conflict", wantStage: "sync_compare",
 		},
 		{

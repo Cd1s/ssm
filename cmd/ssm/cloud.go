@@ -185,6 +185,10 @@ func runPush(args []string) {
 		writeMachineValue(result)
 		return
 	}
+	if result.Action == "noop" {
+		fmt.Println("No pending transactions; local, cached, and remote encrypted vault identities are identical.")
+		return
+	}
 	fmt.Printf("push scope=%s\n", result.Scope)
 	for _, mutation := range result.Preflight {
 		switch {

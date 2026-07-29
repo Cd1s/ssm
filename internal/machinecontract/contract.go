@@ -29,6 +29,7 @@ const (
 	MasterPassFileRequiredCreate        Kind = "master_pass_file_required_create"
 	AliasNotFound                       Kind = "alias_not_found"
 	SyncConflict                        Kind = "sync_conflict"
+	EmptyLedgerSyncConflict             Kind = "empty_ledger_sync_conflict"
 	SyncPullFailed                      Kind = "sync_pull_failed"
 	StreamSyncPullFailed                Kind = "stream_sync_pull_failed"
 	TransferLocalRead                   Kind = "transfer_local_read"
@@ -268,6 +269,10 @@ var failurePolicies = map[Kind]failurePolicy{
 	SyncConflict: {
 		Code: "sync_conflict", Stage: "sync_compare",
 		Hint: "local and remote blobs were preserved; inspect sshctl --offline --json doctor, then explicitly pull or push after review", Exit: 1,
+	},
+	EmptyLedgerSyncConflict: {
+		Code: "sync_conflict", Stage: "sync_compare",
+		Hint: "review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull to adopt remote, then reapply retained local inventory with ssm --offline --json import-json <reviewed-file> --merge or --replace --yes and publish only its transaction", Exit: 1,
 	},
 	SyncPullFailed: {
 		Code: CodeSyncPull, Stage: "sync_pull", Hint: "fix sync connectivity or retry explicitly with --offline", Exit: 1,
@@ -905,6 +910,8 @@ func ClassifySyncFailure(err error, fallback Kind) Failure {
 	switch {
 	case errors.Is(err, synctransaction.ErrConfiguration):
 		kind = SyncConfigurationFailed
+	case errors.Is(err, synctransaction.ErrEmptyLedgerDivergence):
+		kind = EmptyLedgerSyncConflict
 	case errors.Is(err, synctransaction.ErrConflict):
 		kind = SyncConflict
 	}

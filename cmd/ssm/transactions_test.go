@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -24,7 +25,18 @@ func TestPushCommandLoadsMasterPassFile(t *testing.T) {
 	home := t.TempDir()
 	setTestHome(t, home)
 	pass := "push-command-test-pass" //nolint:gosec // test-only vault passphrase
-	if err := config.Save(&config.Vault{}, pass); err != nil {
+	connection := config.Connection{
+		Name: "push-command", Host: "192.0.2.25", Port: 22, User: "runner",
+		Password: "PUSH_COMMAND_PASSWORD_CANARY",
+	}
+	if err := config.Save(&config.Vault{
+		Connections: []config.Connection{connection},
+		PendingBase: &config.InventorySnapshot{},
+		PendingMutations: []config.PendingMutation{{
+			ID: "tx_push_command", Alias: connection.Name, Operation: "created",
+			CreatedAt: "2026-07-29T00:00:25Z", After: &connection,
+		}},
+	}, pass); err != nil {
 		t.Fatal(err)
 	}
 	passPath := filepath.Join(config.Dir(), "master.pass")
@@ -32,12 +44,37 @@ func TestPushCommandLoadsMasterPassFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	var remote []byte
+	var remoteMu sync.Mutex
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut || r.URL.Path != "/sync" {
+		if r.URL.Path != "/sync" {
 			http.NotFound(w, r)
 			return
 		}
-		w.WriteHeader(http.StatusOK)
+		switch r.Method {
+		case http.MethodHead:
+			remoteMu.Lock()
+			defer remoteMu.Unlock()
+			if len(remote) == 0 {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("ETag", `"`+compiledOpaqueIdentity(remote)+`"`)
+			w.WriteHeader(http.StatusOK)
+		case http.MethodPut:
+			uploaded, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, "fixture read failed", http.StatusInternalServerError)
+				return
+			}
+			remoteMu.Lock()
+			remote = uploaded
+			w.Header().Set("ETag", `"`+compiledOpaqueIdentity(remote)+`"`)
+			remoteMu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	defer server.Close()
 	if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: "test-token"}); err != nil {
