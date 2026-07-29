@@ -84,6 +84,202 @@ func TestBarePushRequiresExplicitScope(t *testing.T) {
 	}
 }
 
+func TestMaliciousPublishingIntentDocumentsFailClosedWithoutLeaksOrSideEffects(t *testing.T) {
+	const transactionID = "tx_23232323232323232323232323232323"
+	fixtures := []struct {
+		name        string
+		data        []byte
+		canaries    map[string]string
+		wantMessage string
+	}{
+		{
+			name: "version one duplicate members",
+			data: []byte(`{
+  "version": 1,
+  "state": "ready",
+  "st\u0061te": "ISSUE23_V1_DUPLICATE_STATE_CANARY",
+  "scope": "only",
+  "transaction_ids": ["` + transactionID + `"],
+  "transactions": [{
+    "id": "` + transactionID + `",
+    "alias": "ISSUE23_V1_DUPLICATE_ALIAS_CANARY",
+    "operation": "created",
+    "\u006fperation": "ISSUE23_V1_DUPLICATE_OPERATION_CANARY",
+    "created_at": "2026-07-29T00:00:23Z"
+  }],
+  "prerequisite_remote_exists": false,
+  "target_encrypted_blob_identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "created_at": "2026-07-29T00:00:24Z"
+}
+`),
+			canaries: map[string]string{
+				"state":     "ISSUE23_V1_DUPLICATE_STATE_CANARY",
+				"alias":     "ISSUE23_V1_DUPLICATE_ALIAS_CANARY",
+				"operation": "ISSUE23_V1_DUPLICATE_OPERATION_CANARY",
+			},
+			wantMessage: "publishing intent document is invalid",
+		},
+		{
+			name: "version two duplicate version dispatch and nested members",
+			data: []byte(`{
+  "version": 1,
+  "\u0076ersion": 2,
+  "state": "ready",
+  "scope": "only",
+  "sc\u006fpe": "ISSUE23_V2_DUPLICATE_SCOPE_CANARY",
+  "transaction_ids": ["` + transactionID + `"],
+  "transactions": [{
+    "operation": "created",
+    "created_at": "2026-07-29T00:00:23Z",
+    "created\u005fat": "ISSUE23_V2_DUPLICATE_TIME_CANARY"
+  }],
+  "prerequisite_remote_exists": false,
+  "target_encrypted_blob_identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+`),
+			canaries: map[string]string{
+				"scope":         "ISSUE23_V2_DUPLICATE_SCOPE_CANARY",
+				"creation time": "ISSUE23_V2_DUPLICATE_TIME_CANARY",
+			},
+			wantMessage: "publishing intent document is invalid",
+		},
+		{
+			name: "version one untrusted migration state",
+			data: []byte(`{
+  "version": 1,
+  "state": "ISSUE23_V1_UNTRUSTED_MIGRATION_STATE_CANARY",
+  "scope": "only",
+  "transaction_ids": ["` + transactionID + `"],
+  "transactions": [{
+    "id": "` + transactionID + `",
+    "alias": "ISSUE23_V1_UNTRUSTED_MIGRATION_ALIAS_CANARY",
+    "operation": "created",
+    "created_at": "2026-07-29T00:00:23Z"
+  }],
+  "prerequisite_remote_exists": false,
+  "target_encrypted_blob_identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "created_at": "2026-07-29T00:00:24Z"
+}
+`),
+			canaries: map[string]string{
+				"state": "ISSUE23_V1_UNTRUSTED_MIGRATION_STATE_CANARY",
+				"alias": "ISSUE23_V1_UNTRUSTED_MIGRATION_ALIAS_CANARY",
+			},
+			wantMessage: "publishing intent state is invalid",
+		},
+		{
+			name: "version two untrusted validation scope",
+			data: []byte(`{
+  "version": 2,
+  "state": "ready",
+  "scope": "ISSUE23_V2_UNTRUSTED_VALIDATION_SCOPE_CANARY",
+  "transaction_ids": ["` + transactionID + `"],
+  "transactions": [{
+    "operation": "created",
+    "created_at": "2026-07-29T00:00:23Z"
+  }],
+  "prerequisite_remote_exists": false,
+  "target_encrypted_blob_identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+`),
+			canaries: map[string]string{
+				"scope": "ISSUE23_V2_UNTRUSTED_VALIDATION_SCOPE_CANARY",
+			},
+			wantMessage: "publishing intent scope is invalid",
+		},
+	}
+	commands := []struct {
+		name    string
+		machine bool
+		status  bool
+		args    []string
+	}{
+		{name: "machine status", machine: true, status: true, args: []string{"--json", "status"}},
+		{name: "human status", status: true, args: []string{"status"}},
+		{name: "machine push", machine: true, args: []string{"--json", "push", "--only", transactionID}},
+		{name: "human push", args: []string{"push", "--only", transactionID}},
+	}
+
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			cli := newCompiledCLIHarness(t)
+			pending := config.Connection{ //nolint:gosec // test-only fake credential canary
+				Name: "alpha", Host: "alpha.example", Port: 22, User: "root",
+				Password: "ISSUE23_MALICIOUS_SIDECAR_LEDGER_PASSWORD_CANARY",
+			}
+			cli.SaveVault(t, &config.Vault{
+				Connections: []config.Connection{pending},
+				PendingBase: &config.InventorySnapshot{},
+				PendingMutations: []config.PendingMutation{{
+					ID: transactionID, Alias: pending.Name, Operation: "created",
+					CreatedAt: "2026-07-29T00:00:23Z", After: &pending,
+				}},
+			})
+			sync := newCompiledSyncFixture(t)
+			cli.SaveCloud(t, sync.URL(), "ISSUE23_MALICIOUS_SIDECAR_TOKEN_CANARY")
+			intentPath := filepath.Join(cli.home, ".config", "ssm", "publishing-intent.json")
+			if err := os.WriteFile(intentPath, fixture.data, 0o600); err != nil {
+				t.Fatalf("write malicious publishing intent: %v", err)
+			}
+			ledgerBefore := cli.VaultBlob(t)
+
+			for _, command := range commands {
+				t.Run(command.name, func(t *testing.T) {
+					result := cli.Run(t, "sshctl", nil, command.args...)
+					switch {
+					case command.machine && !command.status:
+						assertCompiledMachineContract(t, result, compiledMachineContract{
+							OK: false, Error: "sync_push_failed", JSONExit: 1, ProcessExit: 1,
+							Hint: "local vault remains pending; fix sync and retry push",
+						})
+						value := decodeExactlyOneJSONObject(t, result.Stdout)
+						if value["message"] != fixture.wantMessage {
+							t.Fatalf("machine push message = %v, want constant %q", value["message"], fixture.wantMessage)
+						}
+					case command.machine:
+						if result.ProcessExit != 1 || result.Stderr != "" {
+							t.Fatalf("machine status failure changed: output=%s", compiledOutputIdentity(result))
+						}
+						value := decodeExactlyOneJSONObject(t, result.Stdout)
+						if ok, _ := value["ok"].(bool); ok {
+							t.Fatal("machine status accepted a malicious publishing intent")
+						}
+						for _, absent := range []string{"error", "message", "hint", "exit", "stage"} {
+							if _, exists := value[absent]; exists {
+								t.Fatalf("machine status unexpectedly added %q", absent)
+							}
+						}
+					default:
+						wantStderr := "ssm: error=sync_push_failed\n" +
+							"Error: " + fixture.wantMessage + "\n" +
+							"ssm: hint=local vault remains pending; fix sync and retry push\n"
+						if result.ProcessExit != 1 || result.Stdout != "" || result.Stderr != wantStderr {
+							t.Fatalf("human sidecar failure changed: output=%s", compiledOutputIdentity(result))
+						}
+					}
+					assertNoCompiledCanaryLeak(t, result, fixture.canaries)
+
+					intentAfter, err := os.ReadFile(intentPath) //nolint:gosec // fixed path beneath the test-owned compiled CLI home
+					if err != nil {
+						t.Fatalf("read rejected publishing intent: %v", err)
+					}
+					if !bytes.Equal(intentAfter, fixture.data) {
+						t.Fatal("rejected publishing intent was rewritten or removed")
+					}
+					if ledgerAfter := cli.VaultBlob(t); !bytes.Equal(ledgerAfter, ledgerBefore) {
+						t.Fatal("rejected publishing intent changed the encrypted pending ledger")
+					}
+					for _, method := range []string{http.MethodHead, http.MethodGet, http.MethodPut} {
+						if got := sync.MethodCount(method); got != 0 {
+							t.Fatalf("malicious publishing intent made %s request count=%d, want 0", method, got)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestConcurrentScopedPublicationsSerializeAcrossProcesses(t *testing.T) {
 	cli := newCompiledCLIHarness(t)
 	const (

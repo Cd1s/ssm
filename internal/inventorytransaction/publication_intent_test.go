@@ -68,6 +68,235 @@ func TestPublishingIntentUsesMinimalPrivateTransactionProjection(t *testing.T) {
 	}
 }
 
+func TestDecodePublishingIntentRejectsDuplicateMembersAtAnyDepth(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+	}{
+		{
+			name: "top level version dispatch",
+			data: `{"version":1,"version":2}`,
+		},
+		{
+			name: "top level state",
+			data: `{"state":"ready","state":"ambiguous"}`,
+		},
+		{
+			name: "top level scope",
+			data: `{"scope":"only","scope":"all"}`,
+		},
+		{
+			name: "top level transaction IDs",
+			data: `{"transaction_ids":[],"transaction_ids":[]}`,
+		},
+		{
+			name: "top level transactions",
+			data: `{"transactions":[],"transactions":[]}`,
+		},
+		{
+			name: "top level prerequisite existence",
+			data: `{"prerequisite_remote_exists":false,"prerequisite_remote_exists":true}`,
+		},
+		{
+			name: "top level prerequisite identity",
+			data: `{"prerequisite_remote_identity":"","prerequisite_remote_identity":""}`,
+		},
+		{
+			name: "top level target identity",
+			data: `{"target_encrypted_blob_identity":"","target_encrypted_blob_identity":""}`,
+		},
+		{
+			name: "top level observation existence",
+			data: `{"observed_remote_exists":false,"observed_remote_exists":true}`,
+		},
+		{
+			name: "top level observed identity",
+			data: `{"observed_remote_identity":"","observed_remote_identity":""}`,
+		},
+		{
+			name: "v2 transaction operation",
+			data: `{"transactions":[{"operation":"created","operation":"removed"}]}`,
+		},
+		{
+			name: "v2 transaction creation time",
+			data: `{"transactions":[{"created_at":"first","created_at":"second"}]}`,
+		},
+		{
+			name: "v1 creation time",
+			data: `{"created_at":"first","created_at":"second"}`,
+		},
+		{
+			name: "v1 transaction ID",
+			data: `{"transactions":[{"id":"first","id":"second"}]}`,
+		},
+		{
+			name: "v1 transaction alias",
+			data: `{"transactions":[{"alias":"first","alias":"second"}]}`,
+		},
+		{
+			name: "v1 transaction aliases",
+			data: `{"transactions":[{"aliases":[],"aliases":[]}]}`,
+		},
+		{
+			name: "v1 transaction key name",
+			data: `{"transactions":[{"key_name":"first","key_name":"second"}]}`,
+		},
+		{
+			name: "v1 transaction connection count",
+			data: `{"transactions":[{"connections":1,"connections":2}]}`,
+		},
+		{
+			name: "v1 transaction key count",
+			data: `{"transactions":[{"keys":1,"keys":2}]}`,
+		},
+		{
+			name: "object inside array with escaped equivalent name",
+			data: `{"outer":[{"member":1,"\u006dember":2}]}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var value any
+			if err := decodePublishingIntent([]byte(test.data), &value, false); err == nil {
+				t.Fatal("publishing intent accepted a duplicate JSON member")
+			}
+		})
+	}
+}
+
+func TestDecodePublishingIntentAcceptsDistinctMembersAndEscapedStrings(t *testing.T) {
+	data := []byte(`{
+	  "member": "quote: \" slash: \\ unicode: \u263a",
+	  "member_similar": "different",
+	  "array": [null, true, 1, "value", {"nested": "ok"}]
+	}`)
+	var value any
+	if err := decodePublishingIntent(data, &value, false); err != nil {
+		t.Fatalf("publishing intent rejected valid JSON: %v", err)
+	}
+}
+
+func TestDecodePublishingIntentRejectsTrailingData(t *testing.T) {
+	var value any
+	err := decodePublishingIntent([]byte(`{"version":2} {"version":2}`), &value, false)
+	if err == nil || err.Error() != "publishing intent document is invalid" {
+		t.Fatalf("trailing-data error = %v, want constant invalid-document error", err)
+	}
+}
+
+func TestValidatePublishingIntentUsesConstantSecretSafeErrors(t *testing.T) {
+	valid := publishingIntent{
+		Version:        publishingIntentVersion,
+		State:          intentReady,
+		Scope:          "only",
+		TransactionIDs: []string{"tx_23232323232323232323232323232323"},
+		Transactions: []publishingIntentTransaction{{
+			Operation: "created", CreatedAt: "2026-07-29T00:00:23Z",
+		}},
+		TargetIdentity: strings.Repeat("a", 64),
+	}
+	tests := []struct {
+		name   string
+		canary string
+		mutate func(*publishingIntent)
+		want   string
+	}{
+		{
+			name: "version",
+			mutate: func(intent *publishingIntent) {
+				intent.Version = 232323
+			},
+			want: "publishing intent version is unsupported",
+		},
+		{
+			name:   "state",
+			canary: "ISSUE23_UNTRUSTED_STATE_CANARY",
+			mutate: func(intent *publishingIntent) {
+				intent.State = "ISSUE23_UNTRUSTED_STATE_CANARY"
+			},
+			want: "publishing intent state is invalid",
+		},
+		{
+			name:   "scope",
+			canary: "ISSUE23_UNTRUSTED_SCOPE_CANARY",
+			mutate: func(intent *publishingIntent) {
+				intent.Scope = "ISSUE23_UNTRUSTED_SCOPE_CANARY"
+			},
+			want: "publishing intent scope is invalid",
+		},
+		{
+			name:   "transaction ID",
+			canary: "ISSUE23_UNTRUSTED_TRANSACTION_ID_CANARY",
+			mutate: func(intent *publishingIntent) {
+				intent.TransactionIDs = []string{
+					"ISSUE23_UNTRUSTED_TRANSACTION_ID_CANARY",
+					"ISSUE23_UNTRUSTED_TRANSACTION_ID_CANARY",
+				}
+				intent.Transactions = append(intent.Transactions, intent.Transactions[0])
+				intent.Scope = "all"
+			},
+			want: "publishing intent transaction IDs are invalid",
+		},
+		{
+			name:   "operation",
+			canary: "ISSUE23_UNTRUSTED_OPERATION_CANARY",
+			mutate: func(intent *publishingIntent) {
+				intent.Transactions[0].Operation = "ISSUE23_UNTRUSTED_OPERATION_CANARY"
+			},
+			want: "publishing intent transaction operation is invalid",
+		},
+		{
+			name:   "creation time",
+			canary: "ISSUE23_UNTRUSTED_CREATION_TIME_CANARY",
+			mutate: func(intent *publishingIntent) {
+				intent.Transactions[0].CreatedAt = "ISSUE23_UNTRUSTED_CREATION_TIME_CANARY"
+			},
+			want: "publishing intent transaction creation time is invalid",
+		},
+		{
+			name:   "target identity",
+			canary: "ISSUE23_UNTRUSTED_TARGET_IDENTITY_CANARY",
+			mutate: func(intent *publishingIntent) {
+				intent.TargetIdentity = "ISSUE23_UNTRUSTED_TARGET_IDENTITY_CANARY"
+			},
+			want: "publishing intent target identity is invalid",
+		},
+		{
+			name:   "prerequisite identity",
+			canary: "ISSUE23_UNTRUSTED_PREREQUISITE_IDENTITY_CANARY",
+			mutate: func(intent *publishingIntent) {
+				intent.PrerequisiteExists = true
+				intent.PrerequisiteIdentity = "ISSUE23_UNTRUSTED_PREREQUISITE_IDENTITY_CANARY"
+			},
+			want: "publishing intent prerequisite identity is invalid",
+		},
+		{
+			name:   "observed identity",
+			canary: "ISSUE23_UNTRUSTED_OBSERVED_IDENTITY_CANARY",
+			mutate: func(intent *publishingIntent) {
+				intent.ObservedExists = true
+				intent.ObservedIdentity = "ISSUE23_UNTRUSTED_OBSERVED_IDENTITY_CANARY"
+			},
+			want: "publishing intent observed identity is invalid",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			intent := valid
+			intent.TransactionIDs = append([]string(nil), valid.TransactionIDs...)
+			intent.Transactions = append([]publishingIntentTransaction(nil), valid.Transactions...)
+			test.mutate(&intent)
+			err := validatePublishingIntent(intent)
+			if err == nil || err.Error() != test.want {
+				t.Fatalf("validation error = %v, want constant %q", err, test.want)
+			}
+			if test.canary != "" && strings.Contains(err.Error(), test.canary) {
+				t.Fatal("validation error exposed an untrusted sidecar value")
+			}
+		})
+	}
+}
+
 func TestLoadPublishingIntentSanitizesVersionOneBeforeRecovery(t *testing.T) {
 	intentPath := usePublishingIntentTestHome(t)
 	const (
@@ -130,6 +359,7 @@ func TestLoadPublishingIntentSanitizesVersionOneBeforeRecovery(t *testing.T) {
 
 func TestLoadPublishingIntentRejectsUnknownFieldsWithoutRewrite(t *testing.T) {
 	intentPath := usePublishingIntentTestHome(t)
+	const unknownFieldCanary = "ISSUE23_UNKNOWN_FIELD_NAME_CANARY"
 	versionOne := []byte(`{
   "version": 1,
   "state": "ready",
@@ -158,19 +388,19 @@ func TestLoadPublishingIntentRejectsUnknownFieldsWithoutRewrite(t *testing.T) {
 	}{
 		{
 			name: "version one top level",
-			data: bytes.Replace(versionOne, []byte(`"state": "ready"`), []byte(`"unexpected": true, "state": "ready"`), 1),
+			data: bytes.Replace(versionOne, []byte(`"state": "ready"`), []byte(`"`+unknownFieldCanary+`": true, "state": "ready"`), 1),
 		},
 		{
 			name: "version one transaction",
-			data: bytes.Replace(versionOne, []byte(`"operation": "saved_key_removed"`), []byte(`"unexpected": true, "operation": "saved_key_removed"`), 1),
+			data: bytes.Replace(versionOne, []byte(`"operation": "saved_key_removed"`), []byte(`"`+unknownFieldCanary+`": true, "operation": "saved_key_removed"`), 1),
 		},
 		{
 			name: "version two top level",
-			data: bytes.Replace(versionTwo, []byte(`"state": "ready"`), []byte(`"unexpected": true, "state": "ready"`), 1),
+			data: bytes.Replace(versionTwo, []byte(`"state": "ready"`), []byte(`"`+unknownFieldCanary+`": true, "state": "ready"`), 1),
 		},
 		{
 			name: "version two transaction",
-			data: bytes.Replace(versionTwo, []byte(`"operation": "saved_key_removed"`), []byte(`"unexpected": true, "operation": "saved_key_removed"`), 1),
+			data: bytes.Replace(versionTwo, []byte(`"operation": "saved_key_removed"`), []byte(`"`+unknownFieldCanary+`": true, "operation": "saved_key_removed"`), 1),
 		},
 	}
 	for _, test := range tests {
@@ -179,8 +409,11 @@ func TestLoadPublishingIntentRejectsUnknownFieldsWithoutRewrite(t *testing.T) {
 				t.Fatalf("write strict-decode publishing intent: %v", err)
 			}
 			_, err := loadPublishingIntent()
-			if err == nil || !strings.Contains(err.Error(), `unknown field "unexpected"`) {
-				t.Fatal("publishing intent accepted an unknown field")
+			if err == nil || err.Error() != "publishing intent document is invalid" {
+				t.Fatalf("unknown-field error = %v, want constant invalid-document error", err)
+			}
+			if strings.Contains(err.Error(), unknownFieldCanary) {
+				t.Fatal("unknown-field error exposed the untrusted member name")
 			}
 			after, readErr := os.ReadFile(intentPath) //nolint:gosec // fixed path beneath the test-owned home
 			if readErr != nil {
@@ -200,8 +433,8 @@ func TestLoadPublishingIntentRejectsUnknownVersionWithoutRewrite(t *testing.T) {
 		t.Fatalf("write unknown-version publishing intent: %v", err)
 	}
 	_, err := loadPublishingIntent()
-	if err == nil || !strings.Contains(err.Error(), "unsupported publishing intent version 99") {
-		t.Fatal("publishing intent accepted an unknown version")
+	if err == nil || err.Error() != "publishing intent version is unsupported" {
+		t.Fatalf("unknown-version error = %v, want constant unsupported-version error", err)
 	}
 	after, readErr := os.ReadFile(intentPath) //nolint:gosec // fixed path beneath the test-owned home
 	if readErr != nil {

@@ -4,6 +4,7 @@
 package inventorytransaction
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -1148,35 +1149,91 @@ func loadPublishingIntent() (publishingIntent, error) {
 		}
 		return intent, nil
 	default:
-		return publishingIntent{}, fmt.Errorf("unsupported publishing intent version %d", header.Version)
+		return publishingIntent{}, errors.New("publishing intent version is unsupported")
 	}
 }
 
 func decodePublishingIntent(data []byte, target any, strict bool) error {
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	if err := validateUniqueJSONMembers(data); err != nil {
+		return errors.New("publishing intent document is invalid")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	if strict {
 		decoder.DisallowUnknownFields()
 	}
 	if err := decoder.Decode(target); err != nil {
-		return fmt.Errorf("decode publishing intent: %w", err)
+		return errors.New("publishing intent document is invalid")
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
-		return fmt.Errorf("decode publishing intent: trailing data")
+		return errors.New("publishing intent document is invalid")
 	}
 	return nil
 }
 
+func validateUniqueJSONMembers(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := consumeUniqueJSONValue(decoder); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return errors.New("JSON document contains trailing data")
+	}
+	return nil
+}
+
+func consumeUniqueJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		members := make(map[string]struct{})
+		for decoder.More() {
+			token, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			member, ok := token.(string)
+			if !ok {
+				return errors.New("JSON object member name is invalid")
+			}
+			if _, duplicate := members[member]; duplicate {
+				return errors.New("JSON object contains a duplicate member")
+			}
+			members[member] = struct{}{}
+			if err := consumeUniqueJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+	case '[':
+		for decoder.More() {
+			if err := consumeUniqueJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+	default:
+		return errors.New("JSON value delimiter is invalid")
+	}
+	_, err = decoder.Token()
+	return err
+}
+
 func sanitizePublishingIntentV1(legacy publishingIntentV1) (publishingIntent, error) {
 	if len(legacy.Transactions) != len(legacy.TransactionIDs) {
-		return publishingIntent{}, fmt.Errorf("publishing intent transaction metadata is incomplete")
+		return publishingIntent{}, errors.New("publishing intent transaction metadata is incomplete")
 	}
 	if _, err := time.Parse(time.RFC3339Nano, legacy.CreatedAt); err != nil {
-		return publishingIntent{}, fmt.Errorf("publishing intent creation time is invalid")
+		return publishingIntent{}, errors.New("publishing intent creation time is invalid")
 	}
 	for index, transaction := range legacy.Transactions {
 		if transaction.ID != legacy.TransactionIDs[index] {
-			return publishingIntent{}, fmt.Errorf("publishing intent transaction metadata order changed")
+			return publishingIntent{}, errors.New("publishing intent transaction metadata order changed")
 		}
 	}
 	intent := publishingIntent{
@@ -1200,52 +1257,52 @@ func sanitizePublishingIntentV1(legacy publishingIntentV1) (publishingIntent, er
 
 func validatePublishingIntent(intent publishingIntent) error {
 	if intent.Version != publishingIntentVersion {
-		return fmt.Errorf("unsupported publishing intent version %d", intent.Version)
+		return errors.New("publishing intent version is unsupported")
 	}
 	switch intent.State {
 	case intentPrepared, intentReady, intentAmbiguous, intentDivergent, intentFinalizationFailed:
 	default:
-		return fmt.Errorf("invalid publishing intent state %q", intent.State)
+		return errors.New("publishing intent state is invalid")
 	}
 	if intent.Scope != "all" && intent.Scope != "only" {
-		return fmt.Errorf("invalid publishing intent scope %q", intent.Scope)
+		return errors.New("publishing intent scope is invalid")
 	}
 	if len(intent.TransactionIDs) == 0 {
-		return fmt.Errorf("publishing intent requires transaction IDs")
+		return errors.New("publishing intent requires transaction IDs")
 	}
 	if intent.Scope == "only" && len(intent.TransactionIDs) != 1 {
-		return fmt.Errorf("only publishing intent requires exactly one transaction ID")
+		return errors.New("only publishing intent requires exactly one transaction ID")
 	}
 	if len(intent.Transactions) != len(intent.TransactionIDs) {
-		return fmt.Errorf("publishing intent transaction metadata is incomplete")
+		return errors.New("publishing intent transaction metadata is incomplete")
 	}
 	seen := make(map[string]bool, len(intent.TransactionIDs))
 	for index, id := range intent.TransactionIDs {
 		if id == "" || seen[id] {
-			return fmt.Errorf("publishing intent transaction IDs are invalid")
+			return errors.New("publishing intent transaction IDs are invalid")
 		}
 		if !validPublishingIntentOperation(intent.Transactions[index].Operation) {
-			return fmt.Errorf("publishing intent transaction operation is invalid")
+			return errors.New("publishing intent transaction operation is invalid")
 		}
 		if _, err := time.Parse(time.RFC3339Nano, intent.Transactions[index].CreatedAt); err != nil {
-			return fmt.Errorf("publishing intent transaction creation time is invalid")
+			return errors.New("publishing intent transaction creation time is invalid")
 		}
 		seen[id] = true
 	}
 	if !opaqueIdentityPattern.MatchString(intent.TargetIdentity) {
-		return fmt.Errorf("publishing intent target identity is invalid")
+		return errors.New("publishing intent target identity is invalid")
 	}
 	if intent.PrerequisiteExists && !opaqueIdentityPattern.MatchString(intent.PrerequisiteIdentity) {
-		return fmt.Errorf("publishing intent prerequisite identity is invalid")
+		return errors.New("publishing intent prerequisite identity is invalid")
 	}
 	if !intent.PrerequisiteExists && intent.PrerequisiteIdentity != "" {
-		return fmt.Errorf("absent publishing intent prerequisite has an identity")
+		return errors.New("absent publishing intent prerequisite has an identity")
 	}
 	if intent.ObservedExists && !opaqueIdentityPattern.MatchString(intent.ObservedIdentity) {
-		return fmt.Errorf("publishing intent observed identity is invalid")
+		return errors.New("publishing intent observed identity is invalid")
 	}
 	if !intent.ObservedExists && intent.ObservedIdentity != "" {
-		return fmt.Errorf("absent publishing intent observation has an identity")
+		return errors.New("absent publishing intent observation has an identity")
 	}
 	return nil
 }
