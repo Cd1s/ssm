@@ -118,6 +118,10 @@ func (f *compiledSyncFixture) URL() string {
 
 func (f *compiledSyncFixture) SetRemote(t *testing.T, blob []byte, etag string) {
 	t.Helper()
+	f.setRemote(blob, etag)
+}
+
+func (f *compiledSyncFixture) setRemote(blob []byte, etag string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.remoteBlob = append([]byte(nil), blob...)

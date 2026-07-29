@@ -67,9 +67,13 @@ func TestRunArgvStreamUsesStableNDJSONErrors(t *testing.T) {
 	offlineMode = true
 	unlockedVault = &config.Vault{}
 	masterPass = "unused"
+	stream, err := syncTransaction(false).BeginStream(defaultStreamRefresh)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	var output bytes.Buffer
-	exit := runArgvStream("missing", runStreamOptions{refresh: defaultStreamRefresh}, bytes.NewBufferString("{bad}\n[\"true\"]\n"), &output)
+	exit := runArgvStream("missing", stream, bytes.NewBufferString("{bad}\n[\"true\"]\n"), &output)
 	if exit != machinecontract.ExitConnectionFailed {
 		t.Fatalf("exit=%d", exit)
 	}

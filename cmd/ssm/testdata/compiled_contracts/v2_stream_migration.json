@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "bc_3": {
+    "command": "sshctl --json run unused --stream --refresh=30s",
+    "input": "[\"true\"]\n",
+    "before": {
+      "accepted": true,
+      "framing": "indented_json_document",
+      "stdout": "{\n  \"ok\": false,\n  \"error\": \"sync_pull_failed\",\n  \"message\": \"sync refresh failed: remote refresh did not commit\",\n  \"hint\": \"fix sync connectivity or retry explicitly with --offline\",\n  \"stage\": \"sync_pull\",\n  \"exit\": 1\n}\n",
+      "stdout_lines": 8,
+      "process_exit": 1,
+      "consumed_non_empty_lines": 0,
+      "head_requests": 1,
+      "get_requests": 0,
+      "put_requests": 0,
+      "tcp_connections": 0,
+      "ssh_sessions": 0
+    },
+    "after": {
+      "accepted": true,
+      "framing": "compact_ndjson",
+      "stdout": "{\"ok\":false,\"error\":\"sync_pull_failed\",\"message\":\"sync refresh failed: remote refresh did not commit\",\"hint\":\"fix sync connectivity or restart explicitly with --offline\",\"stage\":\"sync_pull\",\"exit\":1}\n",
+      "stdout_lines": 1,
+      "process_exit": 1,
+      "consumed_non_empty_lines": 0,
+      "head_requests": 1,
+      "get_requests": 0,
+      "put_requests": 0,
+      "tcp_connections": 0,
+      "ssh_sessions": 0
+    }
+  },
+  "bc_6": {
+    "command": "sshctl --json run zero-refresh --stream --refresh=0",
+    "input": "[\"true\"]\n\n[\"true\"]\n",
+    "before": {
+      "accepted": true,
+      "framing": "compact_ndjson",
+      "stdout": "",
+      "stdout_lines": 2,
+      "process_exit": 0,
+      "consumed_non_empty_lines": 2,
+      "head_requests": 1,
+      "get_requests": 0,
+      "put_requests": 0,
+      "tcp_connections": 1,
+      "ssh_sessions": 2
+    },
+    "after": {
+      "accepted": false,
+      "framing": "compact_ndjson",
+      "stdout": "{\"ok\":false,\"error\":\"invalid_arguments\",\"message\":\"--refresh=0 requires explicit global --offline\",\"hint\":\"use sshctl run \\u003calias\\u003e --stream [--refresh 30s]\",\"exit\":2}\n",
+      "stdout_lines": 1,
+      "process_exit": 2,
+      "consumed_non_empty_lines": 0,
+      "head_requests": 0,
+      "get_requests": 0,
+      "put_requests": 0,
+      "tcp_connections": 0,
+      "ssh_sessions": 0
+    }
+  }
+}

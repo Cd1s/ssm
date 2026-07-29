@@ -18,8 +18,9 @@ import (
 // Disable with SSM_REUSE=0/off/false or RunOptions.NoReuse.
 
 var (
-	poolMu sync.Mutex
-	pool   = map[string]*pooledClient{}
+	poolLifecycle sync.RWMutex
+	poolMu        sync.Mutex
+	pool          = map[string]*pooledClient{}
 )
 
 type pooledClient struct {
@@ -47,14 +48,21 @@ func poolKey(c config.Connection) string {
 	return fmt.Sprintf("%s@%s:%d|key=%s|password=%t", c.User, c.Host, port, c.KeyName, c.Password != "")
 }
 
-func getPoolEntry(key string) *pooledClient {
+// lockPoolEntry acquires the process pool and selected entry as one ordered
+// operation. The lifecycle read lock prevents an acquisition from retaining a
+// detached entry across whole-pool revocation without serializing unrelated
+// destinations against each other.
+func lockPoolEntry(key string) *pooledClient {
+	poolLifecycle.RLock()
 	poolMu.Lock()
-	defer poolMu.Unlock()
-	if entry, ok := pool[key]; ok {
-		return entry
+	entry, ok := pool[key]
+	if !ok {
+		entry = &pooledClient{key: key}
+		pool[key] = entry
 	}
-	entry := &pooledClient{key: key}
-	pool[key] = entry
+	poolMu.Unlock()
+	entry.mu.Lock()
+	poolLifecycle.RUnlock()
 	return entry
 }
 
@@ -95,8 +103,7 @@ func dialSSHFresh(c config.Connection, v *config.Vault) (*gossh.Client, error) {
 
 func getPooledClient(c config.Connection, v *config.Vault) (*gossh.Client, error) {
 	key := poolKey(c)
-	entry := getPoolEntry(key)
-	entry.mu.Lock()
+	entry := lockPoolEntry(key)
 	defer entry.mu.Unlock()
 
 	if entry.client != nil {
@@ -138,8 +145,7 @@ func acquireSSHSession(c config.Connection, v *config.Vault, noReuse bool) (*gos
 		return client, session, "", nil
 	}
 
-	entry := getPoolEntry(poolKey(c))
-	entry.mu.Lock()
+	entry := lockPoolEntry(poolKey(c))
 	defer entry.mu.Unlock()
 
 	if entry.client != nil {
@@ -180,6 +186,9 @@ func releaseClient(client *gossh.Client, noReuse bool) {
 // ClosePool closes every process-local SSH connection. Long-lived streaming
 // callers use this when their inventory changes or the input stream ends.
 func ClosePool() {
+	poolLifecycle.Lock()
+	defer poolLifecycle.Unlock()
+
 	poolMu.Lock()
 	entries := make([]*pooledClient, 0, len(pool))
 	for _, entry := range pool {
