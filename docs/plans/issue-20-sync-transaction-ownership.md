@@ -110,7 +110,7 @@ local snapshot.
 | `internal/ssh/doctor.go` | duplicate configuration, ETag, conflict, and operation-time calculations | supplied `synctransaction.Facts` |
 | `internal/cloud` sync paths | cached ETag, conflict evidence, timestamp commits, and auto-push policy | Opaque HTTP `HEAD`/`GET`/`PUT` mechanism only |
 | `internal/config.RecordSync` | last-operation selection and timestamp persistence | `synctransaction.Transaction` confirmed-commit path |
-| legacy auto-push callers | `auto_sync` selection and configuration probing | `synctransaction.Transaction.AutoPushBlob` |
+| legacy auto-push callers | `auto_sync` selection and configuration probing | Historical Issue #20 owner was `synctransaction.Transaction.AutoPushBlob`; Issue #24 deleted the callers and API when BC-4 prohibited mutation auto-publication |
 | command sync failure switches | separate configuration/conflict projections | `machinecontract.ClassifySyncFailure` |
 | stream refresh | direct refresh helper policy | the same transaction refresh result and invalidation notification |
 

@@ -5,6 +5,10 @@ host mutations and scoped inventory publication. It constructs and validates
 decrypted candidates locally, but delegates publication as opaque encrypted
 bytes to `internal/synctransaction`.
 
+The bounded legacy routes reserved below were subsequently migrated by Issue
+#24. See the
+[Issue 24 ownership and BC-4 evidence](./issue-24-legacy-mutation-ownership.md).
+
 ## BC-2 old/new compiled fixture
 
 The compiled fixture in `TestApprovedV2BreakingChangeBaselines` pins the
@@ -84,9 +88,9 @@ BC-2 is the only behavior change in this ticket.
 
 - Issue #23 owns durable publishing intent, crash-window reconciliation, and
   replacement of the current bounded rollback behavior.
-- Issue #24 owns legacy `ssm remove` (`runRemove`), `ssm keys remove`
-  (`runKeysRemove`), and `import-json --merge|--replace` (`runImportJSON`).
-  Their characterized direct-save/automatic-publication effects are unchanged
-  here.
+- Issue #24 subsequently migrated legacy `ssm remove` (`runRemove`), `ssm keys
+  remove` (`runKeysRemove`), and `import-json --merge|--replace`
+  (`runImportJSON`) into this module. Their old behavior remains characterized
+  at this issue's merge commit; the follow-on old/new matrix is linked above.
 - Bare/empty-ledger push and other approved v2 breaks remain governed by their
   separate migration work; this ticket preserves the current paths.
