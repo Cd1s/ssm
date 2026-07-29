@@ -56,10 +56,12 @@ type SyncConflict struct {
 }
 
 var (
-	ErrConfiguration = errors.New("sync configuration is invalid")
-	ErrUnconfigured  = errors.New("not logged in (run: ssm login)")
-	ErrRefresh       = errors.New("sync refresh failed")
-	ErrConflict      = errors.New("sync conflict")
+	ErrConfiguration        = errors.New("sync configuration is invalid")
+	ErrUnconfigured         = errors.New("not logged in (run: ssm login)")
+	ErrRefresh              = errors.New("sync refresh failed")
+	ErrConflict             = errors.New("sync conflict")
+	ErrStreamRefresh        = errors.New("--refresh=0 requires explicit global --offline")
+	errStreamNotInitialized = errors.New("stream synchronization is not initialized")
 )
 
 type Facts struct {
@@ -89,12 +91,76 @@ type Transaction struct {
 	now        func() time.Time
 }
 
+// Stream owns synchronization policy for one run --stream process lifetime.
+// Offline streams never inspect cloud configuration or refresh after startup.
+// Online streams refresh at the configured positive cadence and stop on the
+// first refresh failure.
+type Stream struct {
+	transaction *Transaction
+	interval    time.Duration
+	nextRefresh time.Time
+	initialized bool
+}
+
 func New(opts Options) *Transaction {
 	now := opts.Now
 	if now == nil {
 		now = time.Now
 	}
 	return &Transaction{offline: opts.Offline, invalidate: opts.Invalidate, now: now}
+}
+
+// BeginStream validates the online/offline refresh contract before any stream
+// input or SSH execution. Zero is reserved for explicit offline streams.
+func (t *Transaction) BeginStream(interval time.Duration) (*Stream, error) {
+	if t == nil || interval < 0 || (!t.offline && interval == 0) {
+		return nil, ErrStreamRefresh
+	}
+	return &Stream{transaction: t, interval: interval}, nil
+}
+
+// Initialize establishes the stream's first inventory state. Explicit offline
+// mode deliberately returns without configuration parsing, settings reads, or
+// cloud transport so the caller can hold its already-unlocked fixed snapshot.
+func (s *Stream) Initialize() (Facts, error) {
+	if s == nil || s.transaction == nil {
+		return Facts{}, errStreamNotInitialized
+	}
+	if s.initialized {
+		return Facts{}, errStreamNotInitialized
+	}
+	s.initialized = true
+	if s.transaction.offline {
+		return Facts{
+			Configuration: ConfigurationOffline,
+			Offline:       true,
+			Freshness:     FreshnessCached,
+			Remote:        RemoteNotChecked,
+		}, nil
+	}
+	return s.refresh()
+}
+
+// BeforeLine refreshes only when an online stream's positive interval is due.
+// A changed refresh invokes the transaction invalidation callback before this
+// method returns, allowing callers to load the replacement snapshot safely.
+func (s *Stream) BeforeLine() (Facts, error) {
+	if s == nil || s.transaction == nil || !s.initialized {
+		return Facts{}, errStreamNotInitialized
+	}
+	if s.transaction.offline || s.transaction.now().Before(s.nextRefresh) {
+		return Facts{}, nil
+	}
+	return s.refresh()
+}
+
+func (s *Stream) refresh() (Facts, error) {
+	facts, err := s.transaction.Refresh()
+	if err != nil {
+		return facts, err
+	}
+	s.nextRefresh = s.transaction.now().Add(s.interval)
+	return facts, nil
 }
 
 func (t *Transaction) configuration() (*cloud.CloudConfig, ConfigurationState, error) {

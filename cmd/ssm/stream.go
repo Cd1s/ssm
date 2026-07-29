@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -77,20 +76,21 @@ func parseStreamRefresh(value string) (time.Duration, error) {
 // runArgvStream reads one JSON argv array per line and writes one compact JSON
 // result per line. Sync, vault decryption, and SSH setup are amortized across
 // the stream; a bounded refresh keeps long sessions from silently going stale.
-func runArgvStream(alias string, opts runStreamOptions, input io.Reader, output io.Writer) int {
+func runArgvStream(alias string, stream *synctransaction.Stream, input io.Reader, output io.Writer) int {
 	defer ssh.ClosePool()
 
-	pullIfChanged()
+	_, err := stream.Initialize()
+	if err != nil {
+		failure := machinecontract.ClassifySyncFailure(err, machinecontract.StreamSyncPullFailed)
+		return writeStreamFailure(output, failure)
+	}
 	v, err := loadVault()
 	if err != nil {
 		failure := machinecontract.Classify(machinecontract.StreamVaultUnlockFailed, machinecontract.Details{Cause: err})
-		_ = machinecontract.WriteFailureNDJSON(output, failure)
-		return machinecontract.ProcessExit(failure)
+		return writeStreamFailure(output, failure)
 	}
-
 	scanner := bufio.NewScanner(input)
 	scanner.Buffer(make([]byte, 4096), maxArgvStreamLineBytes+1)
-	lastRefresh := time.Now()
 	exitCode := 0
 
 	for scanner.Scan() {
@@ -98,26 +98,17 @@ func runArgvStream(alias string, opts runStreamOptions, input io.Reader, output 
 		if len(line) == 0 {
 			continue
 		}
-		if opts.refresh > 0 && time.Since(lastRefresh) >= opts.refresh {
-			changed, refreshErr := refreshVaultIfChangedResult()
-			if refreshErr != nil {
-				failure := machinecontract.Classify(machinecontract.StreamSyncPullFailed, machinecontract.Details{Cause: refreshErr})
-				if errors.Is(refreshErr, synctransaction.ErrConfiguration) {
-					failure = machinecontract.ClassifySyncFailure(refreshErr, machinecontract.StreamSyncPullFailed)
-				}
-				_ = machinecontract.WriteFailureNDJSON(output, failure)
-				return machinecontract.ProcessExit(failure)
+		facts, refreshErr := stream.BeforeLine()
+		if refreshErr != nil {
+			failure := machinecontract.ClassifySyncFailure(refreshErr, machinecontract.StreamSyncPullFailed)
+			return writeStreamFailure(output, failure)
+		}
+		if facts.Changed {
+			v, err = loadVault()
+			if err != nil {
+				failure := machinecontract.Classify(machinecontract.StreamVaultUnlockFailed, machinecontract.Details{Cause: err})
+				return writeStreamFailure(output, failure)
 			}
-			if changed {
-				ssh.ClosePool()
-				v, err = loadVault()
-				if err != nil {
-					failure := machinecontract.Classify(machinecontract.StreamVaultUnlockFailed, machinecontract.Details{Cause: err})
-					_ = machinecontract.WriteFailureNDJSON(output, failure)
-					return machinecontract.ProcessExit(failure)
-				}
-			}
-			lastRefresh = time.Now()
 		}
 
 		argv, decodeErr := decodeArgvStreamLine(line)
@@ -151,10 +142,16 @@ func runArgvStream(alias string, opts runStreamOptions, input io.Reader, output 
 		failure := machinecontract.Classify(machinecontract.StreamReadFailed, machinecontract.Details{
 			Message: "stream line exceeds 1 MiB or could not be read",
 		})
-		_ = machinecontract.WriteFailureNDJSON(output, failure)
-		return machinecontract.ProcessExit(failure)
+		return writeStreamFailure(output, failure)
 	}
 	return exitCode
+}
+
+func writeStreamFailure(output io.Writer, failure machinecontract.Failure) int {
+	if err := machinecontract.WriteFailureNDJSON(output, failure); err != nil {
+		return machinecontract.ProcessExit(machinecontract.Classify(machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
+	}
+	return machinecontract.ProcessExit(failure)
 }
 
 func decodeArgvStreamLine(line []byte) ([]string, error) {
@@ -181,7 +178,13 @@ func decodeArgvStreamLine(line []byte) ([]string, error) {
 	return argv, nil
 }
 
-func exitRunArgvStream(alias string, opts runStreamOptions) {
+func exitRunArgvStream(alias string, stream *synctransaction.Stream) {
 	machineJSON = true
-	os.Exit(runArgvStream(alias, opts, os.Stdin, os.Stdout))
+	os.Exit(runArgvStream(alias, stream, os.Stdin, os.Stdout))
+}
+
+func exitStreamFailure(failure machinecontract.Failure) {
+	machineJSON = true
+	streamMachine = true
+	os.Exit(writeStreamFailure(os.Stdout, failure))
 }

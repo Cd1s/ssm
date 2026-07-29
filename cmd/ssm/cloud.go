@@ -11,6 +11,7 @@ import (
 	"ssm/internal/cloud"
 	"ssm/internal/inventorytransaction"
 	"ssm/internal/machinecontract"
+	"ssm/internal/ssh"
 	"ssm/internal/synctransaction"
 )
 
@@ -303,6 +304,11 @@ func runPull() {
 func syncTransaction(commandOffline bool) *synctransaction.Transaction {
 	return synctransaction.New(synctransaction.Options{
 		Offline:    offlineMode || commandOffline,
-		Invalidate: invalidateVaultCache,
+		Invalidate: invalidateInventory,
 	})
+}
+
+func invalidateInventory() {
+	ssh.ClosePool()
+	invalidateVaultCache()
 }
