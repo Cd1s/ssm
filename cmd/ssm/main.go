@@ -55,18 +55,23 @@ func main() {
 	if version == "dev" {
 		config.EnableDebug()
 	}
-	if !isInformationalInvocation(os.Args[1:]) {
+	rawArgs := os.Args[1:]
+	sshctlInvocation := isSSHCTLInvocation(os.Args[0])
+	args, err := parseGlobalArgs(rawArgs)
+	if err != nil {
+		kind := machinecontract.GenericFailure
+		if sshctlInvocation {
+			kind = machinecontract.InvalidGlobalArguments
+		}
+		os.Exit(machinecontract.WriteClassified(machineJSON, kind, machinecontract.Details{Cause: err}))
+	}
+	if !offlineMode && !isInformationalInvocation(rawArgs) {
 		checkUpdate()
 	}
 
-	if isSSHCTLInvocation(os.Args[0]) {
-		runSSHCTL(os.Args[1:])
+	if sshctlInvocation {
+		runSSHCTLParsed(args)
 		return
-	}
-
-	args, err := parseGlobalArgs(os.Args[1:])
-	if err != nil {
-		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
 
 	if len(args) < 1 {

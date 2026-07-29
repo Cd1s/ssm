@@ -205,6 +205,79 @@ func TestParseGlobalArgsExtractsLeadingOffline(t *testing.T) {
 	}
 }
 
+func TestCanonicalGlobalParserDefinesEarlyOfflineDecision(t *testing.T) {
+	tests := []struct {
+		name        string
+		args        []string
+		wantArgs    []string
+		wantOffline bool
+		wantError   bool
+	}{
+		{
+			name:        "leading explicit flag",
+			args:        []string{"--offline", "--json", "run", "prod", "--offline"},
+			wantArgs:    []string{"run", "prod", "--offline"},
+			wantOffline: true,
+		},
+		{
+			name:        "ordered after valued global",
+			args:        []string{"--master-pass-file", "/tmp/pass", "--offline", "status"},
+			wantArgs:    []string{"status"},
+			wantOffline: true,
+		},
+		{
+			name:     "command local spelling",
+			args:     []string{"run", "prod", "--offline"},
+			wantArgs: []string{"run", "prod", "--offline"},
+		},
+		{
+			name:        "existing delimiter compatibility",
+			args:        []string{"--", "--offline", "run", "prod"},
+			wantArgs:    []string{"--", "run", "prod"},
+			wantOffline: true,
+		},
+		{
+			name:     "unofficial value spelling",
+			args:     []string{"--offline=true", "run", "prod"},
+			wantArgs: []string{"--offline=true", "run", "prod"},
+		},
+		{
+			name:     "unofficial short alias",
+			args:     []string{"-o", "run", "prod"},
+			wantArgs: []string{"-o", "run", "prod"},
+		},
+		{
+			name:        "malformed valued global after offline",
+			args:        []string{"--offline", "--master-pass-file"},
+			wantOffline: true,
+			wantError:   true,
+		},
+	}
+
+	oldOffline, oldJSON, oldPassFile := offlineMode, machineJSON, masterPassFile
+	t.Cleanup(func() {
+		offlineMode, machineJSON, masterPassFile = oldOffline, oldJSON, oldPassFile
+	})
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			offlineMode = false
+			machineJSON = false
+			masterPassFile = ""
+
+			got, err := parseGlobalArgs(test.args)
+			if (err != nil) != test.wantError {
+				t.Fatalf("parseGlobalArgs(%q) error = %v, wantError %t", test.args, err, test.wantError)
+			}
+			if offlineMode != test.wantOffline {
+				t.Fatalf("parseGlobalArgs(%q) offline = %t, want %t", test.args, offlineMode, test.wantOffline)
+			}
+			if !test.wantError && !reflect.DeepEqual(got, test.wantArgs) {
+				t.Fatalf("parseGlobalArgs(%q) args = %q, want %q", test.args, got, test.wantArgs)
+			}
+		})
+	}
+}
+
 func TestSplitRunAliasHandlesCommandLocalJSON(t *testing.T) {
 	alias, args, err := splitRunAlias([]string{"--json", "prod", "--argv", "hostname"})
 	if err != nil {

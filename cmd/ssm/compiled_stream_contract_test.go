@@ -275,6 +275,87 @@ func TestCompiledStreamContract(t *testing.T) {
 	})
 }
 
+func TestCompiledStreamStartupNetworkPolicy(t *testing.T) {
+	const want = "{\"ok\":false,\"error\":\"invalid_request\",\"message\":\"argv must contain at least one item\",\"hint\":\"send one non-empty JSON string array per line\",\"stage\":\"decode\",\"exit\":2}\n"
+
+	t.Run("explicit global offline skips update and sync requests", func(t *testing.T) {
+		cli := newCompiledCLIHarness(t)
+		sync := newCompiledSyncFixture(t)
+		cli.SaveVault(t, &config.Vault{})
+		cli.SaveCloud(t, sync.URL(), "ISSUE21_OFFLINE_STARTUP_TOKEN_CANARY")
+		compiledUpdateServer.ConfigureRelease("v2.0.0", []byte("ISSUE21_OFFLINE_UPDATE_CANARY\n"))
+
+		result := cli.RunWithEnv(
+			t,
+			"sshctl",
+			[]byte("[]\n"),
+			map[string]string{"SSM_UPDATE_REPO": "fixture/repo"},
+			"--offline", "--json", "run", "unused", "--stream", "--refresh=0",
+		)
+		assertNoCompiledCanaryLeak(t, result, map[string]string{
+			"sync_token":         "ISSUE21_OFFLINE_STARTUP_TOKEN_CANARY",
+			"update_replacement": "ISSUE21_OFFLINE_UPDATE_CANARY",
+		})
+		if result.ProcessExit != 2 || result.Stdout != want || result.Stderr != "" {
+			t.Fatalf("offline startup network contract failed; output=%s", compiledOutputIdentity(result))
+		}
+		if lines := nonEmptyCompiledLines(result.Stdout); len(lines) != 1 {
+			t.Fatalf("offline stream result line count = %d, want 1; output=%s", len(lines), compiledOutputIdentity(result))
+		}
+		if got := compiledUpdateServer.RequestPaths(); len(got) != 0 {
+			t.Fatalf("offline stream update requests = %q, want none", got)
+		}
+		for _, method := range []string{http.MethodHead, http.MethodGet, http.MethodPut} {
+			if got := sync.MethodCount(method); got != 0 {
+				t.Fatalf("offline stream sync %s requests = %d, want 0", method, got)
+			}
+		}
+	})
+
+	t.Run("online startup preserves update and sync requests", func(t *testing.T) {
+		cli := newCompiledCLIHarness(t)
+		sync := newCompiledSyncFixture(t)
+		cli.SaveVault(t, &config.Vault{})
+		blob := cli.VaultBlob(t)
+		identity := fmt.Sprintf("%x", sha256.Sum256(blob))
+		cli.SaveCloud(t, sync.URL(), "ISSUE21_ONLINE_STARTUP_TOKEN_CANARY")
+		cli.SaveRemoteETag(t, identity)
+		sync.SetRemote(t, blob, identity)
+		compiledUpdateServer.ConfigureRelease("v2.0.0", []byte("ISSUE21_ONLINE_UPDATE_CANARY\n"))
+
+		result := cli.RunWithEnv(
+			t,
+			"sshctl",
+			[]byte("[]\n"),
+			map[string]string{"SSM_UPDATE_REPO": "fixture/repo"},
+			"--json", "run", "unused", "--stream", "--refresh=30s",
+		)
+		assertNoCompiledCanaryLeak(t, result, map[string]string{
+			"sync_token":         "ISSUE21_ONLINE_STARTUP_TOKEN_CANARY",
+			"update_replacement": "ISSUE21_ONLINE_UPDATE_CANARY",
+		})
+		if result.ProcessExit != 2 || result.Stdout != want || result.Stderr != "" {
+			t.Fatalf("online startup network contract failed; output=%s", compiledOutputIdentity(result))
+		}
+		if lines := nonEmptyCompiledLines(result.Stdout); len(lines) != 1 {
+			t.Fatalf("online stream result line count = %d, want 1; output=%s", len(lines), compiledOutputIdentity(result))
+		}
+		if got := compiledUpdateServer.RequestPaths(); !reflect.DeepEqual(got, []string{"/repos/fixture/repo/releases"}) {
+			t.Fatalf("online stream update requests = %q, want release lookup", got)
+		}
+		if got := sync.MethodCount(http.MethodHead); got != 1 {
+			t.Fatalf("online stream sync HEAD requests = %d, want 1", got)
+		}
+		if sync.MethodCount(http.MethodGet) != 0 || sync.MethodCount(http.MethodPut) != 0 {
+			t.Fatalf(
+				"online stream sync requests GET=%d PUT=%d, want 0 and 0",
+				sync.MethodCount(http.MethodGet),
+				sync.MethodCount(http.MethodPut),
+			)
+		}
+	})
+}
+
 func TestStreamRefreshClosesPool(t *testing.T) {
 	cli := newCompiledCLIHarness(t)
 	sync := newCompiledSyncFixture(t)

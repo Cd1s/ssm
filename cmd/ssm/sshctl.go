@@ -19,8 +19,10 @@ func runSSHCTL(args []string) {
 	if err != nil {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.InvalidGlobalArguments, machinecontract.Details{Cause: err}))
 	}
-	args = parsed
+	runSSHCTLParsed(parsed)
+}
 
+func runSSHCTLParsed(args []string) {
 	if masterPassFile == "" {
 		masterPassFile = os.Getenv("SSM_MASTER_PASS_FILE")
 	}
