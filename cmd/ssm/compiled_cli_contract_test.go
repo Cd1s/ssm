@@ -84,6 +84,7 @@ func TestCompiledCLIBuildArgs(t *testing.T) {
 	want := []string{
 		"build",
 		"-buildvcs=false",
+		"-tags=compiled_cli_contract",
 		"-ldflags", updateLDFlags,
 		"-o", outputPath,
 		".",
@@ -113,7 +114,14 @@ func TestCompiledCLITestMainPushHelperBypassesBuild(t *testing.T) {
 }
 
 func compiledCLIBuildArgs(updateLDFlags, outputPath string) []string {
-	return []string{"build", "-buildvcs=false", "-ldflags", updateLDFlags, "-o", outputPath, "."}
+	return []string{
+		"build",
+		"-buildvcs=false",
+		"-tags=compiled_cli_contract",
+		"-ldflags", updateLDFlags,
+		"-o", outputPath,
+		".",
+	}
 }
 
 func runCompiledCLITestMain(m *testing.M) (exitCode int) {
@@ -2379,6 +2387,11 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 	t.Run("stream refresh failure is the triggering line's only terminal result", func(t *testing.T) {
 		streamCLI := newCompiledCLIHarness(t)
 		sync := newCompiledSyncFixture(t)
+		start := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+		sync.SetClock(t, start)
+		// Initialization reads the clock for local facts and the next deadline.
+		// The third read proves the child scanned the triggering line and entered BeforeLine.
+		sync.BlockClockRequest(t, 3)
 		sync.SetRemote(t, []byte("unused-opaque-blob"), "stream-current")
 		sync.SetStatusAfter(t, "HEAD", 1, 500)
 		streamCLI.SaveVault(t, &config.Vault{})
@@ -2386,24 +2399,42 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		streamCLI.SaveRemoteETag(t, "stream-current")
 		contract := reviewedCompiledMachineContract(t, "stream_refresh_failed")
 		input, writer := io.Pipe()
+		writeDone := make(chan error, 1)
 		go func() {
-			if err := waitForCompiledStreamState(func() bool {
-				return sync.MethodCount("HEAD") == 1
-			}); err != nil {
-				_ = writer.CloseWithError(err)
+			if _, err := io.WriteString(writer, "[\"true\"]\n[\"true\"]\n"); err != nil {
+				writeDone <- err
 				return
 			}
-			time.Sleep(10 * time.Millisecond)
-			_, _ = io.WriteString(writer, "[\"true\"]\n[\"true\"]\n")
-			_ = writer.Close()
+			if err := sync.WaitForClockBarrier(); err != nil {
+				_ = writer.CloseWithError(err)
+				writeDone <- err
+				return
+			}
+			sync.SetClock(t, start.Add(time.Millisecond))
+			sync.ReleaseClockBarrier()
+			writeDone <- writer.Close()
 		}()
 		result := streamCLI.runWithStdin(
 			t,
 			contract.Executable,
 			input,
-			map[string]string{"SSM_MASTER_PASS_FILE": streamCLI.passPath},
+			map[string]string{
+				"SSM_MASTER_PASS_FILE":        streamCLI.passPath,
+				"SSM_COMPILED_TEST_CLOCK_URL": sync.ClockURL(),
+			},
 			contract.Args...,
 		)
+		if err := <-writeDone; err != nil {
+			t.Fatalf("write synchronized stream input: %v", err)
+		}
+		if got := sync.ClockReads(); !reflect.DeepEqual(got, []time.Time{
+			start,
+			start,
+			start.Add(time.Millisecond),
+			start.Add(time.Millisecond),
+		}) {
+			t.Fatalf("stream refresh clock reads = %v, want exact startup and due transition", got)
+		}
 		assertNoCompiledCanaryLeak(t, result, map[string]string{"token": "ISSUE17_STREAM_REFRESH_TOKEN_CANARY"})
 		assertCompiledMachineContract(t, result, contract)
 		if lines := nonEmptyCompiledLines(result.Stdout); len(lines) != 1 {
@@ -2411,6 +2442,11 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		}
 		if got := sync.MethodCount("HEAD"); got != 2 {
 			t.Fatalf("stream refresh HEAD count = %d, want 2", got)
+		}
+		for _, method := range []string{"GET", "PUT"} {
+			if got := sync.MethodCount(method); got != 0 {
+				t.Fatalf("stream refresh %s count = %d, want 0", method, got)
+			}
 		}
 	})
 

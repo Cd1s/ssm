@@ -305,6 +305,7 @@ func syncTransaction(commandOffline bool) *synctransaction.Transaction {
 	return synctransaction.New(synctransaction.Options{
 		Offline:    offlineMode || commandOffline,
 		Invalidate: invalidateInventory,
+		Now:        syncTransactionClock(),
 	})
 }
 
