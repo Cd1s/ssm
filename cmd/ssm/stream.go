@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"ssm/internal/machinecontract"
 	"ssm/internal/ssh"
+	"ssm/internal/synctransaction"
 )
 
 const (
@@ -100,6 +102,9 @@ func runArgvStream(alias string, opts runStreamOptions, input io.Reader, output 
 			changed, refreshErr := refreshVaultIfChangedResult()
 			if refreshErr != nil {
 				failure := machinecontract.Classify(machinecontract.StreamSyncPullFailed, machinecontract.Details{Cause: refreshErr})
+				if errors.Is(refreshErr, synctransaction.ErrConfiguration) {
+					failure = machinecontract.ClassifySyncFailure(refreshErr, machinecontract.StreamSyncPullFailed)
+				}
 				_ = machinecontract.WriteFailureNDJSON(output, failure)
 				return machinecontract.ProcessExit(failure)
 			}

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"ssm/internal/privatepath"
+	"ssm/internal/synctransaction"
 )
 
 func TestMachineContractMatrix(t *testing.T) {
@@ -465,9 +466,15 @@ func TestMachineContractMatrix(t *testing.T) {
 			code:    "sync_push_failed", hint: "local vault remains pending; fix sync and retry push", exit: 1,
 		},
 		{
+			name: "sync unconfigured", kind: SyncUnconfigured,
+			details: Details{Message: "not logged in (run: ssm login)"},
+			code:    "sync_config_error", hint: "configure sync or use local inventory", exit: 1,
+		},
+		{
 			name: "sync configuration", kind: SyncConfigurationFailed,
 			details: Details{Message: "bad sync config"},
-			code:    "sync_config_error", hint: "configure sync or use local inventory", exit: 1,
+			code:    "sync_config_error", stage: "sync_config",
+			hint: "repair sync configuration or retry explicitly with --offline", exit: 1,
 		},
 		{
 			name: "sync pull replacement", kind: SyncPullReplaceFailed,
@@ -867,6 +874,37 @@ func TestMachineContractMatrix(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestClassifySyncFailureUsesCanonicalPolicy(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		fallback  Kind
+		wantCode  string
+		wantStage string
+	}{
+		{
+			name: "configuration overrides command fallback", err: synctransaction.ErrConfiguration,
+			fallback: StreamSyncPullFailed, wantCode: "sync_config_error", wantStage: "sync_config",
+		},
+		{
+			name: "conflict overrides command fallback", err: synctransaction.ErrConflict,
+			fallback: SyncPushFailed, wantCode: "sync_conflict", wantStage: "sync_compare",
+		},
+		{
+			name: "refresh retains command fallback", err: synctransaction.ErrRefresh,
+			fallback: StreamSyncPullFailed, wantCode: "sync_pull_failed", wantStage: "sync_pull",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			failure := ClassifySyncFailure(test.err, test.fallback)
+			if failure.Error != test.wantCode || failure.Stage != test.wantStage {
+				t.Fatalf("failure = %+v", failure)
+			}
+		})
+	}
 }
 
 func TestMachineContractRedaction(t *testing.T) {

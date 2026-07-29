@@ -5,12 +5,19 @@ import (
 
 	"ssm/internal/config"
 	"ssm/internal/machinecontract"
+	"ssm/internal/synctransaction"
 )
+
+var unconfiguredDoctorFacts = synctransaction.Facts{
+	Configuration: synctransaction.ConfigurationUnconfigured,
+	Freshness:     synctransaction.FreshnessUnknown,
+	Remote:        synctransaction.RemoteNotConfigured,
+}
 
 func TestAliasMissContractMatchesMapAndDoctor(t *testing.T) {
 	vault := &config.Vault{}
 	mapResult := runMapJob(vault, MapJob{RequestedAlias: "missing", Command: "true"}, false)
-	doctorResult := Doctor(vault, "missing", false)
+	doctorResult := Doctor(vault, "missing", false, unconfiguredDoctorFacts)
 
 	if mapResult.Error != machinecontract.CodeAliasNotFound || doctorResult.Error != machinecontract.CodeAliasNotFound {
 		t.Fatalf("map=%q doctor=%q", mapResult.Error, doctorResult.Error)
@@ -28,7 +35,7 @@ func TestAliasMissContractMatchesMapAndDoctor(t *testing.T) {
 
 func TestDoctorSuggestsButNeverSelectsAmbiguousAlias(t *testing.T) {
 	vault := &config.Vault{Connections: []config.Connection{{Name: "web-prod-a"}, {Name: "web-prod-b"}}}
-	report := Doctor(vault, "web-prod", false)
+	report := Doctor(vault, "web-prod", false, unconfiguredDoctorFacts)
 	if report.OK || report.ResolvedAlias != "web-prod" || len(report.Candidates) != 2 {
 		t.Fatalf("report = %+v", report)
 	}
@@ -43,7 +50,7 @@ func TestDoctorReportsPersistedMergeConflictWithoutSecrets(t *testing.T) {
 	if err := config.SaveMergeReport(report); err != nil {
 		t.Fatal(err)
 	}
-	doctor := Doctor(&config.Vault{}, "", false)
+	doctor := Doctor(&config.Vault{}, "", false, unconfiguredDoctorFacts)
 	if len(doctor.MergeReport.Conflicts) != 1 || doctor.MergeReport.Conflicts[0].Name != "prod" {
 		t.Fatalf("doctor = %+v", doctor)
 	}

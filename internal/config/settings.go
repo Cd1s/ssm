@@ -130,15 +130,3 @@ func GetCachedPassword() string {
 func ClearPasswordCache() {
 	os.Remove(cachePath())
 }
-
-func RecordSync(syncType string) {
-	s := LoadSettings()
-	ts := time.Now().Format(time.RFC3339)
-	switch syncType {
-	case "push":
-		s.LastPush = ts
-	case "pull":
-		s.LastPull = ts
-	}
-	_ = SaveSettings(s)
-}

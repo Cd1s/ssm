@@ -11,6 +11,7 @@ import (
 	"ssm/internal/cloud"
 	"ssm/internal/config"
 	"ssm/internal/machinecontract"
+	"ssm/internal/synctransaction"
 )
 
 const defaultServer = ""
@@ -171,7 +172,8 @@ func runPush(args []string) {
 	unlock()
 	result, err := pushTransactionScope(only)
 	if err != nil {
-		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.SyncPushFailed, machinecontract.Details{Cause: err}))
+		failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPushFailed)
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
 	}
 	if machineJSON {
 		writeMachineValue(result)
@@ -197,6 +199,16 @@ func pushTransactionScope(only string) (pushResult, error) {
 	if err != nil {
 		return pushResult{}, err
 	}
+	originalBlob, originalBlobErr := os.ReadFile(config.Path())
+	originalBlobExists := originalBlobErr == nil
+	if originalBlobErr != nil && !os.IsNotExist(originalBlobErr) {
+		return pushResult{}, originalBlobErr
+	}
+	restoreOriginal := func() {
+		if originalBlobExists {
+			_ = config.WritePrivateFile(config.Path(), originalBlob)
+		}
+	}
 	projected, selected, err := publishProjection(v, only)
 	if err != nil {
 		return pushResult{}, err
@@ -207,22 +219,20 @@ func pushTransactionScope(only string) (pushResult, error) {
 	}
 	localAfter := cloneVault(v)
 	markPublished(localAfter, selected, projected)
-	if err := config.Save(localAfter, masterPass); err != nil {
-		return pushResult{}, err
+	if len(selected) > 0 {
+		if err := config.Save(localAfter, masterPass); err != nil {
+			return pushResult{}, err
+		}
 	}
 	if only == "" {
 		blob, err = os.ReadFile(config.Path())
 		if err != nil {
-			_ = config.Save(v, masterPass)
+			restoreOriginal()
 			return pushResult{}, err
 		}
 	}
-	cfg, err := cloud.LoadCloud()
-	if err == nil {
-		err = cloud.PushBlob(cfg, blob)
-	}
-	if err != nil {
-		_ = config.Save(v, masterPass)
+	if _, err = syncTransaction(false).PushBlob(blob); err != nil {
+		restoreOriginal()
 		return pushResult{}, err
 	}
 	scope := "all"
@@ -241,29 +251,24 @@ func mutationViews(mutations []config.PendingMutation) []pendingMutationView {
 }
 
 func runRemoteHash() {
-	cfg, err := cloud.LoadCloud()
+	etag, err := syncTransaction(false).RemoteIdentity()
 	if err != nil {
-		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
-	}
-
-	etag, err := cloud.RemoteETag(cfg)
-	if err != nil {
-		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
+		failure := machinecontract.ClassifySyncFailure(err, machinecontract.GenericFailure)
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
 	}
 	fmt.Println(etag)
 }
 
 func runPullIfChanged() {
-	cfg, err := cloud.LoadCloud()
-	if err != nil {
+	facts, err := syncTransaction(false).Sync()
+	if errors.Is(err, synctransaction.ErrUnconfigured) {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
-
-	changed, err := cloud.PullIfChanged(cfg)
 	if err != nil {
-		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
+		failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullFailed)
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
 	}
-	if changed {
+	if facts.Changed {
 		if machineJSON {
 			writeMachineValue(struct {
 				OK      bool   `json:"ok"`
@@ -288,11 +293,8 @@ func runPullIfChanged() {
 
 func pullIfChanged() {
 	if err := refreshVaultIfChanged(); err != nil {
-		var conflict *cloud.SyncConflictError
-		if errors.As(err, &conflict) {
-			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.SyncConflict, machinecontract.Details{Cause: err}))
-		}
-		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.SyncPullFailed, machinecontract.Details{Cause: err}))
+		failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullFailed)
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
 	}
 }
 
@@ -302,30 +304,21 @@ func refreshVaultIfChanged() error {
 }
 
 func refreshVaultIfChangedResult() (bool, error) {
-	if offlineMode || !config.LoadSettings().AutoSync {
-		return false, nil
-	}
-	cfg, err := cloud.LoadCloud()
-	if err != nil {
-		return false, nil
-	}
-	changed, err := cloud.PullIfChanged(cfg)
-	if changed {
-		invalidateVaultCache()
-	}
-	return changed, err
+	facts, err := syncTransaction(false).Refresh()
+	return facts.Changed, err
 }
 
 func runPull() {
-	cfg, err := cloud.LoadCloud()
+	_, err := syncTransaction(false).Pull()
+	if errors.Is(err, synctransaction.ErrUnconfigured) {
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.SyncUnconfigured, machinecontract.Details{
+			Message: "not logged in (run: ssm login)",
+		}))
+	}
 	if err != nil {
-		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.SyncConfigurationFailed, machinecontract.Details{Cause: err}))
+		failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullReplaceFailed)
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
 	}
-
-	if err := cloud.Pull(cfg); err != nil {
-		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.SyncPullReplaceFailed, machinecontract.Details{Cause: err}))
-	}
-	invalidateVaultCache()
 	if machineJSON {
 		writeMachineValue(struct {
 			OK     bool   `json:"ok"`
@@ -334,4 +327,19 @@ func runPull() {
 		return
 	}
 	fmt.Println("Vault pulled from cloud.")
+}
+
+func syncTransaction(commandOffline bool) *synctransaction.Transaction {
+	return synctransaction.New(synctransaction.Options{
+		Offline:    offlineMode || commandOffline,
+		Invalidate: invalidateVaultCache,
+	})
+}
+
+func autoPushOpaque() {
+	blob, err := os.ReadFile(config.Path())
+	if err != nil {
+		return
+	}
+	_, _ = syncTransaction(false).AutoPushBlob(blob)
 }

@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"ssm/internal/cloud"
 	"ssm/internal/config"
+	"ssm/internal/synctransaction"
 )
 
 type BreakingChange struct {
@@ -108,10 +108,11 @@ func checksPassed(checks []MigrationCheck) bool {
 }
 
 func migrationPreflight(release Release, masterPassPath string) []MigrationCheck {
+	localFacts, localErr := synctransaction.New(synctransaction.Options{}).InspectLocal()
 	checks := []MigrationCheck{
-		checkCloudConfiguration(),
+		checkCloudConfiguration(localFacts, localErr),
 		checkPendingRecovery(masterPassPath),
-		checkDivergence(),
+		checkDivergence(localFacts),
 		checkReleaseAsset(release),
 		checkRollbackReadiness(),
 	}
@@ -126,16 +127,14 @@ func failedCheck(id, description, remediation string) MigrationCheck {
 	return MigrationCheck{ID: id, Status: "failed", Automated: true, Description: description, Remediation: remediation}
 }
 
-func checkCloudConfiguration() MigrationCheck {
-	path := filepath.Join(config.Dir(), "cloud.json")
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+func checkCloudConfiguration(facts synctransaction.Facts, err error) MigrationCheck {
+	if err == nil && facts.Configuration == synctransaction.ConfigurationUnconfigured {
 		return passedCheck("cloud_configuration", "Synchronization is unconfigured; no invalid cloud configuration was found.")
 	}
-	cloudConfig, err := cloud.LoadCloud()
-	if err != nil || strings.TrimSpace(cloudConfig.Server) == "" || strings.TrimSpace(cloudConfig.Token) == "" {
-		return failedCheck("cloud_configuration", "Cloud configuration is invalid or unreadable.", "Repair or deliberately remove cloud.json before migration.")
+	if err == nil && facts.Configuration == synctransaction.ConfigurationConfigured {
+		return passedCheck("cloud_configuration", "Cloud configuration is readable and valid.")
 	}
-	return passedCheck("cloud_configuration", "Cloud configuration is readable and valid.")
+	return failedCheck("cloud_configuration", "Cloud configuration is invalid or unreadable.", "Repair or deliberately remove cloud.json before migration.")
 }
 
 func checkPendingRecovery(masterPassPath string) MigrationCheck {
@@ -168,8 +167,8 @@ func checkPendingRecovery(masterPassPath string) MigrationCheck {
 	return passedCheck("pending_recovery", "No pending inventory transactions or recovery intent were found.")
 }
 
-func checkDivergence() MigrationCheck {
-	if cloud.LoadSyncConflict() != nil {
+func checkDivergence(facts synctransaction.Facts) MigrationCheck {
+	if facts.Conflict != nil {
 		return failedCheck("untracked_divergence", "A recorded local/remote synchronization conflict exists.", "Resolve the preserved conflict through reviewed pull, repair, or import before migration.")
 	}
 	return passedCheck("untracked_divergence", "No safely observable local/remote divergence record was found.")

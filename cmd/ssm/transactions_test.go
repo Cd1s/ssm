@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"ssm/internal/cloud"
@@ -56,7 +60,79 @@ func TestPushCommandHelper(t *testing.T) {
 	if os.Getenv("SSM_TEST_PUSH_HELPER") != "1" {
 		return
 	}
+	injectPushPersistenceFailureFromEnvironment()
 	runSSHCTL([]string{"--json", "push", "--all"})
+}
+
+func TestPushLocalPersistenceFailurePreventsPublication(t *testing.T) {
+	if !pushPersistenceFailureSupported() {
+		t.Skip("regular-file persistence fault injection is unavailable on this platform")
+	}
+	home := t.TempDir()
+	setTestHome(t, home)
+	pass := "ISSUE20_PERSISTENCE_PASSPHRASE_CANARY"        //nolint:gosec // test-only vault passphrase
+	connectionSecret := "ISSUE20_PERSISTENCE_VAULT_CANARY" //nolint:gosec // test-only fake credential canary
+	tokenSecret := "ISSUE20_PERSISTENCE_TOKEN_CANARY"      //nolint:gosec // test-only fake credential canary
+	original := &config.Vault{
+		Connections: []config.Connection{{
+			Name: "alpha", Host: "alpha.example", Port: 22, User: "root", Password: connectionSecret,
+		}},
+		PendingBase: &config.InventorySnapshot{},
+		PendingMutations: []config.PendingMutation{{
+			ID: "tx_alpha", Alias: "alpha", Operation: "created", CreatedAt: "2026-07-28T00:00:00Z",
+			After: &config.Connection{Name: "alpha", Host: "alpha.example", Port: 22, User: "root", Password: connectionSecret},
+		}},
+	}
+	if err := config.Save(original, pass); err != nil {
+		t.Fatal(err)
+	}
+	passPath := filepath.Join(config.Dir(), "master.pass")
+	if err := os.WriteFile(passPath, []byte(pass+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("ETag", `"must-not-publish"`)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: tokenSecret}); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestPushCommandHelper$", "-test.count=1") //nolint:gosec // executes this test binary with fixed arguments
+	cmd.Env = append(
+		os.Environ(),
+		"HOME="+home,
+		"USERPROFILE="+home,
+		"SSM_TEST_PUSH_HELPER=1",
+		"SSM_TEST_PUSH_PERSISTENCE_FAILURE=1",
+	)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("push unexpectedly succeeded: %s", output)
+	}
+	for label, canary := range map[string]string{
+		"passphrase": pass,
+		"vault":      connectionSecret,
+		"token":      tokenSecret,
+	} {
+		if strings.Contains(string(output), canary) {
+			t.Fatalf("push persistence failure leaked %s: %s", label, output)
+		}
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("sync requests = %d, want 0 before local persistence succeeds", got)
+	}
+	after, loadErr := config.Load(pass)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if !reflect.DeepEqual(after, original) {
+		t.Fatalf("local pending ledger changed after persistence failure: got=%+v want=%+v", after, original)
+	}
 }
 
 func TestScopedPushDoesNotPublishUnrelatedPendingMutation(t *testing.T) {
@@ -133,6 +209,201 @@ func TestScopedPushDoesNotPublishUnrelatedPendingMutation(t *testing.T) {
 	}
 	if len(local.PendingMutations) != 1 || local.PendingMutations[0].ID != alphaResult.TransactionID {
 		t.Fatalf("remaining mutations = %+v", local.PendingMutations)
+	}
+}
+
+func TestScopedPushRemoteFailureRestoresExactPendingLedger(t *testing.T) {
+	setTestHome(t, t.TempDir())
+	previousPass := masterPass
+	masterPass = "ISSUE20_REMOTE_FAILURE_PASSPHRASE_CANARY" //nolint:gosec // test-only vault passphrase
+	t.Cleanup(func() { masterPass = previousPass })
+
+	base := config.Connection{Name: "base", Host: "base.example", Port: 22, User: "root", Password: "ISSUE20_BASE_SECRET_CANARY"}     //nolint:gosec // test-only fake credential canary
+	alpha := config.Connection{Name: "alpha", Host: "alpha.example", Port: 22, User: "root", Password: "ISSUE20_ALPHA_SECRET_CANARY"} //nolint:gosec // test-only fake credential canary
+	beta := config.Connection{Name: "beta", Host: "beta.example", Port: 22, User: "root", Password: "ISSUE20_BETA_SECRET_CANARY"}     //nolint:gosec // test-only fake credential canary
+	original := &config.Vault{
+		Connections: []config.Connection{base, alpha, beta},
+		PendingBase: &config.InventorySnapshot{Connections: []config.Connection{base}},
+		PendingMutations: []config.PendingMutation{
+			{ID: "tx_alpha", Alias: "alpha", Operation: "created", CreatedAt: "2026-07-28T00:00:00Z", After: &alpha},
+			{ID: "tx_beta", Alias: "beta", Operation: "created", CreatedAt: "2026-07-28T00:00:01Z", After: &beta},
+		},
+	}
+	if err := config.Save(original, masterPass); err != nil {
+		t.Fatal(err)
+	}
+	originalBlob, err := os.ReadFile(config.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var uploaded []byte
+	var putCount atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/sync" {
+			http.NotFound(w, r)
+			return
+		}
+		putCount.Add(1)
+		var err error
+		uploaded, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upload: %v", err)
+		}
+		http.Error(w, `{"error":"fixture remote rejection"}`, http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	tokenSecret := "ISSUE20_REMOTE_FAILURE_TOKEN_CANARY" //nolint:gosec // test-only fake credential canary
+	if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: tokenSecret}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = pushTransactionScope("tx_beta")
+	if err == nil {
+		t.Fatal("scoped push unexpectedly succeeded")
+	}
+	for label, canary := range map[string]string{
+		"passphrase": masterPass,
+		"base":       base.Password,
+		"alpha":      alpha.Password,
+		"beta":       beta.Password,
+		"token":      tokenSecret,
+	} {
+		if strings.Contains(err.Error(), canary) {
+			t.Fatalf("push failure leaked %s: %v", label, err)
+		}
+		if strings.Contains(string(uploaded), canary) {
+			t.Fatalf("encrypted upload exposed %s plaintext", label)
+		}
+	}
+	if got := putCount.Load(); got != 1 {
+		t.Fatalf("PUT count = %d, want 1", got)
+	}
+	plaintext, decryptErr := securevault.Decrypt(uploaded, masterPass)
+	if decryptErr != nil {
+		t.Fatal(decryptErr)
+	}
+	var attempted config.Vault
+	if unmarshalErr := json.Unmarshal(plaintext, &attempted); unmarshalErr != nil {
+		t.Fatal(unmarshalErr)
+	}
+	wantAttempted := &config.Vault{Connections: []config.Connection{base, beta}}
+	if !reflect.DeepEqual(&attempted, wantAttempted) {
+		t.Fatalf("attempted scoped publication widened: got=%+v want=%+v", &attempted, wantAttempted)
+	}
+	after, loadErr := config.Load(masterPass)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if !reflect.DeepEqual(after, original) {
+		t.Fatalf("remote failure did not restore exact pending ledger: got=%+v want=%+v", after, original)
+	}
+	afterBlob, readErr := os.ReadFile(config.Path())
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(afterBlob, originalBlob) {
+		t.Fatal("remote failure did not atomically restore the exact original opaque vault bytes")
+	}
+}
+
+func TestPushAllPublishesExactPrePersistedFinalizedVault(t *testing.T) {
+	home := t.TempDir()
+	setTestHome(t, home)
+	pass := "ISSUE20_SUCCESS_PASSPHRASE_CANARY"   //nolint:gosec // test-only vault passphrase
+	tokenSecret := "ISSUE20_SUCCESS_TOKEN_CANARY" //nolint:gosec // test-only fake credential canary
+	alpha := config.Connection{Name: "alpha", Host: "alpha.example", Port: 22, User: "root", Password: "ISSUE20_SUCCESS_ALPHA_CANARY"}
+	beta := config.Connection{Name: "beta", Host: "beta.example", Port: 22, User: "root", Password: "ISSUE20_SUCCESS_BETA_CANARY"}
+	original := &config.Vault{
+		Connections: []config.Connection{alpha, beta},
+		PendingBase: &config.InventorySnapshot{},
+		PendingMutations: []config.PendingMutation{
+			{ID: "tx_alpha", Alias: "alpha", Operation: "created", CreatedAt: "2026-07-28T00:00:00Z", After: &alpha},
+			{ID: "tx_beta", Alias: "beta", Operation: "created", CreatedAt: "2026-07-28T00:00:01Z", After: &beta},
+		},
+	}
+	if err := config.Save(original, pass); err != nil {
+		t.Fatal(err)
+	}
+	passPath := filepath.Join(config.Dir(), "master.pass")
+	if err := os.WriteFile(passPath, []byte(pass+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	type publicationObservation struct {
+		uploaded  []byte
+		persisted []byte
+		err       error
+	}
+	observed := make(chan publicationObservation, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observation := publicationObservation{}
+		if r.Method != http.MethodPut || r.URL.Path != "/sync" {
+			observation.err = fmt.Errorf("request = %s %s, want PUT /sync", r.Method, r.URL.Path)
+		} else {
+			observation.uploaded, observation.err = io.ReadAll(r.Body)
+			if observation.err == nil {
+				observation.persisted, observation.err = os.ReadFile(config.Path())
+			}
+		}
+		observed <- observation
+		w.Header().Set("ETag", `"finalized-success"`)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: tokenSecret}); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestPushCommandHelper$", "-test.count=1") //nolint:gosec // executes this test binary with fixed arguments
+	cmd.Env = append(os.Environ(), "HOME="+home, "USERPROFILE="+home, "SSM_TEST_PUSH_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("push command failed: %v: %s", err, output)
+	}
+	observation := <-observed
+	if observation.err != nil {
+		t.Fatal(observation.err)
+	}
+	for label, canary := range map[string]string{
+		"passphrase": pass,
+		"alpha":      alpha.Password,
+		"beta":       beta.Password,
+		"token":      tokenSecret,
+	} {
+		if strings.Contains(string(output), canary) {
+			t.Fatalf("successful push leaked %s in output: %s", label, output)
+		}
+		if strings.Contains(string(observation.uploaded), canary) {
+			t.Fatalf("successful push exposed %s plaintext in transport", label)
+		}
+	}
+	if !bytes.Equal(observation.uploaded, observation.persisted) {
+		t.Fatal("--all did not publish the exact opaque vault bytes persisted before PUT")
+	}
+	plaintext, decryptErr := securevault.Decrypt(observation.persisted, pass)
+	if decryptErr != nil {
+		t.Fatal(decryptErr)
+	}
+	var persistedAtPUT config.Vault
+	if unmarshalErr := json.Unmarshal(plaintext, &persistedAtPUT); unmarshalErr != nil {
+		t.Fatal(unmarshalErr)
+	}
+	wantFinalized := &config.Vault{Connections: []config.Connection{alpha, beta}}
+	if !reflect.DeepEqual(&persistedAtPUT, wantFinalized) {
+		t.Fatalf("vault at PUT was not finalized: got=%+v want=%+v", &persistedAtPUT, wantFinalized)
+	}
+	after, readErr := os.ReadFile(config.Path())
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(after, observation.persisted) {
+		t.Fatal("local vault was saved again after the successful PUT")
+	}
+	for _, transactionID := range []string{"tx_alpha", "tx_beta"} {
+		if !strings.Contains(string(output), transactionID) {
+			t.Fatalf("successful push output omitted stable selected transaction %q: %s", transactionID, output)
+		}
 	}
 }
 

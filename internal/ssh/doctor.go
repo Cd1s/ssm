@@ -3,13 +3,12 @@ package ssh
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
-	"ssm/internal/cloud"
 	"ssm/internal/config"
 	"ssm/internal/machinecontract"
+	"ssm/internal/synctransaction"
 )
 
 // DoctorReport is agent-oriented local + remote diagnostics.
@@ -17,11 +16,16 @@ type DoctorReport struct {
 	OK            bool              `json:"ok"`
 	VersionHint   string            `json:"version_hint,omitempty"`
 	Vault         string            `json:"vault"` // present|missing
-	Sync          string            `json:"sync"`  // configured|missing
+	Sync          string            `json:"sync"`  // configured|missing|offline
 	LocalVault    string            `json:"local_vault_state"`
 	RemoteVault   string            `json:"remote_vault_state"`
 	LastPull      string            `json:"last_pull,omitempty"`
 	LastPush      string            `json:"last_push,omitempty"`
+	LastSync      string            `json:"last_sync,omitempty"`
+	Freshness     string            `json:"freshness"`
+	RemoteState   string            `json:"remote_state"`
+	Offline       bool              `json:"offline"`
+	CacheAge      int64             `json:"cache_age_seconds,omitempty"`
 	Pending       bool              `json:"pending_changes"`
 	Hosts         int               `json:"hosts"`
 	Redirects     int               `json:"redirects"`
@@ -31,14 +35,14 @@ type DoctorReport struct {
 	Check         *CheckResult      `json:"check,omitempty"`
 	Deep          map[string]string `json:"deep,omitempty"`
 	machinecontract.Metadata
-	Candidates   []string            `json:"candidates,omitempty"`
-	MergeReport  config.MergeReport  `json:"merge_report"`
-	SyncConflict *cloud.SyncConflict `json:"sync_conflict,omitempty"`
-	LatencyMS    int64               `json:"latency_ms,omitempty"`
+	Candidates   []string                      `json:"candidates,omitempty"`
+	MergeReport  config.MergeReport            `json:"merge_report"`
+	SyncConflict *synctransaction.SyncConflict `json:"sync_conflict,omitempty"`
+	LatencyMS    int64                         `json:"latency_ms,omitempty"`
 }
 
 // Doctor gathers vault/sync status and optional remote check/deep probes.
-func Doctor(v *config.Vault, alias string, deep bool) DoctorReport {
+func Doctor(v *config.Vault, alias string, deep bool, facts synctransaction.Facts) DoctorReport {
 	start := time.Now()
 	rep := DoctorReport{
 		Vault:        "missing",
@@ -47,10 +51,11 @@ func Doctor(v *config.Vault, alias string, deep bool) DoctorReport {
 		RemoteVault:  "unknown",
 		Reuse:        "on",
 		MergeReport:  config.LoadMergeReport(),
-		SyncConflict: cloud.LoadSyncConflict(),
+		SyncConflict: facts.Conflict,
+		LastPull:     facts.LastPull, LastPush: facts.LastPush, LastSync: facts.LastSync,
+		Freshness: string(facts.Freshness), RemoteState: string(facts.Remote),
+		Offline: facts.Offline, CacheAge: facts.CacheAge,
 	}
-	settings := config.LoadSettings()
-	rep.LastPull, rep.LastPush = settings.LastPull, settings.LastPush
 	if !reuseEnabled() {
 		rep.Reuse = "off"
 	}
@@ -58,12 +63,15 @@ func Doctor(v *config.Vault, alias string, deep bool) DoctorReport {
 		rep.Vault = "present"
 		rep.LocalVault = "present"
 	}
-	if _, err := os.Stat(filepath.Join(config.Dir(), "cloud.json")); err == nil {
+	switch facts.Configuration {
+	case synctransaction.ConfigurationConfigured:
 		rep.Sync = "configured"
 		rep.RemoteVault = "cached_unknown"
+	case synctransaction.ConfigurationOffline:
+		rep.Sync = "offline"
 	}
-	if local, err := cloud.LocalVaultETag(); err == nil && cloud.CachedRemoteETag() != "" {
-		if local == cloud.CachedRemoteETag() {
+	if facts.LocalETag != "" && facts.RemoteETag != "" {
+		if facts.Freshness == synctransaction.FreshnessFresh || facts.Freshness == synctransaction.FreshnessCached {
 			rep.LocalVault = "matches_remote"
 			rep.RemoteVault = "cached_match"
 		} else {

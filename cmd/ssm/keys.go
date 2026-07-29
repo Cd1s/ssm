@@ -5,12 +5,12 @@ import (
 	"os"
 	"strings"
 
-	"ssm/internal/cloud"
 	"ssm/internal/config"
 	"ssm/internal/machinecontract"
 )
 
 func runKeysList() {
+	pullIfChanged()
 	v, err := loadVault()
 	if err != nil {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
@@ -28,6 +28,7 @@ func runKeysList() {
 }
 
 func runKeysRemove(name string) {
+	pullIfChanged()
 	v, err := loadVault()
 	if err != nil {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
@@ -53,6 +54,6 @@ func runKeysRemove(name string) {
 	if err := config.Save(v, masterPass); err != nil {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 	}
-	cloud.AutoPush()
+	autoPushOpaque()
 	fmt.Printf("Key \"%s\" removed.\n", name)
 }

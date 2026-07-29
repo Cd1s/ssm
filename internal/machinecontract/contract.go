@@ -13,6 +13,8 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
+
+	"ssm/internal/synctransaction"
 )
 
 // Kind identifies a failure context without exposing its serialized policy to
@@ -101,6 +103,7 @@ const (
 	PushOnlyRequired                    Kind = "push_only_required"
 	PushScopeConflict                   Kind = "push_scope_conflict"
 	SyncPushFailed                      Kind = "sync_push_failed"
+	SyncUnconfigured                    Kind = "sync_unconfigured"
 	SyncConfigurationFailed             Kind = "sync_configuration_failed"
 	SyncPullReplaceFailed               Kind = "sync_pull_replace_failed"
 	TransferArgumentsInvalid            Kind = "transfer_arguments_invalid"
@@ -502,8 +505,12 @@ var failurePolicies = map[Kind]failurePolicy{
 	SyncPushFailed: {
 		Code: CodeSyncPush, Hint: "local vault remains pending; fix sync and retry push", Exit: 1,
 	},
-	SyncConfigurationFailed: {
+	SyncUnconfigured: {
 		Code: "sync_config_error", Hint: "configure sync or use local inventory", Exit: 1,
+	},
+	SyncConfigurationFailed: {
+		Code: "sync_config_error", Stage: "sync_config",
+		Hint: "repair sync configuration or retry explicitly with --offline", Exit: 1,
 	},
 	SyncPullReplaceFailed: {
 		Code: CodeSyncPull, Hint: "local inventory was not replaced", Exit: 1,
@@ -888,6 +895,20 @@ func Classify(kind Kind, details Details) Failure {
 		processExit:       processExit,
 		renderer:          policy.Renderer,
 	}
+}
+
+// ClassifySyncFailure keeps configuration and conflict failures canonical
+// across inventory command families while retaining each command's established
+// refresh fallback.
+func ClassifySyncFailure(err error, fallback Kind) Failure {
+	kind := fallback
+	switch {
+	case errors.Is(err, synctransaction.ErrConfiguration):
+		kind = SyncConfigurationFailed
+	case errors.Is(err, synctransaction.ErrConflict):
+		kind = SyncConflict
+	}
+	return Classify(kind, Details{Cause: err})
 }
 
 // ResultMetadata is embedded by typed execution results whose exit field has

@@ -7,6 +7,7 @@ import (
 
 	"ssm/internal/cloud"
 	"ssm/internal/config"
+	"ssm/internal/synctransaction"
 )
 
 func TestRefreshVaultFailureNeverSilentlyEnablesOffline(t *testing.T) {
@@ -46,12 +47,16 @@ func TestRefreshVaultExplicitOfflineSkipsNetwork(t *testing.T) {
 }
 
 func TestSyncCacheAgeUsesLatestSuccessfulOperation(t *testing.T) {
+	setTestHome(t, t.TempDir())
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
 	settings := config.DefaultSettings()
 	settings.LastPull = now.Add(-10 * time.Minute).Format(time.RFC3339)
 	settings.LastPush = now.Add(-2 * time.Minute).Format(time.RFC3339)
-	last, age := syncCacheAge(settings, now)
-	if last != settings.LastPush || age != 120 {
-		t.Fatalf("last=%q age=%d", last, age)
+	if err := config.SaveSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	facts := synctransaction.New(synctransaction.Options{Offline: true, Now: func() time.Time { return now }}).Facts()
+	if facts.LastSync != settings.LastPush || facts.CacheAge != 120 {
+		t.Fatalf("last=%q age=%d", facts.LastSync, facts.CacheAge)
 	}
 }

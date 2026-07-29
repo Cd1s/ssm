@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -13,10 +12,10 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"ssm/internal/cloud"
 	"ssm/internal/config"
 	"ssm/internal/machinecontract"
 	agentssh "ssm/internal/ssh"
+	"ssm/internal/synctransaction"
 )
 
 const maxHostCredentialBytes = 1 << 20
@@ -319,6 +318,10 @@ func runHostCommand(args []string) {
 	}
 
 	if err := refreshHostVault(opts.offline); err != nil {
+		if errors.Is(err, synctransaction.ErrConfiguration) {
+			failure := machinecontract.ClassifySyncFailure(err, machinecontract.HostSyncPullFailed)
+			os.Exit(machinecontract.WriteFailure(opts.asJSON, failure, failure))
+		}
 		os.Exit(machinecontract.WriteMetadataError(opts.asJSON, newHostError(machinecontract.HostSyncPullFailed, "%s; retry only with --offline if stale local state is acceptable", redactError(err)), machinecontract.HostInternalFailure))
 	}
 	v, err := loadVault()
@@ -390,24 +393,7 @@ func runHostCommand(args []string) {
 }
 
 func refreshHostVault(offline bool) error {
-	if offline || !config.LoadSettings().AutoSync {
-		return nil
-	}
-	cloudPath := filepath.Join(config.Dir(), "cloud.json")
-	if _, err := os.Stat(cloudPath); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	cfg, err := cloud.LoadCloud()
-	if err != nil {
-		return err
-	}
-	changed, err := cloud.PullIfChanged(cfg)
-	if changed {
-		invalidateVaultCache()
-	}
+	_, err := syncTransaction(offline).Refresh()
 	return err
 }
 
