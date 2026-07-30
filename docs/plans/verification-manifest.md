@@ -82,9 +82,12 @@ test suite. The focused suite covers restricted-token owner/group/DACL
 preservation, privileged
 full-descriptor/SACL preservation, privilege restoration and descriptor
 freeing, exclusive update/cleanup locking, file-ID revalidation,
-hard-link/reparse and substitution rejection, completed and unexplained stale
-rollback states, concurrent updaters, ordinary rollback, and rollback-failure
-evidence. Tests
+hard-link/reparse rejection, non-delete-sharing source handles and exact-object
+handle renames, canonical-name substitution, rollback over an unexpected
+canonical file, explicit owner-only protected lock/state DACLs, rejection of
+valid-CRC forged, inherited/writable, and wrong-owner control state, completed
+and unexplained stale rollback states, concurrent updaters, ordinary rollback,
+and rollback-failure evidence. Tests
 that execute a Unix remote shell or compare Bash script behavior are selected
 only on Unix; portable parsing, planning, host-key, environment-isolation, and
 security tests remain active on Windows.

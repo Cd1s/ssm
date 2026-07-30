@@ -7,9 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
-	"os"
 	"path/filepath"
 	"strings"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -19,11 +19,13 @@ const (
 	windowsReplacementPhaseBeforeTargetMove = "before_target_move"
 	windowsReplacementPhaseAfterBackup      = "after_backup"
 	windowsReplacementPhaseBeforeStageMove  = "before_stage_move"
+	windowsReplacementPhaseTargetRenameGap  = "target_rename_gap"
+	windowsReplacementPhaseStageRenameGap   = "stage_rename_gap"
 )
 
 var (
-	moveWindowsReplacementFile = moveWindowsFile
-	windowsReplacementTestHook func(string) error
+	renameWindowsReplacementHandle = renameWindowsFileHandle
+	windowsReplacementTestHook     func(string) error
 )
 
 func replaceExecutable(staged, target string) (resultErr error) {
@@ -54,31 +56,19 @@ func replaceExecutable(staged, target string) (resultErr error) {
 	if err := runWindowsReplacementTestHook(windowsReplacementPhaseAfterLock); err != nil {
 		return fmt.Errorf("pause after Windows executable update lock: %w", err)
 	}
-	if err := cleanupCompletedWindowsRollbackUnderLock(target); err != nil {
+	if err := cleanupCompletedWindowsRollbackUnderLockWithPolicy(target, updateLock.policy); err != nil {
 		return fmt.Errorf("clean previous Windows executable: %w", err)
-	}
-
-	targetIdentity, err := inspectWindowsReplacementPath(target, "current Windows executable")
-	if err != nil {
-		return err
-	}
-	stageIdentity, err := inspectWindowsReplacementPath(staged, "verified Windows replacement")
-	if err != nil {
-		return err
-	}
-	if targetIdentity == stageIdentity {
-		return fmt.Errorf("verified Windows replacement aliases the current executable")
 	}
 
 	security, err := prepareWindowsReplacementSecurity(
 		staged,
 		target,
-		targetIdentity,
-		stageIdentity,
 	)
 	if err != nil {
 		return fmt.Errorf("preserve Windows executable security descriptor: %w", err)
 	}
+	targetIdentity := security.targetIdentity
+	stageIdentity := security.stageIdentity
 	closeSecurity := func() error {
 		if security == nil {
 			return nil
@@ -98,58 +88,45 @@ func replaceExecutable(staged, target string) (resultErr error) {
 	}
 
 	if err := runWindowsReplacementTestHook(windowsReplacementPhaseBeforeTargetMove); err != nil {
-		return failBeforeRecord("revalidate Windows replacement before preserving executable", err)
-	}
-	if err := requireWindowsReplacementPathIdentity(
-		target,
-		targetIdentity,
-		"current Windows executable",
-	); err != nil {
-		return failBeforeRecord("revalidate Windows replacement before preserving executable", err)
-	}
-	if err := requireWindowsReplacementPathIdentity(
-		staged,
-		stageIdentity,
-		"verified Windows replacement",
-	); err != nil {
-		return failBeforeRecord("revalidate Windows replacement before preserving executable", err)
+		return failBeforeRecord("continue before preserving Windows executable", err)
 	}
 
-	record, err := createWindowsReplacementRecord(target, targetIdentity, stageIdentity)
+	record, err := createWindowsReplacementRecord(
+		target,
+		targetIdentity,
+		stageIdentity,
+		updateLock.policy,
+	)
 	if err != nil {
 		return failBeforeRecord("record Windows rollback ownership", err)
 	}
 	failBeforeBackup := func(operation string, operationErr error) error {
-		if closeErr := closeSecurity(); closeErr != nil {
-			operationErr = errors.Join(
-				operationErr,
-				fmt.Errorf("release Windows security state: %w", closeErr),
-			)
-		}
-		if closeErr := record.close(); closeErr != nil {
-			operationErr = errors.Join(
-				operationErr,
-				fmt.Errorf("close Windows rollback ownership record: %w", closeErr),
-			)
-		}
-		if removeErr := removeWindowsReplacementPath(
-			windowsReplacementRecord(target),
-			record.identity,
-			"Windows rollback ownership record",
-		); removeErr != nil {
+		if removeErr := record.remove(); removeErr != nil {
 			operationErr = errors.Join(
 				operationErr,
 				fmt.Errorf("remove Windows rollback ownership record: %w", removeErr),
 			)
 		}
-		return fmt.Errorf("%s: %w", operation, operationErr)
-	}
-	failAfterBackup := func(operation string, operationErr error) error {
+		if closeErr := record.close(); closeErr != nil {
+			operationErr = errors.Join(
+				operationErr,
+				fmt.Errorf("close Windows rollback ownership record: %w", closeErr),
+			)
+		}
 		if closeErr := closeSecurity(); closeErr != nil {
 			operationErr = errors.Join(
 				operationErr,
 				fmt.Errorf("release Windows security state: %w", closeErr),
 			)
+		}
+		return fmt.Errorf("%s: %w", operation, operationErr)
+	}
+	failAfterBackup := func(operation string, operationErr error) error {
+		rollbackErr := rollbackWindowsReplacement(target, security)
+		if rollbackErr == nil {
+			if removeErr := record.remove(); removeErr != nil {
+				rollbackErr = fmt.Errorf("remove Windows rollback ownership record: %w", removeErr)
+			}
 		}
 		if closeErr := record.close(); closeErr != nil {
 			operationErr = errors.Join(
@@ -157,42 +134,36 @@ func replaceExecutable(staged, target string) (resultErr error) {
 				fmt.Errorf("close Windows rollback ownership record: %w", closeErr),
 			)
 		}
-		if rollbackErr := rollbackWindowsReplacement(
-			target,
-			targetIdentity,
-			stageIdentity,
-			record.identity,
-		); rollbackErr != nil {
+		if closeErr := closeSecurity(); closeErr != nil {
+			operationErr = errors.Join(
+				operationErr,
+				fmt.Errorf("release Windows security state: %w", closeErr),
+			)
+		}
+		if rollbackErr != nil {
 			return fmt.Errorf("%s: %w (rollback failed: %v)", operation, operationErr, rollbackErr)
 		}
 		return fmt.Errorf("%s: %w", operation, operationErr)
 	}
 
 	backup := windowsReplacementBackup(target)
-	if err := moveExpectedWindowsReplacementPath(
-		target,
+	if err := renameExpectedWindowsReplacementHandle(
+		security.target,
 		backup,
 		targetIdentity,
-		nil,
 		false,
+		windowsReplacementPhaseTargetRenameGap,
 		"current Windows executable",
 		"Windows rollback image",
 	); err != nil {
-		backupIdentity, exists, inspectErr := inspectOptionalWindowsReplacementPath(
-			backup,
-			"Windows rollback image",
-		)
-		switch {
-		case inspectErr != nil:
-			return failAfterBackup(
-				"preserve running Windows executable",
-				errors.Join(err, inspectErr),
-			)
-		case exists && backupIdentity == targetIdentity:
-			return failAfterBackup("preserve running Windows executable", err)
-		default:
+		if targetErr := requireWindowsReplacementPathIdentity(
+			target,
+			targetIdentity,
+			"current Windows executable",
+		); targetErr == nil {
 			return failBeforeBackup("preserve running Windows executable", err)
 		}
+		return failAfterBackup("preserve running Windows executable", err)
 	}
 	if err := runWindowsReplacementTestHook(windowsReplacementPhaseAfterBackup); err != nil {
 		return failAfterBackup("continue after preserving running Windows executable", err)
@@ -200,12 +171,12 @@ func replaceExecutable(staged, target string) (resultErr error) {
 	if err := runWindowsReplacementTestHook(windowsReplacementPhaseBeforeStageMove); err != nil {
 		return failAfterBackup("revalidate verified Windows replacement before install", err)
 	}
-	if err := moveExpectedWindowsReplacementPath(
-		staged,
+	if err := renameExpectedWindowsReplacementHandle(
+		security.staged,
 		target,
 		stageIdentity,
-		nil,
-		false,
+		true,
+		windowsReplacementPhaseStageRenameGap,
 		"verified Windows replacement",
 		"canonical Windows executable",
 	); err != nil {
@@ -231,14 +202,14 @@ func replaceExecutable(staged, target string) (resultErr error) {
 	); err != nil {
 		return failAfterBackup("verify installed Windows executable identity", err)
 	}
-	if err := closeSecurity(); err != nil {
-		return failAfterBackup("release Windows security state", err)
-	}
 	if err := record.markCompleted(); err != nil {
 		return failAfterBackup("mark Windows replacement complete", err)
 	}
 	if err := record.close(); err != nil {
 		return failAfterBackup("close completed Windows rollback ownership record", err)
+	}
+	if err := closeSecurity(); err != nil {
+		return fmt.Errorf("release Windows security state after installing executable: %w", err)
 	}
 	return nil
 }
@@ -290,31 +261,42 @@ func inspectWindowsReplacementHandle(
 	handle windows.Handle,
 	description string,
 ) (windowsFileIdentity, error) {
+	identity, links, err := inspectWindowsReplacementHandleObject(handle, description)
+	if err != nil {
+		return windowsFileIdentity{}, err
+	}
+	if links != 1 {
+		return windowsFileIdentity{}, fmt.Errorf("%s has %d hard links", description, links)
+	}
+	return identity, nil
+}
+
+func inspectWindowsReplacementHandleObject(
+	handle windows.Handle,
+	description string,
+) (windowsFileIdentity, uint32, error) {
 	fileType, err := windows.GetFileType(handle)
 	if err != nil {
-		return windowsFileIdentity{}, fmt.Errorf("inspect %s file type: %w", description, err)
+		return windowsFileIdentity{}, 0, fmt.Errorf("inspect %s file type: %w", description, err)
 	}
 	if fileType != windows.FILE_TYPE_DISK {
-		return windowsFileIdentity{}, fmt.Errorf("%s is not a disk file", description)
+		return windowsFileIdentity{}, 0, fmt.Errorf("%s is not a disk file", description)
 	}
 	var info windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
-		return windowsFileIdentity{}, fmt.Errorf("inspect %s identity: %w", description, err)
+		return windowsFileIdentity{}, 0, fmt.Errorf("inspect %s identity: %w", description, err)
 	}
 	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-		return windowsFileIdentity{}, fmt.Errorf("%s is a reparse point", description)
+		return windowsFileIdentity{}, 0, fmt.Errorf("%s is a reparse point", description)
 	}
 	if info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0 {
-		return windowsFileIdentity{}, fmt.Errorf("%s is a directory", description)
-	}
-	if info.NumberOfLinks != 1 {
-		return windowsFileIdentity{}, fmt.Errorf("%s has %d hard links", description, info.NumberOfLinks)
+		return windowsFileIdentity{}, 0, fmt.Errorf("%s is a directory", description)
 	}
 	return windowsFileIdentity{
 		volumeSerialNumber: info.VolumeSerialNumber,
 		fileIndexHigh:      info.FileIndexHigh,
 		fileIndexLow:       info.FileIndexLow,
-	}, nil
+	}, info.NumberOfLinks, nil
 }
 
 func requireWindowsReplacementHandleIdentity(
@@ -364,6 +346,22 @@ func isWindowsPathNotFound(err error) bool {
 }
 
 func openWindowsReplacementFile(path string, access uint32) (windows.Handle, error) {
+	return openWindowsReplacementFileWithShare(
+		path,
+		access,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+	)
+}
+
+func openWindowsProtectedReplacementFile(path string, access uint32) (windows.Handle, error) {
+	return openWindowsReplacementFileWithShare(path, access, windows.FILE_SHARE_READ)
+}
+
+func openWindowsReplacementFileWithShare(
+	path string,
+	access,
+	share uint32,
+) (windows.Handle, error) {
 	pathPointer, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return windows.InvalidHandle, err
@@ -371,7 +369,7 @@ func openWindowsReplacementFile(path string, access uint32) (windows.Handle, err
 	return windows.CreateFile(
 		pathPointer,
 		access,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		share,
 		nil,
 		windows.OPEN_EXISTING,
 		windows.FILE_ATTRIBUTE_NORMAL|
@@ -381,85 +379,145 @@ func openWindowsReplacementFile(path string, access uint32) (windows.Handle, err
 	)
 }
 
-func moveExpectedWindowsReplacementPath(
-	source,
+func renameExpectedWindowsReplacementHandle(
+	source windows.Handle,
 	destination string,
 	sourceIdentity windowsFileIdentity,
-	destinationIdentity *windowsFileIdentity,
 	replace bool,
+	testPhase,
 	sourceDescription,
 	destinationDescription string,
 ) error {
-	if err := requireWindowsReplacementPathIdentity(source, sourceIdentity, sourceDescription); err != nil {
+	if err := requireWindowsReplacementHandleIdentity(source, sourceIdentity, sourceDescription); err != nil {
 		return err
 	}
-	if destinationIdentity == nil {
+	if !replace {
 		if err := requireWindowsReplacementPathAbsent(destination, destinationDescription); err != nil {
 			return err
 		}
-	} else if err := requireWindowsReplacementPathIdentity(
-		destination,
-		*destinationIdentity,
-		destinationDescription,
-	); err != nil {
+	}
+	if err := runWindowsReplacementTestHook(testPhase); err != nil {
 		return err
 	}
-	if err := moveWindowsReplacementFile(source, destination, replace); err != nil {
+	if err := renameWindowsReplacementHandle(source, destination, replace); err != nil {
 		return err
 	}
-	if err := requireWindowsReplacementPathIdentity(
+	if err := requireWindowsReplacementHandleIdentity(source, sourceIdentity, destinationDescription); err != nil {
+		return err
+	}
+	return requireWindowsReplacementPathIdentity(
 		destination,
 		sourceIdentity,
 		destinationDescription,
-	); err != nil {
-		return err
-	}
-	return requireWindowsReplacementPathAbsent(source, sourceDescription)
+	)
 }
 
 func rollbackWindowsReplacement(
 	target string,
-	targetIdentity,
-	stageIdentity,
-	recordIdentity windowsFileIdentity,
+	security *windowsReplacementSecurityState,
 ) error {
-	backup := windowsReplacementBackup(target)
-	if err := requireWindowsReplacementPathIdentity(
-		backup,
-		targetIdentity,
-		"Windows rollback image",
-	); err != nil {
-		return err
+	if security == nil || security.target == windows.InvalidHandle {
+		return fmt.Errorf("Windows rollback image handle is unavailable")
 	}
-	currentIdentity, targetExists, err := inspectOptionalWindowsReplacementPath(
-		target,
-		"failed installed Windows executable",
+	originalIdentity, _, err := inspectWindowsReplacementHandleObject(
+		security.target,
+		"Windows rollback image",
 	)
 	if err != nil {
 		return err
 	}
-	var destinationIdentity *windowsFileIdentity
-	if targetExists {
-		if currentIdentity != stageIdentity {
-			return fmt.Errorf("canonical Windows executable changed before rollback")
-		}
-		destinationIdentity = &stageIdentity
+	if originalIdentity != security.targetIdentity {
+		return fmt.Errorf("Windows rollback image identity changed after inspection")
 	}
-	if err := moveExpectedWindowsReplacementPath(
-		backup,
-		target,
-		targetIdentity,
-		destinationIdentity,
-		targetExists,
-		"Windows rollback image",
-		"restored Windows executable",
-	); err != nil {
+	currentHandle, openErr := openWindowsReplacementFile(target, 0)
+	if openErr == nil {
+		currentIdentity, _, inspectErr := inspectWindowsReplacementHandleObject(
+			currentHandle,
+			"failed installed Windows executable",
+		)
+		closeErr := windows.CloseHandle(currentHandle)
+		if inspectErr != nil {
+			return inspectErr
+		}
+		if closeErr != nil {
+			return fmt.Errorf("close failed installed Windows executable inspection handle: %w", closeErr)
+		}
+		if currentIdentity == security.targetIdentity {
+			return nil
+		}
+	} else if !isWindowsPathNotFound(openErr) {
+		return openErr
+	}
+	if err := renameWindowsReplacementHandle(security.target, target, true); err != nil {
 		return err
 	}
-	return removeWindowsReplacementPath(
-		windowsReplacementRecord(target),
-		recordIdentity,
-		"Windows rollback ownership record",
+	restoredIdentity, _, err := inspectWindowsReplacementHandleObject(
+		security.target,
+		"restored Windows executable",
+	)
+	if err != nil {
+		return err
+	}
+	if restoredIdentity != security.targetIdentity {
+		return fmt.Errorf("restored Windows executable identity changed after inspection")
+	}
+	canonicalHandle, err := openWindowsReplacementFile(target, 0)
+	if err != nil {
+		return err
+	}
+	canonicalIdentity, _, inspectErr := inspectWindowsReplacementHandleObject(
+		canonicalHandle,
+		"restored Windows executable",
+	)
+	closeErr := windows.CloseHandle(canonicalHandle)
+	if inspectErr != nil {
+		return inspectErr
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close restored Windows executable inspection handle: %w", closeErr)
+	}
+	if canonicalIdentity == security.targetIdentity {
+		return nil
+	}
+	return fmt.Errorf("restored Windows executable path has an unexpected identity")
+}
+
+type windowsFileRenameInfo struct {
+	flags          uint32
+	rootDirectory  windows.Handle
+	fileNameLength uint32
+	fileName       [1]uint16
+}
+
+func renameWindowsFileHandle(handle windows.Handle, destination string, replace bool) error {
+	name, err := windows.UTF16FromString(destination)
+	if err != nil {
+		return err
+	}
+	name = name[:len(name)-1]
+	var layout windowsFileRenameInfo
+	headerSize := int(unsafe.Offsetof(layout.fileName))
+	bufferSize := headerSize + len(name)*2
+	if minimum := int(unsafe.Sizeof(layout)); bufferSize < minimum {
+		bufferSize = minimum
+	}
+	buffer := make([]byte, bufferSize)
+	info := (*windowsFileRenameInfo)(unsafe.Pointer(&buffer[0]))
+	if replace {
+		info.flags = windows.FILE_RENAME_REPLACE_IF_EXISTS |
+			windows.FILE_RENAME_POSIX_SEMANTICS |
+			windows.FILE_RENAME_IGNORE_READONLY_ATTRIBUTE
+	}
+	info.fileNameLength = uint32(len(name) * 2)
+	copy(
+		unsafe.Slice(&info.fileName[0], len(name)),
+		name,
+	)
+	return windows.SetFileInformationByHandle(
+		handle,
+		windows.FileRenameInfoEx,
+		&buffer[0],
+		uint32(len(buffer)),
 	)
 }
 
@@ -467,9 +525,14 @@ type windowsReplacementLockState struct {
 	handle     windows.Handle
 	overlapped windows.Overlapped
 	locked     bool
+	policy     *windowsControlSecurityPolicy
 }
 
 func acquireWindowsReplacementLock(target string) (*windowsReplacementLockState, error) {
+	policy, err := newWindowsControlSecurityPolicy()
+	if err != nil {
+		return nil, fmt.Errorf("prepare Windows executable update lock security policy: %w", err)
+	}
 	path := windowsReplacementLock(target)
 	pathPointer, err := windows.UTF16PtrFromString(path)
 	if err != nil {
@@ -479,7 +542,7 @@ func acquireWindowsReplacementLock(target string) (*windowsReplacementLockState,
 		pathPointer,
 		windows.GENERIC_READ|windows.GENERIC_WRITE,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
-		nil,
+		policy.attributes(),
 		windows.OPEN_ALWAYS,
 		windows.FILE_ATTRIBUTE_HIDDEN|windows.FILE_FLAG_OPEN_REPARSE_POINT,
 		0,
@@ -490,8 +553,12 @@ func acquireWindowsReplacementLock(target string) (*windowsReplacementLockState,
 		}
 		return nil, fmt.Errorf("open Windows executable update lock: %w", err)
 	}
-	state := &windowsReplacementLockState{handle: handle}
+	state := &windowsReplacementLockState{handle: handle, policy: policy}
 	if _, err := inspectWindowsReplacementHandle(handle, "Windows executable update lock"); err != nil {
+		_ = windows.CloseHandle(handle)
+		return nil, err
+	}
+	if err := policy.validate(handle, "Windows executable update lock"); err != nil {
 		_ = windows.CloseHandle(handle)
 		return nil, err
 	}
@@ -544,15 +611,16 @@ type windowsReplacementRecordData struct {
 }
 
 type windowsReplacementRecordState struct {
-	handle   windows.Handle
-	identity windowsFileIdentity
-	data     windowsReplacementRecordData
+	handle        windows.Handle
+	deletePending bool
+	data          windowsReplacementRecordData
 }
 
 func createWindowsReplacementRecord(
 	target string,
 	original,
 	installed windowsFileIdentity,
+	policy *windowsControlSecurityPolicy,
 ) (*windowsReplacementRecordState, error) {
 	path := windowsReplacementRecord(target)
 	if err := requireWindowsReplacementPathAbsent(path, "Windows rollback ownership record"); err != nil {
@@ -564,9 +632,9 @@ func createWindowsReplacementRecord(
 	}
 	handle, err := windows.CreateFile(
 		pathPointer,
-		windows.GENERIC_READ|windows.GENERIC_WRITE,
+		windows.GENERIC_READ|windows.GENERIC_WRITE|windows.DELETE,
 		windows.FILE_SHARE_READ,
-		nil,
+		policy.attributes(),
 		windows.CREATE_NEW,
 		windows.FILE_ATTRIBUTE_HIDDEN|windows.FILE_FLAG_OPEN_REPARSE_POINT,
 		0,
@@ -582,7 +650,7 @@ func createWindowsReplacementRecord(
 			installed: installed,
 		},
 	}
-	state.identity, err = inspectWindowsReplacementHandle(
+	_, err = inspectWindowsReplacementHandle(
 		handle,
 		"Windows rollback ownership record",
 	)
@@ -590,16 +658,16 @@ func createWindowsReplacementRecord(
 		_ = windows.CloseHandle(handle)
 		return nil, err
 	}
+	if err := policy.validate(handle, "Windows rollback ownership record"); err != nil {
+		_ = windows.CloseHandle(handle)
+		return nil, err
+	}
 	if err := state.write(); err != nil {
-		if closeErr := state.close(); closeErr != nil {
-			err = errors.Join(err, fmt.Errorf("close failed Windows rollback ownership record: %w", closeErr))
-		}
-		if removeErr := removeWindowsReplacementPath(
-			path,
-			state.identity,
-			"failed Windows rollback ownership record",
-		); removeErr != nil {
+		if removeErr := state.remove(); removeErr != nil {
 			err = errors.Join(err, fmt.Errorf("remove failed Windows rollback ownership record: %w", removeErr))
+		}
+		if closeErr := state.close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close removed Windows rollback ownership record: %w", closeErr))
 		}
 		return nil, err
 	}
@@ -627,6 +695,26 @@ func (state *windowsReplacementRecordState) write() error {
 		return err
 	}
 	return windows.FlushFileBuffers(state.handle)
+}
+
+func (state *windowsReplacementRecordState) remove() error {
+	if state == nil || state.handle == windows.InvalidHandle {
+		return fmt.Errorf("Windows rollback ownership record handle is unavailable")
+	}
+	if state.deletePending {
+		return nil
+	}
+	deleteFile := byte(1)
+	if err := windows.SetFileInformationByHandle(
+		state.handle,
+		windows.FileDispositionInfo,
+		&deleteFile,
+		uint32(unsafe.Sizeof(deleteFile)),
+	); err != nil {
+		return err
+	}
+	state.deletePending = true
+	return nil
 }
 
 func (state *windowsReplacementRecordState) close() error {
@@ -698,34 +786,43 @@ func getWindowsFileIdentity(data []byte) windowsFileIdentity {
 	}
 }
 
-func readWindowsReplacementRecord(
+func openWindowsReplacementRecord(
 	target string,
-) (windowsReplacementRecordData, windowsFileIdentity, error) {
+	policy *windowsControlSecurityPolicy,
+) (*windowsReplacementRecordState, error) {
 	path := windowsReplacementRecord(target)
-	handle, err := openWindowsReplacementFile(path, windows.GENERIC_READ)
+	handle, err := openWindowsReplacementFileWithShare(
+		path,
+		windows.GENERIC_READ|windows.DELETE,
+		windows.FILE_SHARE_READ,
+	)
 	if err != nil {
-		return windowsReplacementRecordData{}, windowsFileIdentity{}, err
+		return nil, err
 	}
-	identity, inspectErr := inspectWindowsReplacementHandle(
+	state := &windowsReplacementRecordState{handle: handle}
+	if _, err := inspectWindowsReplacementHandle(
 		handle,
 		"Windows rollback ownership record",
-	)
-	if inspectErr != nil {
-		_ = windows.CloseHandle(handle)
-		return windowsReplacementRecordData{}, windowsFileIdentity{}, inspectErr
+	); err != nil {
+		_ = state.close()
+		return nil, err
+	}
+	if err := policy.validate(handle, "Windows rollback ownership record"); err != nil {
+		_ = state.close()
+		return nil, err
 	}
 	data := make([]byte, windowsReplacementRecordSize+1)
 	var read uint32
-	readErr := windows.ReadFile(handle, data, &read, nil)
-	closeErr := windows.CloseHandle(handle)
-	if readErr != nil {
-		return windowsReplacementRecordData{}, windowsFileIdentity{}, readErr
+	if err := windows.ReadFile(handle, data, &read, nil); err != nil {
+		_ = state.close()
+		return nil, err
 	}
-	if closeErr != nil {
-		return windowsReplacementRecordData{}, windowsFileIdentity{}, closeErr
+	state.data, err = decodeWindowsReplacementRecord(data[:read])
+	if err != nil {
+		_ = state.close()
+		return nil, err
 	}
-	record, err := decodeWindowsReplacementRecord(data[:read])
-	return record, identity, err
+	return state, nil
 }
 
 func cleanupPreviousExecutable(target string) (resultErr error) {
@@ -741,19 +838,23 @@ func cleanupPreviousExecutable(target string) (resultErr error) {
 			)
 		}
 	}()
-	return cleanupCompletedWindowsRollbackUnderLock(target)
+	return cleanupCompletedWindowsRollbackUnderLockWithPolicy(target, updateLock.policy)
 }
 
 func cleanupCompletedWindowsRollbackUnderLock(target string) error {
-	backup := windowsReplacementBackup(target)
-	recordPath := windowsReplacementRecord(target)
-	backupIdentity, backupExists, err := inspectOptionalWindowsReplacementPath(
-		backup,
-		"Windows rollback image",
-	)
+	policy, err := newWindowsControlSecurityPolicy()
 	if err != nil {
 		return err
 	}
+	return cleanupCompletedWindowsRollbackUnderLockWithPolicy(target, policy)
+}
+
+func cleanupCompletedWindowsRollbackUnderLockWithPolicy(
+	target string,
+	policy *windowsControlSecurityPolicy,
+) (resultErr error) {
+	backup := windowsReplacementBackup(target)
+	recordPath := windowsReplacementRecord(target)
 	_, recordExists, err := inspectOptionalWindowsReplacementPath(
 		recordPath,
 		"Windows rollback ownership record",
@@ -761,66 +862,119 @@ func cleanupCompletedWindowsRollbackUnderLock(target string) error {
 	if err != nil {
 		return err
 	}
-	if !backupExists && !recordExists {
+	if !recordExists {
+		_, backupExists, backupErr := inspectOptionalWindowsReplacementPath(
+			backup,
+			"Windows rollback image",
+		)
+		if backupErr != nil {
+			return backupErr
+		}
+		if backupExists {
+			return fmt.Errorf("Windows rollback evidence has no ownership record")
+		}
 		return nil
 	}
-	if backupExists && !recordExists {
-		return fmt.Errorf("Windows rollback evidence has no ownership record")
-	}
 
-	record, recordIdentity, err := readWindowsReplacementRecord(target)
+	record, err := openWindowsReplacementRecord(target, policy)
 	if err != nil {
 		return fmt.Errorf("read Windows rollback ownership record: %w", err)
 	}
-	if record.state != windowsReplacementRecordCompleted {
+	defer func() {
+		if closeErr := record.close(); closeErr != nil {
+			resultErr = errors.Join(
+				resultErr,
+				fmt.Errorf("close Windows rollback ownership record: %w", closeErr),
+			)
+		}
+	}()
+	if record.data.state != windowsReplacementRecordCompleted {
 		return fmt.Errorf("incomplete Windows executable replacement requires recovery")
 	}
-	targetIdentity, targetExists, err := inspectOptionalWindowsReplacementPath(
-		target,
+	targetHandle, err := openWindowsProtectedReplacementFile(target, 0)
+	if err != nil {
+		if isWindowsPathNotFound(err) {
+			return fmt.Errorf("completed Windows rollback record has no installed executable")
+		}
+		return err
+	}
+	defer func() {
+		if targetHandle != windows.InvalidHandle {
+			if closeErr := windows.CloseHandle(targetHandle); closeErr != nil {
+				resultErr = errors.Join(
+					resultErr,
+					fmt.Errorf("close installed Windows executable: %w", closeErr),
+				)
+			}
+		}
+	}()
+	targetIdentity, err := inspectWindowsReplacementHandle(
+		targetHandle,
 		"installed Windows executable",
 	)
 	if err != nil {
 		return err
 	}
-	if !targetExists || targetIdentity != record.installed {
+	if targetIdentity != record.data.installed {
 		return fmt.Errorf("completed Windows rollback record does not match the installed executable")
 	}
-	if !backupExists {
-		return removeWindowsReplacementPath(
-			recordPath,
-			recordIdentity,
-			"completed Windows rollback ownership record",
-		)
+	backupHandle, err := openWindowsReplacementFileWithShare(
+		backup,
+		windows.DELETE,
+		windows.FILE_SHARE_READ,
+	)
+	if err != nil && isWindowsPathNotFound(err) {
+		if err := record.remove(); err != nil {
+			return fmt.Errorf("remove completed Windows rollback ownership record: %w", err)
+		}
+		return nil
 	}
-	if backupIdentity != record.original {
+	if err != nil {
+		return err
+	}
+	backupOpen := true
+	defer func() {
+		if backupOpen {
+			if closeErr := windows.CloseHandle(backupHandle); closeErr != nil {
+				resultErr = errors.Join(
+					resultErr,
+					fmt.Errorf("close Windows rollback image: %w", closeErr),
+				)
+			}
+		}
+	}()
+	backupIdentity, err := inspectWindowsReplacementHandle(
+		backupHandle,
+		"Windows rollback image",
+	)
+	if err != nil {
+		return err
+	}
+	if backupIdentity != record.data.original {
 		return fmt.Errorf("completed Windows rollback record does not match the rollback image")
 	}
-	if err := removeWindowsReplacementPath(
-		backup,
-		backupIdentity,
-		"completed Windows rollback image",
-	); err != nil {
-		return err
+	if err := deleteWindowsReplacementHandle(backupHandle); err != nil {
+		return fmt.Errorf("remove completed Windows rollback image: %w", err)
 	}
-	return removeWindowsReplacementPath(
-		recordPath,
-		recordIdentity,
-		"completed Windows rollback ownership record",
-	)
+	if err := windows.CloseHandle(backupHandle); err != nil {
+		backupOpen = false
+		return fmt.Errorf("close removed Windows rollback image: %w", err)
+	}
+	backupOpen = false
+	if err := record.remove(); err != nil {
+		return fmt.Errorf("remove completed Windows rollback ownership record: %w", err)
+	}
+	return nil
 }
 
-func removeWindowsReplacementPath(
-	path string,
-	expected windowsFileIdentity,
-	description string,
-) error {
-	if err := requireWindowsReplacementPathIdentity(path, expected, description); err != nil {
-		return err
-	}
-	if err := os.Remove(path); err != nil {
-		return err
-	}
-	return requireWindowsReplacementPathAbsent(path, description)
+func deleteWindowsReplacementHandle(handle windows.Handle) error {
+	deleteFile := byte(1)
+	return windows.SetFileInformationByHandle(
+		handle,
+		windows.FileDispositionInfo,
+		&deleteFile,
+		uint32(unsafe.Sizeof(deleteFile)),
+	)
 }
 
 func windowsReplacementBackup(target string) string {
@@ -833,20 +987,4 @@ func windowsReplacementRecord(target string) string {
 
 func windowsReplacementLock(target string) string {
 	return filepath.Join(filepath.Dir(target), "."+filepath.Base(target)+".update.lock")
-}
-
-func moveWindowsFile(source, destination string, replace bool) error {
-	sourcePath, err := windows.UTF16PtrFromString(source)
-	if err != nil {
-		return err
-	}
-	destinationPath, err := windows.UTF16PtrFromString(destination)
-	if err != nil {
-		return err
-	}
-	flags := uint32(windows.MOVEFILE_WRITE_THROUGH)
-	if replace {
-		flags |= windows.MOVEFILE_REPLACE_EXISTING
-	}
-	return windows.MoveFileEx(sourcePath, destinationPath, flags)
 }

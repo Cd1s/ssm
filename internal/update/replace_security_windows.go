@@ -103,6 +103,9 @@ type windowsReplacementSecurityState struct {
 	scope            *windowsReplacementPrivilegeScope
 	target           windows.Handle
 	staged           windows.Handle
+	stagedOwner      windows.Handle
+	targetIdentity   windowsFileIdentity
+	stageIdentity    windowsFileIdentity
 	sourceDescriptor *ownedWindowsSecurityDescriptor
 	applyOwner       bool
 	applyGroup       bool
@@ -111,8 +114,6 @@ type windowsReplacementSecurityState struct {
 func prepareWindowsReplacementSecurity(
 	staged,
 	target string,
-	targetIdentity,
-	stageIdentity windowsFileIdentity,
 ) (*windowsReplacementSecurityState, error) {
 	scope, full, err := beginWindowsReplacementPrivileges()
 	if err != nil {
@@ -123,10 +124,11 @@ func prepareWindowsReplacementSecurity(
 		tier = windowsFullSecurityTier
 	}
 	state := &windowsReplacementSecurityState{
-		tier:   tier,
-		scope:  scope,
-		target: windows.InvalidHandle,
-		staged: windows.InvalidHandle,
+		tier:        tier,
+		scope:       scope,
+		target:      windows.InvalidHandle,
+		staged:      windows.InvalidHandle,
+		stagedOwner: windows.InvalidHandle,
 	}
 	fail := func(operationErr error) (*windowsReplacementSecurityState, error) {
 		if closeErr := state.close(); closeErr != nil {
@@ -135,27 +137,36 @@ func prepareWindowsReplacementSecurity(
 		return nil, operationErr
 	}
 
-	state.target, err = openWindowsReplacementFile(target, tier.targetAccess)
+	state.target, err = openWindowsProtectedReplacementFile(
+		target,
+		tier.targetAccess|windows.DELETE,
+	)
 	if err != nil {
 		return fail(fmt.Errorf("open current executable %s: %w", tier.name, err))
 	}
-	if err := requireWindowsReplacementHandleIdentity(
+	state.targetIdentity, err = inspectWindowsReplacementHandle(
 		state.target,
-		targetIdentity,
 		"current Windows executable",
-	); err != nil {
+	)
+	if err != nil {
 		return fail(err)
 	}
-	state.staged, err = openWindowsReplacementFile(staged, tier.stageAccess)
+	state.staged, err = openWindowsProtectedReplacementFile(
+		staged,
+		tier.stageAccess|windows.DELETE,
+	)
 	if err != nil {
 		return fail(fmt.Errorf("open verified replacement %s: %w", tier.name, err))
 	}
-	if err := requireWindowsReplacementHandleIdentity(
+	state.stageIdentity, err = inspectWindowsReplacementHandle(
 		state.staged,
-		stageIdentity,
 		"verified Windows replacement",
-	); err != nil {
+	)
+	if err != nil {
 		return fail(err)
+	}
+	if state.targetIdentity == state.stageIdentity {
+		return fail(fmt.Errorf("verified Windows replacement aliases the current executable"))
 	}
 
 	state.sourceDescriptor, err = captureWindowsSecurityDescriptor(state.target, tier.information)
@@ -166,7 +177,7 @@ func prepareWindowsReplacementSecurity(
 		return fail(fmt.Errorf("capture current executable %s: %w", tier.name, err))
 	}
 	if !tier.full {
-		if err := state.prepareOrdinaryOwnerAndGroup(staged, stageIdentity); err != nil {
+		if err := state.prepareOrdinaryOwnerAndGroup(staged); err != nil {
 			return fail(err)
 		}
 	} else {
@@ -184,7 +195,6 @@ func prepareWindowsReplacementSecurity(
 
 func (state *windowsReplacementSecurityState) prepareOrdinaryOwnerAndGroup(
 	staged string,
-	stageIdentity windowsFileIdentity,
 ) (err error) {
 	current, err := captureWindowsSecurityDescriptor(state.staged, windowsOrdinarySecurityInformation)
 	if err != nil {
@@ -217,14 +227,10 @@ func (state *windowsReplacementSecurityState) prepareOrdinaryOwnerAndGroup(
 		return nil
 	}
 
-	if err := windows.CloseHandle(state.staged); err != nil {
-		state.staged = windows.InvalidHandle
-		return fmt.Errorf("close verified replacement before owner/group preservation: %w", err)
-	}
-	state.staged = windows.InvalidHandle
-	state.staged, err = openWindowsReplacementFile(
+	state.stagedOwner, err = openWindowsReplacementFileWithShare(
 		staged,
 		state.tier.stageAccess|windows.WRITE_OWNER,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_DELETE,
 	)
 	if err != nil {
 		return fmt.Errorf(
@@ -233,8 +239,8 @@ func (state *windowsReplacementSecurityState) prepareOrdinaryOwnerAndGroup(
 		)
 	}
 	return requireWindowsReplacementHandleIdentity(
-		state.staged,
-		stageIdentity,
+		state.stagedOwner,
+		state.stageIdentity,
 		"verified Windows replacement",
 	)
 }
@@ -304,7 +310,7 @@ func (state *windowsReplacementSecurityState) apply() error {
 		}
 	}
 	return setWindowsSecurityInfo(
-		state.staged,
+		state.stagedSecurityHandle(),
 		windows.SE_FILE_OBJECT,
 		information,
 		owner,
@@ -315,7 +321,7 @@ func (state *windowsReplacementSecurityState) apply() error {
 }
 
 func (state *windowsReplacementSecurityState) verify() (err error) {
-	descriptor, err := captureWindowsSecurityDescriptor(state.staged, state.tier.information)
+	descriptor, err := captureWindowsSecurityDescriptor(state.stagedSecurityHandle(), state.tier.information)
 	if err != nil {
 		return err
 	}
@@ -332,6 +338,13 @@ func (state *windowsReplacementSecurityState) verify() (err error) {
 		descriptor.descriptor,
 		state.tier.full,
 	)
+}
+
+func (state *windowsReplacementSecurityState) stagedSecurityHandle() windows.Handle {
+	if state.stagedOwner != windows.InvalidHandle {
+		return state.stagedOwner
+	}
+	return state.staged
 }
 
 func validateWindowsSecurityDescriptor(descriptor *windows.SECURITY_DESCRIPTOR) error {
@@ -402,6 +415,10 @@ func (state *windowsReplacementSecurityState) close() error {
 	if state.staged != windows.InvalidHandle {
 		errs = append(errs, windows.CloseHandle(state.staged))
 		state.staged = windows.InvalidHandle
+	}
+	if state.stagedOwner != windows.InvalidHandle {
+		errs = append(errs, windows.CloseHandle(state.stagedOwner))
+		state.stagedOwner = windows.InvalidHandle
 	}
 	if state.scope != nil {
 		errs = append(errs, state.scope.close())

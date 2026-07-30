@@ -94,7 +94,7 @@ newest eligible release fails this check.
 | Downloaded digest matches checksum but differs from provenance | Subject digest comparison | Checksum cannot rescue the mismatch; no replacement. |
 | Unsupported, missing, misnamed, additional, or duplicate release asset | Strict manifest selection | No asset download and no fallback. |
 | Checksums over 16 KiB, provenance or release metadata over 1 MiB, or a binary over 64 MiB | Header-independent bounded stream, rejecting after at most limit plus one byte | No replacement; temporary output is bounded and removed; installed bytes and mode are unchanged. |
-| Windows cannot overwrite its mapped running `.exe` | Platform replacement | Hold the fixed sibling update lock across inspection, moves, rollback, and cleanup; reject reparse points and multiple hard links; and revalidate volume/file IDs immediately before and after each name move. The ordinary tier captures, applies, and verifies owner, primary group, DACL, and DACL inheritance/protection without optional privileges. When all three backup/restore/security privileges can be enabled on a duplicated thread token, the full tier instead preserves and verifies the complete descriptor, including SACL-backed fields. An unavailable full tier is never claimed; failure to preserve the selected tier stops before the first move or restores the identity-bound rollback image. |
+| Windows cannot overwrite its mapped running `.exe` | Platform replacement | Hold the fixed sibling update lock across inspection, handle-bound moves, rollback, and cleanup; reject reparse points and multiple hard links; and keep non-delete-sharing handles on the validated original and stage until the completed record is durable. `SetFileInformationByHandle(FileRenameInfoEx)` renames those exact objects. Replacement uses replace, POSIX, and ignore-read-only semantics so a file inserted at the temporarily vacant canonical name cannot become canonical or prevent restoration. The ordinary tier captures, applies, and verifies owner, primary group, DACL, and DACL inheritance/protection without optional privileges. When all three backup/restore/security privileges can be enabled on a duplicated thread token, the full tier instead preserves and verifies the complete descriptor, including SACL-backed fields. An unavailable full tier is never claimed; failure to preserve the selected tier stops before the first move or restores the still-held original over any unexpected canonical file. |
 
 `TestTrustFailurePreservesExecutable` records the original executable bytes and
 permission bits, injects a wrong-subject signed bundle, and proves both remain
@@ -121,7 +121,10 @@ full-descriptor equality; the official focused Windows gate fails rather than
 skips if the runner cannot exercise that tier. The suite also proves exact
 thread-token restoration, one `LocalFree` per native descriptor allocation,
 concurrent-updater and cleanup exclusion, hard-link/reparse rejection,
-identity-changing stage substitution, ordinary rollback, and rollback-failure
+identity-changing source substitution at both former validation/rename gaps,
+canonical-name substitution with a non-delete-sharing attacker handle,
+replacement of an unexpected canonical file during rollback, ordinary
+rollback, forged control records, owner/DACL rejection, and rollback-failure
 evidence retention.
 
 The updater calls the native `GetSecurityInfo` entry point through x/sys'
@@ -136,25 +139,36 @@ enable on a duplicated impersonation token pinned to the current OS thread.
 Closing the scope restores the exact prior thread token (or no token), closes
 the duplicate, and never changes the process token.
 
-The persistent hidden `.<exe>.update.lock` is opened without delete sharing
-and byte-range locked exclusively for inspection, both moves, rollback,
-ownership-record writes, and startup cleanup. Target, stage, lock, rollback,
-and record objects must be non-reparse single-link disk files. Validation
-handles share delete so they do not block the intended rename, but the updater
-reopens and compares volume/file IDs immediately before every destructive
-name operation and verifies the result afterward.
+The persistent hidden `.<exe>.update.lock` is created with an explicit
+non-inherited DACL containing one full-control ACE for the effective updater
+SID and an explicit owner and primary group from that token. It is opened
+without delete sharing, its owner, group, protected-DACL control bits, one-ACE
+shape, trustee, and exact access mask are validated, and then it is byte-range
+locked exclusively for inspection, both moves, rollback, record writes, and
+startup cleanup. An existing lock with unexpected ownership or permissions is
+rejected and preserved. Target, stage, lock, rollback, and record objects must
+be non-reparse single-link disk files. The target and stage validation handles
+also supply the native rename source and omit delete sharing, so pathname
+substitution cannot occur between validation and either destructive move.
 
 Before the first move, a flushed `.<exe>.old.state` record binds the inspected
-old and staged file IDs. Success flushes it as completed and retains both it
-and `.<exe>.old` until a later cleanup owns the same lock and verifies the
-installed and rollback identities. An `.old` without a valid record, a
-prepared/incomplete record, or any identity mismatch is recovery evidence and
-is never deleted or overwritten by cleanup or a new update. Successful
-rollback restores the original identity and removes its record. Failed
-rollback retains the original at `.old`, the prepared record, and any
-remaining stage while reporting both the operation and rollback failure.
-These errors continue through the existing `update_failed` / `update` machine
-contract.
+old and staged file IDs. The record is created with the same explicit
+owner-only protected security policy as the lock and remains open without
+delete sharing throughout replacement. Cleanup protectively opens and
+validates that policy before parsing or trusting any record field. CRC32
+remains only an accidental-corruption check; authorization comes from the
+validated Windows owner and DACL, not from the checksum. Success flushes the
+record as completed and retains both it and `.<exe>.old` until a later cleanup
+owns the same trusted lock, holds the record/target/rollback objects against
+substitution, and verifies the installed and rollback identities. An `.old`
+without a trusted record, a prepared/incomplete record, an untrusted owner or
+DACL, or any identity mismatch is recovery evidence and is never deleted or
+overwritten by cleanup or a new update. Successful rollback restores the
+original handle over the canonical name and deletes its exact record by
+handle. Failed rollback retains the original at `.old`, the prepared record,
+and any remaining stage while reporting both the operation and rollback
+failure. These errors continue through the existing `update_failed` /
+`update` machine contract.
 
 The installer success fixture places a BSD-compatible `mktemp` shim ahead of
 the host implementation. It rejects every supplied template that does not end
