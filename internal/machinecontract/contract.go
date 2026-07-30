@@ -268,7 +268,7 @@ var failurePolicies = map[Kind]failurePolicy{
 	},
 	SyncConflict: {
 		Code: "sync_conflict", Stage: "sync_compare",
-		Hint: "local and remote blobs were preserved; inspect sshctl --offline --json doctor, then explicitly pull or push after review", Exit: 1,
+		Hint: "local and remote blobs were preserved; inspect sshctl --offline --json doctor, then run sshctl --json pull after review", Exit: 1,
 	},
 	EmptyLedgerSyncConflict: {
 		Code: "sync_conflict", Stage: "sync_compare",
@@ -342,7 +342,7 @@ var failurePolicies = map[Kind]failurePolicy{
 		Hint: "inspect verification.error and fix the candidate before retrying", Exit: ExitConnectionFailed, Human: humanHostVerification,
 	},
 	HostPushFailed: {
-		Code: CodeSyncPush, Stage: "sync_push", Hint: "local changes remain pending; fix sync and retry push",
+		Code: CodeSyncPush, Stage: "sync_push", Hint: "local change remains pending; inspect sshctl --json status and retry with sshctl --json push --only <transaction-id>",
 		HumanHint: "local change remains pending; inspect sshctl --json status and retry with sshctl --json push --only <transaction-id>", Exit: 1, Human: humanHostPush,
 	},
 	HostSyncPullFailed: {
@@ -508,7 +508,9 @@ var failurePolicies = map[Kind]failurePolicy{
 		Code: CodeInvalidArgs, Hint: "choose one explicit push scope", Exit: 2,
 	},
 	SyncPushFailed: {
-		Code: CodeSyncPush, Hint: "local vault remains pending; fix sync and retry push", Exit: 1,
+		Code: CodeSyncPush,
+		Hint: "local vault remains pending; fix sync, then retry with sshctl --json push --only <transaction-id> or, after reviewing all pending transactions, sshctl --json push --all",
+		Exit: 1,
 	},
 	SyncUnconfigured: {
 		Code: "sync_config_error", Hint: "configure sync or use local inventory", Exit: 1,

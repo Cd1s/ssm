@@ -118,7 +118,7 @@ func TestEmptyLedgerPushNeverPuts(t *testing.T) {
 		result := cli.Run(t, "sshctl", nil, "--json", "push", "--only", "tx_unknown")
 		assertCompiledMachineContract(t, result, compiledMachineContract{
 			OK: false, Error: "sync_push_failed",
-			Hint:     "local vault remains pending; fix sync and retry push",
+			Hint:     "local vault remains pending; fix sync, then retry with sshctl --json push --only <transaction-id> or, after reviewing all pending transactions, sshctl --json push --all",
 			JSONExit: 1, ProcessExit: 1,
 		})
 		assertNoCompiledCanaryLeak(t, result, map[string]string{ //nolint:gosec // test-only fake credential canary

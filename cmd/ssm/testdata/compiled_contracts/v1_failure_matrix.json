@@ -86,7 +86,7 @@
     "stage": "sync_compare",
     "json_exit": 1,
     "process_exit": 1,
-    "hint": "local and remote blobs were preserved; inspect sshctl --offline --json doctor, then explicitly pull or push after review",
+    "hint": "local and remote blobs were preserved; inspect sshctl --offline --json doctor, then run sshctl --json pull after review",
     "absent": ["alias", "candidates"],
     "stdout_placement": "stdout",
     "stderr_placement": "empty",

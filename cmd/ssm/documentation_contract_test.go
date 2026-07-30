@@ -18,9 +18,22 @@ const (
 )
 
 var (
-	executableNamePattern = regexp.MustCompile(`(?i)\b(?:sshctl|ssm)(?:\.exe)?\b`)
-	lineContinuation      = regexp.MustCompile(`\\\r?\n[ \t]*`)
-	stalePushClaims       = []*regexp.Regexp{
+	executableNamePattern  = regexp.MustCompile(`(?i)\b(?:sshctl|ssm)(?:\.exe)?\b`)
+	lineContinuation       = regexp.MustCompile(`\\\r?\n[ \t]*`)
+	pushWordPattern        = regexp.MustCompile(`(?i)\bpush\b`)
+	explicitScopeAfterPush = regexp.MustCompile(
+		"(?i)^[ \t\r\n`'\"]*--(?:all\\b|only(?:\\b|=))",
+	)
+	negatedAdvicePrefix = regexp.MustCompile(
+		`(?i)\b(?:do\s+not|don't|never|must\s+not|should\s+not|cannot|can't)\s*$`,
+	)
+	vaguePushAdvice = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\b(?:retry(?:ing)?|re-?run(?:ning)?|repeat(?:ing)?|try(?:ing)?)\b[^.;]{0,80}\bpush\b`),
+		regexp.MustCompile(`(?i)\brun\b[^.;]{0,40}\bpush\b[^.;]{0,40}\bagain\b`),
+		regexp.MustCompile(`(?i)\bpush\b[^.;]{0,30}\bagain\b`),
+		regexp.MustCompile(`(?i)\bpull\b[^.;]{0,30}\bor\b[^.;]{0,30}\bpush\b`),
+	}
+	stalePushClaims = []*regexp.Regexp{
 		regexp.MustCompile("(?is)\\bbare[ \t\\r\\n`]+push\\b.{0,80}\\b(?:remain(?:s|ed)?|is|was|are|were|mean(?:s|t)?|act(?:s|ed)?|serve(?:s|d)?)\\b.{0,50}\\b(?:compatib[[:alnum:]_-]*|alias|synonym[[:alnum:]_-]*|equivalent)\\b"),
 		regexp.MustCompile("(?is)\\b(?:retain(?:s|ed)?|preserve(?:s|d)?)\\b.{0,50}\\bbare[ \t\\r\\n`]+push\\b.{0,50}\\b(?:compatib[[:alnum:]_-]*|alias|synonym[[:alnum:]_-]*|equivalent)\\b"),
 		regexp.MustCompile("(?s)裸[ \t\\r\\n`]*push.{0,80}(?:仍|是|作为|等同|表示).{0,40}(?:兼容|别名|同义|等价|全部)"),
@@ -74,6 +87,7 @@ type pushGuidanceViolation struct {
 
 func scanPushGuidance(document string) []pushGuidanceViolation {
 	active, violations := excludeHistoricalPushGuidance(document)
+	violations = append(violations, scanVaguePushAdvice(active)...)
 	for _, pattern := range stalePushClaims {
 		for _, match := range pattern.FindAllStringIndex(active, -1) {
 			violations = append(violations, pushGuidanceViolation{
@@ -100,6 +114,45 @@ func scanPushGuidance(document string) []pushGuidanceViolation {
 		}
 	}
 	return violations
+}
+
+func scanVaguePushAdvice(document string) []pushGuidanceViolation {
+	seenPushes := make(map[int]struct{})
+	var violations []pushGuidanceViolation
+	for _, pattern := range vaguePushAdvice {
+		for _, match := range pattern.FindAllStringIndex(document, -1) {
+			pushes := pushWordPattern.FindAllStringIndex(document[match[0]:match[1]], -1)
+			if len(pushes) == 0 {
+				continue
+			}
+			push := pushes[len(pushes)-1]
+			pushStart := match[0] + push[0]
+			pushEnd := match[0] + push[1]
+			if _, seen := seenPushes[pushStart]; seen {
+				continue
+			}
+			seenPushes[pushStart] = struct{}{}
+			if negatesPushAdvice(document, match[0]) ||
+				explicitScopeAfterPush.MatchString(document[pushEnd:]) {
+				continue
+			}
+			violations = append(violations, pushGuidanceViolation{
+				line:    lineAt(document, match[0]),
+				reason:  "contains natural-language push guidance without an explicit scope",
+				excerpt: compactExcerpt(document[match[0]:match[1]]),
+			})
+		}
+	}
+	return violations
+}
+
+func negatesPushAdvice(document string, adviceStart int) bool {
+	const prefixLimit = 40
+	prefixStart := adviceStart - prefixLimit
+	if prefixStart < 0 {
+		prefixStart = 0
+	}
+	return negatedAdvicePrefix.MatchString(document[prefixStart:adviceStart])
 }
 
 func describesBareExecutableProse(prefix string) bool {
@@ -362,9 +415,38 @@ func TestPushGuidanceScannerAdversarialFixtures(t *testing.T) {
 			wantError: true,
 		},
 		{
+			name:      "vague retry push advice",
+			document:  "Local changes remain pending; fix sync and retry push.",
+			wantError: true,
+		},
+		{
+			name:      "vague pull or push choice",
+			document:  "Inspect the conflict, then explicitly pull or push after review.",
+			wantError: true,
+		},
+		{
+			name:      "vague run push again advice",
+			document:  "After fixing connectivity, run `push` again.",
+			wantError: true,
+		},
+		{
+			name:      "bare push retry advice",
+			document:  "Retry the bare push after fixing connectivity.",
+			wantError: true,
+		},
+		{
 			name: "explicit scopes with global flag forms",
 			document: "sshctl --master-pass-file ./pass --json push --only tx_reviewed\n" +
 				"ssm --master-pass-file=./pass --offline push --all\n",
+		},
+		{
+			name: "explicitly scoped prose guidance",
+			document: "Retry push --only <transaction-id> after reviewing the transaction.\n" +
+				"Pull or publish with push --all after reviewing every pending transaction.\n",
+		},
+		{
+			name:     "bare push rejection is not advice",
+			document: "Do not retry bare push; bare push is rejected before vault unlock.\n",
 		},
 		{
 			name: "multiline explicit scope",
@@ -386,6 +468,8 @@ func TestPushGuidanceScannerAdversarialFixtures(t *testing.T) {
 			name: "explicit historical section is excluded",
 			document: "<!-- documentation-contract: historical-begin -->\n" +
 				"Bare `push` remains an alias for `push --all`.\n" +
+				"Fix sync and retry push.\n" +
+				"Explicitly pull or push after review.\n" +
 				"sshctl --json push\n" +
 				"<!-- documentation-contract: historical-end -->\n" +
 				"sshctl --json push --only tx_reviewed\n",

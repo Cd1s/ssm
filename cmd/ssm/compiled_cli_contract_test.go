@@ -2671,7 +2671,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		})
 		assertCompiledMachineContract(t, result, compiledMachineContract{
 			OK: false, Error: "sync_push_failed", JSONExit: 1, ProcessExit: 1,
-			Hint:   "local vault remains pending; fix sync and retry push",
+			Hint:   "local vault remains pending; fix sync, then retry with sshctl --json push --only <transaction-id> or, after reviewing all pending transactions, sshctl --json push --all",
 			Absent: []string{"stage", "alias", "candidates"},
 		})
 		for _, safe := range []string{"tx_alpha", "alpha", "created", key.Name, "saved_key_create"} {
@@ -2715,7 +2715,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		})
 		assertCompiledMachineContract(t, rejected, compiledMachineContract{
 			OK: false, Error: "sync_push_failed", JSONExit: 1, ProcessExit: 1,
-			Hint:   "local vault remains pending; fix sync and retry push",
+			Hint:   "local vault remains pending; fix sync, then retry with sshctl --json push --only <transaction-id> or, after reviewing all pending transactions, sshctl --json push --all",
 			Absent: []string{"stage", "alias", "candidates"},
 		})
 		if got := sameAliasSync.MethodCount("PUT"); got != 0 {
@@ -3612,7 +3612,7 @@ func TestCompiledSyncStateMatrix(t *testing.T) {
 		})
 		assertCompiledMachineContract(t, result, compiledMachineContract{
 			OK: false, Error: "sync_conflict", Stage: "sync_compare", JSONExit: 1, ProcessExit: 1,
-			Hint: "local and remote blobs were preserved; inspect sshctl --offline --json doctor, then explicitly pull or push after review",
+			Hint: "local and remote blobs were preserved; inspect sshctl --offline --json doctor, then run sshctl --json pull after review",
 		})
 		if got := sync.MethodCount(http.MethodHead); got != 1 {
 			t.Fatalf("explicit pull HEAD count = %d, want 1", got)
@@ -3671,7 +3671,7 @@ func TestCompiledSyncStateMatrix(t *testing.T) {
 		})
 		assertCompiledMachineContract(t, result, compiledMachineContract{
 			OK: false, Error: "sync_conflict", Stage: "sync_compare", JSONExit: 1, ProcessExit: 1,
-			Hint: "local and remote blobs were preserved; inspect sshctl --offline --json doctor, then explicitly pull or push after review",
+			Hint: "local and remote blobs were preserved; inspect sshctl --offline --json doctor, then run sshctl --json pull after review",
 		})
 		if got := sync.MethodCount(http.MethodHead); got != 1 {
 			t.Fatalf("explicit push HEAD count = %d, want 1", got)

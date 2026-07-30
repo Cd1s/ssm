@@ -156,7 +156,7 @@ func TestScopedPublicationSavedKeyDependencies(t *testing.T) {
 		})
 		assertCompiledMachineContract(t, result, compiledMachineContract{
 			OK: false, Error: "sync_push_failed", JSONExit: 1, ProcessExit: 1,
-			Hint:   "local vault remains pending; fix sync and retry push",
+			Hint:   "local vault remains pending; fix sync, then retry with sshctl --json push --only <transaction-id> or, after reviewing all pending transactions, sshctl --json push --all",
 			Absent: []string{"stage", "alias", "candidates"},
 		})
 		for _, safe := range []string{
@@ -222,7 +222,7 @@ func TestScopedPublicationSavedKeyDependencies(t *testing.T) {
 		})
 		assertCompiledMachineContract(t, result, compiledMachineContract{
 			OK: false, Error: "sync_push_failed", JSONExit: 1, ProcessExit: 1,
-			Hint:   "local vault remains pending; fix sync and retry push",
+			Hint:   "local vault remains pending; fix sync, then retry with sshctl --json push --only <transaction-id> or, after reviewing all pending transactions, sshctl --json push --all",
 			Absent: []string{"stage", "alias", "candidates"},
 		})
 		for _, safe := range []string{"tx_key_delete", "alpha", "updated", oldKey.Name, "saved_key_delete"} {
@@ -296,7 +296,7 @@ func TestScopedPublicationSavedKeyDependencies(t *testing.T) {
 		})
 		assertCompiledMachineContract(t, result, compiledMachineContract{
 			OK: false, Error: "sync_push_failed", JSONExit: 1, ProcessExit: 1,
-			Hint:   "local vault remains pending; fix sync and retry push",
+			Hint:   "local vault remains pending; fix sync, then retry with sshctl --json push --only <transaction-id> or, after reviewing all pending transactions, sshctl --json push --all",
 			Absent: []string{"stage", "alias", "candidates"},
 		})
 		referenceAt := strings.Index(result.Stdout, referenceID)
@@ -391,7 +391,7 @@ func TestScopedPublicationSavedKeyDependencies(t *testing.T) {
 		})
 		assertCompiledMachineContract(t, rejected, compiledMachineContract{
 			OK: false, Error: "sync_push_failed", JSONExit: 1, ProcessExit: 1,
-			Hint:   "local vault remains pending; fix sync and retry push",
+			Hint:   "local vault remains pending; fix sync, then retry with sshctl --json push --only <transaction-id> or, after reviewing all pending transactions, sshctl --json push --all",
 			Absent: []string{"stage", "alias", "candidates"},
 		})
 		referenceAt := strings.Index(rejected.Stdout, referenceID)
@@ -513,7 +513,7 @@ func TestScopedPublicationSavedKeyDependencies(t *testing.T) {
 		})
 		assertCompiledMachineContract(t, result, compiledMachineContract{
 			OK: false, Error: "sync_push_failed", JSONExit: 1, ProcessExit: 1,
-			Hint:   "local vault remains pending; fix sync and retry push",
+			Hint:   "local vault remains pending; fix sync, then retry with sshctl --json push --only <transaction-id> or, after reviewing all pending transactions, sshctl --json push --all",
 			Absent: []string{"stage", "alias", "candidates"},
 		})
 		createAt := strings.Index(result.Stdout, "tx_alpha_create")

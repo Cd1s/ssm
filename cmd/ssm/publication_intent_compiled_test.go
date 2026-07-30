@@ -286,7 +286,7 @@ func TestMaliciousPublishingIntentDocumentsFailClosedWithoutLeaksOrSideEffects(t
 					case command.machine && !command.status:
 						assertCompiledMachineContract(t, result, compiledMachineContract{
 							OK: false, Error: "sync_push_failed", JSONExit: 1, ProcessExit: 1,
-							Hint: "local vault remains pending; fix sync and retry push",
+							Hint: "local vault remains pending; fix sync, then retry with sshctl --json push --only <transaction-id> or, after reviewing all pending transactions, sshctl --json push --all",
 						})
 						value := decodeExactlyOneJSONObject(t, result.Stdout)
 						if value["message"] != fixture.wantMessage {
@@ -308,7 +308,7 @@ func TestMaliciousPublishingIntentDocumentsFailClosedWithoutLeaksOrSideEffects(t
 					default:
 						wantStderr := "ssm: error=sync_push_failed\n" +
 							"Error: " + fixture.wantMessage + "\n" +
-							"ssm: hint=local vault remains pending; fix sync and retry push\n"
+							"ssm: hint=local vault remains pending; fix sync, then retry with sshctl --json push --only <transaction-id> or, after reviewing all pending transactions, sshctl --json push --all\n"
 						if result.ProcessExit != 1 || result.Stdout != "" || result.Stderr != wantStderr {
 							t.Fatalf("human sidecar failure changed: output=%s", compiledOutputIdentity(result))
 						}
@@ -558,7 +558,7 @@ func TestPublicationLockContentionFailsBeforeUnlockOrMutation(t *testing.T) {
 	}, "--json", "push", "--only", betaID)
 	assertCompiledMachineContract(t, busy, compiledMachineContract{
 		OK: false, Error: "sync_push_failed", JSONExit: 1, ProcessExit: 1,
-		Hint: "local vault remains pending; fix sync and retry push",
+		Hint: "local vault remains pending; fix sync, then retry with sshctl --json push --only <transaction-id> or, after reviewing all pending transactions, sshctl --json push --all",
 	})
 	if !strings.Contains(busy.Stdout, "publication is busy") ||
 		strings.Contains(busy.Stdout, "master pass file") {

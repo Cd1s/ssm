@@ -225,8 +225,8 @@ func issue17RenderCases() map[string]issue17RenderCase {
 		},
 		"sync_etag_conflict": {
 			failure: syncConflict, machineMode: JSONDocument, machine: syncConflict,
-			wantMachine: "{\n  \"ok\": false,\n  \"error\": \"sync_conflict\",\n  \"message\": \"remote changed\",\n  \"hint\": \"local and remote blobs were preserved; inspect sshctl --offline --json doctor, then explicitly pull or push after review\",\n  \"stage\": \"sync_compare\",\n  \"exit\": 1\n}\n",
-			wantHuman:   "ssm: error=sync_conflict stage=sync_compare\nError: remote changed\nssm: hint=local and remote blobs were preserved; inspect sshctl --offline --json doctor, then explicitly pull or push after review\n",
+			wantMachine: "{\n  \"ok\": false,\n  \"error\": \"sync_conflict\",\n  \"message\": \"remote changed\",\n  \"hint\": \"local and remote blobs were preserved; inspect sshctl --offline --json doctor, then run sshctl --json pull after review\",\n  \"stage\": \"sync_compare\",\n  \"exit\": 1\n}\n",
+			wantHuman:   "ssm: error=sync_conflict stage=sync_compare\nError: remote changed\nssm: hint=local and remote blobs were preserved; inspect sshctl --offline --json doctor, then run sshctl --json pull after review\n",
 		},
 		"transfer_local_read": {
 			failure: transfer, machineMode: JSONDocument, machine: transferDocument, machineAlias: "transfer",
