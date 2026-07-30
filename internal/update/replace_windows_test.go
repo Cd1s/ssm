@@ -39,6 +39,7 @@ const (
 func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("ordinary user preserves owner group DACL and inheritance", testWindowsOrdinaryUserReplacement)
 	t.Run("effective token privilege detection cannot escape to the process token", testWindowsRestrictedImpersonationToken)
+	t.Run("no thread token falls back to one process token and closes its handles", testWindowsNoThreadTokenProcessFallback)
 	t.Run("process token fallback requires ERROR_NO_TOKEN", testWindowsProcessTokenFallbackRequiresNoThreadToken)
 	t.Run("ordinary inherited descriptor capture apply and verification are semantic", testWindowsInheritedOrdinaryDescriptorPreparation)
 	t.Run("ordinary descriptor differences identify the changed security component", testWindowsOrdinaryDescriptorDiagnostics)
@@ -372,6 +373,85 @@ func testWindowsRestrictedImpersonationToken(t *testing.T) {
 		t.Fatalf("restore ordinary non-privileged token: %v", err)
 	}
 	restore = nil
+}
+
+func testWindowsNoThreadTokenProcessFallback(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := windows.RevertToSelf(); err != nil {
+		t.Fatalf("remove ambient thread token: %v", err)
+	}
+	assertWindowsTestThreadHasNoToken(t)
+
+	threadOpenCalls := 0
+	var openAsSelfValues []bool
+	processOpenCalls := 0
+	var processToken windows.Token
+	var closedTokens []windows.Token
+	scope, _, err := beginWindowsReplacementPrivilegesWithTokenOpenAndClose(
+		func(
+			_ windows.Handle,
+			_ uint32,
+			openAsSelf bool,
+			_ *windows.Token,
+		) error {
+			threadOpenCalls++
+			openAsSelfValues = append(openAsSelfValues, openAsSelf)
+			return windows.ERROR_NO_TOKEN
+		},
+		func(process windows.Handle, access uint32, token *windows.Token) error {
+			processOpenCalls++
+			err := windows.OpenProcessToken(process, access, token)
+			if err == nil {
+				processToken = *token
+			}
+			return err
+		},
+		func(token windows.Token) error {
+			closedTokens = append(closedTokens, token)
+			return token.Close()
+		},
+	)
+	if err != nil {
+		t.Fatalf("begin optional replacement privileges without a thread token: %v", err)
+	}
+	if scope != nil {
+		if err := scope.close(); err != nil {
+			t.Fatalf("close optional replacement privileges without a prior thread token: %v", err)
+		}
+	}
+	if threadOpenCalls != 1 {
+		t.Fatalf("OpenThreadToken calls = %d, want 1", threadOpenCalls)
+	}
+	if len(openAsSelfValues) != 1 {
+		t.Fatalf("OpenThreadToken openAsSelf observations = %d, want 1", len(openAsSelfValues))
+	}
+	if openAsSelfValues[0] {
+		t.Fatal("OpenThreadToken openAsSelf = true, want false for the effective thread token")
+	}
+	if processOpenCalls != 1 {
+		t.Fatalf("OpenProcessToken calls after ERROR_NO_TOKEN = %d, want 1", processOpenCalls)
+	}
+	if processToken == 0 {
+		t.Fatal("OpenProcessToken returned a zero token")
+	}
+	if len(closedTokens) != 2 {
+		t.Fatalf("closed token handles = %d, want process and duplicated tokens", len(closedTokens))
+	}
+	if !slices.Contains(closedTokens, processToken) {
+		t.Fatal("opened process token was not closed")
+	}
+	if closedTokens[0] == closedTokens[1] {
+		t.Fatalf("closed token handle %v twice, want distinct process and duplicated tokens", closedTokens[0])
+	}
+	for _, token := range closedTokens {
+		var size uint32
+		err := windows.GetTokenInformation(token, windows.TokenType, nil, 0, &size)
+		if !errors.Is(err, windows.ERROR_INVALID_HANDLE) {
+			t.Fatalf("GetTokenInformation on closed token %v error = %v, want ERROR_INVALID_HANDLE", token, err)
+		}
+	}
+	assertWindowsTestThreadHasNoToken(t)
 }
 
 func testWindowsProcessTokenFallbackRequiresNoThreadToken(t *testing.T) {
@@ -1796,6 +1876,19 @@ func windowsTestTokenState(t *testing.T) (thread, effective string) {
 	}
 	effective = windowsTestTokenDescription(t, windows.GetCurrentThreadEffectiveToken())
 	return thread, effective
+}
+
+func assertWindowsTestThreadHasNoToken(t *testing.T) {
+	t.Helper()
+	var token windows.Token
+	err := windows.OpenThreadToken(windows.CurrentThread(), windows.TOKEN_QUERY, false, &token)
+	if err == nil {
+		_ = token.Close()
+		t.Fatal("thread has an impersonation token, want none")
+	}
+	if !errors.Is(err, windows.ERROR_NO_TOKEN) {
+		t.Fatalf("open absent thread token error = %v, want ERROR_NO_TOKEN", err)
+	}
 }
 
 func windowsTestTokenDescription(t *testing.T, token windows.Token) string {

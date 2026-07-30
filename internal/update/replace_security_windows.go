@@ -664,6 +664,7 @@ type windowsReplacementPrivilegeScope struct {
 	token         windows.Token
 	processToken  windows.Token
 	previousToken windows.Token
+	closeToken    windowsCloseTokenFunc
 	hadPrevious   bool
 	installed     bool
 	active        bool
@@ -689,12 +690,31 @@ type windowsOpenProcessTokenFunc func(
 	token *windows.Token,
 ) error
 
+type windowsCloseTokenFunc func(token windows.Token) error
+
 func beginWindowsReplacementPrivilegesWithTokenOpen(
 	openThreadToken windowsOpenThreadTokenFunc,
 	openProcessToken windowsOpenProcessTokenFunc,
 ) (*windowsReplacementPrivilegeScope, bool, error) {
+	return beginWindowsReplacementPrivilegesWithTokenOpenAndClose(
+		openThreadToken,
+		openProcessToken,
+		func(token windows.Token) error {
+			return token.Close()
+		},
+	)
+}
+
+func beginWindowsReplacementPrivilegesWithTokenOpenAndClose(
+	openThreadToken windowsOpenThreadTokenFunc,
+	openProcessToken windowsOpenProcessTokenFunc,
+	closeToken windowsCloseTokenFunc,
+) (*windowsReplacementPrivilegeScope, bool, error) {
 	runtime.LockOSThread()
-	scope := &windowsReplacementPrivilegeScope{active: true}
+	scope := &windowsReplacementPrivilegeScope{
+		closeToken: closeToken,
+		active:     true,
+	}
 	fallback := func() (*windowsReplacementPrivilegeScope, bool, error) {
 		if err := scope.close(); err != nil {
 			return nil, false, fmt.Errorf("restore optional Windows security privilege scope: %w", err)
@@ -814,15 +834,15 @@ func (scope *windowsReplacementPrivilegeScope) close() error {
 		scope.installed = false
 	}
 	if scope.token != 0 {
-		errs = append(errs, scope.token.Close())
+		errs = append(errs, scope.closeToken(scope.token))
 		scope.token = 0
 	}
 	if scope.processToken != 0 {
-		errs = append(errs, scope.processToken.Close())
+		errs = append(errs, scope.closeToken(scope.processToken))
 		scope.processToken = 0
 	}
 	if scope.previousToken != 0 {
-		errs = append(errs, scope.previousToken.Close())
+		errs = append(errs, scope.closeToken(scope.previousToken))
 		scope.previousToken = 0
 	}
 	scope.active = false
