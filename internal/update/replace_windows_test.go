@@ -39,6 +39,7 @@ const (
 func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("ordinary user preserves owner group DACL and inheritance", testWindowsOrdinaryUserReplacement)
 	t.Run("effective token privilege detection cannot escape to the process token", testWindowsRestrictedImpersonationToken)
+	t.Run("process token fallback requires ERROR_NO_TOKEN", testWindowsProcessTokenFallbackRequiresNoThreadToken)
 	t.Run("ordinary inherited descriptor capture apply and verification are semantic", testWindowsInheritedOrdinaryDescriptorPreparation)
 	t.Run("ordinary descriptor differences identify the changed security component", testWindowsOrdinaryDescriptorDiagnostics)
 	t.Run("optional complete descriptor denial falls back to ordinary preservation", testWindowsOptionalFullTierFallback)
@@ -317,9 +318,39 @@ func testWindowsRestrictedImpersonationToken(t *testing.T) {
 		}
 	}
 	before := windowsTestTokenDescription(t, token)
-	scope, available, err := beginWindowsReplacementPrivileges()
+	var openAsSelfValues []bool
+	var threadOpenErr error
+	processOpenCalls := 0
+	scope, available, err := beginWindowsReplacementPrivilegesWithTokenOpen(
+		func(
+			thread windows.Handle,
+			access uint32,
+			openAsSelf bool,
+			token *windows.Token,
+		) error {
+			openAsSelfValues = append(openAsSelfValues, openAsSelf)
+			threadOpenErr = windows.OpenThreadToken(thread, access, openAsSelf, token)
+			return threadOpenErr
+		},
+		func(process windows.Handle, access uint32, token *windows.Token) error {
+			processOpenCalls++
+			return windows.OpenProcessToken(process, access, token)
+		},
+	)
 	if err != nil {
 		t.Fatalf("probe restricted optional privileges: %v", err)
+	}
+	if len(openAsSelfValues) != 1 {
+		t.Fatalf("OpenThreadToken calls = %d, want 1", len(openAsSelfValues))
+	}
+	if openAsSelfValues[0] {
+		t.Fatal("OpenThreadToken openAsSelf = true, want false for the effective thread token")
+	}
+	if threadOpenErr != nil {
+		t.Fatalf("open existing restricted thread token: %v", threadOpenErr)
+	}
+	if processOpenCalls != 0 {
+		t.Fatalf("OpenProcessToken calls with an existing thread token = %d, want 0", processOpenCalls)
 	}
 	if scope != nil {
 		if closeErr := scope.close(); closeErr != nil {
@@ -341,6 +372,38 @@ func testWindowsRestrictedImpersonationToken(t *testing.T) {
 		t.Fatalf("restore ordinary non-privileged token: %v", err)
 	}
 	restore = nil
+}
+
+func testWindowsProcessTokenFallbackRequiresNoThreadToken(t *testing.T) {
+	processOpenCalls := 0
+	scope, available, err := beginWindowsReplacementPrivilegesWithTokenOpen(
+		func(
+			windows.Handle,
+			uint32,
+			bool,
+			*windows.Token,
+		) error {
+			return windows.ERROR_ACCESS_DENIED
+		},
+		func(windows.Handle, uint32, *windows.Token) error {
+			processOpenCalls++
+			return windows.ERROR_GEN_FAILURE
+		},
+	)
+	if err != nil {
+		t.Fatalf("probe denied thread token: %v", err)
+	}
+	if scope != nil {
+		if closeErr := scope.close(); closeErr != nil {
+			t.Fatalf("close unexpected denied privilege scope: %v", closeErr)
+		}
+	}
+	if available {
+		t.Fatal("denied thread token unexpectedly supports complete descriptor privileges")
+	}
+	if processOpenCalls != 0 {
+		t.Fatalf("OpenProcessToken calls after ERROR_ACCESS_DENIED = %d, want 0", processOpenCalls)
+	}
 }
 
 func testWindowsInheritedOrdinaryDescriptorPreparation(t *testing.T) {
@@ -526,7 +589,23 @@ func testWindowsReplacementPrivilegeRestoration(t *testing.T) {
 	defer runtime.UnlockOSThread()
 
 	beforeThread, beforeEffective := windowsTestTokenState(t)
-	scope, _, err := beginWindowsReplacementPrivileges()
+	var threadOpenErr error
+	processOpenCalls := 0
+	scope, _, err := beginWindowsReplacementPrivilegesWithTokenOpen(
+		func(
+			thread windows.Handle,
+			access uint32,
+			openAsSelf bool,
+			token *windows.Token,
+		) error {
+			threadOpenErr = windows.OpenThreadToken(thread, access, openAsSelf, token)
+			return threadOpenErr
+		},
+		func(process windows.Handle, access uint32, token *windows.Token) error {
+			processOpenCalls++
+			return windows.OpenProcessToken(process, access, token)
+		},
+	)
 	if err != nil {
 		t.Fatalf("begin optional replacement privileges: %v", err)
 	}
@@ -534,6 +613,13 @@ func testWindowsReplacementPrivilegeRestoration(t *testing.T) {
 		if err := scope.close(); err != nil {
 			t.Fatalf("close optional replacement privileges: %v", err)
 		}
+	}
+	if errors.Is(threadOpenErr, windows.ERROR_NO_TOKEN) {
+		if processOpenCalls != 1 {
+			t.Fatalf("OpenProcessToken calls after ERROR_NO_TOKEN = %d, want 1", processOpenCalls)
+		}
+	} else if processOpenCalls != 0 {
+		t.Fatalf("OpenProcessToken calls after OpenThreadToken error %v = %d, want 0", threadOpenErr, processOpenCalls)
 	}
 	afterThread, afterEffective := windowsTestTokenState(t)
 	if afterThread != beforeThread || afterEffective != beforeEffective {

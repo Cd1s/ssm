@@ -670,6 +670,29 @@ type windowsReplacementPrivilegeScope struct {
 }
 
 func beginWindowsReplacementPrivileges() (*windowsReplacementPrivilegeScope, bool, error) {
+	return beginWindowsReplacementPrivilegesWithTokenOpen(
+		windows.OpenThreadToken,
+		windows.OpenProcessToken,
+	)
+}
+
+type windowsOpenThreadTokenFunc func(
+	thread windows.Handle,
+	access uint32,
+	openAsSelf bool,
+	token *windows.Token,
+) error
+
+type windowsOpenProcessTokenFunc func(
+	process windows.Handle,
+	access uint32,
+	token *windows.Token,
+) error
+
+func beginWindowsReplacementPrivilegesWithTokenOpen(
+	openThreadToken windowsOpenThreadTokenFunc,
+	openProcessToken windowsOpenProcessTokenFunc,
+) (*windowsReplacementPrivilegeScope, bool, error) {
 	runtime.LockOSThread()
 	scope := &windowsReplacementPrivilegeScope{active: true}
 	fallback := func() (*windowsReplacementPrivilegeScope, bool, error) {
@@ -679,7 +702,7 @@ func beginWindowsReplacementPrivileges() (*windowsReplacementPrivilegeScope, boo
 		return nil, false, nil
 	}
 	var source windows.Token
-	if err := windows.OpenThreadToken(
+	if err := openThreadToken(
 		windows.CurrentThread(),
 		windows.TOKEN_QUERY|windows.TOKEN_DUPLICATE|windows.TOKEN_IMPERSONATE,
 		false,
@@ -688,7 +711,7 @@ func beginWindowsReplacementPrivileges() (*windowsReplacementPrivilegeScope, boo
 		scope.hadPrevious = true
 		source = scope.previousToken
 	} else if errors.Is(err, windows.ERROR_NO_TOKEN) {
-		if err := windows.OpenProcessToken(
+		if err := openProcessToken(
 			windows.CurrentProcess(),
 			windows.TOKEN_QUERY|windows.TOKEN_DUPLICATE,
 			&scope.processToken,
