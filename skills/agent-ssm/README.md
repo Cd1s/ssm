@@ -72,7 +72,7 @@ sshctl run <exact-alias> --stream
 sshctl request --file ./ssm-request.json
 ```
 
-Use direct `run --argv` for a simple fixed one-shot, `run --stream` for repeated simple commands, and request schema version 1 for dynamic argv, scripts, put, and host operations. Add/update requests default to candidate verification; publish the returned transaction with `push --only <transaction-id>`. Use push-all only after reviewing every pending mutation. Detailed request and legacy bulk-import guidance is in `SKILL.md` and `references/import-json.md`.
+Use direct `run --argv` for a simple fixed one-shot, `run --stream` for repeated simple commands, and request schema version 1 for dynamic argv, scripts, put, and host operations. Add/update requests default to candidate verification; publish the returned transaction with `push --only <transaction-id>`. Bare push is invalid. Use `push --all` only after reviewing every mutation in its invocation-start pending set; an empty set is an identity-checked no-op or a safe divergence failure, never full-blob publication. Detailed request, empty-ledger recovery, and legacy bulk-import guidance is in `SKILL.md` and `references/import-json.md`.
 
 ## Safety boundaries
 

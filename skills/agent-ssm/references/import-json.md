@@ -97,7 +97,37 @@ sshctl --json status
 sshctl --json push --only <transaction-id>
 ```
 
-Use the mutation result's exact `transaction_id`; do not push when verification fails. `push --all` is only for deliberately publishing every reviewed pending mutation. Bare push is compatibility push-all.
+Use the mutation result's exact `transaction_id`; do not push when verification fails. Bare push is invalid and is rejected before vault unlock or any sync HTTP request. Choose `push --only <transaction-id>`, or use `push --all` only after deliberately reviewing every mutation in the invocation-start pending-ID set. Later transactions remain pending.
+
+An empty invocation-start set never publishes the full local blob. `push --all` compares the exact local encrypted-blob identity, last confirmed remote identity, and current remote identity with one HEAD request. Identical identities return `action:"noop"` with no GET or PUT; a missing or different identity returns `error:"sync_conflict"`, `stage:"sync_compare"`, preserves both sides and private identity evidence, and also performs no GET or PUT.
+
+### Empty-ledger divergence recovery
+
+Retrying `push --all` cannot repair this conflict.
+
+1. Run `sshctl --offline --json doctor` and review the safe `sync_conflict` identities.
+2. Preserve private copies of the local encrypted vault, `remote.etag`, and `sync-conflict.json`; keep their permissions private.
+3. Prepare the local inventory that must survive as a reviewed import file. Keep secrets in that private file, never in command arguments or logs.
+4. Run `sshctl --json pull` to adopt the reviewed remote encrypted blob. If the cached prerequisite does not make replacement safe and pull reports another conflict, stop and retain all evidence for manual repair.
+5. If the remote version wins completely, stop. Otherwise, reapply retained local inventory with exactly one guarded command:
+
+   ```bash
+   ssm --offline --json import-json <reviewed-file> --merge
+   ```
+
+   Or, only after explicit full-replacement review:
+
+   ```bash
+   ssm --offline --json import-json <reviewed-file> --replace --yes
+   ```
+
+6. Review the returned transaction and publish only that ID:
+
+   ```bash
+   sshctl --json push --only <transaction-id>
+   ```
+
+There is no force flag, automatic repair, evidence deletion, or empty-ledger overwrite path.
 
 ## Remove
 

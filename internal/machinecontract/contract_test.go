@@ -1573,7 +1573,7 @@ func TestMachineContractHostHumanRendering(t *testing.T) {
 			},
 			want: "ssm: error=sync_push_failed alias=candidate\n" +
 				"Error: push rejected\n" +
-				"ssm: hint=local change remains pending; fix sync and retry sshctl push\n",
+				"ssm: hint=local change remains pending; inspect sshctl --json status and retry with sshctl --json push --only <transaction-id>\n",
 		},
 		{
 			name: "map no targets",

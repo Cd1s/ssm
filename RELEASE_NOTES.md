@@ -15,6 +15,25 @@
   vault/ledger schema, transaction ID format, and typed success fields. Legacy
   removal and import behavior remains unchanged pending its separate migration.
 
+### Exact push scopes and empty-ledger safety
+
+- Bare `push` is invalid and is rejected before vault unlock or any sync HTTP
+  request. Callers must choose `push --only <transaction-id>` or `push --all`.
+- `push --all` publishes only the invocation-start ordered pending-ID snapshot;
+  later transactions remain pending.
+- An empty `push --all` performs one identity HEAD and no GET or PUT. Identical
+  local, cached, and remote encrypted-blob identities return `action:"noop"`;
+  any missing or different identity returns a safe `sync_conflict`, preserves
+  both blobs and private identity evidence, and never publishes a full blob.
+- English, Chinese, agent-skill, command-help, and recovery guidance now use
+  only explicit publication scopes.
+
+## Historical v1 release notes
+
+The versioned sections below describe behavior of those v1 releases, including
+then-supported bare-push compatibility. They are historical evidence, not
+current v2 command guidance; the v2 contract above supersedes them.
+
 ## v1.4.3
 
 ### Fast agent execution

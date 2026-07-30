@@ -66,7 +66,7 @@ sshctl get <alias> /remote/dir ./dir
 sshctl redirect set old-alias limee-hk
 sshctl run old-alias hostname
 
-sshctl push --all  # deliberate compatibility push-all after reviewing status
+sshctl push --all  # deliberately publish the invocation-start pending set after review
 ```
 
 Normal run/check operations reject both first-use and changed host keys. Never use an automatic `ssh-keygen -R` plus `ssh-keyscan` shortcut. Inspect `observed_fingerprint`, `known_fingerprints`, and `classification:new|mismatch|trusted`, verify through a trusted channel, then explicitly accept the exact same fingerprint with `--yes`.
@@ -75,7 +75,48 @@ Regular-file `put` always streams to a private sibling temporary file, verifies 
 
 Resume is regular-file-only and explicitly enabled with `--resume=v1`; existing put behavior is unchanged when it is absent. v1 requires remote `sha256sum`, binds a private `0600` sibling partial and metadata file to the protocol version, destination-path hash, complete local size, and SHA-256 digest, then verifies the remote prefix against the same local prefix before appending. A changed source starts separate state rather than reusing the old partial; corrupt, missing, or ambiguous state returns `partial_state_mismatch|partial_state_incompatible` and never replaces the destination. A completed size and digest are verified before atomic publish. Interrupted v1 state is retained for retry, while states for the same destination older than seven days are removed opportunistically during a later probe; operators may review and remove the deterministic `.ssm-resume-v1-*` siblings sooner. Results include `bytes_reused` and `bytes_sent`. Directory resume is unsupported.
 
-`status` checks the configured sync endpoint by default and refreshes when its ETag changed. A sync failure returns `error:sync_pull_failed`, `stage:sync_pull`; cached data is never selected silently. A present malformed or unreadable `cloud.json` stops every online inventory operation with `error:sync_config_error`, `stage:sync_config`; repair the file and its permissions, or use explicit `--offline` only after accepting stale cached inventory. Missing `cloud.json` continues to mean sync is unconfigured. Use `sshctl --json status --offline` (or global `--offline`) only when stale data is explicitly acceptable. Offline results include `offline:true`, `remote_state:not_checked`, `freshness`, `cache_age_seconds`, last pull/push times, `pending_changes`, and non-secret `pending_mutations` (`id`, `alias`, `operation`, `created_at`). Mutation results return a stable `transaction_id`. Publish one reviewed change with `push --only <transaction-id>`; its preflight lists the exact alias/operation and unrelated changes stay pending. Use `push --all` (or the legacy bare `push`) only to deliberately publish every pending change.
+`status` checks the configured sync endpoint by default and refreshes when its ETag changed. A sync failure returns `error:sync_pull_failed`, `stage:sync_pull`; cached data is never selected silently. A present malformed or unreadable `cloud.json` stops every online inventory operation with `error:sync_config_error`, `stage:sync_config`; repair the file and its permissions, or use explicit `--offline` only after accepting stale cached inventory. Missing `cloud.json` continues to mean sync is unconfigured. Use `sshctl --json status --offline` (or global `--offline`) only when stale data is explicitly acceptable. Offline results include `offline:true`, `remote_state:not_checked`, `freshness`, `cache_age_seconds`, last pull/push times, `pending_changes`, and non-secret `pending_mutations` (`id`, `alias`, `operation`, `created_at`). Mutation results return a stable `transaction_id`.
+
+### Reviewed publication scope
+
+Bare `push` is invalid. Its arguments are rejected before vault unlock and before any sync HTTP request. Callers must choose one explicit scope:
+
+```bash
+sshctl --json push --only <transaction-id>
+sshctl --json push --all
+```
+
+`push --only` publishes the one reviewed transaction; its preflight lists the exact alias/operation and unrelated changes stay pending. `push --all` fixes the ordered pending-ID set when the invocation starts and publishes only that set, so transactions created later remain pending.
+
+When that invocation-start set is empty, `push --all` compares the exact local encrypted-blob identity, the last confirmed remote identity, and the current remote identity with one HEAD request. If all three are present and identical, it returns `action:"noop"` and performs no GET or PUT. If any identity is missing or differs, it returns `error:"sync_conflict"`, `stage:"sync_compare"`, preserves both blobs and private identity evidence, and performs no GET or PUT. An empty scope never publishes the full local blob.
+
+#### Reviewed empty-ledger divergence recovery
+
+Retrying `push --all` cannot repair an empty-ledger conflict because it never publishes an untracked full blob.
+
+1. Run `sshctl --offline --json doctor` and review the safe `sync_conflict` identities.
+2. Preserve private copies of the local encrypted vault, `remote.etag`, and `sync-conflict.json`; keep their permissions private.
+3. Prepare the local inventory that must survive as a reviewed import file. Keep secrets in that private file, never in command arguments or logs.
+4. Run `sshctl --json pull` to adopt the reviewed remote encrypted blob. Pull succeeds only when the cached prerequisite makes replacement safe; if it reports another conflict, stop and retain all evidence for manual repair.
+5. If the remote version wins completely, recovery is finished. Otherwise, reapply the retained local inventory with exactly one guarded command:
+
+   ```bash
+   ssm --offline --json import-json <reviewed-file> --merge
+   ```
+
+   Or, only after explicit full-replacement review:
+
+   ```bash
+   ssm --offline --json import-json <reviewed-file> --replace --yes
+   ```
+
+6. Review the returned transaction and publish only that ID:
+
+   ```bash
+   sshctl --json push --only <transaction-id>
+   ```
+
+There is no force flag, automatic repair, evidence deletion, or empty-ledger overwrite path.
 
 Use `sshctl --json run <alias> --argv ...` directly for simple, fixed, reviewed literal arguments; no request file is needed. For repeated simple commands, `sshctl run <alias> --stream` reads one JSON string array per stdin line and writes one compact JSON result per stdout line. It syncs and decrypts once at startup, checks inventory again every 30 seconds by default, and stops on refresh failure instead of using stale data. Keep `sshctl request --file` for dynamic or untrusted arguments, scripts, secrets, and host mutations. The project does not provide an interactive shell.
 
@@ -162,7 +203,7 @@ A new host requires `--host`, `--user`, and one auth source: `--key <saved-name>
 
 Structured host mutations require a successful remote refresh. `--verify` checks the in-memory candidate with `hostname; uname -sr`; failure returns `verification_failed`, `applied:false`, and leaves the encrypted vault unchanged. Success is saved atomically and returns `sync_pending:true`. `--push` requires `--verify`; a sync failure leaves the local change pending and returns `sync_push_failed`. Use `--offline` only when stale local state is explicitly acceptable.
 
-`doctor <alias> --json` returns `resolved_alias` and safe `candidates` on an exact miss, but never selects a candidate or connects. It also reports local/remote vault state, last pull/push, pending state, and non-secret alias/key-name conflict metadata from the latest reviewed merge. When local and remote both diverge from one cached ETag, auto-refresh returns `sync_conflict` and preserves both sides; `sshctl --offline --json doctor` exposes only non-secret blob identifiers in `sync_conflict`. Review `merge_report.conflicts`/`sync_conflict`, then explicitly choose pull or repair local state and push.
+`doctor <alias> --json` returns `resolved_alias` and safe `candidates` on an exact miss, but never selects a candidate or connects. It also reports local/remote vault state, last pull/push, pending state, and non-secret alias/key-name conflict metadata from the latest reviewed merge. When local and remote both diverge from one cached ETag, auto-refresh returns `sync_conflict` and preserves both sides; `sshctl --offline --json doctor` exposes only non-secret blob identifiers in `sync_conflict`. Review `merge_report.conflicts`/`sync_conflict`, then explicitly choose pull or create a reviewed transaction and publish it with `push --only <transaction-id>`. For an empty-ledger conflict, follow the recovery sequence above.
 
 ### Agent fleet: map (parallel)
 
@@ -207,7 +248,7 @@ ssm login --server <sync-server-url> --email <email> --password-file <sync-passw
 sshctl sync
 ```
 
-The center server stores only encrypted vault blobs. It never decrypts SSH passwords or private keys. `sshctl list/run/status` and `ssm list/exec` check the remote ETag before reading the vault and auto-pull when it changed. Agent-facing host mutations remain local as transactions: use `push --only <transaction-id>` for one reviewed change, and `push --all` only after reviewing every pending mutation. Bare `push` is compatibility push-all.
+The center server stores only encrypted vault blobs. It never decrypts SSH passwords or private keys. `sshctl list/run/status` and `ssm list/exec` check the remote ETag before reading the vault and auto-pull when it changed. Agent-facing host mutations remain local as transactions: use `push --only <transaction-id>` for one reviewed change, or `push --all` only after reviewing every mutation in the invocation-start pending set. Bare `push` is invalid and performs no vault unlock or HTTP request.
 
 ## Center Server
 

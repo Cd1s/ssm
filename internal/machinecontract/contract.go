@@ -343,7 +343,7 @@ var failurePolicies = map[Kind]failurePolicy{
 	},
 	HostPushFailed: {
 		Code: CodeSyncPush, Stage: "sync_push", Hint: "local changes remain pending; fix sync and retry push",
-		HumanHint: "local change remains pending; fix sync and retry sshctl push", Exit: 1, Human: humanHostPush,
+		HumanHint: "local change remains pending; inspect sshctl --json status and retry with sshctl --json push --only <transaction-id>", Exit: 1, Human: humanHostPush,
 	},
 	HostSyncPullFailed: {
 		Code: CodeSyncPull, Stage: "sync_pull", Hint: "fix sync connectivity or retry explicitly with --offline", Exit: 1,
