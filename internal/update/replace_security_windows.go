@@ -20,9 +20,11 @@ const (
 )
 
 var (
-	getWindowsSecurityInfoProcedure    = windows.NewLazySystemDLL("advapi32.dll").NewProc("GetSecurityInfo")
-	localFreeWindowsSecurityDescriptor = windows.LocalFree
-	setWindowsSecurityInfo             = windows.SetSecurityInfo
+	getWindowsSecurityInfoProcedure           = windows.NewLazySystemDLL("advapi32.dll").NewProc("GetSecurityInfo")
+	localFreeWindowsSecurityDescriptor        = windows.LocalFree
+	setWindowsSecurityInfo                    = windows.SetSecurityInfo
+	beginWindowsReplacementSecurityPrivileges = beginWindowsReplacementPrivileges
+	captureWindowsReplacementDescriptor       = captureWindowsSecurityDescriptor
 )
 
 type ownedWindowsSecurityDescriptor struct {
@@ -115,7 +117,7 @@ func prepareWindowsReplacementSecurity(
 	staged,
 	target string,
 ) (*windowsReplacementSecurityState, error) {
-	scope, full, err := beginWindowsReplacementPrivileges()
+	scope, full, err := beginWindowsReplacementSecurityPrivileges()
 	if err != nil {
 		return nil, err
 	}
@@ -123,6 +125,37 @@ func prepareWindowsReplacementSecurity(
 	if full {
 		tier = windowsFullSecurityTier
 	}
+	state, unavailable, err := prepareWindowsReplacementSecurityTier(
+		staged,
+		target,
+		tier,
+		scope,
+	)
+	if !unavailable {
+		return state, err
+	}
+	return prepareWindowsReplacementOrdinarySecurity(staged, target)
+}
+
+func prepareWindowsReplacementOrdinarySecurity(
+	staged,
+	target string,
+) (*windowsReplacementSecurityState, error) {
+	state, _, err := prepareWindowsReplacementSecurityTier(
+		staged,
+		target,
+		windowsOrdinarySecurityTier,
+		nil,
+	)
+	return state, err
+}
+
+func prepareWindowsReplacementSecurityTier(
+	staged,
+	target string,
+	tier windowsSecurityTier,
+	scope *windowsReplacementPrivilegeScope,
+) (*windowsReplacementSecurityState, bool, error) {
 	state := &windowsReplacementSecurityState{
 		tier:        tier,
 		scope:       scope,
@@ -130,13 +163,16 @@ func prepareWindowsReplacementSecurity(
 		staged:      windows.InvalidHandle,
 		stagedOwner: windows.InvalidHandle,
 	}
-	fail := func(operationErr error) (*windowsReplacementSecurityState, error) {
+	fail := func(operationErr error) (*windowsReplacementSecurityState, bool, error) {
+		unavailable := tier.full && isWindowsCompleteSecurityUnavailable(operationErr)
 		if closeErr := state.close(); closeErr != nil {
 			operationErr = errors.Join(operationErr, closeErr)
+			unavailable = false
 		}
-		return nil, operationErr
+		return nil, unavailable, operationErr
 	}
 
+	var err error
 	state.target, err = openWindowsProtectedReplacementFile(
 		target,
 		tier.targetAccess|windows.DELETE,
@@ -169,7 +205,7 @@ func prepareWindowsReplacementSecurity(
 		return fail(fmt.Errorf("verified Windows replacement aliases the current executable"))
 	}
 
-	state.sourceDescriptor, err = captureWindowsSecurityDescriptor(state.target, tier.information)
+	state.sourceDescriptor, err = captureWindowsReplacementDescriptor(state.target, tier.information)
 	if err != nil {
 		return fail(fmt.Errorf("capture current executable %s: %w", tier.name, err))
 	}
@@ -190,7 +226,13 @@ func prepareWindowsReplacementSecurity(
 	if err := state.verify(); err != nil {
 		return fail(fmt.Errorf("verify current %s on verified replacement: %w", tier.name, err))
 	}
-	return state, nil
+	return state, false, nil
+}
+
+func isWindowsCompleteSecurityUnavailable(err error) bool {
+	return errors.Is(err, windows.ERROR_ACCESS_DENIED) ||
+		errors.Is(err, windows.ERROR_PRIVILEGE_NOT_HELD) ||
+		errors.Is(err, windows.ERROR_NOT_SUPPORTED)
 }
 
 func (state *windowsReplacementSecurityState) prepareOrdinaryOwnerAndGroup(
@@ -321,7 +363,10 @@ func (state *windowsReplacementSecurityState) apply() error {
 }
 
 func (state *windowsReplacementSecurityState) verify() (err error) {
-	descriptor, err := captureWindowsSecurityDescriptor(state.stagedSecurityHandle(), state.tier.information)
+	descriptor, err := captureWindowsReplacementDescriptor(
+		state.stagedSecurityHandle(),
+		state.tier.information,
+	)
 	if err != nil {
 		return err
 	}

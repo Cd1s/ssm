@@ -94,7 +94,7 @@ newest eligible release fails this check.
 | Downloaded digest matches checksum but differs from provenance | Subject digest comparison | Checksum cannot rescue the mismatch; no replacement. |
 | Unsupported, missing, misnamed, additional, or duplicate release asset | Strict manifest selection | No asset download and no fallback. |
 | Checksums over 16 KiB, provenance or release metadata over 1 MiB, or a binary over 64 MiB | Header-independent bounded stream, rejecting after at most limit plus one byte | No replacement; temporary output is bounded and removed; installed bytes and mode are unchanged. |
-| Windows cannot overwrite its mapped running `.exe` | Platform replacement | Hold the fixed sibling update lock across inspection, handle-bound moves, rollback, and cleanup; reject reparse points and multiple hard links; and keep non-delete-sharing handles on the validated original and stage until the completed record is durable. `SetFileInformationByHandle(FileRenameInfoEx)` renames those exact objects. Replacement uses replace, POSIX, and ignore-read-only semantics so a file inserted at the temporarily vacant canonical name cannot become canonical or prevent restoration. The ordinary tier captures, applies, and verifies owner, primary group, DACL, and DACL inheritance/protection without optional privileges. When all three backup/restore/security privileges can be enabled on a duplicated thread token, the full tier instead preserves and verifies the complete descriptor, including SACL-backed fields. An unavailable full tier is never claimed; failure to preserve the selected tier stops before the first move or restores the still-held original over any unexpected canonical file. |
+| Windows cannot overwrite its mapped running `.exe` | Platform replacement | Hold the fixed sibling update lock across inspection, handle-bound moves, rollback, and cleanup; reject reparse points and multiple hard links; and keep non-delete-sharing handles on the validated original and stage until the completed record is durable. `SetFileInformationByHandle(FileRenameInfoEx)` renames those exact objects. Replacement uses replace, POSIX, and ignore-read-only semantics so a file inserted at the temporarily vacant canonical name cannot become canonical or prevent restoration. The ordinary tier captures, applies, and verifies owner, primary group, DACL, and DACL inheritance/protection without optional privileges. When all three backup/restore/security privileges can be enabled on a duplicated thread token and the requested handles support complete capture, apply, and verification, the full tier instead preserves and verifies the complete descriptor, including SACL-backed fields. An unavailable full tier is never claimed; failure to preserve the selected tier stops before the first move or restores the still-held original over any unexpected canonical file. |
 
 `TestTrustFailurePreservesExecutable` records the original executable bytes and
 permission bits, injects a wrong-subject signed bundle, and proves both remain
@@ -116,9 +116,12 @@ preserve the installed bytes and mode.
 Native Windows tests execute a copied Go test binary, so the target is a
 genuinely mapped `.exe` during replacement. A restricted-token fixture proves
 ordinary operation with no backup, restore, or security privilege. A
-privileged fixture installs a protected audit SACL and requires exact
-full-descriptor equality; the official focused Windows gate fails rather than
-skips if the runner cannot exercise that tier. The suite also proves exact
+capability-gated fixture installs a protected audit SACL and requires exact
+full-descriptor equality when the host can configure and read it. Otherwise,
+the nested full-tier subcase reports a skip after the same fixture proves
+ordinary descriptor preservation. The official focused Windows gate always
+runs the complete suite without demanding elevated hosted-runner privileges.
+The suite also proves exact
 thread-token restoration, one `LocalFree` per native descriptor allocation,
 concurrent-updater and cleanup exclusion, hard-link/reparse rejection,
 identity-changing source substitution at both former validation/rename gaps,
@@ -133,9 +136,14 @@ Every success and failure path calls `LocalFree` exactly once. Ordinary capture
 requests only owner, primary group, and DACL information and applies only
 components the current token can set; owner/group equality avoids requiring
 `WRITE_OWNER` when those fields already match. If a differing owner or group
-cannot be set, the update fails before rename. The full tier is selected only
-after `SeBackupPrivilege`, `SeRestorePrivilege`, and `SeSecurityPrivilege` all
-enable on a duplicated impersonation token pinned to the current OS thread.
+cannot be set, the update fails before rename. The updater attempts the full
+tier only after `SeBackupPrivilege`, `SeRestorePrivilege`, and
+`SeSecurityPrivilege` all enable on a duplicated impersonation token pinned to
+the current OS thread. It selects that tier only when the requested target and
+stage handles support complete descriptor capture, initial apply, and
+verification. An access/privilege/unsupported failure during that preparation
+restores the thread token, closes the privileged handles, and retries the
+ordinary tier from fresh handles.
 Closing the scope restores the exact prior thread token (or no token), closes
 the duplicate, and never changes the process token.
 

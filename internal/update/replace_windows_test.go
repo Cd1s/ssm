@@ -27,6 +27,7 @@ const (
 	windowsCleanupTargetEnv    = "SSM_TEST_WINDOWS_CLEANUP_TARGET"
 	windowsExpectedFailureEnv  = "SSM_TEST_WINDOWS_EXPECTED_FAILURE"
 	windowsOrdinaryUserEnv     = "SSM_TEST_WINDOWS_ORDINARY_USER"
+	windowsFullTierDeniedEnv   = "SSM_TEST_WINDOWS_FULL_TIER_DENIED"
 	windowsReplacementPauseEnv = "SSM_TEST_WINDOWS_REPLACEMENT_PAUSE"
 	windowsReplacementReadyEnv = "SSM_TEST_WINDOWS_REPLACEMENT_READY"
 	windowsReplacementGoEnv    = "SSM_TEST_WINDOWS_REPLACEMENT_GO"
@@ -36,7 +37,9 @@ const (
 
 func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("ordinary user preserves owner group DACL and inheritance", testWindowsOrdinaryUserReplacement)
-	t.Run("privileged user preserves the complete descriptor", testWindowsPrivilegedReplacement)
+	t.Run("ordinary fixture uses a restricted impersonation token", testWindowsRestrictedImpersonationToken)
+	t.Run("optional complete descriptor denial falls back to ordinary preservation", testWindowsOptionalFullTierFallback)
+	t.Run("complete descriptor is preserved when supported with ordinary fallback", testWindowsPrivilegedReplacement)
 	t.Run("privileges and thread identity are restored", testWindowsReplacementPrivilegeRestoration)
 	t.Run("native descriptor buffers are freed exactly once", testWindowsSecurityDescriptorOwnership)
 	t.Run("mapped executable is replaced and completed rollback is cleaned", testWindowsMappedExecutableReplacementSucceedsAndCleansOnNextLaunch)
@@ -118,8 +121,15 @@ func testWindowsPrivilegedReplacement(t *testing.T) {
 	stage := filepath.Join(directory, ".ssm.test-stage.exe")
 	copyWindowsTestExecutable(t, testExecutable, target, nil)
 	setRestrictiveWindowsTestDACL(t, target)
-	setWindowsTestSACL(t, target)
-	wantDescriptor := readWindowsTestSecurityDescriptor(t, target, true)
+	fullConfigured, fullUnavailableReason := trySetWindowsTestSACL(t, target)
+	var wantFullDescriptor windowsTestSecurityDescriptor
+	if fullConfigured {
+		var fullReadable bool
+		wantFullDescriptor, fullReadable, fullUnavailableReason =
+			tryReadWindowsTestCompleteSecurityDescriptor(t, target)
+		fullConfigured = fullReadable
+	}
+	wantOrdinaryDescriptor := readWindowsTestSecurityDescriptor(t, target)
 	copyWindowsTestExecutable(t, testExecutable, stage, []byte("\nSSM_WINDOWS_DESCRIPTOR_MARKER\n"))
 
 	command := exec.Command(target, "-test.run=^TestWindowsReplacementChildProcess$", "-test.count=1") //nolint:gosec // fixed test-owned executable and arguments
@@ -131,10 +141,31 @@ func testWindowsPrivilegedReplacement(t *testing.T) {
 		t.Fatalf("mapped executable replacement failed: %v; output=%q", err, output)
 	}
 
-	gotDescriptor := readWindowsTestSecurityDescriptor(t, target, true)
-	if gotDescriptor != wantDescriptor {
-		t.Fatalf("replacement security descriptor = %#v, want %#v", gotDescriptor, wantDescriptor)
+	gotOrdinaryDescriptor := readWindowsTestSecurityDescriptor(t, target)
+	if gotOrdinaryDescriptor != wantOrdinaryDescriptor {
+		t.Fatalf(
+			"replacement ordinary security descriptor = %#v, want %#v",
+			gotOrdinaryDescriptor,
+			wantOrdinaryDescriptor,
+		)
 	}
+	t.Run("complete descriptor", func(t *testing.T) {
+		if !fullConfigured {
+			t.Skipf("host cannot exercise complete descriptor tier: %s", fullUnavailableReason)
+		}
+		gotFullDescriptor, available, reason :=
+			tryReadWindowsTestCompleteSecurityDescriptor(t, target)
+		if !available {
+			t.Fatalf("complete descriptor capability became unavailable: %s", reason)
+		}
+		if gotFullDescriptor != wantFullDescriptor {
+			t.Fatalf(
+				"replacement complete security descriptor = %#v, want %#v",
+				gotFullDescriptor,
+				wantFullDescriptor,
+			)
+		}
+	})
 }
 
 func testWindowsMappedExecutableReplacementFailureRollsBack(t *testing.T) {
@@ -187,7 +218,7 @@ func testWindowsSecurityDescriptorApplyFailureRollsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantDescriptor := readWindowsTestSecurityDescriptor(t, target, false)
+	wantDescriptor := readWindowsTestSecurityDescriptor(t, target)
 	copyWindowsTestExecutable(t, testExecutable, stage, []byte("\nSSM_WINDOWS_DESCRIPTOR_FAILURE\n"))
 
 	command := exec.Command(target, "-test.run=^TestWindowsReplacementChildProcess$", "-test.count=1") //nolint:gosec // fixed test-owned executable and arguments
@@ -201,7 +232,7 @@ func testWindowsSecurityDescriptorApplyFailureRollsBack(t *testing.T) {
 	}
 
 	assertWindowsFileBytes(t, target, original)
-	gotDescriptor := readWindowsTestSecurityDescriptor(t, target, false)
+	gotDescriptor := readWindowsTestSecurityDescriptor(t, target)
 	if gotDescriptor != wantDescriptor {
 		t.Fatalf("rolled back security descriptor = %#v, want %#v", gotDescriptor, wantDescriptor)
 	}
@@ -226,7 +257,7 @@ func testWindowsOrdinaryUserReplacement(t *testing.T) {
 	stage := filepath.Join(directory, ".ssm.ordinary-stage.exe")
 	copyWindowsTestExecutable(t, testExecutable, target, nil)
 	setRestrictiveWindowsTestDACL(t, target)
-	wantDescriptor := readWindowsTestSecurityDescriptor(t, target, false)
+	wantDescriptor := readWindowsTestSecurityDescriptor(t, target)
 	copyWindowsTestExecutable(t, testExecutable, stage, []byte("\nSSM_WINDOWS_ORDINARY_MARKER\n"))
 
 	command := windowsReplacementTestCommand(target, stage)
@@ -235,9 +266,97 @@ func testWindowsOrdinaryUserReplacement(t *testing.T) {
 		t.Fatalf("ordinary non-privileged replacement failed: %v; output=%q", err, output)
 	}
 
-	gotDescriptor := readWindowsTestSecurityDescriptor(t, target, false)
+	gotDescriptor := readWindowsTestSecurityDescriptor(t, target)
 	if gotDescriptor != wantDescriptor {
 		t.Fatalf("ordinary replacement security descriptor = %#v, want %#v", gotDescriptor, wantDescriptor)
+	}
+}
+
+func testWindowsRestrictedImpersonationToken(t *testing.T) {
+	restore, err := impersonateWindowsTestTokenWithoutPrivileges()
+	if err != nil {
+		t.Fatalf("create ordinary non-privileged token: %v", err)
+	}
+	defer func() {
+		if restore != nil {
+			if err := restore(); err != nil {
+				t.Fatalf("restore ordinary non-privileged token: %v", err)
+			}
+		}
+	}()
+
+	token := windows.GetCurrentThreadEffectiveToken()
+	tokenType, err := windowsTestTokenUint32Information(token, windows.TokenType)
+	if err != nil {
+		t.Fatalf("read restricted token type: %v", err)
+	}
+	if tokenType != windows.TokenImpersonation {
+		t.Fatalf("restricted token type = %d, want TokenImpersonation", tokenType)
+	}
+	level, err := windowsTestTokenUint32Information(token, windows.TokenImpersonationLevel)
+	if err != nil {
+		t.Fatalf("read restricted token impersonation level: %v", err)
+	}
+	if level != windows.SecurityImpersonation {
+		t.Fatalf("restricted token impersonation level = %d, want SecurityImpersonation", level)
+	}
+	for _, privilege := range []string{
+		"SeBackupPrivilege",
+		"SeRestorePrivilege",
+		"SeSecurityPrivilege",
+	} {
+		present, err := windowsTestTokenHasPrivilege(token, privilege)
+		if err != nil {
+			t.Fatalf("inspect restricted token privilege %s: %v", privilege, err)
+		}
+		if present {
+			t.Fatalf("restricted token unexpectedly retains %s", privilege)
+		}
+	}
+	scope, available, err := beginWindowsReplacementPrivileges()
+	if err != nil {
+		t.Fatalf("probe restricted optional privileges: %v", err)
+	}
+	if scope != nil {
+		if closeErr := scope.close(); closeErr != nil {
+			t.Fatalf("close unexpected restricted privilege scope: %v", closeErr)
+		}
+	}
+	if available {
+		t.Fatal("restricted token unexpectedly supports complete descriptor privileges")
+	}
+	if err := restore(); err != nil {
+		t.Fatalf("restore ordinary non-privileged token: %v", err)
+	}
+	restore = nil
+}
+
+func testWindowsOptionalFullTierFallback(t *testing.T) {
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	target := filepath.Join(directory, "ssm.exe")
+	stage := filepath.Join(directory, ".ssm.optional-full-tier-stage.exe")
+	copyWindowsTestExecutable(t, testExecutable, target, nil)
+	setRestrictiveWindowsTestDACL(t, target)
+	wantDescriptor := readWindowsTestSecurityDescriptor(t, target)
+	copyWindowsTestExecutable(t, testExecutable, stage, []byte("\nSSM_WINDOWS_OPTIONAL_FULL_TIER\n"))
+	want, err := os.ReadFile(stage) //nolint:gosec // test-owned replacement fixture
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	command := windowsReplacementTestCommand(target, stage)
+	command.Env = append(command.Env, windowsFullTierDeniedEnv+"=1")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("optional full-tier fallback failed: %v; output=%q", err, output)
+	}
+	assertWindowsFileBytes(t, target, want)
+	gotDescriptor := readWindowsTestSecurityDescriptor(t, target)
+	if gotDescriptor != wantDescriptor {
+		t.Fatalf("ordinary fallback security descriptor = %#v, want %#v", gotDescriptor, wantDescriptor)
 	}
 }
 
@@ -1098,6 +1217,47 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 			}
 		}()
 	}
+	if os.Getenv(windowsFullTierDeniedEnv) == "1" {
+		originalBegin := beginWindowsReplacementSecurityPrivileges
+		originalCapture := captureWindowsReplacementDescriptor
+		fullSelections := 0
+		fullCaptures := 0
+		ordinaryCaptures := 0
+		beginWindowsReplacementSecurityPrivileges = func() (*windowsReplacementPrivilegeScope, bool, error) {
+			fullSelections++
+			return nil, true, nil
+		}
+		captureWindowsReplacementDescriptor = func(
+			handle windows.Handle,
+			information windows.SECURITY_INFORMATION,
+		) (*ownedWindowsSecurityDescriptor, error) {
+			if information == windowsFullSecurityInformation {
+				fullCaptures++
+				return nil, windows.ERROR_ACCESS_DENIED
+			}
+			ordinaryCaptures++
+			return originalCapture(handle, information)
+		}
+		defer func() {
+			beginWindowsReplacementSecurityPrivileges = originalBegin
+			captureWindowsReplacementDescriptor = originalCapture
+		}()
+
+		err = replaceExecutable(stage, executable)
+		if err != nil {
+			t.Fatalf("replacement did not fall back from optional complete descriptor capture: %v", err)
+		}
+		if fullSelections != 1 {
+			t.Fatalf("complete descriptor tier selections = %d, want 1", fullSelections)
+		}
+		if fullCaptures > 1 {
+			t.Fatalf("complete descriptor capture calls = %d, want at most 1 denied probe", fullCaptures)
+		}
+		if ordinaryCaptures == 0 {
+			t.Fatal("ordinary descriptor capture was not reached after denied complete capture")
+		}
+		return
+	}
 	if pause := os.Getenv(windowsReplacementPauseEnv); pause != "" ||
 		os.Getenv(windowsSubstituteStageEnv) != "" {
 		originalHook := windowsReplacementTestHook
@@ -1301,7 +1461,7 @@ func impersonateWindowsTestTokenWithoutPrivileges() (func() error, error) {
 	}
 	defer processToken.Close()
 
-	var restrictedToken windows.Token
+	var restrictedPrimaryToken windows.Token
 	createRestrictedToken := windows.NewLazySystemDLL("advapi32.dll").NewProc("CreateRestrictedToken")
 	result, _, callErr := createRestrictedToken.Call(
 		uintptr(processToken),
@@ -1312,7 +1472,7 @@ func impersonateWindowsTestTokenWithoutPrivileges() (func() error, error) {
 		0,
 		0,
 		0,
-		uintptr(unsafe.Pointer(&restrictedToken)),
+		uintptr(unsafe.Pointer(&restrictedPrimaryToken)),
 	)
 	if result == 0 {
 		runtime.UnlockOSThread()
@@ -1321,10 +1481,46 @@ func impersonateWindowsTestTokenWithoutPrivileges() (func() error, error) {
 		}
 		return nil, callErr
 	}
+	tokenType, err := windowsTestTokenUint32Information(
+		restrictedPrimaryToken,
+		windows.TokenType,
+	)
+	if err != nil {
+		_ = restrictedPrimaryToken.Close()
+		runtime.UnlockOSThread()
+		return nil, fmt.Errorf("read restricted primary token type: %w", err)
+	}
+	if tokenType != windows.TokenPrimary {
+		_ = restrictedPrimaryToken.Close()
+		runtime.UnlockOSThread()
+		return nil, fmt.Errorf(
+			"CreateRestrictedToken returned token type %d, want TokenPrimary",
+			tokenType,
+		)
+	}
+
+	var restrictedToken windows.Token
+	if err := windows.DuplicateTokenEx(
+		restrictedPrimaryToken,
+		windows.TOKEN_QUERY|windows.TOKEN_IMPERSONATE,
+		nil,
+		windows.SecurityImpersonation,
+		windows.TokenImpersonation,
+		&restrictedToken,
+	); err != nil {
+		_ = restrictedPrimaryToken.Close()
+		runtime.UnlockOSThread()
+		return nil, fmt.Errorf("duplicate restricted impersonation token: %w", err)
+	}
+	if err := restrictedPrimaryToken.Close(); err != nil {
+		_ = restrictedToken.Close()
+		runtime.UnlockOSThread()
+		return nil, fmt.Errorf("close restricted primary token: %w", err)
+	}
 	if err := windows.SetThreadToken(nil, restrictedToken); err != nil {
 		_ = restrictedToken.Close()
 		runtime.UnlockOSThread()
-		return nil, err
+		return nil, fmt.Errorf("install restricted impersonation token: %w", err)
 	}
 	return func() error {
 		var errs []error
@@ -1375,6 +1571,57 @@ func windowsTestTokenDescription(t *testing.T, token windows.Token) string {
 	}
 	privileges := (*windows.Tokenprivileges)(unsafe.Pointer(&buffer[0])).AllPrivileges()
 	return fmt.Sprintf("%s:%v", user.User.Sid.String(), privileges)
+}
+
+func windowsTestTokenUint32Information(token windows.Token, class uint32) (uint32, error) {
+	var value uint32
+	var returned uint32
+	err := windows.GetTokenInformation(
+		token,
+		class,
+		(*byte)(unsafe.Pointer(&value)),
+		uint32(unsafe.Sizeof(value)),
+		&returned,
+	)
+	if err != nil {
+		return 0, err
+	}
+	if returned != uint32(unsafe.Sizeof(value)) {
+		return 0, fmt.Errorf("token information size = %d, want %d", returned, unsafe.Sizeof(value))
+	}
+	return value, nil
+}
+
+func windowsTestTokenHasPrivilege(token windows.Token, name string) (bool, error) {
+	namePointer, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return false, err
+	}
+	var want windows.LUID
+	if err := windows.LookupPrivilegeValue(nil, namePointer, &want); err != nil {
+		return false, err
+	}
+	var size uint32
+	err = windows.GetTokenInformation(token, windows.TokenPrivileges, nil, 0, &size)
+	if !errors.Is(err, windows.ERROR_INSUFFICIENT_BUFFER) {
+		return false, fmt.Errorf("size token privileges: %w", err)
+	}
+	buffer := make([]byte, size)
+	if err := windows.GetTokenInformation(
+		token,
+		windows.TokenPrivileges,
+		&buffer[0],
+		uint32(len(buffer)),
+		&size,
+	); err != nil {
+		return false, fmt.Errorf("read token privileges: %w", err)
+	}
+	for _, privilege := range (*windows.Tokenprivileges)(unsafe.Pointer(&buffer[0])).AllPrivileges() {
+		if privilege.Luid == want {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func copyWindowsTestExecutable(t *testing.T, source, target string, suffix []byte) {
@@ -1508,9 +1755,6 @@ func setWrongWindowsTestOwner(t *testing.T, path string) {
 		t.Fatalf("enable wrong-owner test privileges: %v", err)
 	}
 	if !available {
-		if os.Getenv("SSM_REQUIRE_WINDOWS_PRIVILEGED_TEST") == "1" {
-			t.Fatal("native Windows gate requires SeRestorePrivilege for wrong-owner control-state coverage")
-		}
 		t.Skip("current Windows token cannot assign a foreign control-state owner")
 	}
 	defer func() {
@@ -1531,6 +1775,9 @@ func setWrongWindowsTestOwner(t *testing.T, path string) {
 		nil,
 		nil,
 	); err != nil {
+		if isWindowsCompleteSecurityUnavailable(err) {
+			t.Skipf("current Windows token cannot assign a foreign control-state owner: %v", err)
+		}
 		t.Fatalf("set wrong control-state owner: %v", err)
 	}
 }
@@ -1551,17 +1798,14 @@ func assertWindowsControlFileSecurity(t *testing.T, path string) {
 	}
 }
 
-func setWindowsTestSACL(t *testing.T, path string) {
+func trySetWindowsTestSACL(t *testing.T, path string) (bool, string) {
 	t.Helper()
 	scope, available, err := beginWindowsReplacementPrivileges()
 	if err != nil {
 		t.Fatalf("enable test SACL privileges: %v", err)
 	}
 	if !available {
-		if os.Getenv("SSM_REQUIRE_WINDOWS_PRIVILEGED_TEST") == "1" {
-			t.Fatal("native Windows gate requires SeBackupPrivilege, SeRestorePrivilege, and SeSecurityPrivilege")
-		}
-		t.Skip("current Windows token does not assign the complete descriptor privileges")
+		return false, "current token lacks the complete descriptor privileges"
 	}
 	defer func() {
 		if err := scope.close(); err != nil {
@@ -1596,42 +1840,90 @@ func setWindowsTestSACL(t *testing.T, path string) {
 		nil,
 		acl,
 	); err != nil {
+		if isWindowsCompleteSecurityUnavailable(err) {
+			return false, fmt.Sprintf("set test SACL: %v", err)
+		}
 		t.Fatalf("set test SACL: %v", err)
 	}
+	return true, ""
 }
 
-func readWindowsTestSecurityDescriptor(t *testing.T, path string, full bool) windowsTestSecurityDescriptor {
+func tryReadWindowsTestCompleteSecurityDescriptor(
+	t *testing.T,
+	path string,
+) (windowsTestSecurityDescriptor, bool, string) {
 	t.Helper()
-	access := uint32(windows.READ_CONTROL)
-	information := windowsOrdinarySecurityInformation
-	var scope *windowsReplacementPrivilegeScope
-	if full {
-		var available bool
-		var err error
-		scope, available, err = beginWindowsReplacementPrivileges()
-		if err != nil {
-			t.Fatalf("enable test descriptor privileges: %v", err)
-		}
-		if !available {
-			t.Fatal("complete test descriptor privileges became unavailable")
-		}
-		access |= windows.ACCESS_SYSTEM_SECURITY
-		information = windowsFullSecurityInformation
-		defer func() {
-			if err := scope.close(); err != nil {
-				t.Fatalf("release test descriptor privileges: %v", err)
-			}
-		}()
+	scope, available, err := beginWindowsReplacementPrivileges()
+	if err != nil {
+		t.Fatalf("enable test descriptor privileges: %v", err)
 	}
+	if !available {
+		return windowsTestSecurityDescriptor{},
+			false,
+			"current token lacks the complete descriptor privileges"
+	}
+	defer func() {
+		if err := scope.close(); err != nil {
+			t.Fatalf("release test descriptor privileges: %v", err)
+		}
+	}()
+
 	handle, err := openWindowsReplacementFile(
 		path,
-		access,
+		windows.READ_CONTROL|windows.ACCESS_SYSTEM_SECURITY,
+	)
+	if err != nil {
+		if isWindowsCompleteSecurityUnavailable(err) {
+			return windowsTestSecurityDescriptor{}, false, fmt.Sprintf("open test descriptor: %v", err)
+		}
+		t.Fatalf("open test descriptor: %v", err)
+	}
+	descriptor, captureErr := captureWindowsSecurityDescriptor(
+		handle,
+		windowsFullSecurityInformation,
+	)
+	closeErr := windows.CloseHandle(handle)
+	if closeErr != nil {
+		t.Fatalf("close test descriptor: %v", closeErr)
+	}
+	if captureErr != nil {
+		if isWindowsCompleteSecurityUnavailable(captureErr) {
+			return windowsTestSecurityDescriptor{},
+				false,
+				fmt.Sprintf("read complete security descriptor: %v", captureErr)
+		}
+		t.Fatalf("read complete security descriptor: %v", captureErr)
+	}
+	defer func() {
+		if err := descriptor.close(); err != nil {
+			t.Fatalf("free test security descriptor: %v", err)
+		}
+	}()
+	if err := validateWindowsSecurityDescriptor(descriptor.descriptor); err != nil {
+		t.Fatal(err)
+	}
+	control, _, err := descriptor.descriptor.Control()
+	if err != nil {
+		t.Fatalf("read security descriptor control: %v", err)
+	}
+	sddl := descriptor.descriptor.String()
+	if sddl == "" {
+		t.Fatal("convert security descriptor to SDDL")
+	}
+	return windowsTestSecurityDescriptor{sddl: sddl, control: control}, true, ""
+}
+
+func readWindowsTestSecurityDescriptor(t *testing.T, path string) windowsTestSecurityDescriptor {
+	t.Helper()
+	handle, err := openWindowsReplacementFile(
+		path,
+		windows.READ_CONTROL,
 	)
 	if err != nil {
 		t.Fatalf("open test descriptor: %v", err)
 	}
 	defer windows.CloseHandle(handle)
-	descriptor, err := captureWindowsSecurityDescriptor(handle, information)
+	descriptor, err := captureWindowsSecurityDescriptor(handle, windowsOrdinarySecurityInformation)
 	if err != nil {
 		t.Fatalf("read security descriptor: %v", err)
 	}

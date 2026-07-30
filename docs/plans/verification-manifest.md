@@ -76,12 +76,13 @@ official prebuilt lint prerequisites visibly in workflow YAML, declares
 read-only repository permissions, disables checkout credential persistence,
 and invokes only `go run ./cmd/verify ci` in the Linux merge job. A separate
 native Windows job first invokes the explicit security-critical
-`TestWindowsNativeReplacementSecurity` suite with privileged coverage
-required, then invokes `go run ./cmd/verify fast` for the complete native Go
-test suite. The focused suite covers restricted-token owner/group/DACL
-preservation, privileged
-full-descriptor/SACL preservation, privilege restoration and descriptor
-freeing, exclusive update/cleanup locking, file-ID revalidation,
+`TestWindowsNativeReplacementSecurity` suite without assuming elevated hosted
+runner privileges, then invokes `go run ./cmd/verify fast` for the complete
+native Go test suite. The focused suite always covers restricted-token
+owner/group/DACL preservation and optional full-tier fallback; it covers
+full-descriptor/SACL preservation when the host proves that capture, apply,
+and verification are available. It also covers privilege restoration and
+descriptor freeing, exclusive update/cleanup locking, file-ID revalidation,
 hard-link/reparse rejection, non-delete-sharing source handles and exact-object
 handle renames, canonical-name substitution, rollback over an unexpected
 canonical file, explicit owner-only protected lock/state DACLs, rejection of

@@ -768,11 +768,12 @@ func TestCIWorkflowMatchesReviewedGoldenAndHasReadOnlyCredentialFreeJobs(t *test
 	}
 	if !strings.Contains(text,
 		"      - name: Verify native Windows replacement security\n"+
-			"        env:\n"+
-			"          SSM_REQUIRE_WINDOWS_PRIVILEGED_TEST: \"1\"\n"+
 			nativeReplacementCommand,
 	) {
-		t.Fatal("native Windows replacement-security gate is not explicit or does not require privileged coverage")
+		t.Fatal("native Windows replacement-security gate is not explicit")
+	}
+	if strings.Contains(text, "SSM_REQUIRE_WINDOWS_PRIVILEGED_TEST") {
+		t.Fatal("native Windows gate incorrectly requires optional host privileges")
 	}
 	for _, exactUse := range []string{
 		"actions/checkout@v7",
