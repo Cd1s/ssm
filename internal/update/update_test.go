@@ -31,6 +31,12 @@ func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) 
 	return f(request)
 }
 
+type readerFunc func([]byte) (int, error)
+
+func (f readerFunc) Read(data []byte) (int, error) {
+	return f(data)
+}
+
 func setTestHome(t *testing.T, home string) {
 	t.Helper()
 	t.Setenv("HOME", home)
@@ -683,6 +689,190 @@ func TestOversizedProvenanceBundlePreservesExecutable(t *testing.T) {
 		t.Fatal("oversized provenance bundle authorized replacement")
 	}
 	assertExecutablePreserved(t, exe, original, before.Mode().Perm())
+}
+
+func TestOversizedBinaryContentLengthPreservesExecutable(t *testing.T) {
+	restoreUpdateTestHooks(t)
+	setTestHome(t, t.TempDir())
+	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
+
+	directory := t.TempDir()
+	exe := filepath.Join(directory, "ssm")
+	original := []byte("original executable bytes")
+	if err := os.WriteFile(exe, original, 0o751); err != nil { //nolint:gosec // test-owned executable mode is part of preservation proof
+		t.Fatal(err)
+	}
+	before, err := os.Stat(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executablePath = func() (string, error) { return exe, nil }
+	evalSymlinks = func(path string) (string, error) { return path, nil }
+	verifyProvenance = func(context.Context, []byte, provenance.Request) error {
+		t.Fatal("provenance verifier ran for an oversized binary")
+		return nil
+	}
+
+	const (
+		version         = "v9.9.9"
+		testBinaryLimit = 64 << 20
+	)
+	bodyRead := false
+	httpClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		var body io.ReadCloser
+		contentLength := int64(-1)
+		switch request.URL.Path {
+		case "/owner/repo/releases/download/" + version + "/checksums.txt":
+			body = io.NopCloser(strings.NewReader(strings.Repeat("0", sha256.Size*2) + "  " + assetName() + "\n"))
+		case "/owner/repo/releases/download/" + version + "/" + releaseasset.ProvenanceName(assetName()):
+			body = io.NopCloser(strings.NewReader("{}"))
+		case "/owner/repo/releases/download/" + version + "/" + assetName():
+			contentLength = testBinaryLimit + 1
+			body = io.NopCloser(readerFunc(func([]byte) (int, error) {
+				bodyRead = true
+				return 0, io.EOF
+			}))
+		default:
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Status:     "404 Not Found",
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Status:        "200 OK",
+			Body:          body,
+			ContentLength: contentLength,
+		}, nil
+	})}
+
+	err = DownloadVersion(version, false)
+	if err == nil || !strings.Contains(err.Error(), "exceeds 67108864-byte limit") {
+		t.Fatalf("oversized declared binary error = %v, want size-limit rejection", err)
+	}
+	if bodyRead {
+		t.Fatal("updater read a binary whose declared length exceeded the limit")
+	}
+	assertExecutablePreserved(t, exe, original, before.Mode().Perm())
+	staged, globErr := filepath.Glob(filepath.Join(directory, ".ssm.*.new"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(staged) != 0 {
+		t.Fatalf("oversized binary retained staged artifacts: %q", staged)
+	}
+}
+
+func TestRedirectedChunkedOversizedBinaryPreservesExecutable(t *testing.T) {
+	restoreUpdateTestHooks(t)
+	setTestHome(t, t.TempDir())
+	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
+
+	directory := t.TempDir()
+	exe := filepath.Join(directory, "ssm")
+	original := []byte("original executable bytes")
+	if err := os.WriteFile(exe, original, 0o751); err != nil { //nolint:gosec // test-owned executable mode is part of preservation proof
+		t.Fatal(err)
+	}
+	before, err := os.Stat(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executablePath = func() (string, error) { return exe, nil }
+	evalSymlinks = func(path string) (string, error) { return path, nil }
+	verifyProvenance = func(context.Context, []byte, provenance.Request) error {
+		t.Fatal("provenance verifier ran for an oversized binary")
+		return nil
+	}
+
+	const (
+		version         = "v9.9.9"
+		testBinaryLimit = 64 << 20
+	)
+	remaining := int64(testBinaryLimit + 8192)
+	var readBytes int64
+	sawRedirect := false
+	sawChunkedBody := false
+	httpClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Path {
+		case "/owner/repo/releases/download/" + version + "/checksums.txt":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body: io.NopCloser(strings.NewReader(
+					strings.Repeat("0", sha256.Size*2) + "  " + assetName() + "\n",
+				)),
+				ContentLength: -1,
+			}, nil
+		case "/owner/repo/releases/download/" + version + "/" + releaseasset.ProvenanceName(assetName()):
+			return &http.Response{
+				StatusCode:    http.StatusOK,
+				Status:        "200 OK",
+				Body:          io.NopCloser(strings.NewReader("{}")),
+				ContentLength: -1,
+			}, nil
+		case "/owner/repo/releases/download/" + version + "/" + assetName():
+			sawRedirect = true
+			return &http.Response{
+				StatusCode: http.StatusFound,
+				Status:     "302 Found",
+				Header: http.Header{
+					"Location": []string{"https://downloads.example/final-binary"},
+				},
+				Body: io.NopCloser(strings.NewReader("")),
+			}, nil
+		case "/final-binary":
+			sawChunkedBody = true
+			return &http.Response{
+				StatusCode:       http.StatusOK,
+				Status:           "200 OK",
+				ContentLength:    -1,
+				TransferEncoding: []string{"chunked"},
+				Body: io.NopCloser(readerFunc(func(data []byte) (int, error) {
+					if remaining == 0 {
+						return 0, io.EOF
+					}
+					if int64(len(data)) > remaining {
+						data = data[:remaining]
+					}
+					for i := range data {
+						data[i] = 'x'
+					}
+					n := len(data)
+					remaining -= int64(n)
+					readBytes += int64(n)
+					return n, nil
+				})),
+			}, nil
+		default:
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Status:     "404 Not Found",
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		}
+	})}
+	downloadBaseURL = "https://releases.example"
+
+	err = DownloadVersion(version, false)
+	if err == nil || !strings.Contains(err.Error(), "exceeds 67108864-byte limit") {
+		t.Fatalf("oversized chunked binary error = %v, want size-limit rejection", err)
+	}
+	if !sawRedirect || !sawChunkedBody {
+		t.Fatalf("redirected chunked fixture redirect=%t final_body=%t", sawRedirect, sawChunkedBody)
+	}
+	if readBytes != testBinaryLimit+1 {
+		t.Fatalf("oversized chunked binary bytes read = %d, want %d", readBytes, testBinaryLimit+1)
+	}
+	assertExecutablePreserved(t, exe, original, before.Mode().Perm())
+	staged, globErr := filepath.Glob(filepath.Join(directory, ".ssm.*.new"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(staged) != 0 {
+		t.Fatalf("oversized binary retained staged artifacts: %q", staged)
+	}
 }
 
 func TestCopyAndVerifyRejectsChecksumMismatch(t *testing.T) {

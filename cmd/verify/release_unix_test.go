@@ -139,36 +139,58 @@ func TestInstallerRequiresExactReleaseManifest(t *testing.T) {
 	}
 }
 
-func TestInstallerRejectsOversizedDownloadsBeforeReplacement(t *testing.T) {
+func TestInstallerRejectsUnknownLengthOversizedDownloadsBeforeReplacement(t *testing.T) {
 	for _, test := range []struct {
 		name    string
+		limit   int
 		options installerFixtureOptions
 	}{
 		{
-			name: "release metadata",
+			name:  "release metadata",
+			limit: 1 << 20,
 			options: installerFixtureOptions{
 				metadata:        installerReleaseMetadata(releaseasset.ExpectedReleaseNames()),
 				bundle:          []byte("{}\n"),
 				ghPolicy:        "success",
 				metadataPadding: (1 << 20) + 1,
+				unknownLength:   true,
+				redirect:        true,
 			},
 		},
 		{
-			name: "checksums",
+			name:  "binary",
+			limit: 64 << 20,
+			options: installerFixtureOptions{
+				metadata:      installerReleaseMetadata(releaseasset.ExpectedReleaseNames()),
+				bundle:        []byte("{}\n"),
+				ghPolicy:      "success",
+				binaryPadding: (64 << 20) + 1,
+				unknownLength: true,
+				redirect:      true,
+			},
+		},
+		{
+			name:  "checksums",
+			limit: 16 << 10,
 			options: installerFixtureOptions{
 				metadata:         installerReleaseMetadata(releaseasset.ExpectedReleaseNames()),
 				bundle:           []byte("{}\n"),
 				ghPolicy:         "success",
 				checksumsPadding: (16 << 10) + 1,
+				unknownLength:    true,
+				redirect:         true,
 			},
 		},
 		{
-			name: "provenance bundle",
+			name:  "provenance bundle",
+			limit: 1 << 20,
 			options: installerFixtureOptions{
 				metadata:      installerReleaseMetadata(releaseasset.ExpectedReleaseNames()),
 				bundle:        []byte("{}\n"),
 				ghPolicy:      "success",
 				bundlePadding: (1 << 20) + 1,
+				unknownLength: true,
+				redirect:      true,
 			},
 		},
 	} {
@@ -180,6 +202,22 @@ func TestInstallerRejectsOversizedDownloadsBeforeReplacement(t *testing.T) {
 			assertInstallerExecutablePreserved(t, result)
 			if result.ghCalled {
 				t.Fatalf("installer passed oversized %s to provenance verification; output=%q", test.name, result.output)
+			}
+			if !result.redirected {
+				t.Fatalf("installer did not follow the simulated redirect for %s; output=%q", test.name, result.output)
+			}
+			if len(result.downloadSizes) == 0 {
+				t.Fatalf("installer did not inspect bounded temporary output for %s; output=%q", test.name, result.output)
+			}
+			if got, want := result.downloadSizes[len(result.downloadSizes)-1], fmt.Sprint(test.limit+1); got != want {
+				t.Fatalf(
+					"oversized %s temporary bytes = %s, want bounded max+1 size %s; all_sizes=%q output=%q",
+					test.name,
+					got,
+					want,
+					result.downloadSizes,
+					result.output,
+				)
 			}
 		})
 	}
@@ -202,6 +240,8 @@ func TestInstallerPinsProvenanceTrustPolicy(t *testing.T) {
 		"OIDC issuer":               "--cert-oidc-issuer https://token.actions.githubusercontent.com",
 		"SLSA predicate":            "--predicate-type https://slsa.dev/provenance/v1",
 		"hosted runner":             "--deny-self-hosted-runners",
+		"binary size ceiling":       "binary_limit=67108864",
+		"streaming size ceiling":    `head -c "$((download_limit + 1))"`,
 		"atomic destination":        `mv -f "$staged" "$prefix/ssm"`,
 	} {
 		if !strings.Contains(installer, required) {
@@ -225,12 +265,14 @@ func TestInstallerPinsProvenanceTrustPolicy(t *testing.T) {
 }
 
 type installerResult struct {
-	output     []byte
-	err        error
-	executable string
-	original   []byte
-	mode       os.FileMode
-	ghCalled   bool
+	output        []byte
+	err           error
+	executable    string
+	original      []byte
+	mode          os.FileMode
+	ghCalled      bool
+	redirected    bool
+	downloadSizes []string
 }
 
 type installerFixtureOptions struct {
@@ -240,6 +282,9 @@ type installerFixtureOptions struct {
 	metadataPadding  int
 	checksumsPadding int
 	bundlePadding    int
+	binaryPadding    int
+	unknownLength    bool
+	redirect         bool
 }
 
 func runInstallerFixture(t *testing.T, options installerFixtureOptions) installerResult {
@@ -260,6 +305,7 @@ func runInstallerFixture(t *testing.T, options installerFixtureOptions) installe
 
 	asset := "ssm-" + runtime.GOOS + "-" + runtime.GOARCH
 	payload := []byte("#!/bin/sh\nexit 0\n")
+	payload = append(payload, bytes.Repeat([]byte(" "), options.binaryPadding)...)
 	digest := sha256.Sum256(payload)
 	metadata := append([]byte(nil), options.metadata...)
 	metadata = append(metadata, bytes.Repeat([]byte(" "), options.metadataPadding)...)
@@ -284,34 +330,75 @@ func runInstallerFixture(t *testing.T, options installerFixtureOptions) installe
 	}
 
 	fakeBin := t.TempDir()
+	realTee, err := exec.LookPath("tee")
+	if err != nil {
+		t.Fatal(err)
+	}
+	realWC, err := exec.LookPath("wc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	downloadSizeMarker := filepath.Join(t.TempDir(), "download-sizes")
+	redirectMarker := filepath.Join(t.TempDir(), "redirects")
 	curlPath := filepath.Join(fakeBin, "curl")
 	writeTestFile(t, curlPath, `#!/bin/sh
 set -eu
 url=""
 output=""
 write_format=""
+follow_redirects=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -o) output="$2"; shift 2 ;;
     -w) write_format="$2"; shift 2 ;;
     --max-filesize) shift 2 ;;
-    -*) shift ;;
+    -*)
+      case "$1" in
+        *L*) follow_redirects=true ;;
+      esac
+      shift
+      ;;
     *) url="$1"; shift ;;
   esac
 done
 case "$url" in
-  https://api.github.com/*) cp "$METADATA_FIXTURE" "$output" ;;
-  */releases/latest) : ;;
-  */checksums.txt) cp "$CHECKSUMS_FIXTURE" "$output" ;;
-  *.sigstore.json) cp "$BUNDLE_FIXTURE" "$output" ;;
-  */"$INSTALLER_ASSET") cp "$PAYLOAD_FIXTURE" "$output" ;;
+  https://api.github.com/*) source="$METADATA_FIXTURE" ;;
+  */checksums.txt) source="$CHECKSUMS_FIXTURE" ;;
+  *.sigstore.json) source="$BUNDLE_FIXTURE" ;;
+  */"$INSTALLER_ASSET") source="$PAYLOAD_FIXTURE" ;;
   *) exit 90 ;;
 esac
+if [ "$REDIRECT_FIXTURE" = true ]; then
+  [ "$follow_redirects" = true ] || exit 91
+  printf '%s\n' "$url" >>"$REDIRECT_MARKER"
+fi
+if [ "$UNKNOWN_LENGTH_FIXTURE" = true ]; then
+  if [ -n "$output" ]; then
+    dd if="$source" of="$output" bs=1024 2>/dev/null
+  else
+    dd if="$source" bs=1024 2>/dev/null
+  fi
+elif [ -n "$output" ]; then
+  cp "$source" "$output"
+else
+  dd if="$source" bs=1024 2>/dev/null
+fi
 if [ -n "$write_format" ]; then
   printf 'https://github.com/Cd1s/ssm/releases/tag/v9.9.9'
 fi
 `)
 	if err := os.Chmod(curlPath, 0o700); err != nil { //nolint:gosec // test-owned command shim
+		t.Fatal(err)
+	}
+	wcPath := filepath.Join(fakeBin, "wc")
+	writeTestFile(t, wcPath, `#!/bin/sh
+set -eu
+capture="$WC_CAPTURE.$$"
+trap 'rm -f "$capture"' EXIT
+"$REAL_TEE" "$capture" | "$REAL_WC" "$@"
+"$REAL_WC" -c <"$capture" >>"$DOWNLOAD_SIZE_MARKER"
+`)
+	if err := os.Chmod(wcPath, 0o700); err != nil { //nolint:gosec // test-owned command shim
 		t.Fatal(err)
 	}
 	ghMarker := filepath.Join(t.TempDir(), "gh-called")
@@ -361,16 +448,30 @@ esac
 		"INSTALLER_ASSET="+asset,
 		"GH_MARKER="+ghMarker,
 		"GH_POLICY="+options.ghPolicy,
+		"UNKNOWN_LENGTH_FIXTURE="+fmt.Sprint(options.unknownLength),
+		"REDIRECT_FIXTURE="+fmt.Sprint(options.redirect),
+		"REDIRECT_MARKER="+redirectMarker,
+		"REAL_TEE="+realTee,
+		"REAL_WC="+realWC,
+		"WC_CAPTURE="+filepath.Join(t.TempDir(), "wc-capture"),
+		"DOWNLOAD_SIZE_MARKER="+downloadSizeMarker,
 	)
 	output, runErr := command.CombinedOutput()
 	_, markerErr := os.Stat(ghMarker)
+	_, redirectErr := os.Stat(redirectMarker)
+	sizeData, sizeErr := os.ReadFile(downloadSizeMarker) //nolint:gosec // test-owned observation marker
+	if sizeErr != nil && !os.IsNotExist(sizeErr) {
+		t.Fatal(sizeErr)
+	}
 	return installerResult{
-		output:     output,
-		err:        runErr,
-		executable: executable,
-		original:   original,
-		mode:       before.Mode().Perm(),
-		ghCalled:   markerErr == nil,
+		output:        output,
+		err:           runErr,
+		executable:    executable,
+		original:      original,
+		mode:          before.Mode().Perm(),
+		ghCalled:      markerErr == nil,
+		redirected:    redirectErr == nil,
+		downloadSizes: strings.Fields(string(sizeData)),
 	}
 }
 

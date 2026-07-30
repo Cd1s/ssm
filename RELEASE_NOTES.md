@@ -13,9 +13,12 @@
   wrong-subject, or expired provenance leaves the existing executable intact.
 - Release builds publish one adjacent Sigstore bundle per binary. Checksums
   remain an independent digest input but cannot authorize replacement alone.
+- Redirected and unknown-length release responses are streamed through exact
+  1 MiB metadata/provenance, 16 KiB checksum, and 64 MiB binary ceilings.
 - On a trust failure, keep using the preserved executable and wait for a
   repaired release through a reviewed identity. Installer users need a current
-  GitHub CLI with attestation verification; there is no verification skip.
+  GitHub CLI with attestation verification and `head -c`; there is no
+  verification skip.
 
 ### Reviewed saved-key publication
 

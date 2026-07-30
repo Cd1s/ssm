@@ -13,7 +13,7 @@ replacement remain separate compatibility boundaries.
 | Automatic same-major update | Adjacent `checksums.txt` selected the runtime asset; a matching SHA-256 authorized replacement. | The selected release must have the exact 14-name manifest. The downloaded bytes must match the selected checksum and an adjacent, cryptographically valid provenance subject under the pinned policy. | Automatic updates remain same-major only. |
 | Manual same-major update | The same checksum-only downloader was used. | The same release-manifest and provenance verifier as automatic update is used. | Manual ordinary update remains same-major only. |
 | Explicit major migration | Migration checked that the runtime binary was declared, then delegated to the checksum-only downloader after `--major --yes`. | Migration requires the exact release manifest, retains the explicit review/authorization callback, and delegates to the same digest-and-provenance verifier before replacement. | `--major --yes` remains mandatory and cannot authorize trust failure. |
-| `install.sh` replacement | Downloaded the latest asset and checksum, then installed directly after SHA-256 matched. | Validates bounded GitHub metadata contains the exact 14-name manifest, downloads bounded assets from that exact tag, independently matches SHA-256, verifies the exact single named subject and digest with GitHub CLI against the pinned repository/workflow/ref/issuer/predicate/runner/rotation policy, and stages a sibling file before rename. | There is no verification skip or fallback. A selection or trust failure leaves an existing installation unchanged. |
+| `install.sh` replacement | Downloaded the latest asset and checksum, then installed directly after SHA-256 matched. | Validates bounded GitHub metadata contains the exact 14-name manifest, streams bounded assets from that exact tag, independently matches SHA-256, verifies the exact single named subject and digest with GitHub CLI against the pinned repository/workflow/ref/issuer/predicate/runner/rotation policy, and stages a sibling file before rename. | There is no verification skip or fallback. A selection or trust failure leaves an existing installation unchanged. |
 
 An adjacent checksum remains release digest data, but it is no longer an
 authority by itself. The updater computes SHA-256 while copying the downloaded
@@ -93,7 +93,7 @@ newest eligible release fails this check.
 | Downloaded digest differs from checksum | Independent digest comparison | Provenance cannot rescue the mismatch; no replacement. |
 | Downloaded digest matches checksum but differs from provenance | Subject digest comparison | Checksum cannot rescue the mismatch; no replacement. |
 | Unsupported, missing, misnamed, additional, or duplicate release asset | Strict manifest selection | No asset download and no fallback. |
-| Checksums over 16 KiB, provenance over 1 MiB, or release metadata over 1 MiB | Bounded read before parsing | No replacement; installed bytes and mode are unchanged. |
+| Checksums over 16 KiB, provenance or release metadata over 1 MiB, or a binary over 64 MiB | Header-independent bounded stream, rejecting after at most limit plus one byte | No replacement; temporary output is bounded and removed; installed bytes and mode are unchanged. |
 
 `TestTrustFailurePreservesExecutable` records the original executable bytes and
 permission bits, injects a wrong-subject signed bundle, and proves both remain
@@ -104,7 +104,13 @@ intended sibling temporary target, preserves the prior permission bits, and
 does not modify an adjacent sentinel file. Unix installer regressions give the
 same byte-and-mode proof for a failed external attestation verifier,
 unversioned-identity replay, invalid exact manifests, and oversized metadata or
-trust inputs.
+trust inputs. Redirected, unknown-length installer fixtures prove that release
+metadata (1,048,576 bytes), checksums (16,384 bytes), provenance bundles
+(1,048,576 bytes), and binaries (67,108,864 bytes) stop at the next byte rather
+than first writing an unlimited response to disk. The Go updater separately
+proves declared-length early rejection and a redirected chunked binary stopped
+after exactly 67,108,865 bytes. Both paths remove temporary artifacts and
+preserve the installed bytes and mode.
 
 ## Workflow permission review
 

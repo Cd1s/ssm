@@ -32,9 +32,14 @@ tmp="$(mktemp)"
 checksums="$(mktemp)"
 bundle="$(mktemp)"
 release_metadata="$(mktemp)"
-trap 'rm -f "$tmp" "$checksums" "$bundle" "$release_metadata"' EXIT
+curl_status="$(mktemp)"
+trap 'rm -f "$tmp" "$checksums" "$bundle" "$release_metadata" "$curl_status"' EXIT
 if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required for exact release manifest validation" >&2
+  exit 1
+fi
+if ! command -v head >/dev/null 2>&1; then
+  echo "head is required for bounded release downloads" >&2
   exit 1
 fi
 download_bounded() {
@@ -42,13 +47,35 @@ download_bounded() {
   download_output="$2"
   download_limit="$3"
   download_description="$4"
-  if ! curl -fsSL --max-filesize "$download_limit" "$download_url" -o "$download_output"; then
+  : > "$curl_status"
+  if ! {
+    if curl -fsSL --max-filesize "$download_limit" "$download_url"; then
+      printf '0\n' > "$curl_status"
+    else
+      printf '%s\n' "$?" > "$curl_status"
+    fi
+  } | head -c "$((download_limit + 1))" > "$download_output"; then
     echo "failed to download bounded $download_description" >&2
     return 1
   fi
   download_size="$(wc -c < "$download_output" | tr -d '[:space:]')"
   if [ "$download_size" -gt "$download_limit" ]; then
     echo "$download_description exceeds $download_limit-byte limit" >&2
+    return 1
+  fi
+  download_curl_exit=""
+  if ! IFS= read -r download_curl_exit < "$curl_status"; then
+    echo "failed to download bounded $download_description" >&2
+    return 1
+  fi
+  case "$download_curl_exit" in
+    ''|*[!0-9]*)
+      echo "failed to download bounded $download_description" >&2
+      return 1
+      ;;
+  esac
+  if [ "$download_curl_exit" -ne 0 ]; then
+    echo "failed to download bounded $download_description" >&2
     return 1
   fi
 }
@@ -150,7 +177,7 @@ fi
 chmod 755 "$tmp"
 mkdir -p "$prefix" "$config_dir"
 staged="$(mktemp "$prefix/.ssm.XXXXXX.new")"
-trap 'rm -f "$tmp" "$checksums" "$bundle" "$release_metadata" "$staged"' EXIT
+trap 'rm -f "$tmp" "$checksums" "$bundle" "$release_metadata" "$curl_status" "$staged"' EXIT
 install -m 755 "$tmp" "$staged"
 mv -f "$staged" "$prefix/ssm"
 staged=""

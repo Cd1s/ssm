@@ -113,6 +113,7 @@ const (
 	checksumsAsset = "checksums.txt"
 	maxChecksums   = 16 << 10
 	maxMetadata    = 1 << 20
+	maxBinary      = 64 << 20
 	cooldown       = 6 * time.Hour
 )
 
@@ -252,6 +253,9 @@ func DownloadVersionBeforeReplace(version string, verbose bool, beforeReplace fu
 
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("download failed: %s", resp.Status)
+	}
+	if resp.ContentLength > maxBinary {
+		return fmt.Errorf("%s exceeds %d-byte limit", asset, maxBinary)
 	}
 
 	exe, err := executablePath()
@@ -409,8 +413,12 @@ func copyAndVerify(dst io.Writer, src io.Reader, h hash.Hash, expected string) e
 
 func copyAndVerifyDigest(dst io.Writer, src io.Reader, h hash.Hash, expected string) ([sha256.Size]byte, error) {
 	var digest [sha256.Size]byte
-	if _, err := io.Copy(io.MultiWriter(dst, h), src); err != nil {
+	written, err := io.Copy(io.MultiWriter(dst, h), io.LimitReader(src, maxBinary+1))
+	if err != nil {
 		return digest, err
+	}
+	if written > maxBinary {
+		return digest, fmt.Errorf("binary exceeds %d-byte limit", maxBinary)
 	}
 	sum := h.Sum(nil)
 	if len(sum) != sha256.Size {

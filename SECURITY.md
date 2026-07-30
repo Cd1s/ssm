@@ -20,3 +20,11 @@ failure preserves the installed executable. Do not work around a failed update
 by copying the downloaded binary or looking for a verification-skip option;
 report unexpected official-release failures privately through the channels
 above.
+
+Release downloads are streamed with hard ceilings of 1,048,576 bytes for
+release metadata, 16,384 bytes for checksums, 1,048,576 bytes for each
+provenance bundle, and 67,108,864 bytes for a binary. The updater and installer
+reject on the next byte even when a redirect has no `Content-Length`; declared
+length and curl checks are early optimizations only. The installer therefore
+requires `curl`, `head -c`, `wc`, `jq`, a SHA-256 tool, and a current GitHub CLI
+with `gh attestation verify`.
