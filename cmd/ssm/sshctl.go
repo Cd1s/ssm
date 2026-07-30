@@ -424,7 +424,9 @@ func sshctlUsage() {
 	  sshctl request --file <request.json>  # argv, script_file, secret_files paths
 
 	  sshctl [--json] <command> ...
-	  sshctl sync | pull | push --only <transaction-id> | push --all
+	  sshctl sync | pull
+	  sshctl --json push --only <transaction-id>
+	  sshctl --json push --all
   sshctl list [--json]
 	  sshctl host list|show|add|update|upsert|remove ...
 	  sshctl host-key inspect <alias> [--json]

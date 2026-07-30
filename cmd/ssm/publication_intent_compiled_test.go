@@ -286,7 +286,7 @@ func TestMaliciousPublishingIntentDocumentsFailClosedWithoutLeaksOrSideEffects(t
 					case command.machine && !command.status:
 						assertCompiledMachineContract(t, result, compiledMachineContract{
 							OK: false, Error: "sync_push_failed", JSONExit: 1, ProcessExit: 1,
-							Hint: "local vault remains pending; fix sync and retry push",
+							Hint: "local vault remains pending; fix sync, then retry with sshctl --json push --only <transaction-id> or, after reviewing all pending transactions, sshctl --json push --all",
 						})
 						value := decodeExactlyOneJSONObject(t, result.Stdout)
 						if value["message"] != fixture.wantMessage {
@@ -308,7 +308,7 @@ func TestMaliciousPublishingIntentDocumentsFailClosedWithoutLeaksOrSideEffects(t
 					default:
 						wantStderr := "ssm: error=sync_push_failed\n" +
 							"Error: " + fixture.wantMessage + "\n" +
-							"ssm: hint=local vault remains pending; fix sync and retry push\n"
+							"ssm: hint=local vault remains pending; fix sync, then retry with sshctl --json push --only <transaction-id> or, after reviewing all pending transactions, sshctl --json push --all\n"
 						if result.ProcessExit != 1 || result.Stdout != "" || result.Stderr != wantStderr {
 							t.Fatalf("human sidecar failure changed: output=%s", compiledOutputIdentity(result))
 						}
@@ -558,7 +558,7 @@ func TestPublicationLockContentionFailsBeforeUnlockOrMutation(t *testing.T) {
 	}, "--json", "push", "--only", betaID)
 	assertCompiledMachineContract(t, busy, compiledMachineContract{
 		OK: false, Error: "sync_push_failed", JSONExit: 1, ProcessExit: 1,
-		Hint: "local vault remains pending; fix sync and retry push",
+		Hint: "local vault remains pending; fix sync, then retry with sshctl --json push --only <transaction-id> or, after reviewing all pending transactions, sshctl --json push --all",
 	})
 	if !strings.Contains(busy.Stdout, "publication is busy") ||
 		strings.Contains(busy.Stdout, "master pass file") {
@@ -1147,6 +1147,73 @@ func TestPublicationIntentCrashMatrix(t *testing.T) {
 		if got := sync.putCount(); got != 2 {
 			t.Fatalf("explicit rejection retry PUT count = %d, want 2 total", got)
 		}
+	})
+
+	t.Run("all scope preserves rejection response-loss and finalization semantics", func(t *testing.T) {
+		t.Run("explicit rejection", func(t *testing.T) {
+			const transactionID = "tx_25250000000000000000000000000001"
+			cli, sync, original := newSinglePublicationScenario(t, transactionID, "all-rejected")
+			sync.rejectNext()
+
+			rejected := cli.Run(t, "sshctl", nil, "--json", "push", "--all")
+			if rejected.ProcessExit != 1 || sync.putCount() != 1 {
+				t.Fatalf("all-scope rejection changed: %s", compiledOutputIdentity(rejected))
+			}
+			assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), original)
+			if _, err := os.Stat(filepath.Join(cli.home, ".config", "ssm", "publishing-intent.json")); !os.IsNotExist(err) {
+				t.Fatalf("all-scope rejection retained publishing intent: %v", err)
+			}
+		})
+
+		t.Run("response loss", func(t *testing.T) {
+			const transactionID = "tx_25250000000000000000000000000002"
+			cli, sync, original := newSinglePublicationScenario(t, transactionID, "all-response-loss")
+			sync.dropNextResponse()
+
+			lost := cli.Run(t, "sshctl", nil, "--json", "push", "--all")
+			if lost.ProcessExit == 0 || sync.putCount() != 1 {
+				t.Fatalf("all-scope response loss changed: %s", compiledOutputIdentity(lost))
+			}
+			status := cli.Run(t, "sshctl", nil, "--json", "status")
+			statusValue := assertCompiledJSONSuccess(t, status)
+			pending, ok := statusValue["pending_mutations"].([]any)
+			if !ok || len(pending) != 0 {
+				t.Fatal("all-scope response-loss restart did not finalize the exact confirmed set")
+			}
+			if sync.putCount() != 1 {
+				t.Fatal("all-scope response-loss restart repeated PUT")
+			}
+			assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), &config.Vault{
+				Connections: append([]config.Connection(nil), original.Connections...),
+			})
+			assertCompiledVaultIdentity(
+				t,
+				decodeCompiledVaultIdentity(t, sync.remote(), cli.passphrase),
+				&config.Vault{Connections: append([]config.Connection(nil), original.Connections...)},
+			)
+		})
+
+		t.Run("local finalization failure", func(t *testing.T) {
+			const transactionID = "tx_25250000000000000000000000000003"
+			cli, sync, original := newSinglePublicationScenario(t, transactionID, "all-finalization")
+			failed := cli.RunWithEnv(t, "sshctl", nil, map[string]string{
+				"SSM_TEST_PUBLICATION_FAULT": "before_local_finalization_error",
+			}, "--json", "push", "--all")
+			if failed.ProcessExit == 0 || sync.putCount() != 1 {
+				t.Fatalf("all-scope finalization fault changed: %s", compiledOutputIdentity(failed))
+			}
+			assertCompiledVaultIdentity(t, cli.LoadVaultIdentity(t), original)
+			headBeforeRestart := sync.headCount()
+			status := cli.Run(t, "sshctl", nil, "--offline", "--json", "status")
+			statusValue := assertCompiledJSONSuccess(t, status)
+			pending, ok := statusValue["pending_mutations"].([]any)
+			if !ok || len(pending) != 0 {
+				t.Fatal("all-scope local finalization restart did not finalize the exact confirmed set")
+			}
+			if sync.putCount() != 1 || sync.headCount() != headBeforeRestart {
+				t.Fatal("all-scope offline finalization recovery used transport")
+			}
+		})
 	})
 }
 

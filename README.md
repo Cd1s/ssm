@@ -27,8 +27,8 @@ sshctl host search prod-web --json       # 只返回候选，不自动选择或�
 sshctl host upsert prod-api --host 203.0.113.10 --user root --port 22 --key-file /secure/prod-api.key --verify --json
 sshctl host update prod-api --port 2222 --verify --json
 sshctl host show prod-api --json
-sshctl push --only <transaction-id>
-sshctl push --all
+sshctl --json push --only <transaction-id>
+sshctl --json push --all
 
 # 单条简单命令：最快路径，不创建 request 文件
 sshctl --json run <alias> --argv hostname
@@ -66,7 +66,7 @@ sshctl get <alias> /remote/dir ./dir
 sshctl redirect set old-alias limee-hk
 sshctl run old-alias hostname
 
-sshctl push --all  # 审查 status 后显式发布全部兼容变更
+sshctl push --all  # 审查后显式发布调用开始时的 pending 集合
 ```
 
 首次出现的 host key 和变化后的 host key 都会被普通 run/check 拒绝。不要使用自动 `ssh-keygen -R` + `ssh-keyscan` 捷径；先通过 `inspect` 获取 `observed_fingerprint`、`known_fingerprints` 与 `classification:new|mismatch|trusted`，经可信渠道核对后，再用完全相同的指纹显式 `accept --yes`。
@@ -75,7 +75,54 @@ regular-file `put` 始终写入同目录的私有临时文件，核对远端 byt
 
 resume 仅支持 regular file，且必须用 `--resume=v1` 显式启用；未提供时旧 put 行为不变。v1 要求远端有 `sha256sum`，以协议版本、目标路径 hash、完整 local size 与 SHA-256 digest 绑定权限为 `0600` 的 sibling partial/metadata；append 前还会把远端 prefix digest 与本地同长度 prefix digest 核对。source 改变时使用独立 state，不复用旧 partial；corrupt、缺失或歧义 state 返回 `partial_state_mismatch|partial_state_incompatible`，绝不替换目标。完整 size/digest 通过后才 atomic publish。中断后的 v1 state 保留供 retry；后续 probe 会顺带清理同一目标超过 7 天的 `.ssm-resume-v1-*` state，operator 也可在审查后提前删除。结果包含 `bytes_reused` 与 `bytes_sent`。目录 resume 不支持。
 
-`status` 默认检查配置的同步端点并在远端 ETag 变化时刷新；同步失败会返回 `error:sync_pull_failed`、`stage:sync_pull`，不会静默使用缓存。若 `cloud.json` 存在但格式错误或不可读，所有在线 inventory 操作都会以 `error:sync_config_error`、`stage:sync_config` 停止；请修复文件及其权限，或仅在明确接受陈旧缓存时显式使用 `--offline`。缺少 `cloud.json` 仍表示同步未配置。只有调用方明确接受陈旧数据时才使用 `sshctl --json status --offline`（或全局 `--offline`）。离线结果包含 `offline:true`、`remote_state:not_checked`、`freshness`、`cache_age_seconds`、最近 pull/push 时间、`pending_changes` 与不含 secret 的 `pending_mutations`（`id`、`alias`、`operation`、`created_at`）。mutation 结果返回稳定的 `transaction_id`；用 `push --only <transaction-id>` 发布单个已审查变更，其 preflight 会列出准确 alias/operation，无关变更继续 pending。仅在明确发布全部 pending change 时使用 `push --all`（裸 `push` 作为兼容路径仍表示全部发布）。
+`status` 默认检查配置的同步端点并在远端 ETag 变化时刷新；同步失败会返回 `error:sync_pull_failed`、`stage:sync_pull`，不会静默使用缓存。若 `cloud.json` 存在但格式错误或不可读，所有在线 inventory 操作都会以 `error:sync_config_error`、`stage:sync_config` 停止；请修复文件及其权限，或仅在明确接受陈旧缓存时显式使用 `--offline`。缺少 `cloud.json` 仍表示同步未配置。只有调用方明确接受陈旧数据时才使用 `sshctl --json status --offline`（或全局 `--offline`）。离线结果包含 `offline:true`、`remote_state:not_checked`、`freshness`、`cache_age_seconds`、最近 pull/push 时间、`pending_changes` 与不含 secret 的 `pending_mutations`（`id`、`alias`、`operation`、`created_at`）。mutation 结果返回稳定的 `transaction_id`。
+
+### 已审查的发布范围
+
+裸 `push` 无效；参数会在 vault 解锁和任何同步 HTTP 请求之前被拒绝。调用方必须显式选择一个范围：
+
+```bash
+sshctl --json push --only <transaction-id>
+sshctl --json push --all
+```
+
+`push --only` 只发布一个已审查 transaction；preflight 会列出准确的 alias/operation，无关变更继续 pending。`push --all` 在调用开始时固定有序的 pending ID 集合，并且只发布该集合；调用开始后新建的 transaction 仍保持 pending。
+
+若调用开始时的集合为空，`push --all` 会用一次 HEAD 请求比较本地加密 blob 的精确标识、最后确认的远端标识和当前远端标识。三者均存在且完全相同时返回 `action:"noop"`，不执行 GET 或 PUT；任一标识缺失或不同时返回 `error:"sync_conflict"`、`stage:"sync_compare"`，保留两端 blob 和私有标识证据，也不执行 GET 或 PUT。空范围绝不会发布完整本地 blob。
+
+#### 已审查的空 ledger 分歧恢复
+
+重试 `push --all` 无法修复空 ledger 冲突，因为它绝不会发布未跟踪的完整 blob。
+
+实际输出的 machine hint 只推荐受保护的 merge，不授权整库替换：
+
+```text
+review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull to adopt remote, then use guarded ssm --offline --json import-json <reviewed-file> --merge and publish its reviewed transaction with sshctl --json push --only <transaction-id>
+```
+
+1. 运行 `sshctl --offline --json doctor`，审查安全的 `sync_conflict` 标识。
+2. 私下保存本地加密 vault、`remote.etag` 和 `sync-conflict.json` 的副本，并保持其私有权限。
+3. 将必须保留的本地 inventory 准备成已审查的 import 文件。secret 只保存在该私有文件中，绝不放入命令参数或日志。
+4. 运行 `sshctl --json pull`，采用已审查的远端加密 blob。只有 cached prerequisite 允许安全替换时 pull 才会成功；若再次报告冲突，立即停止并保留全部证据以便手工修复。
+5. 若完全采用远端版本，恢复到此结束。否则只运行以下一个受保护命令来重新应用保留的本地 inventory：
+
+   ```bash
+   ssm --offline --json import-json <reviewed-file> --merge
+   ```
+
+   只有完成显式全量替换审查后，才可改用：
+
+   ```bash
+   ssm --offline --json import-json <reviewed-file> --replace --yes
+   ```
+
+6. 审查返回的 transaction，并且只发布该 ID：
+
+   ```bash
+   sshctl --json push --only <transaction-id>
+   ```
+
+不存在 force flag、自动修复、证据删除或空 ledger 覆盖路径。
 
 简单、固定、已审查的字面参数直接使用 `sshctl --json run <alias> --argv ...`，无需创建 request 文件。连续的简单命令可使用 `sshctl run <alias> --stream`：stdin 每行是一个 JSON 字符串数组，stdout 每行是一个紧凑 JSON 结果；进程启动时同步并解密一次，默认每 30 秒重新检查 inventory，刷新失败立即停止而不会使用陈旧数据。需要动态/不可信参数、脚本、secret 或 host 变更时，仍使用 `sshctl request --file`。项目不提供交互式 shell。
 
@@ -95,7 +142,7 @@ Agent 排障示例：
 
 - alias miss：检查 `sshctl --json host list` 或 `host search`；绝不自动执行 suggestion。
 - sync pull failure：停止；修复连接，或仅在明确接受 stale inventory 后使用 `--offline`，不会静默 fallback。
-- sync push failure：检查 `status.pending_mutations`，重试 `push --only <same-id>`；不得扩大为 push-all。
+- sync push failure：检查 `status.pending_mutations`，使用同一个返回 ID 重试 `sshctl --json push --only <transaction-id>`；不得扩大为 `sshctl --json push --all`。
 - host-key change：先 `host-key inspect --json`，out-of-band 核验 `observed_fingerprint`，再 exact `accept ... --yes`；不得自动 remove/rescan。
 - remote failure：`remote_failed|remote_script_failed` 表示 SSH transport 已成功；依据 `stage`、`stderr` 和 remote exit（包括 255）处理，不得误判为 transport failure。
 - transfer failure：依据 `stage`、`bytes_sent`、`bytes_reused`、`resume`、`integrity`；不得 append incompatible partial。
@@ -164,7 +211,7 @@ Host request 使用 `op: host.upsert|host.update|...` 与嵌套 `host` 字段，
 
 结构化 host 变更会先确认远端 vault 已刷新；`--verify` 使用内存中的候选 vault 建连并运行 `hostname; uname -sr`，失败返回 `verification_failed`、`applied:false`，加密 vault 不发生变化。成功后才原子保存并返回 `sync_pending:true`。`--push` 必须和 `--verify` 一起使用；同步失败时本地变更保留并返回 `sync_push_failed`。只有明确接受本地数据可能过期时才使用 `--offline`。
 
-`doctor <alias> --json` 在 exact miss 时返回 `resolved_alias` 和安全的 `candidates`，但绝不选择候选或发起连接；同时报告 local/remote vault 状态、最近 pull/push、pending 状态，以及最近一次 reviewed merge 的非敏感 alias/key-name conflict 元数据。若本地与远端从同一 cached ETag 后同时变化，自动刷新返回 `sync_conflict` 并保留两端，`sshctl --offline --json doctor` 会显示 `sync_conflict` 的非敏感 blob 标识。检查 `merge_report.conflicts`/`sync_conflict` 后，明确选择 pull 或修复本地并 push。
+`doctor <alias> --json` 在 exact miss 时返回 `resolved_alias` 和安全的 `candidates`，但绝不选择候选或发起连接；同时报告 local/remote vault 状态、最近 pull/push、pending 状态，以及最近一次 reviewed merge 的非敏感 alias/key-name conflict 元数据。若本地与远端从同一 cached ETag 后同时变化，自动刷新返回 `sync_conflict` 并保留两端，`sshctl --offline --json doctor` 会显示 `sync_conflict` 的非敏感 blob 标识。检查 `merge_report.conflicts`/`sync_conflict` 后，显式选择 pull，或创建 reviewed transaction 并用 `sshctl --json push --only <transaction-id>` 发布。空 ledger 冲突必须遵循上面的恢复流程。
 
 ### Agent 舰队：map 并行
 
@@ -210,7 +257,7 @@ ssm login --server <sync-server-url> --email <email> --password-file <sync-passw
 sshctl sync
 ```
 
-中心服务器只保存加密 vault blob，不解密 SSH 密码或私钥。`sshctl list/run/status` 和 `ssm list/exec` 会在读取 vault 前检测远端 ETag；远端有新版本时会自动拉取。Agent host mutation 以 transaction 留在本地：单个 reviewed change 用 `push --only <transaction-id>`，只有审查全部 pending mutation 后才用 `push --all`；裸 `push` 是兼容 push-all。
+中心服务器只保存加密 vault blob，不解密 SSH 密码或私钥。`sshctl list/run/status` 和 `ssm list/exec` 会在读取 vault 前检测远端 ETag；远端有新版本时会自动拉取。Agent host mutation 以 transaction 留在本地：单个 reviewed change 用 `sshctl --json push --only <transaction-id>`；只有审查调用开始时 pending 集合中的每个 mutation 后才用 `sshctl --json push --all`。裸 `push` 无效，并且不会解锁 vault 或发出 HTTP 请求。
 
 ## 中心服务器
 
@@ -253,7 +300,7 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 然后执行 sshctl sync，用 sshctl status 和 sshctl list 验证。
 简单固定命令直接使用 sshctl --json run <alias> --argv ...；连续简单命令使用 sshctl run <alias> --stream。
 动态或不可信参数使用 sshctl request --file <json>：字面参数放 argv 数组，脚本使用 script_file/script_args，secret_files 只放路径。
-新增/修改服务器用 host.upsert/host.update request，保持 verify:true；成功后只用 push --only 发布返回的 transaction_id，审查全部 pending mutation 后才可 push --all。
+新增/修改服务器用 host.upsert/host.update request，保持 verify:true；成功后只用 sshctl --json push --only <transaction-id> 发布返回的 transaction_id，审查全部 pending mutation 后才可用 sshctl --json push --all。
 兼容 CLI 中字面参数用 --argv，复杂脚本用 --preflight -f；不要把生成脚本塞进 bash -c。
 ```
 

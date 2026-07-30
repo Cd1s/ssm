@@ -34,7 +34,7 @@ func sshctlCommandUsage(command string, args []string) {
 	case "request":
 		fmt.Print("Usage: sshctl request --file <request.json>|-\nReads one strict schema-v1 JSON object; always emits one JSON value.\nExample: sshctl request --file ./request.json\n")
 	case "push":
-		fmt.Print("Usage: sshctl [--json] push (--only <transaction-id> | --all)\n--only publishes one reviewed mutation; --all publishes the invocation-start pending set. Bare push is invalid.\nExample: sshctl --json push --only tx_...\n")
+		fmt.Print("Usage: sshctl [--json] push (--only <transaction-id> | --all)\n--only publishes one reviewed mutation; --all publishes the invocation-start pending set. Bare push is invalid.\nAn empty --all scope performs an identity-checked no-op or fails safely on divergence; it never publishes a full blob.\nExample: sshctl --json push --only tx_...\n")
 	case "put":
 		fmt.Print("Usage: sshctl put <alias> <local> <remote> [--resume=v1] [--sha256] [--timeout <duration>] [--json]\nResume v1 is explicit and regular-file-only; timeout uses Go durations such as 2m.\nExample: sshctl put app ./build.tgz /srv/build.tgz --sha256 --json\n")
 	case "get":

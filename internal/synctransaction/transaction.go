@@ -57,15 +57,16 @@ type SyncConflict struct {
 }
 
 var (
-	ErrConfiguration        = errors.New("sync configuration is invalid")
-	ErrUnconfigured         = errors.New("not logged in (run: ssm login)")
-	ErrRefresh              = errors.New("sync refresh failed")
-	ErrConflict             = errors.New("sync conflict")
-	ErrPushNotSent          = errors.New("publication request was not sent")
-	ErrPushRejected         = errors.New("publication request was explicitly rejected")
-	ErrPushAmbiguous        = errors.New("publication commit is ambiguous")
-	ErrStreamRefresh        = errors.New("--refresh=0 requires explicit global --offline")
-	errStreamNotInitialized = errors.New("stream synchronization is not initialized")
+	ErrConfiguration         = errors.New("sync configuration is invalid")
+	ErrUnconfigured          = errors.New("not logged in (run: ssm login)")
+	ErrRefresh               = errors.New("sync refresh failed")
+	ErrConflict              = errors.New("sync conflict")
+	ErrEmptyLedgerDivergence = errors.New("empty-ledger sync divergence")
+	ErrPushNotSent           = errors.New("publication request was not sent")
+	ErrPushRejected          = errors.New("publication request was explicitly rejected")
+	ErrPushAmbiguous         = errors.New("publication commit is ambiguous")
+	ErrStreamRefresh         = errors.New("--refresh=0 requires explicit global --offline")
+	errStreamNotInitialized  = errors.New("stream synchronization is not initialized")
 )
 
 // BlobIdentity is a secret-free opaque identity observation. Exists makes a
@@ -104,6 +105,52 @@ func (t *Transaction) CachedPublicationPrerequisite() (BlobIdentity, error) {
 		return BlobIdentity{}, fmt.Errorf("%w: cached remote identity is unsupported", ErrRefresh)
 	}
 	return BlobIdentity{Exists: cached != "", Value: cached}, nil
+}
+
+// VerifyEmptyPublication compares the exact local encrypted blob, last
+// confirmed remote identity, and current remote identity for an empty
+// publication scope. It never sends or retrieves a blob. A mismatch persists
+// only opaque identity evidence so recovery can be reviewed without exposing
+// inventory or overwriting either side.
+func (t *Transaction) VerifyEmptyPublication() error {
+	local, err := localOpaqueIdentity()
+	if err != nil {
+		return fmt.Errorf("%w: local encrypted blob identity was not read", ErrRefresh)
+	}
+	cached, err := t.CachedPublicationPrerequisite()
+	if err != nil {
+		return err
+	}
+	remote, err := t.ObservePublicationIdentity()
+	if err != nil {
+		return err
+	}
+	if cached.Exists && remote.Exists &&
+		local == cached.Value && local == remote.Value {
+		return nil
+	}
+
+	remoteValue := ""
+	if remote.Exists {
+		remoteValue = remote.Value
+	}
+	cachedValue := ""
+	if cached.Exists {
+		cachedValue = cached.Value
+	}
+	conflict := SyncConflict{
+		DetectedAt: t.now().UTC().Format(time.RFC3339),
+		LocalETag:  local,
+		RemoteETag: remoteValue,
+		CachedETag: cachedValue,
+	}
+	if err := preserveConflict(conflict); err != nil {
+		return fmt.Errorf("%w: empty-ledger conflict evidence could not be preserved", ErrRefresh)
+	}
+	return fmt.Errorf(
+		"%w: local, cached, and remote encrypted blob identities are not identical",
+		ErrEmptyLedgerDivergence,
+	)
 }
 
 type Facts struct {

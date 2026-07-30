@@ -28,12 +28,16 @@ GET, and PUT requests, and the encrypted local vault remains byte-for-byte
 logically unchanged.
 
 Callers must publish every reported prerequisite explicitly in the displayed
-ledger order, then retry the originally selected transaction:
+ledger order with this form:
 
 ```text
-sshctl --json push --only <first-required-transaction-id>
-sshctl --json push --only <next-required-transaction-id>
-sshctl --json push --only <original-transaction-id>
+sshctl --json push --only <transaction-id>
+```
+
+After all reported prerequisites, retry the originally selected transaction:
+
+```text
+sshctl --json push --only <transaction-id>
 ```
 
 Publication never adds those IDs to the requested scope automatically.

@@ -4,7 +4,7 @@
 
 ### Reviewed saved-key publication
 
-- `push --only <transaction-id>` now rejects unsatisfied cross-alias saved-key
+- `sshctl --json push --only <transaction-id>` now rejects unsatisfied cross-alias saved-key
   create, replace, rename, delete, prune, and reference prerequisites before
   any sync request.
 - The safe failure message lists every required stable transaction ID in
@@ -14,6 +14,31 @@
 - Modern direct and request-v1 host mutations retain their existing encrypted
   vault/ledger schema, transaction ID format, and typed success fields. Legacy
   removal and import behavior remains unchanged pending its separate migration.
+
+### Exact push scopes and empty-ledger safety
+
+- Bare `push` is invalid and is rejected before vault unlock or any sync HTTP
+  request. Callers must choose `sshctl --json push --only <transaction-id>` or
+  `sshctl --json push --all`.
+- `sshctl --json push --all` publishes only the invocation-start ordered pending-ID snapshot;
+  later transactions remain pending.
+- An empty `push --all` performs one identity HEAD and no GET or PUT. Identical
+  local, cached, and remote encrypted-blob identities return `action:"noop"`;
+  any missing or different identity returns a safe `sync_conflict`, preserves
+  both blobs and private identity evidence, and never publishes a full blob.
+- English, Chinese, agent-skill, command-help, and recovery guidance now use
+  only explicit publication scopes.
+- The empty-ledger `sync_conflict` hint recommends the guarded `--merge`
+  recovery path. It does not suggest `--replace --yes`; the longer recovery
+  guide permits replacement only after explicit full-replacement review.
+
+<!-- documentation-contract: historical-begin -->
+
+## Historical v1 release notes
+
+The versioned sections below describe behavior of those v1 releases, including
+then-supported bare-push compatibility. They are historical evidence, not
+current v2 command guidance; the v2 contract above supersedes them.
 
 ## v1.4.3
 
@@ -244,3 +269,5 @@
 ### Validation
 
 - Confirmed no remaining references to `AGENTS`, `OpenSpec`, `openspec`, `REVIEW_FINDINGS`, or `.codex`.
+
+<!-- documentation-contract: historical-end -->

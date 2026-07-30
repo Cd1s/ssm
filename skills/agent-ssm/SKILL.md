@@ -50,7 +50,7 @@ Successful mutations return a stable `transaction_id`. Review the secret-free pe
 sshctl --json push --only <transaction-id>
 ```
 
-Never use bare push or `push --all` unless the user explicitly authorizes every pending mutation. Never silently switch to `--offline`; stop on `sync_pull_failed` unless the user accepts stale inventory.
+Bare push is invalid and stops before vault unlock or HTTP. Use the returned ID with `sshctl --json push --only <transaction-id>`, or use `sshctl --json push --all` only when the user explicitly authorizes every mutation in the invocation-start pending set. An empty `--all` scope identity-checks as a no-op when local, cached, and remote encrypted blobs are identical; otherwise it preserves both sides and fails with `sync_conflict`, never a full-blob publication. Follow `references/import-json.md` for the reviewed recovery sequence. Never silently switch to `--offline`; stop on `sync_pull_failed` unless the user accepts stale inventory.
 
 For bulk import only, read `references/import-json.md`. Do not use bulk import for one host.
 

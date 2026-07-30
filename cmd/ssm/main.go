@@ -108,8 +108,8 @@ Usage:
 Cloud (optional):
   ssm login            authenticate with sync server
   ssm register         create a sync account
-  ssm push --only <transaction-id>  publish one reviewed mutation
-  ssm push --all       deliberately publish all pending mutations
+  ssm --json push --only <transaction-id>  publish one reviewed mutation
+  ssm --json push --all       publish the invocation-start pending set
   ssm pull             download encrypted vault
   ssm pull-if-changed  download encrypted vault only if remote changed
   ssm remote-hash      print remote encrypted vault hash

@@ -29,6 +29,7 @@ const (
 	MasterPassFileRequiredCreate        Kind = "master_pass_file_required_create"
 	AliasNotFound                       Kind = "alias_not_found"
 	SyncConflict                        Kind = "sync_conflict"
+	EmptyLedgerSyncConflict             Kind = "empty_ledger_sync_conflict"
 	SyncPullFailed                      Kind = "sync_pull_failed"
 	StreamSyncPullFailed                Kind = "stream_sync_pull_failed"
 	TransferLocalRead                   Kind = "transfer_local_read"
@@ -267,7 +268,11 @@ var failurePolicies = map[Kind]failurePolicy{
 	},
 	SyncConflict: {
 		Code: "sync_conflict", Stage: "sync_compare",
-		Hint: "local and remote blobs were preserved; inspect sshctl --offline --json doctor, then explicitly pull or push after review", Exit: 1,
+		Hint: "local and remote blobs were preserved; inspect sshctl --offline --json doctor, then run sshctl --json pull after review", Exit: 1,
+	},
+	EmptyLedgerSyncConflict: {
+		Code: "sync_conflict", Stage: "sync_compare",
+		Hint: "review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull to adopt remote, then use guarded ssm --offline --json import-json <reviewed-file> --merge and publish its reviewed transaction with sshctl --json push --only <transaction-id>", Exit: 1,
 	},
 	SyncPullFailed: {
 		Code: CodeSyncPull, Stage: "sync_pull", Hint: "fix sync connectivity or retry explicitly with --offline", Exit: 1,
@@ -337,8 +342,8 @@ var failurePolicies = map[Kind]failurePolicy{
 		Hint: "inspect verification.error and fix the candidate before retrying", Exit: ExitConnectionFailed, Human: humanHostVerification,
 	},
 	HostPushFailed: {
-		Code: CodeSyncPush, Stage: "sync_push", Hint: "local changes remain pending; fix sync and retry push",
-		HumanHint: "local change remains pending; fix sync and retry sshctl push", Exit: 1, Human: humanHostPush,
+		Code: CodeSyncPush, Stage: "sync_push", Hint: "local change remains pending; inspect sshctl --json status and retry with sshctl --json push --only <transaction-id>",
+		HumanHint: "local change remains pending; inspect sshctl --json status and retry with sshctl --json push --only <transaction-id>", Exit: 1, Human: humanHostPush,
 	},
 	HostSyncPullFailed: {
 		Code: CodeSyncPull, Stage: "sync_pull", Hint: "fix sync connectivity or retry explicitly with --offline", Exit: 1,
@@ -503,7 +508,9 @@ var failurePolicies = map[Kind]failurePolicy{
 		Code: CodeInvalidArgs, Hint: "choose one explicit push scope", Exit: 2,
 	},
 	SyncPushFailed: {
-		Code: CodeSyncPush, Hint: "local vault remains pending; fix sync and retry push", Exit: 1,
+		Code: CodeSyncPush,
+		Hint: "local vault remains pending; fix sync, then retry with sshctl --json push --only <transaction-id> or, after reviewing all pending transactions, sshctl --json push --all",
+		Exit: 1,
 	},
 	SyncUnconfigured: {
 		Code: "sync_config_error", Hint: "configure sync or use local inventory", Exit: 1,
@@ -905,6 +912,8 @@ func ClassifySyncFailure(err error, fallback Kind) Failure {
 	switch {
 	case errors.Is(err, synctransaction.ErrConfiguration):
 		kind = SyncConfigurationFailed
+	case errors.Is(err, synctransaction.ErrEmptyLedgerDivergence):
+		kind = EmptyLedgerSyncConflict
 	case errors.Is(err, synctransaction.ErrConflict):
 		kind = SyncConflict
 	}

@@ -68,7 +68,13 @@ func TestMachineContractMatrix(t *testing.T) {
 			name: "sync conflict", kind: SyncConflict,
 			details: Details{Message: "remote changed"},
 			code:    "sync_conflict", stage: "sync_compare",
-			hint: "local and remote blobs were preserved; inspect sshctl --offline --json doctor, then explicitly pull or push after review", exit: 1,
+			hint: "local and remote blobs were preserved; inspect sshctl --offline --json doctor, then run sshctl --json pull after review", exit: 1,
+		},
+		{
+			name: "empty-ledger sync conflict", kind: EmptyLedgerSyncConflict,
+			details: Details{Message: "empty ledger diverged"},
+			code:    "sync_conflict", stage: "sync_compare",
+			hint: "review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull to adopt remote, then use guarded ssm --offline --json import-json <reviewed-file> --merge and publish its reviewed transaction with sshctl --json push --only <transaction-id>", exit: 1,
 		},
 		{
 			name: "sync pull", kind: SyncPullFailed,
@@ -189,7 +195,7 @@ func TestMachineContractMatrix(t *testing.T) {
 		{
 			name: "host push", kind: HostPushFailed,
 			details: Details{Cause: errors.New("push rejected"), Alias: "candidate"},
-			code:    "sync_push_failed", stage: "sync_push", hint: "local changes remain pending; fix sync and retry push", exit: 1,
+			code:    "sync_push_failed", stage: "sync_push", hint: "local change remains pending; inspect sshctl --json status and retry with sshctl --json push --only <transaction-id>", exit: 1,
 			alias: "candidate",
 		},
 		{
@@ -463,7 +469,9 @@ func TestMachineContractMatrix(t *testing.T) {
 		{
 			name: "sync push", kind: SyncPushFailed,
 			details: Details{Message: "push failed"},
-			code:    "sync_push_failed", hint: "local vault remains pending; fix sync and retry push", exit: 1,
+			code:    "sync_push_failed",
+			hint:    "local vault remains pending; fix sync, then retry with sshctl --json push --only <transaction-id> or, after reviewing all pending transactions, sshctl --json push --all",
+			exit:    1,
 		},
 		{
 			name: "sync unconfigured", kind: SyncUnconfigured,
@@ -890,6 +898,10 @@ func TestClassifySyncFailureUsesCanonicalPolicy(t *testing.T) {
 		},
 		{
 			name: "conflict overrides command fallback", err: synctransaction.ErrConflict,
+			fallback: SyncPushFailed, wantCode: "sync_conflict", wantStage: "sync_compare",
+		},
+		{
+			name: "empty-ledger conflict uses reviewed recovery", err: synctransaction.ErrEmptyLedgerDivergence,
 			fallback: SyncPushFailed, wantCode: "sync_conflict", wantStage: "sync_compare",
 		},
 		{
@@ -1563,7 +1575,7 @@ func TestMachineContractHostHumanRendering(t *testing.T) {
 			},
 			want: "ssm: error=sync_push_failed alias=candidate\n" +
 				"Error: push rejected\n" +
-				"ssm: hint=local change remains pending; fix sync and retry sshctl push\n",
+				"ssm: hint=local change remains pending; inspect sshctl --json status and retry with sshctl --json push --only <transaction-id>\n",
 		},
 		{
 			name: "map no targets",

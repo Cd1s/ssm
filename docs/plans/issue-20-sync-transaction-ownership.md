@@ -4,6 +4,8 @@
 synchronization. It operates on encrypted bytes and opaque blob identities;
 decrypted inventory remains outside the module.
 
+<!-- documentation-contract: historical-begin -->
+
 ## BC-1 old/new compiled matrix
 
 The issue 17 compiled baseline at `de66f23` characterized the old split before
@@ -31,6 +33,8 @@ The stable failure hint is `repair sync configuration or retry explicitly with
 --offline`. Repair the JSON and its read permissions, or use explicit
 `--offline` only after accepting that the cached inventory may be stale.
 Configuration contents and credentials are never included in the failure.
+
+<!-- documentation-contract: historical-end -->
 
 ## Transaction state tables
 
