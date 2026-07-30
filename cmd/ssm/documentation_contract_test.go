@@ -111,10 +111,10 @@ func scanPushGuidanceSource(path, document string) []pushGuidanceViolation {
 			if describesBareExecutableProse(line[:match[0]]) {
 				continue
 			}
-			if pushInvocationLacksScope(line[match[0]:]) {
+			if pushInvocationHasInvalidScope(line[match[0]:]) {
 				violations = append(violations, pushGuidanceViolation{
 					line:    index + 1,
-					reason:  "contains a push invocation without an explicit scope",
+					reason:  "contains a push invocation without exactly one valid explicit scope",
 					excerpt: compactExcerpt(line),
 				})
 			}
@@ -308,13 +308,45 @@ func excludeHistoricalPushGuidance(document string) (string, []pushGuidanceViola
 	return active.String(), violations
 }
 
-func pushInvocationLacksScope(commandText string) bool {
+func pushInvocationHasInvalidScope(commandText string) bool {
 	tokens := shellLikeTokens(commandText)
 	commandIndex := commandIndexAfterExecutable(tokens)
 	if commandIndex < 0 || normalizeCommandToken(tokens[commandIndex]) != "push" {
 		return false
 	}
-	return !tokensContainExplicitPushScope(tokens[commandIndex+1:])
+	args := documentedPushArguments(tokens[commandIndex+1:])
+	_, failure := parsePushScopeArguments(args)
+	return failure != nil
+}
+
+func documentedPushArguments(tokens []string) []string {
+	args := make([]string, 0, len(tokens))
+	scopeComplete := false
+	expectOnlyValue := false
+	for _, raw := range tokens {
+		token := normalizeCommandToken(raw)
+		if token == "" {
+			continue
+		}
+		if scopeComplete && !expectOnlyValue && !strings.HasPrefix(token, "-") {
+			break
+		}
+		args = append(args, token)
+		if expectOnlyValue {
+			expectOnlyValue = false
+			scopeComplete = true
+			continue
+		}
+		switch {
+		case token == "--only":
+			expectOnlyValue = true
+		case token == "--all", strings.HasPrefix(token, "--only="):
+			scopeComplete = true
+		case !strings.HasPrefix(token, "-"):
+			return args
+		}
+	}
+	return args
 }
 
 func commandIndexAfterExecutable(tokens []string) int {
@@ -362,26 +394,6 @@ func commandNameAfterExecutable(commandText string) string {
 		return ""
 	}
 	return normalizeCommandToken(tokens[commandIndex])
-}
-
-func tokensContainExplicitPushScope(tokens []string) bool {
-	for index, raw := range tokens {
-		token := normalizeCommandToken(raw)
-		if token == "--all" {
-			return true
-		}
-		if token == "--only" {
-			if index+1 >= len(tokens) {
-				return false
-			}
-			value := normalizeCommandToken(tokens[index+1])
-			return value != "" && !strings.HasPrefix(value, "-")
-		}
-		if strings.HasPrefix(token, "--only=") {
-			return strings.TrimPrefix(token, "--only=") != ""
-		}
-	}
-	return false
 }
 
 func shellLikeTokens(commandText string) []string {
@@ -624,6 +636,31 @@ func TestPushGuidanceScannerAdversarialFixtures(t *testing.T) {
 		{
 			name:      "only rejects another flag as its value",
 			document:  "sshctl --json push --only --all\n",
+			wantError: true,
+		},
+		{
+			name:      "all then only is conflicting",
+			document:  "sshctl --json push --all --only tx_reviewed\n",
+			wantError: true,
+		},
+		{
+			name:      "repeated only is invalid",
+			document:  "sshctl --json push --only tx_first --only=tx_second\n",
+			wantError: true,
+		},
+		{
+			name:      "repeated all is invalid",
+			document:  "sshctl --json push --all --all\n",
+			wantError: true,
+		},
+		{
+			name:      "unknown push flag is invalid",
+			document:  "sshctl --json push --unknown\n",
+			wantError: true,
+		},
+		{
+			name:      "only rejects unknown option token as value",
+			document:  "sshctl --json push --only --unknown\n",
 			wantError: true,
 		},
 		{

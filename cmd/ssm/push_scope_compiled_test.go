@@ -15,6 +15,119 @@ import (
 
 const emptyLedgerRecoveryHint = "review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull to adopt remote, then use guarded ssm --offline --json import-json <reviewed-file> --merge and publish its reviewed transaction with sshctl --json push --only <transaction-id>"
 
+func TestPushScopeArgumentsFailBeforePublicationSideEffects(t *testing.T) {
+	const (
+		scopeConflictFailure = "{\n" +
+			"  \"ok\": false,\n" +
+			"  \"error\": \"invalid_arguments\",\n" +
+			"  \"message\": \"--all and --only are mutually exclusive\",\n" +
+			"  \"hint\": \"choose one explicit push scope\",\n" +
+			"  \"exit\": 2\n" +
+			"}\n"
+		onlyRequiredFailure = "{\n" +
+			"  \"ok\": false,\n" +
+			"  \"error\": \"invalid_arguments\",\n" +
+			"  \"message\": \"--only requires a non-empty transaction id\",\n" +
+			"  \"hint\": \"copy an exact id from sshctl --json status\",\n" +
+			"  \"exit\": 2\n" +
+			"}\n"
+		invalidScopeFailure = "{\n" +
+			"  \"ok\": false,\n" +
+			"  \"error\": \"invalid_arguments\",\n" +
+			"  \"message\": \"push accepts --all or --only \\u003ctransaction-id\\u003e\",\n" +
+			"  \"hint\": \"inspect pending_mutations with sshctl --json status\",\n" +
+			"  \"exit\": 2\n" +
+			"}\n"
+	)
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "only then all", args: []string{"--only", "--all"}, want: scopeConflictFailure},
+		{name: "all then only", args: []string{"--all", "--only", "tx_reviewed"}, want: scopeConflictFailure},
+		{name: "repeated only", args: []string{"--only", "tx_first", "--only=tx_second"}, want: invalidScopeFailure},
+		{name: "repeated all", args: []string{"--all", "--all"}, want: invalidScopeFailure},
+		{name: "missing only value", args: []string{"--only"}, want: onlyRequiredFailure},
+		{name: "empty only value", args: []string{"--only", ""}, want: onlyRequiredFailure},
+		{name: "whitespace only value", args: []string{"--only", " \t "}, want: onlyRequiredFailure},
+		{name: "empty only equals value", args: []string{"--only="}, want: onlyRequiredFailure},
+		{name: "unknown flag", args: []string{"--unknown"}, want: invalidScopeFailure},
+		{name: "only rejects long option token", args: []string{"--only", "--unknown"}, want: onlyRequiredFailure},
+		{name: "only rejects short option token", args: []string{"--only", "-x"}, want: onlyRequiredFailure},
+	}
+
+	for _, executable := range []string{"ssm", "sshctl"} {
+		for _, test := range tests {
+			t.Run(executable+"/"+test.name, func(t *testing.T) {
+				cli := newCompiledCLIHarness(t)
+				sync := newCompiledSyncFixture(t)
+				cli.SaveCloud(t, sync.URL(), "ISSUE25_PUSH_ARGUMENT_TOKEN_CANARY")
+				unlockCanary := filepath.Join(cli.temp, "ISSUE25_UNLOCK_MUST_NOT_BE_TOUCHED_CANARY")
+				configDir := filepath.Join(cli.home, ".config", "ssm")
+				untouchedPaths := []string{
+					filepath.Join(configDir, "connections.enc"),
+					filepath.Join(configDir, "publication.lock"),
+					filepath.Join(configDir, "publishing-intent.json"),
+					filepath.Join(configDir, "sync-conflict.json"),
+				}
+				for _, path := range untouchedPaths {
+					if _, err := os.Stat(path); !os.IsNotExist(err) {
+						t.Fatalf("precondition: push argument canary path %s exists: %v", filepath.Base(path), err)
+					}
+				}
+
+				args := append([]string{"--json", "push"}, test.args...)
+				result := cli.RunWithEnv(t, executable, nil, map[string]string{
+					"SSM_MASTER_PASS_FILE": unlockCanary,
+				}, args...)
+				if result.ProcessExit != 2 || result.Stdout != test.want || result.Stderr != "" {
+					t.Fatalf("push argument rejection changed; output=%s", compiledOutputIdentity(result))
+				}
+				decodeExactlyOneJSONObject(t, result.Stdout)
+				assertPushRequestCounts(t, sync, 0, 0)
+				for _, path := range untouchedPaths {
+					if _, err := os.Stat(path); !os.IsNotExist(err) {
+						t.Fatalf("invalid push arguments touched %s: %v", filepath.Base(path), err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestPushOnlyEqualsPreservesExactScope(t *testing.T) {
+	const transactionID = "tx_25252525252525252525252525252529"
+	for _, executable := range []string{"ssm", "sshctl"} {
+		t.Run(executable, func(t *testing.T) {
+			cli, sync, _ := newSinglePublicationScenario(t, transactionID, executable+" only equals")
+			result := cli.Run(
+				t,
+				executable,
+				nil,
+				"--master-pass-file="+cli.passPath,
+				"--json",
+				"push",
+				"--only="+transactionID,
+			)
+			value := assertCompiledJSONSuccess(t, result)
+			assertCompiledStringField(t, value, "scope", "only", result)
+			assertCompiledStringField(t, value, "transaction_id", transactionID, result)
+			assertCompiledSinglePreflightID(t, value, transactionID)
+			if remaining, ok := value["remaining_mutations"].([]any); !ok || len(remaining) != 0 {
+				t.Fatalf("only equals remaining_mutations = %v, want []", value["remaining_mutations"])
+			}
+			if got := sync.headCount(); got != 2 {
+				t.Fatalf("only equals HEAD count = %d, want 2", got)
+			}
+			if got := sync.putCount(); got != 1 {
+				t.Fatalf("only equals PUT count = %d, want 1", got)
+			}
+		})
+	}
+}
+
 func TestEmptyLedgerPushNeverPuts(t *testing.T) {
 	t.Run("identical local cached and remote identities are an explicit no-op", func(t *testing.T) {
 		cli := newCompiledCLIHarness(t)

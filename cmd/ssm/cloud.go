@@ -137,36 +137,90 @@ func runLogout() {
 type pendingMutationView = inventorytransaction.MutationView
 type pushResult = inventorytransaction.PublicationReceipt
 
-func runPush(args []string) {
+type pushScope uint8
+
+const (
+	pushScopeUnset pushScope = iota
+	pushScopeOnly
+	pushScopeAll
+)
+
+type pushArgumentFailure struct {
+	kind    machinecontract.Kind
+	message string
+}
+
+const (
+	pushScopeUsageMessage    = "push accepts --all or --only <transaction-id>"
+	pushOnlyRequiredMessage  = "--only requires a non-empty transaction id"
+	pushScopeConflictMessage = "--all and --only are mutually exclusive"
+)
+
+func pushScopeTransitionFailure(current, next pushScope) *pushArgumentFailure {
+	switch current {
+	case pushScopeUnset:
+		return nil
+	case next:
+		return &pushArgumentFailure{kind: machinecontract.PushArgumentsInvalid, message: pushScopeUsageMessage}
+	default:
+		return &pushArgumentFailure{kind: machinecontract.PushScopeConflict, message: pushScopeConflictMessage}
+	}
+}
+
+func parsePushScopeArguments(args []string) (string, *pushArgumentFailure) {
+	scope := pushScopeUnset
 	only := ""
-	all := false
-	seenOnly := false
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--all":
-			all = true
-		case args[i] == "--only" && i+1 < len(args):
+			if failure := pushScopeTransitionFailure(scope, pushScopeAll); failure != nil {
+				return "", failure
+			}
+			scope = pushScopeAll
+		case args[i] == "--only":
+			if failure := pushScopeTransitionFailure(scope, pushScopeOnly); failure != nil {
+				return "", failure
+			}
+			if i+1 >= len(args) {
+				return "", &pushArgumentFailure{kind: machinecontract.PushOnlyRequired, message: pushOnlyRequiredMessage}
+			}
+			value := args[i+1]
+			if value == "--all" {
+				return "", &pushArgumentFailure{kind: machinecontract.PushScopeConflict, message: pushScopeConflictMessage}
+			}
+			if strings.TrimSpace(value) == "" || strings.HasPrefix(value, "-") {
+				return "", &pushArgumentFailure{kind: machinecontract.PushOnlyRequired, message: pushOnlyRequiredMessage}
+			}
 			i++
-			only = args[i]
-			seenOnly = true
+			only = value
+			scope = pushScopeOnly
 		case strings.HasPrefix(args[i], "--only="):
-			only = strings.TrimPrefix(args[i], "--only=")
-			seenOnly = true
+			if failure := pushScopeTransitionFailure(scope, pushScopeOnly); failure != nil {
+				return "", failure
+			}
+			value := strings.TrimPrefix(args[i], "--only=")
+			if strings.TrimSpace(value) == "" {
+				return "", &pushArgumentFailure{kind: machinecontract.PushOnlyRequired, message: pushOnlyRequiredMessage}
+			}
+			only = value
+			scope = pushScopeOnly
 		default:
-			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.PushArgumentsInvalid, machinecontract.Details{
-				Message: "push accepts --all or --only <transaction-id>",
-			}))
+			return "", &pushArgumentFailure{kind: machinecontract.PushArgumentsInvalid, message: pushScopeUsageMessage}
 		}
 	}
-	if seenOnly && strings.TrimSpace(only) == "" {
-		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.PushOnlyRequired, machinecontract.Details{Message: "--only requires a non-empty transaction id"}))
+	if scope == pushScopeUnset {
+		return "", &pushArgumentFailure{
+			kind: machinecontract.PushArgumentsInvalid, message: "push requires --all or --only <transaction-id>",
+		}
 	}
-	if all && only != "" {
-		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.PushScopeConflict, machinecontract.Details{Message: "--all and --only are mutually exclusive"}))
-	}
-	if !all && !seenOnly {
-		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.PushArgumentsInvalid, machinecontract.Details{
-			Message: "push requires --all or --only <transaction-id>",
+	return only, nil
+}
+
+func runPush(args []string) {
+	only, argumentFailure := parsePushScopeArguments(args)
+	if argumentFailure != nil {
+		os.Exit(machinecontract.WriteClassified(machineJSON, argumentFailure.kind, machinecontract.Details{
+			Message: argumentFailure.message,
 		}))
 	}
 	session, err := inventorytransaction.BeginPublication()
