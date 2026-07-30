@@ -94,7 +94,7 @@ newest eligible release fails this check.
 | Downloaded digest matches checksum but differs from provenance | Subject digest comparison | Checksum cannot rescue the mismatch; no replacement. |
 | Unsupported, missing, misnamed, additional, or duplicate release asset | Strict manifest selection | No asset download and no fallback. |
 | Checksums over 16 KiB, provenance or release metadata over 1 MiB, or a binary over 64 MiB | Header-independent bounded stream, rejecting after at most limit plus one byte | No replacement; temporary output is bounded and removed; installed bytes and mode are unchanged. |
-| Windows cannot overwrite its mapped running `.exe` | Platform replacement | Rename the running image to its fixed sibling rollback path, move the verified sibling stage to the original path, and restore the rollback image if that move fails. A completed replacement is reported only after the new bytes occupy the original path. |
+| Windows cannot overwrite its mapped running `.exe` | Platform replacement | Open the exact non-reparse target and verified sibling stage, capture the target's complete backup security descriptor, and apply and verify it on the stage before renaming. Rename the running image to its fixed sibling rollback path, move the stage to the original path, reapply and verify the descriptor on the new canonical executable, and restore the rollback image on any later failure. A completed replacement is reported only after the new bytes and equivalent owner, primary group, DACL, SACL, and inheritance-protection state occupy the original path. |
 
 `TestTrustFailurePreservesExecutable` records the original executable bytes and
 permission bits, injects a wrong-subject signed bundle, and proves both remain
@@ -115,13 +115,28 @@ preserve the installed bytes and mode.
 
 Native Windows tests execute a copied Go test binary, so the target is a
 genuinely mapped `.exe` during replacement. Success proves the verified stage
-occupies the original path before the updater reports completion. The mapped
-old image remains at `.ssm.exe.old` only until a later launch can remove it.
-The failure fixture holds the verified stage with a native sharing lock,
-proves the running image was first renamed, and then proves rollback restores
-the exact original bytes at the canonical path. Replacement failures return
-through the existing updater failure contract, and the updater's staging defer
-removes the verified temporary file.
+occupies the original path with the restrictive, protected descriptor of the
+old executable before the updater reports completion. The mapped old image
+remains at `.ssm.exe.old` only until a later launch can remove it. One failure
+fixture holds the verified stage with a native sharing lock; another injects a
+failure into the second native descriptor application after the new bytes
+occupy the canonical path. Both prove rollback restores the exact original
+bytes and descriptor, removes the fixed rollback path and staging path, and
+never reports success.
+
+Windows descriptor preservation uses `CreateFile` with
+`FILE_FLAG_OPEN_REPARSE_POINT`, `GetSecurityInfo` with
+`BACKUP_SECURITY_INFORMATION`, and `SetSecurityInfo` with explicit owner,
+primary-group, DACL, SACL, label, attribute, scope, and protected/unprotected
+ACL flags. The updater enables `SeBackupPrivilege`, `SeRestorePrivilege`, and
+`SeSecurityPrivilege` only on a self-impersonating, OS-thread-locked token and
+restores the prior token state before returning. Missing privileges, an
+unreadable owner or SACL, any application error, or any SDDL/control mismatch
+is a fail-closed updater error. Before the first rename the original executable
+is untouched; after it, the fixed `.old` image retains the original bytes and
+descriptor and is moved back on failure. These errors continue through the
+existing `update_failed` / `update` machine contract, and the updater's staging
+defer removes any verified temporary file that still has its staging name.
 
 The installer success fixture places a BSD-compatible `mktemp` shim ahead of
 the host implementation. It rejects every supplied template that does not end

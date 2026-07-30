@@ -78,7 +78,11 @@ and invokes only `go run ./cmd/verify ci` in the Linux merge job. A separate
 native Windows job invokes `go run ./cmd/verify fast`, including the
 complete native Go test suite and its Windows-only no-follow/reparse and DACL
 tests plus mapped-executable update success, next-launch cleanup, and
-sharing-lock rollback tests, without duplicating command membership. Tests
+sharing-lock rollback tests. The mapped update tests also require equality of
+the complete Windows security descriptor under a restrictive protected DACL
+and prove a post-move descriptor-application failure restores bytes and
+descriptor, removes staging/rollback paths, and cannot report success, without
+duplicating command membership. Tests
 that execute a Unix remote shell or compare Bash script behavior are selected
 only on Unix; portable parsing, planning, host-key, environment-isolation, and
 security tests remain active on Windows.
