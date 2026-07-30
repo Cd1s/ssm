@@ -106,19 +106,14 @@ func verificationManifest() Manifest {
 			},
 			{
 				Name:          "release",
-				Purpose:       "Ticket #18 non-publishing release preflight; this is not a claim of initial-v2 release readiness.",
-				Equivalence:   "ticket_18_release_preflight",
+				Purpose:       "Non-publishing release preflight with required pinned-provenance verification.",
+				Equivalence:   "release_preflight_with_bc9",
 				Prerequisites: profilePrerequisites(),
 				Checks:        release,
 				Extensions: []Extension{
 					{
 						Name:           "migration-extension",
 						Description:    "v2 migration contract and failure-path verification",
-						RequiredBefore: "initial_v2_release",
-					},
-					{
-						Name:           "provenance-extension",
-						Description:    "keyless provenance identity and trust verification",
 						RequiredBefore: "initial_v2_release",
 					},
 				},
@@ -218,6 +213,24 @@ func releaseChecks() []Check {
 			Prerequisites: []Prerequisite{
 				{Kind: "file", Name: "install.sh", Version: "tracked"},
 			},
+		},
+		Check{
+			ID:            "release-provenance",
+			Description:   "Generate and verify test-owned keyless provenance for all six release assets without publication.",
+			Requirement:   requirementRequired,
+			Action:        Action{Kind: actionBuiltin, Name: "release-provenance"},
+			Prerequisites: []Prerequisite{},
+		},
+		Check{
+			ID:          "provenance-failure-paths",
+			Description: "Exercise pinned identity, digest binding, and byte-preserving trust failures through the updater verifier.",
+			Requirement: requirementRequired,
+			Action: commandAction("go", []string{
+				"test", "./internal/update", "-run",
+				"^(TestProvenanceIdentityMatrix|TestProvenanceDigestBinding|TestTrustFailurePreservesExecutable)$",
+				"-count=1",
+			}, nil, ""),
+			Prerequisites: goPrerequisites(),
 		},
 		Check{
 			ID:          "checksum-failure-paths",

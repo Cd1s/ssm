@@ -649,8 +649,8 @@
     },
     {
       "name": "release",
-      "purpose": "Ticket #18 non-publishing release preflight; this is not a claim of initial-v2 release readiness.",
-      "equivalence": "ticket_18_release_preflight",
+      "purpose": "Non-publishing release preflight with required pinned-provenance verification.",
+      "equivalence": "release_preflight_with_bc9",
       "prerequisites": [
         {
           "kind": "tool",
@@ -1494,6 +1494,46 @@
           ]
         },
         {
+          "id": "release-provenance",
+          "description": "Generate and verify test-owned keyless provenance for all six release assets without publication.",
+          "requirement": "required",
+          "action": {
+            "kind": "builtin",
+            "name": "release-provenance"
+          },
+          "prerequisites": []
+        },
+        {
+          "id": "provenance-failure-paths",
+          "description": "Exercise pinned identity, digest binding, and byte-preserving trust failures through the updater verifier.",
+          "requirement": "required",
+          "action": {
+            "kind": "command",
+            "command": {
+              "executable": "go",
+              "args": [
+                "test",
+                "./internal/update",
+                "-run",
+                "^(TestProvenanceIdentityMatrix|TestProvenanceDigestBinding|TestTrustFailurePreservesExecutable)$",
+                "-count=1"
+              ]
+            }
+          },
+          "prerequisites": [
+            {
+              "kind": "tool",
+              "name": "go",
+              "version": "1.25.12"
+            },
+            {
+              "kind": "capability",
+              "name": "repository-modules",
+              "version": "go-mod-download"
+            }
+          ]
+        },
+        {
           "id": "checksum-failure-paths",
           "description": "Exercise checksum selection, mismatch, and no-replacement failure paths.",
           "requirement": "required",
@@ -1528,11 +1568,6 @@
         {
           "name": "migration-extension",
           "description": "v2 migration contract and failure-path verification",
-          "required_before": "initial_v2_release"
-        },
-        {
-          "name": "provenance-extension",
-          "description": "keyless provenance identity and trust verification",
           "required_before": "initial_v2_release"
         }
       ]

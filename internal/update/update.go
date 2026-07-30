@@ -1,6 +1,7 @@
 package update
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"ssm/internal/config"
+	"ssm/internal/provenance"
 	"ssm/internal/releaseasset"
 )
 
@@ -113,11 +115,12 @@ const (
 )
 
 var (
-	httpClient      = &http.Client{Timeout: 15 * time.Second}
-	apiBaseURL      = "https://api.github.com"
-	downloadBaseURL = "https://github.com"
-	executablePath  = os.Executable
-	evalSymlinks    = filepath.EvalSymlinks
+	httpClient       = &http.Client{Timeout: 15 * time.Second}
+	apiBaseURL       = "https://api.github.com"
+	downloadBaseURL  = "https://github.com"
+	executablePath   = os.Executable
+	evalSymlinks     = filepath.EvalSymlinks
+	verifyProvenance = provenance.VerifyPublicGoodBundle
 )
 
 func flagPath() string {
@@ -145,6 +148,9 @@ func Auto(currentVersion string) error {
 	markChecked(available)
 	if sameMajor == nil {
 		return nil
+	}
+	if err := validateReleaseAssets(*sameMajor); err != nil {
+		return err
 	}
 	if err := DownloadVersion(sameMajor.TagName, false); err != nil {
 		return err
@@ -192,6 +198,9 @@ func Download(currentVersion string) (OrdinaryResult, error) {
 		}
 		return result, fmt.Errorf("no supported newer release found")
 	}
+	if err := validateReleaseAssets(*sameMajor); err != nil {
+		return result, err
+	}
 	if err := DownloadVersion(sameMajor.TagName, false); err != nil {
 		return result, err
 	}
@@ -220,6 +229,13 @@ func DownloadVersionBeforeReplace(version string, verbose bool, beforeReplace fu
 	if err != nil {
 		return err
 	}
+	provenanceBundle, err := downloadReleaseAsset(repo, version, releaseasset.ProvenanceName(asset))
+	if err != nil {
+		return err
+	}
+	if len(provenanceBundle) == 0 {
+		return fmt.Errorf("provenance for %s is empty", asset)
+	}
 
 	resp, err := getReleaseAsset(repo, version, asset)
 	if err != nil {
@@ -239,6 +255,13 @@ func DownloadVersionBeforeReplace(version string, verbose bool, beforeReplace fu
 	if err != nil {
 		return err
 	}
+	executableInfo, err := os.Stat(exe)
+	if err != nil {
+		return fmt.Errorf("inspect current binary: %w", err)
+	}
+	if !executableInfo.Mode().IsRegular() {
+		return fmt.Errorf("current binary is not a regular file")
+	}
 
 	tmpFile, err := os.CreateTemp(filepath.Dir(exe), "."+filepath.Base(exe)+".*.new")
 	if err != nil {
@@ -252,18 +275,28 @@ func DownloadVersionBeforeReplace(version string, verbose bool, beforeReplace fu
 		}
 	}()
 
-	if err := tmpFile.Chmod(0755); err != nil {
+	if err := tmpFile.Chmod(executableInfo.Mode().Perm()); err != nil {
 		_ = tmpFile.Close()
 		return err
 	}
 
 	h := sha256.New()
-	if err := copyAndVerify(tmpFile, resp.Body, h, expected); err != nil {
+	actualDigest, err := copyAndVerifyDigest(tmpFile, resp.Body, h, expected)
+	if err != nil {
 		_ = tmpFile.Close()
 		return err
 	}
 	if err := tmpFile.Close(); err != nil {
 		return err
+	}
+	verificationContext, cancelVerification := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancelVerification()
+	if err := verifyProvenance(verificationContext, provenanceBundle, provenance.Request{
+		AssetName: asset,
+		Version:   version,
+		Digest:    actualDigest,
+	}); err != nil {
+		return fmt.Errorf("provenance verification failed for %s: %w", asset, err)
 	}
 	if beforeReplace != nil {
 		if err := beforeReplace(); err != nil {
@@ -278,6 +311,17 @@ func DownloadVersionBeforeReplace(version string, verbose bool, beforeReplace fu
 	ClearFlag()
 	if verbose {
 		fmt.Printf("Updated to %s\n", version)
+	}
+	return nil
+}
+
+func validateReleaseAssets(release Release) error {
+	names := make([]string, 0, len(release.Assets))
+	for _, asset := range release.Assets {
+		names = append(names, asset.Name)
+	}
+	if err := releaseasset.ValidateReleaseNames(names); err != nil {
+		return fmt.Errorf("release %s asset selection failed: %w", release.TagName, err)
 	}
 	return nil
 }
@@ -314,6 +358,7 @@ func downloadReleaseAsset(repo, version, asset string) ([]byte, error) {
 }
 
 func checksumForAsset(data []byte, asset string) (string, error) {
+	var found string
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
@@ -332,20 +377,37 @@ func checksumForAsset(data []byte, asset string) (string, error) {
 				return "", fmt.Errorf("invalid checksum for %s", asset)
 			}
 		}
-		return sum, nil
+		if found != "" {
+			return "", fmt.Errorf("multiple checksums found for %s", asset)
+		}
+		found = sum
+	}
+	if found != "" {
+		return found, nil
 	}
 	return "", fmt.Errorf("checksum for %s not found", asset)
 }
 
 func copyAndVerify(dst io.Writer, src io.Reader, h hash.Hash, expected string) error {
+	_, err := copyAndVerifyDigest(dst, src, h, expected)
+	return err
+}
+
+func copyAndVerifyDigest(dst io.Writer, src io.Reader, h hash.Hash, expected string) ([sha256.Size]byte, error) {
+	var digest [sha256.Size]byte
 	if _, err := io.Copy(io.MultiWriter(dst, h), src); err != nil {
-		return err
+		return digest, err
 	}
-	actual := fmt.Sprintf("%x", h.Sum(nil))
+	sum := h.Sum(nil)
+	if len(sum) != sha256.Size {
+		return digest, fmt.Errorf("invalid SHA-256 result length %d", len(sum))
+	}
+	copy(digest[:], sum)
+	actual := fmt.Sprintf("%x", digest)
 	if actual != strings.ToLower(expected) {
-		return fmt.Errorf("checksum mismatch: got %s, want %s", actual, expected)
+		return digest, fmt.Errorf("checksum mismatch: got %s, want %s", actual, expected)
 	}
-	return nil
+	return digest, nil
 }
 
 func shouldCheck() bool {

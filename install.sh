@@ -22,14 +22,26 @@ esac
 ext=""
 [ "$os" = "windows" ] && ext=".exe"
 asset="ssm-$os-$arch$ext"
+latest_url="https://github.com/$repo/releases/latest"
 url="https://github.com/$repo/releases/latest/download/$asset"
 checksums_url="https://github.com/$repo/releases/latest/download/checksums.txt"
+provenance="$asset.sigstore.json"
+provenance_url="https://github.com/$repo/releases/latest/download/$provenance"
 
 tmp="$(mktemp)"
 checksums="$(mktemp)"
-trap 'rm -f "$tmp" "$checksums"' EXIT
+bundle="$(mktemp)"
+trap 'rm -f "$tmp" "$checksums" "$bundle"' EXIT
+resolved_release_url="$(curl -fsSL -o /dev/null -w '%{url_effective}' "$latest_url")"
+release_tag="${resolved_release_url#*/releases/tag/}"
+release_tag="${release_tag%%[/?#]*}"
+if ! printf '%s\n' "$release_tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+  echo "resolved release identity is invalid" >&2
+  exit 1
+fi
 curl -fsSL "$url" -o "$tmp"
 curl -fsSL "$checksums_url" -o "$checksums"
+curl -fsSL "$provenance_url" -o "$bundle"
 expected="$(awk -v asset="$asset" '$2 == asset { print $1 }' "$checksums")"
 if [ -z "$expected" ]; then
   echo "checksum for $asset not found" >&2
@@ -54,9 +66,42 @@ if [ "$actual" != "$expected" ]; then
   echo "checksum mismatch for $asset" >&2
   exit 1
 fi
+if ! command -v gh >/dev/null 2>&1; then
+  echo "GitHub CLI with attestation verification is required" >&2
+  exit 1
+fi
+verify_identity() {
+  identity="$1"
+  verified="$(gh attestation verify "$tmp" \
+    --bundle "$bundle" \
+    --repo Cd1s/ssm \
+    --cert-identity "$identity" \
+    --cert-oidc-issuer https://token.actions.githubusercontent.com \
+    --predicate-type https://slsa.dev/provenance/v1 \
+    --deny-self-hosted-runners \
+    --format json \
+    --jq "[.[] | .verificationResult | select(
+      (.statement.subject | length) == 1 and
+      .statement.subject[0].name == \"$asset\" and
+      (.statement.subject[0].digest | keys) == [\"sha256\"] and
+      ([.verifiedTimestamps[].timestamp] |
+        (length > 0 and all(.[]; . >= \"2026-07-30T00:00:00Z\")))
+    )] | length == 1")"
+  [ "$verified" = "true" ]
+}
+tag_identity="https://github.com/Cd1s/ssm/.github/workflows/release.yml@refs/tags/$release_tag"
+main_identity="https://github.com/Cd1s/ssm/.github/workflows/release.yml@refs/heads/main"
+if ! verify_identity "$tag_identity" 2>/dev/null && ! verify_identity "$main_identity"; then
+  echo "release provenance does not match the reviewed identity set" >&2
+  exit 1
+fi
 chmod 755 "$tmp"
 mkdir -p "$prefix" "$config_dir"
-install -m 755 "$tmp" "$prefix/ssm"
+staged="$(mktemp "$prefix/.ssm.XXXXXX.new")"
+trap 'rm -f "$tmp" "$checksums" "$bundle" "$staged"' EXIT
+install -m 755 "$tmp" "$staged"
+mv -f "$staged" "$prefix/ssm"
+staged=""
 ln -sfn "$prefix/ssm" "$prefix/sshctl"
 chmod 700 "$config_dir"
 printf '%s\n' "$repo" > "$config_dir/update_repo"

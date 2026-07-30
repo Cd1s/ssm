@@ -11,6 +11,7 @@ import (
 
 	"ssm/internal/cloud"
 	"ssm/internal/config"
+	"ssm/internal/releaseasset"
 	"ssm/internal/synctransaction"
 )
 
@@ -154,9 +155,11 @@ func setMigrationTestExecutable(t *testing.T) {
 
 func migrationTestRelease() Release {
 	release := Release{}
-	release.Assets = []struct {
-		Name string `json:"name"`
-	}{{Name: assetName()}}
+	for _, name := range releaseasset.ExpectedReleaseNames() {
+		release.Assets = append(release.Assets, struct {
+			Name string `json:"name"`
+		}{Name: name})
+	}
 	return release
 }
 

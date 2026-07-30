@@ -1,6 +1,6 @@
 # Verification manifest and BC-10 migration
 
-Status: implemented by GitHub Issue #18
+Status: implemented by GitHub Issues #18 and #28
 
 The checked-in Go manifest at `cmd/verify` is the sole owner of verification
 profile membership, ordering, exact actions and preparation actions,
@@ -127,7 +127,11 @@ then adds, in order:
 4. a non-empty `RELEASE_NOTES.md` section matching the source version;
 5. `sh -n install.sh`, because the release workflow publishes that installer;
 6. in-memory SHA-256 computation for the six assets and `install.sh`;
-7. updater checksum selection, mismatch, and no-replacement failure tests.
+7. synthetic, test-owned keyless provenance generation and verification for
+   every temporary release asset;
+8. pinned identity, digest binding, and byte-preserving provenance failure
+   tests through the updater's production verifier core;
+9. updater checksum selection, mismatch, and no-replacement failure tests.
 
 No separate check called “release source policy” is added. The live Issue #18
 acceptance text names the current source/version check, and the accepted
@@ -139,13 +143,12 @@ trust rule here would conflict with the audit's explicit non-goal of changing
 updater trust or release signing. The exact ASCII `X.Y.Z` source-version gate
 therefore remains the authoritative bounded source check for Issue #18.
 
-The release profile separately exposes metadata named `migration-extension`
-and `provenance-extension`. These are not executable Ticket #18 checks and do not
-appear in check results as passed, failed, or unavailable. Their manifest
-metadata says `required_before: initial_v2_release`, preserving the future
-migration/provenance seams required by Issue #18 while honoring ADR 0003 and
-Decisions 12–13: the initial v2 release remains blocked until later tickets add
-and pass those real gates.
+The release profile still exposes `migration-extension` metadata. BC-9
+promotes the former `provenance-extension` metadata to two required executable
+checks: `release-provenance` and `provenance-failure-paths`. Their generated
+roots, certificates, signed statements, and executable subjects are
+test-owned and remain inside verifier-controlled temporary storage. The
+initial v2 release remains blocked on the separate migration extension.
 
 Accordingly, the exact command
 
@@ -153,11 +156,12 @@ Accordingly, the exact command
 go run ./cmd/verify release
 ```
 
-returns zero only when all executable Ticket #18 release-preflight checks pass.
+returns zero only when all executable release-preflight checks, including the
+BC-9 provenance gates, pass.
 Its terminal summary is `preflight_passed`, and its profile purpose and
-equivalence explicitly say that this is not a claim of initial-v2 release
-readiness. When later tickets implement either extension, they must promote it
-from metadata into a required executable check before the initial v2 release.
+equivalence explicitly name required pinned-provenance verification. This is
+still not a claim of initial-v2 readiness until the remaining migration
+extension is promoted.
 
 No approved top-level action merges, tags, installs, replaces an executable,
 creates or uploads a release, or writes release artifacts into the repository.
@@ -170,8 +174,11 @@ Manual release tags cross into Bash through the validation step environment,
 remain quoted data, and must match the exact `vMAJOR.MINOR.PATCH` grammar
 before the step writes any release outputs.
 Builds depend on that preflight and use the same six exact names and
-`-buildvcs=false` flags. Only the final `publish` job has `contents: write`,
-and it depends on both preflight and build. Exact checksum inputs, release-note
+`-buildvcs=false` flags. The build job alone has explicit identity-token,
+attestation, and artifact-metadata write permission. It attests each exact
+build output before uploading the binary and adjacent bundle together. Only
+the final `publish` job has `contents: write`, and it depends on both preflight
+and build. Exact checksum inputs, provenance subjects and names, release-note
 extraction, published files, permissions, and job dependencies are covered by
 semantic tests and a complete workflow golden.
 

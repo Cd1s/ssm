@@ -1,6 +1,21 @@
 # Release Notes Draft
 
-## v2.0.0 (draft)
+## Upcoming v2.0.0 (draft)
+
+### Pinned release provenance
+
+- Automatic and manual same-major updates, explicitly authorized major
+  migrations, and installer replacements now require both the selected
+  SHA-256 digest and keyless provenance for the exact downloaded asset.
+- Provenance is pinned to `Cd1s/ssm`, the reviewed release workflow identity,
+  GitHub Actions' OIDC issuer, the supported six-target manifest, and the
+  reviewed identity-rotation state. Missing, malformed, unverifiable,
+  wrong-subject, or expired provenance leaves the existing executable intact.
+- Release builds publish one adjacent Sigstore bundle per binary. Checksums
+  remain an independent digest input but cannot authorize replacement alone.
+- On a trust failure, keep using the preserved executable and wait for a
+  repaired release through a reviewed identity. Installer users need a current
+  GitHub CLI with attestation verification; there is no verification skip.
 
 ### Reviewed saved-key publication
 

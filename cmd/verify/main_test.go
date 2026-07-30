@@ -530,6 +530,42 @@ func TestReleaseChecksumAction(t *testing.T) {
 	}
 }
 
+func TestReleaseProvenanceForEveryTarget(t *testing.T) {
+	tempDir := t.TempDir()
+	for _, target := range releaseasset.SupportedTargets() {
+		name := releaseasset.Name(target.GOOS, target.GOARCH)
+		if err := os.WriteFile(filepath.Join(tempDir, name), []byte("synthetic artifact:"+name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result := executeBuiltin("release-provenance", actionContext{
+		TempDir: tempDir,
+		Version: "1.2.3",
+	})
+	if result.Status != statusPassed {
+		t.Fatalf("release provenance status = %q (%s), want passed", result.Status, result.Detail)
+	}
+	wantDetail := fmt.Sprintf(
+		"generated and verified keyless provenance for %d release assets",
+		len(releaseasset.SupportedTargets()),
+	)
+	if result.Detail != wantDetail {
+		t.Fatalf("release provenance detail = %q, want %q", result.Detail, wantDetail)
+	}
+
+	first := releaseasset.SupportedTargets()[0]
+	if err := os.Remove(filepath.Join(tempDir, releaseasset.Name(first.GOOS, first.GOARCH))); err != nil {
+		t.Fatal(err)
+	}
+	result = executeBuiltin("release-provenance", actionContext{
+		TempDir: tempDir,
+		Version: "1.2.3",
+	})
+	if result.Status != statusFailed {
+		t.Fatalf("missing release asset provenance status = %q, want failed", result.Status)
+	}
+}
+
 func TestReleaseAssetsMatchProductionUpdater(t *testing.T) {
 	release, ok := findProfile(verificationManifest(), "release")
 	if !ok {
@@ -781,6 +817,45 @@ func TestReleaseWorkflowUsesCredentialFreeVerifierPreflightAndManifestParity(t *
 	for _, wildcard := range []string{"ssm-linux-*", "ssm-darwin-*", "ssm-windows-*"} {
 		if strings.Contains(workflow, wildcard) {
 			t.Errorf("release workflow retains drift-prone wildcard %q", wildcard)
+		}
+	}
+}
+
+func TestReleaseWorkflowProducesPinnedProvenance(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(data)
+	for description, required := range map[string]string{
+		"build identity permission":   "  build:\n    needs: preflight\n    permissions:\n      contents: read\n      id-token: write\n      attestations: write\n      artifact-metadata: write\n",
+		"official attestation action": "      - id: provenance\n        name: Attest exact release asset\n        uses: actions/attest@v4\n",
+		"exact build subject":         "          subject-path: ${{ github.workspace }}/${{ matrix.asset }}\n",
+		"adjacent bundle output":      `cp "${{ steps.provenance.outputs.bundle-path }}" "${{ matrix.asset }}.sigstore.json"`,
+		"binary artifact upload":      "            ${{ matrix.asset }}\n",
+		"bundle artifact upload":      "            ${{ matrix.asset }}.sigstore.json\n",
+		"workflow identity input":     "          RELEASE_WORKFLOW_REF: ${{ github.workflow_ref }}\n",
+		"main workflow identity":      `expected_workflow_ref="Cd1s/ssm/.github/workflows/release.yml@refs/heads/main"`,
+		"tag workflow identity":       `expected_workflow_ref="Cd1s/ssm/.github/workflows/release.yml@refs/tags/$tag"`,
+	} {
+		if !strings.Contains(workflow, required) {
+			t.Errorf("release workflow lacks %s surface %q", description, required)
+		}
+	}
+	if got := strings.Count(workflow, "id-token: write"); got != 1 {
+		t.Errorf("release identity-token permission count = %d, want build job only", got)
+	}
+	if got := strings.Count(workflow, "attestations: write"); got != 1 {
+		t.Errorf("release attestation-write permission count = %d, want build job only", got)
+	}
+	if strings.Contains(workflow, "subject-path: checksums.txt") ||
+		strings.Contains(workflow, "subject-checksums:") {
+		t.Fatal("release provenance is tied to replaceable checksum data instead of exact build outputs")
+	}
+	for _, target := range releaseasset.SupportedTargets() {
+		bundle := releaseasset.ProvenanceName(releaseasset.Name(target.GOOS, target.GOARCH))
+		if got := strings.Count(workflow, "\n            "+bundle+"\n"); got != 1 {
+			t.Errorf("published provenance entry count for %s = %d, want 1", bundle, got)
 		}
 	}
 }
@@ -2370,6 +2445,7 @@ func TestRepresentativeRealReleaseActionsAreNonMutating(t *testing.T) {
 		"asset-windows-arm64": true,
 		"release-notes":       true,
 		"release-checksums":   true,
+		"release-provenance":  true,
 	}
 	var representative []Check
 	for _, check := range releaseChecks() {
@@ -2740,6 +2816,36 @@ func TestReleaseStrictlyContainsCI(t *testing.T) {
 	}
 }
 
+func TestReleaseProvenanceIsRequiredGate(t *testing.T) {
+	release, ok := findProfile(verificationManifest(), "release")
+	if !ok {
+		t.Fatal("release profile not found")
+	}
+	required := map[string]bool{
+		"release-provenance":       false,
+		"provenance-failure-paths": false,
+	}
+	for _, check := range release.Checks {
+		if _, tracked := required[check.ID]; !tracked {
+			continue
+		}
+		if check.Requirement != requirementRequired {
+			t.Fatalf("release provenance gate %q requirement = %q, want required", check.ID, check.Requirement)
+		}
+		required[check.ID] = true
+	}
+	for id, found := range required {
+		if !found {
+			t.Errorf("required release provenance gate %q is missing", id)
+		}
+	}
+	for _, extension := range release.Extensions {
+		if extension.Name == "provenance-extension" {
+			t.Fatal("provenance remains future metadata instead of an executable release gate")
+		}
+	}
+}
+
 func TestReleaseExtensionsAreMetadataNotChecks(t *testing.T) {
 	release, ok := findProfile(verificationManifest(), "release")
 	if !ok {
@@ -2755,11 +2861,6 @@ func TestReleaseExtensionsAreMetadataNotChecks(t *testing.T) {
 		{
 			Name:           "migration-extension",
 			Description:    "v2 migration contract and failure-path verification",
-			RequiredBefore: "initial_v2_release",
-		},
-		{
-			Name:           "provenance-extension",
-			Description:    "keyless provenance identity and trust verification",
 			RequiredBefore: "initial_v2_release",
 		},
 	}
@@ -2786,7 +2887,7 @@ func TestReleaseExtensionsAreMetadataNotChecks(t *testing.T) {
 	}
 	result, err := executeProfile(context.Background(), runtimeManifest, "release", deps)
 	if err != nil {
-		t.Fatalf("execute Ticket #18 release preflight: %v", err)
+		t.Fatalf("execute release preflight: %v", err)
 	}
 	if result.Status != statusPreflightPassed {
 		t.Fatalf("release preflight status = %q, want %q", result.Status, statusPreflightPassed)

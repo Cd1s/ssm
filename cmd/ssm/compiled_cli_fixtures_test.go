@@ -26,6 +26,7 @@ import (
 
 	"ssm/internal/cloud"
 	"ssm/internal/config"
+	"ssm/internal/releaseasset"
 )
 
 var compiledUpdateServer *compiledUpdateFixture
@@ -804,7 +805,16 @@ func (f *compiledUpdateFixture) serveHTTP(w http.ResponseWriter, r *http.Request
 	switch {
 	case r.URL.Path == releasesPath:
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `[{"tag_name":%q,"name":"Fixture release","body":"Fixture migration release notes","assets":[{"name":%q}]}]`, f.version, compiledUpdateAssetName())
+		assets := make([]string, 0, len(releaseasset.ExpectedReleaseNames()))
+		for _, name := range releaseasset.ExpectedReleaseNames() {
+			assets = append(assets, fmt.Sprintf(`{"name":%q}`, name))
+		}
+		_, _ = fmt.Fprintf(
+			w,
+			`[{"tag_name":%q,"name":"Fixture release","body":"Fixture migration release notes","assets":[%s]}]`,
+			f.version,
+			strings.Join(assets, ","),
+		)
 	case strings.HasPrefix(r.URL.Path, releasePrefix) && strings.HasSuffix(r.URL.Path, "/checksums.txt"):
 		digest := sha256.Sum256(f.replacement)
 		_, _ = fmt.Fprintf(w, "%x  %s\n", digest, compiledUpdateAssetName())
