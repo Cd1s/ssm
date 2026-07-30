@@ -419,19 +419,16 @@ func rollbackWindowsReplacement(
 	if security == nil || security.target == windows.InvalidHandle {
 		return fmt.Errorf("Windows rollback image handle is unavailable")
 	}
-	originalIdentity, _, err := inspectWindowsReplacementHandleObject(
+	if err := requireWindowsReplacementHandleIdentity(
 		security.target,
+		security.targetIdentity,
 		"Windows rollback image",
-	)
-	if err != nil {
+	); err != nil {
 		return err
-	}
-	if originalIdentity != security.targetIdentity {
-		return fmt.Errorf("Windows rollback image identity changed after inspection")
 	}
 	currentHandle, openErr := openWindowsReplacementFile(target, 0)
 	if openErr == nil {
-		currentIdentity, _, inspectErr := inspectWindowsReplacementHandleObject(
+		currentIdentity, inspectErr := inspectWindowsReplacementHandle(
 			currentHandle,
 			"failed installed Windows executable",
 		)
@@ -451,35 +448,18 @@ func rollbackWindowsReplacement(
 	if err := renameWindowsReplacementHandle(security.target, target, true); err != nil {
 		return err
 	}
-	restoredIdentity, _, err := inspectWindowsReplacementHandleObject(
+	if err := requireWindowsReplacementHandleIdentity(
 		security.target,
+		security.targetIdentity,
 		"restored Windows executable",
-	)
-	if err != nil {
+	); err != nil {
 		return err
 	}
-	if restoredIdentity != security.targetIdentity {
-		return fmt.Errorf("restored Windows executable identity changed after inspection")
-	}
-	canonicalHandle, err := openWindowsReplacementFile(target, 0)
-	if err != nil {
-		return err
-	}
-	canonicalIdentity, _, inspectErr := inspectWindowsReplacementHandleObject(
-		canonicalHandle,
+	return requireWindowsReplacementPathIdentity(
+		target,
+		security.targetIdentity,
 		"restored Windows executable",
 	)
-	closeErr := windows.CloseHandle(canonicalHandle)
-	if inspectErr != nil {
-		return inspectErr
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close restored Windows executable inspection handle: %w", closeErr)
-	}
-	if canonicalIdentity == security.targetIdentity {
-		return nil
-	}
-	return fmt.Errorf("restored Windows executable path has an unexpected identity")
 }
 
 type windowsFileRenameInfo struct {

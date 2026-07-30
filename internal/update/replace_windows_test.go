@@ -49,6 +49,7 @@ func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("source substitution at the rename gap is blocked", testWindowsSourceSubstitutionAtRenameGap)
 	t.Run("canonical substitution at the rename gap cannot be installed", testWindowsCanonicalSubstitutionAtRenameGap)
 	t.Run("rollback replaces an unexpected canonical substitute", testWindowsRollbackReplacesCanonicalSubstitute)
+	t.Run("rollback rejects a late hard link to its image", testWindowsRollbackRejectsLateHardLink)
 	t.Run("late hard links cannot compromise the canonical target", testWindowsLateHardLinksCannotCompromiseTarget)
 	t.Run("hard-linked targets and stages fail closed", testWindowsHardLinksFailClosed)
 	t.Run("rollback failure preserves recovery evidence", testWindowsRollbackFailurePreservesEvidence)
@@ -693,6 +694,61 @@ func testWindowsRollbackReplacesCanonicalSubstitute(t *testing.T) {
 	}
 	if _, err := os.Stat(windowsReplacementRecord(target)); !os.IsNotExist(err) {
 		t.Fatalf("successful object-bound rollback retained control state: %v", err)
+	}
+}
+
+func testWindowsRollbackRejectsLateHardLink(t *testing.T) {
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	target := filepath.Join(directory, "ssm.exe")
+	stage := filepath.Join(directory, ".ssm.rollback-hard-link-stage.exe")
+	ready := filepath.Join(directory, "rollback-hard-link.ready")
+	proceed := filepath.Join(directory, "rollback-hard-link.proceed")
+	alias := filepath.Join(directory, "rollback-hard-link-alias.exe")
+	copyWindowsTestExecutable(t, testExecutable, target, nil)
+	copyWindowsTestExecutable(t, testExecutable, stage, []byte("\nROLLBACK_HARD_LINK_STAGE\n"))
+	original, err := os.ReadFile(target) //nolint:gosec // test-owned mapped executable
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updater := windowsReplacementTestCommand(target, stage)
+	updater.Env = append(updater.Env,
+		windowsReplacementFailEnv+"=1",
+		windowsReplacementPauseEnv+"="+windowsReplacementPhaseAfterBackup,
+		windowsReplacementReadyEnv+"="+ready,
+		windowsReplacementGoEnv+"="+proceed,
+		windowsExpectedFailureEnv+"=rollback failed: Windows rollback image has 2 hard links",
+	)
+	var updaterOutput bytes.Buffer
+	updater.Stdout = &updaterOutput
+	updater.Stderr = &updaterOutput
+	if err := updater.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForWindowsTestPath(t, ready)
+
+	backup := windowsReplacementBackup(target)
+	if err := os.Link(backup, alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(proceed, []byte("continue"), 0o600); err != nil { //nolint:gosec // test-owned synchronization fixture
+		t.Fatal(err)
+	}
+	if waitErr := updater.Wait(); waitErr != nil {
+		t.Fatalf("late rollback hard-link fixture failed: %v; output=%q", waitErr, updaterOutput.String())
+	}
+
+	assertWindowsFileBytes(t, backup, original)
+	assertWindowsFileBytes(t, alias, original)
+	if _, err := os.Stat(windowsReplacementRecord(target)); err != nil {
+		t.Fatalf("late rollback hard link did not retain ownership state: %v", err)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("late rollback hard link left an unexpected canonical target: %v", err)
 	}
 }
 
