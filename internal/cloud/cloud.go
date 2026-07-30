@@ -179,7 +179,7 @@ func Pull(cfg *CloudConfig) (string, error) {
 
 	if resp.StatusCode == 404 {
 		config.Debug("pull: no vault on server (404)")
-		return "", fmt.Errorf("no vault found on server; review pending mutations, then choose ssm push --only <transaction-id> or ssm push --all")
+		return "", fmt.Errorf("no vault found on server; review pending mutations, then choose sshctl --json push --only <transaction-id> or sshctl --json push --all")
 	}
 	if resp.StatusCode != 200 {
 		config.Debug("pull: server error %d", resp.StatusCode)
@@ -218,7 +218,7 @@ func RemoteETag(cfg *CloudConfig) (string, error) {
 		return "", err
 	}
 	if !identity.Exists {
-		return "", fmt.Errorf("no vault found on server; review pending mutations, then choose ssm push --only <transaction-id> or ssm push --all")
+		return "", fmt.Errorf("no vault found on server; review pending mutations, then choose sshctl --json push --only <transaction-id> or sshctl --json push --all")
 	}
 	return identity.Value, nil
 }

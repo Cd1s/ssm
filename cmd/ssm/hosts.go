@@ -523,7 +523,7 @@ Auth (choose one when required):
   --password-file <path>
 
 Use upsert for retry-safe agent automation. Secrets are never accepted inline.
-Mutations are saved locally; verify the host, then publish its returned transaction with sshctl push --only <transaction-id>.
+Mutations are saved locally; verify the host, then publish its returned transaction with sshctl --json push --only <transaction-id>.
 With configured auto-sync, remote refresh errors stop the command; --offline is an explicit stale-state override.
 `)
 }

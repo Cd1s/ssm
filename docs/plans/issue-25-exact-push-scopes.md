@@ -81,10 +81,10 @@ publication adapter with compiled binaries.
 
 | Public entry point | Command adapter | Publication scope and owner |
 | --- | --- | --- |
-| `ssm push --only <id>` | `runPush` | one exact ID through `PublicationSession.Publish` |
-| `sshctl push --only <id>` | compatibility command name into the same `runPush` | one exact ID through the same owner |
-| `ssm push --all` | `runPush` | invocation-start ordered snapshot through the same owner |
-| `sshctl push --all` | compatibility command name into the same `runPush` | invocation-start ordered snapshot through the same owner |
+| `ssm --json push --only <transaction-id>` | `runPush` | one exact ID through `PublicationSession.Publish` |
+| `sshctl --json push --only <transaction-id>` | compatibility command name into the same `runPush` | one exact ID through the same owner |
+| `ssm --json push --all` | `runPush` | invocation-start ordered snapshot through the same owner |
+| `sshctl --json push --all` | compatibility command name into the same `runPush` | invocation-start ordered snapshot through the same owner |
 | `ssm host|hosts add|update|upsert --verify --push` | `runHostCommand` → `pushTransactions` | only the newly verified transaction ID through the same owner |
 | `sshctl host|hosts add|update|upsert --verify --push` | same host adapter | only the newly verified transaction ID through the same owner |
 | request v1 `host.add|host.update|host.upsert` with `verify:true,push:true` | strict request adapter → `runHostCommand` | only the newly verified transaction ID through the same owner |
@@ -159,7 +159,7 @@ review sshctl --offline --json doctor and preserve the local vault and sync-conf
 6. Review the returned transaction and publish only that ID:
 
    ```text
-   sshctl --json push --only <transaction_id>
+   sshctl --json push --only <transaction-id>
    ```
 
 This sequence makes the remote baseline explicit before a new reviewed

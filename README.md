@@ -27,8 +27,8 @@ sshctl host search prod-web --json       # 只返回候选，不自动选择或�
 sshctl host upsert prod-api --host 203.0.113.10 --user root --port 22 --key-file /secure/prod-api.key --verify --json
 sshctl host update prod-api --port 2222 --verify --json
 sshctl host show prod-api --json
-sshctl push --only <transaction-id>
-sshctl push --all
+sshctl --json push --only <transaction-id>
+sshctl --json push --all
 
 # 单条简单命令：最快路径，不创建 request 文件
 sshctl --json run <alias> --argv hostname
@@ -142,7 +142,7 @@ Agent 排障示例：
 
 - alias miss：检查 `sshctl --json host list` 或 `host search`；绝不自动执行 suggestion。
 - sync pull failure：停止；修复连接，或仅在明确接受 stale inventory 后使用 `--offline`，不会静默 fallback。
-- sync push failure：检查 `status.pending_mutations`，重试 `push --only <same-id>`；不得扩大为 push-all。
+- sync push failure：检查 `status.pending_mutations`，使用同一个返回 ID 重试 `sshctl --json push --only <transaction-id>`；不得扩大为 `sshctl --json push --all`。
 - host-key change：先 `host-key inspect --json`，out-of-band 核验 `observed_fingerprint`，再 exact `accept ... --yes`；不得自动 remove/rescan。
 - remote failure：`remote_failed|remote_script_failed` 表示 SSH transport 已成功；依据 `stage`、`stderr` 和 remote exit（包括 255）处理，不得误判为 transport failure。
 - transfer failure：依据 `stage`、`bytes_sent`、`bytes_reused`、`resume`、`integrity`；不得 append incompatible partial。
@@ -211,7 +211,7 @@ Host request 使用 `op: host.upsert|host.update|...` 与嵌套 `host` 字段，
 
 结构化 host 变更会先确认远端 vault 已刷新；`--verify` 使用内存中的候选 vault 建连并运行 `hostname; uname -sr`，失败返回 `verification_failed`、`applied:false`，加密 vault 不发生变化。成功后才原子保存并返回 `sync_pending:true`。`--push` 必须和 `--verify` 一起使用；同步失败时本地变更保留并返回 `sync_push_failed`。只有明确接受本地数据可能过期时才使用 `--offline`。
 
-`doctor <alias> --json` 在 exact miss 时返回 `resolved_alias` 和安全的 `candidates`，但绝不选择候选或发起连接；同时报告 local/remote vault 状态、最近 pull/push、pending 状态，以及最近一次 reviewed merge 的非敏感 alias/key-name conflict 元数据。若本地与远端从同一 cached ETag 后同时变化，自动刷新返回 `sync_conflict` 并保留两端，`sshctl --offline --json doctor` 会显示 `sync_conflict` 的非敏感 blob 标识。检查 `merge_report.conflicts`/`sync_conflict` 后，显式选择 pull，或创建 reviewed transaction 并用 `push --only <transaction-id>` 发布。空 ledger 冲突必须遵循上面的恢复流程。
+`doctor <alias> --json` 在 exact miss 时返回 `resolved_alias` 和安全的 `candidates`，但绝不选择候选或发起连接；同时报告 local/remote vault 状态、最近 pull/push、pending 状态，以及最近一次 reviewed merge 的非敏感 alias/key-name conflict 元数据。若本地与远端从同一 cached ETag 后同时变化，自动刷新返回 `sync_conflict` 并保留两端，`sshctl --offline --json doctor` 会显示 `sync_conflict` 的非敏感 blob 标识。检查 `merge_report.conflicts`/`sync_conflict` 后，显式选择 pull，或创建 reviewed transaction 并用 `sshctl --json push --only <transaction-id>` 发布。空 ledger 冲突必须遵循上面的恢复流程。
 
 ### Agent 舰队：map 并行
 
@@ -257,7 +257,7 @@ ssm login --server <sync-server-url> --email <email> --password-file <sync-passw
 sshctl sync
 ```
 
-中心服务器只保存加密 vault blob，不解密 SSH 密码或私钥。`sshctl list/run/status` 和 `ssm list/exec` 会在读取 vault 前检测远端 ETag；远端有新版本时会自动拉取。Agent host mutation 以 transaction 留在本地：单个 reviewed change 用 `push --only <transaction-id>`；只有审查调用开始时 pending 集合中的每个 mutation 后才用 `push --all`。裸 `push` 无效，并且不会解锁 vault 或发出 HTTP 请求。
+中心服务器只保存加密 vault blob，不解密 SSH 密码或私钥。`sshctl list/run/status` 和 `ssm list/exec` 会在读取 vault 前检测远端 ETag；远端有新版本时会自动拉取。Agent host mutation 以 transaction 留在本地：单个 reviewed change 用 `sshctl --json push --only <transaction-id>`；只有审查调用开始时 pending 集合中的每个 mutation 后才用 `sshctl --json push --all`。裸 `push` 无效，并且不会解锁 vault 或发出 HTTP 请求。
 
 ## 中心服务器
 
@@ -300,7 +300,7 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 然后执行 sshctl sync，用 sshctl status 和 sshctl list 验证。
 简单固定命令直接使用 sshctl --json run <alias> --argv ...；连续简单命令使用 sshctl run <alias> --stream。
 动态或不可信参数使用 sshctl request --file <json>：字面参数放 argv 数组，脚本使用 script_file/script_args，secret_files 只放路径。
-新增/修改服务器用 host.upsert/host.update request，保持 verify:true；成功后只用 push --only 发布返回的 transaction_id，审查全部 pending mutation 后才可 push --all。
+新增/修改服务器用 host.upsert/host.update request，保持 verify:true；成功后只用 sshctl --json push --only <transaction-id> 发布返回的 transaction_id，审查全部 pending mutation 后才可用 sshctl --json push --all。
 兼容 CLI 中字面参数用 --argv，复杂脚本用 --preflight -f；不要把生成脚本塞进 bash -c。
 ```
 

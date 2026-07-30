@@ -21,6 +21,8 @@ var (
 	executableNamePattern  = regexp.MustCompile(`(?i)\b(?:sshctl|ssm)(?:\.exe)?\b`)
 	lineContinuation       = regexp.MustCompile(`\\\r?\n[ \t]*`)
 	pushWordPattern        = regexp.MustCompile(`(?i)\bpush\b`)
+	pushOnlyFlagPattern    = regexp.MustCompile("(?i)\\bpush\\b[ \t`'\"]+--only(?:\\b|=)")
+	instructionalPushOnly  = regexp.MustCompile(`(?i)(?:\b(?:use|uses|using|run|runs|running|invoke|invokes|invoking|retry|retries|retrying|re-?run|publish|publishes|publishing|then)\b|用|使用|执行|运行|重试|发布).{0,160}$`)
 	explicitScopeAfterPush = regexp.MustCompile(
 		"(?i)^[ \t\r\n`'\"]*--(?:all\\b|only(?:\\b|=))",
 	)
@@ -72,7 +74,7 @@ func TestActivePushGuidanceRequiresExplicitPublicationScope(t *testing.T) {
 		path := path
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
-			for _, violation := range scanPushGuidance(sources[path]) {
+			for _, violation := range scanPushGuidanceSource(path, sources[path]) {
 				t.Errorf("%s:%d %s: %s", path, violation.line, violation.reason, violation.excerpt)
 			}
 		})
@@ -86,8 +88,13 @@ type pushGuidanceViolation struct {
 }
 
 func scanPushGuidance(document string) []pushGuidanceViolation {
-	active, violations := excludeHistoricalPushGuidance(document)
+	return scanPushGuidanceSource("", document)
+}
+
+func scanPushGuidanceSource(path, document string) []pushGuidanceViolation {
+	active, violations := activePushGuidance(path, document)
 	violations = append(violations, scanVaguePushAdvice(active)...)
+	violations = append(violations, scanPushOnlyValueSemantics(active)...)
 	for _, pattern := range stalePushClaims {
 		for _, match := range pattern.FindAllStringIndex(active, -1) {
 			violations = append(violations, pushGuidanceViolation{
@@ -114,6 +121,103 @@ func scanPushGuidance(document string) []pushGuidanceViolation {
 		}
 	}
 	return violations
+}
+
+func activePushGuidance(path, document string) (string, []pushGuidanceViolation) {
+	if !isProductionGoSource(path) {
+		return excludeHistoricalPushGuidance(document)
+	}
+
+	var violations []pushGuidanceViolation
+	for _, marker := range []string{historicalBegin, historicalEnd} {
+		offset := 0
+		for {
+			index := strings.Index(document[offset:], marker)
+			if index < 0 {
+				break
+			}
+			index += offset
+			violations = append(violations, pushGuidanceViolation{
+				line:    lineAt(document, index),
+				reason:  "uses a historical exclusion marker in production Go",
+				excerpt: marker,
+			})
+			offset = index + len(marker)
+		}
+	}
+	return document, violations
+}
+
+func scanPushOnlyValueSemantics(document string) []pushGuidanceViolation {
+	normalized := lineContinuation.ReplaceAllString(document, " ")
+	var violations []pushGuidanceViolation
+	for index, line := range strings.Split(normalized, "\n") {
+		for _, match := range pushOnlyFlagPattern.FindAllStringIndex(line, -1) {
+			executable := lineContainsExecutablePushInvocation(line, match[0])
+			if !executable && !instructionalPushOnly.MatchString(line[:match[0]]) {
+				continue
+			}
+			equalsForm := strings.HasSuffix(line[match[0]:match[1]], "=")
+			value, valid := explicitPushOnlyValue(equalsForm, line[match[1]:])
+			if !valid {
+				violations = append(violations, pushGuidanceViolation{
+					line:    index + 1,
+					reason:  "uses --only without a non-empty transaction ID",
+					excerpt: compactExcerpt(line[match[0]:]),
+				})
+				continue
+			}
+			if value != "<transaction-id>" &&
+				(!executable || strings.HasPrefix(value, "<") || value == "transaction_id") {
+				violations = append(violations, pushGuidanceViolation{
+					line:    index + 1,
+					reason:  "uses a non-canonical instructional transaction ID placeholder",
+					excerpt: compactExcerpt(line[match[0]:]),
+				})
+			}
+		}
+	}
+	return violations
+}
+
+func explicitPushOnlyValue(equalsForm bool, remainder string) (string, bool) {
+	if equalsForm &&
+		(remainder == "" || strings.ContainsRune(" \t\r\n", rune(remainder[0]))) {
+		return "", false
+	}
+	remainder = strings.TrimLeft(remainder, " \t\r\n")
+	if remainder == "" {
+		return "", false
+	}
+
+	var value string
+	if strings.ContainsRune("`'\"", rune(remainder[0])) {
+		quote := remainder[0]
+		end := strings.IndexByte(remainder[1:], quote)
+		if end < 0 {
+			return "", false
+		}
+		value = strings.TrimSpace(remainder[1 : end+1])
+	} else {
+		end := strings.IndexAny(remainder, " \t\r\n`'\",.;|&")
+		if end < 0 {
+			end = len(remainder)
+		}
+		value = normalizeCommandToken(remainder[:end])
+	}
+	if equalsForm {
+		return value, value != ""
+	}
+	return value, value != "" && !strings.HasPrefix(value, "-")
+}
+
+func lineContainsExecutablePushInvocation(line string, pushStart int) bool {
+	for _, match := range executableNamePattern.FindAllStringIndex(line[:pushStart], -1) {
+		if commandNameAfterExecutable(line[match[0]:]) == "push" {
+			return true
+		}
+	}
+	return false
 }
 
 func scanVaguePushAdvice(document string) []pushGuidanceViolation {
@@ -206,8 +310,16 @@ func excludeHistoricalPushGuidance(document string) (string, []pushGuidanceViola
 
 func pushInvocationLacksScope(commandText string) bool {
 	tokens := shellLikeTokens(commandText)
-	if len(tokens) < 2 || !isExecutableToken(tokens[0]) {
+	commandIndex := commandIndexAfterExecutable(tokens)
+	if commandIndex < 0 || normalizeCommandToken(tokens[commandIndex]) != "push" {
 		return false
+	}
+	return !tokensContainExplicitPushScope(tokens[commandIndex+1:])
+}
+
+func commandIndexAfterExecutable(tokens []string) int {
+	if len(tokens) < 2 || !isExecutableToken(tokens[0]) {
+		return -1
 	}
 	for index := 1; index < len(tokens); index++ {
 		token := normalizeCommandToken(tokens[index])
@@ -215,10 +327,7 @@ func pushInvocationLacksScope(commandText string) bool {
 			continue
 		}
 		if _, ok := pushCommands[token]; ok {
-			if token != "push" {
-				return false
-			}
-			return !tokensContainExplicitPushScope(tokens[index+1:])
+			return index
 		}
 		if _, ok := globalFlagsWithoutValues[token]; ok {
 			continue
@@ -241,16 +350,35 @@ func pushInvocationLacksScope(commandText string) bool {
 			}
 			continue
 		}
-		return false
+		return -1
 	}
-	return false
+	return -1
+}
+
+func commandNameAfterExecutable(commandText string) string {
+	tokens := shellLikeTokens(commandText)
+	commandIndex := commandIndexAfterExecutable(tokens)
+	if commandIndex < 0 {
+		return ""
+	}
+	return normalizeCommandToken(tokens[commandIndex])
 }
 
 func tokensContainExplicitPushScope(tokens []string) bool {
-	for _, raw := range tokens {
+	for index, raw := range tokens {
 		token := normalizeCommandToken(raw)
-		if token == "--all" || token == "--only" || strings.HasPrefix(token, "--only=") {
+		if token == "--all" {
 			return true
+		}
+		if token == "--only" {
+			if index+1 >= len(tokens) {
+				return false
+			}
+			value := normalizeCommandToken(tokens[index+1])
+			return value != "" && !strings.HasPrefix(value, "-")
+		}
+		if strings.HasPrefix(token, "--only=") {
+			return strings.TrimPrefix(token, "--only=") != ""
 		}
 	}
 	return false
@@ -289,7 +417,19 @@ func shellLikeTokens(commandText string) []string {
 			}
 			flush()
 		case char == '\'' || char == '"' || char == '`':
+			if !strings.HasSuffix(token.String(), "=") {
+				flush()
+				return tokens
+			}
+			quote := char
 			index++
+			for index < len(commandText) && commandText[index] != quote {
+				token.WriteByte(commandText[index])
+				index++
+			}
+			if index < len(commandText) {
+				index++
+			}
 		default:
 			token.WriteByte(char)
 			index++
@@ -306,7 +446,7 @@ func isExecutableToken(token string) bool {
 }
 
 func normalizeCommandToken(token string) string {
-	return strings.ToLower(strings.Trim(token, " \t\r\n`'\"()[]{}:,.;"))
+	return strings.ToLower(strings.Trim(token, " \t\r\n`'\"()[]{}:,.;：，。；"))
 }
 
 func compactExcerpt(value string) string {
@@ -370,6 +510,13 @@ func isPushContractSource(path string) bool {
 	default:
 		return false
 	}
+}
+
+func isProductionGoSource(path string) bool {
+	path = filepath.ToSlash(path)
+	return (strings.HasPrefix(path, "cmd/") || strings.HasPrefix(path, "internal/")) &&
+		strings.EqualFold(filepath.Ext(path), ".go") &&
+		!strings.HasSuffix(path, "_test.go")
 }
 
 func TestPushGuidanceScannerAdversarialFixtures(t *testing.T) {
@@ -440,6 +587,78 @@ func TestPushGuidanceScannerAdversarialFixtures(t *testing.T) {
 				"ssm --master-pass-file=./pass --offline push --all\n",
 		},
 		{
+			name:      "only requires a value",
+			document:  "sshctl --json push --only\n",
+			wantError: true,
+		},
+		{
+			name:      "only equals requires a value",
+			document:  "sshctl --json push --only=\n",
+			wantError: true,
+		},
+		{
+			name:      "only equals rejects a separate value",
+			document:  "sshctl --json push --only= <transaction-id>\n",
+			wantError: true,
+		},
+		{
+			name:      "only rejects an empty quoted value",
+			document:  "sshctl --json push --only \"\"\n",
+			wantError: true,
+		},
+		{
+			name:      "only rejects a whitespace quoted value",
+			document:  "sshctl --json push --only '   '\n",
+			wantError: true,
+		},
+		{
+			name:      "only equals rejects an empty quoted value",
+			document:  "sshctl --json push --only=\"\"\n",
+			wantError: true,
+		},
+		{
+			name:      "only equals rejects a whitespace quoted value",
+			document:  "sshctl --json push --only='   '\n",
+			wantError: true,
+		},
+		{
+			name:      "only rejects another flag as its value",
+			document:  "sshctl --json push --only --all\n",
+			wantError: true,
+		},
+		{
+			name:      "instructional prose requires a value",
+			document:  "Publish the returned transaction_id with push --only after review.\n",
+			wantError: true,
+		},
+		{
+			name:      "instructional prose rejects underscore placeholder",
+			document:  "Publish with push --only <transaction_id> after review.\n",
+			wantError: true,
+		},
+		{
+			name:      "instructional prose rejects field name as placeholder",
+			document:  "Publish with push --only transaction_id after review.\n",
+			wantError: true,
+		},
+		{
+			name: "only accepts canonical placeholder",
+			document: "sshctl --json push --only <transaction-id>\n" +
+				"sshctl --json push --only=<transaction-id>\n" +
+				"Publish with push --only <transaction-id> after review.\n",
+		},
+		{
+			name: "only accepts real ids and quoted non-empty values",
+			document: "sshctl --json push --only tx_reviewed\n" +
+				"sshctl --json push --only \"tx_reviewed_quoted\"\n" +
+				"sshctl --json push --only='tx_reviewed_equals'\n" +
+				"sshctl --json push --only=--nonempty-id\n",
+		},
+		{
+			name:     "all is an explicit scope",
+			document: "sshctl --json push --all\n",
+		},
+		{
 			name: "explicitly scoped prose guidance",
 			document: "Retry push --only <transaction-id> after reviewing the transaction.\n" +
 				"Pull or publish with push --all after reviewing every pending transaction.\n",
@@ -488,6 +707,25 @@ func TestPushGuidanceScannerAdversarialFixtures(t *testing.T) {
 	}
 }
 
+func TestProductionGoPushGuidanceCannotUseHistoricalExclusions(t *testing.T) {
+	t.Parallel()
+
+	document := "package fixture\n\n" +
+		"const hint = `\n" + historicalBegin + "\n" +
+		"retry with sshctl --json push\n" +
+		historicalEnd + "\n`\n"
+	violations := scanPushGuidanceSource("cmd/ssm/fixture.go", document)
+	for _, violation := range violations {
+		if violation.reason == "uses a historical exclusion marker in production Go" {
+			return
+		}
+	}
+	if len(violations) == 0 {
+		t.Fatal("scanPushGuidanceSource() accepted a marker-wrapped unsafe production Go hint")
+	}
+	t.Fatal("scanPushGuidanceSource() did not reject the production Go historical marker")
+}
+
 func TestPushContractSourceDiscoveryIncludesRequiredSurfaces(t *testing.T) {
 	t.Parallel()
 
@@ -528,7 +766,7 @@ func TestReviewedRecoveryGuidanceUsesExactSafeHint(t *testing.T) {
 	}
 	matched := 0
 	for path, document := range sources {
-		active, markerViolations := excludeHistoricalPushGuidance(document)
+		active, markerViolations := activePushGuidance(path, document)
 		if len(markerViolations) != 0 {
 			continue
 		}

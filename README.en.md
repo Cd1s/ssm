@@ -27,8 +27,8 @@ sshctl host search prod-web --json       # candidates only; never auto-selects o
 sshctl host upsert prod-api --host 203.0.113.10 --user root --port 22 --key-file /secure/prod-api.key --verify --json
 sshctl host update prod-api --port 2222 --verify --json
 sshctl host show prod-api --json
-sshctl push --only <transaction-id>
-sshctl push --all
+sshctl --json push --only <transaction-id>
+sshctl --json push --all
 
 # Simple one-shot command: fastest path, no request file
 sshctl --json run <alias> --argv hostname
@@ -141,7 +141,7 @@ Agent troubleshooting examples:
 
 - Alias miss: inspect `sshctl --json host list` or `host search`; never execute a suggested candidate automatically.
 - Sync pull failure: stop. Retry connectivity, or use explicit `--offline` only after accepting stale inventory; no silent fallback occurs.
-- Sync push failure: inspect `status.pending_mutations`, then retry `push --only <same-id>`; do not broaden to push-all.
+- Sync push failure: inspect `status.pending_mutations`, then retry `sshctl --json push --only <transaction-id>` with the same returned ID; do not broaden to `sshctl --json push --all`.
 - Host-key change: `host-key inspect --json`, verify `observed_fingerprint` out-of-band, then exact `accept ... --yes`; never remove/rescan automatically.
 - Remote failure: `remote_failed|remote_script_failed` means SSH transport succeeded. Inspect `stage`, `stderr`, and the remote exit—even 255—without reclassifying it as transport failure.
 - Transfer failure: use `stage`, `bytes_sent`, `bytes_reused`, `resume`, and `integrity`; never append an incompatible partial.
@@ -210,7 +210,7 @@ A new host requires `--host`, `--user`, and one auth source: `--key <saved-name>
 
 Structured host mutations require a successful remote refresh. `--verify` checks the in-memory candidate with `hostname; uname -sr`; failure returns `verification_failed`, `applied:false`, and leaves the encrypted vault unchanged. Success is saved atomically and returns `sync_pending:true`. `--push` requires `--verify`; a sync failure leaves the local change pending and returns `sync_push_failed`. Use `--offline` only when stale local state is explicitly acceptable.
 
-`doctor <alias> --json` returns `resolved_alias` and safe `candidates` on an exact miss, but never selects a candidate or connects. It also reports local/remote vault state, last pull/push, pending state, and non-secret alias/key-name conflict metadata from the latest reviewed merge. When local and remote both diverge from one cached ETag, auto-refresh returns `sync_conflict` and preserves both sides; `sshctl --offline --json doctor` exposes only non-secret blob identifiers in `sync_conflict`. Review `merge_report.conflicts`/`sync_conflict`, then explicitly choose pull or create a reviewed transaction and publish it with `push --only <transaction-id>`. For an empty-ledger conflict, follow the recovery sequence above.
+`doctor <alias> --json` returns `resolved_alias` and safe `candidates` on an exact miss, but never selects a candidate or connects. It also reports local/remote vault state, last pull/push, pending state, and non-secret alias/key-name conflict metadata from the latest reviewed merge. When local and remote both diverge from one cached ETag, auto-refresh returns `sync_conflict` and preserves both sides; `sshctl --offline --json doctor` exposes only non-secret blob identifiers in `sync_conflict`. Review `merge_report.conflicts`/`sync_conflict`, then explicitly choose pull or create a reviewed transaction and publish it with `sshctl --json push --only <transaction-id>`. For an empty-ledger conflict, follow the recovery sequence above.
 
 ### Agent fleet: map (parallel)
 
@@ -255,7 +255,7 @@ ssm login --server <sync-server-url> --email <email> --password-file <sync-passw
 sshctl sync
 ```
 
-The center server stores only encrypted vault blobs. It never decrypts SSH passwords or private keys. `sshctl list/run/status` and `ssm list/exec` check the remote ETag before reading the vault and auto-pull when it changed. Agent-facing host mutations remain local as transactions: use `push --only <transaction-id>` for one reviewed change, or `push --all` only after reviewing every mutation in the invocation-start pending set. Bare `push` is invalid and performs no vault unlock or HTTP request.
+The center server stores only encrypted vault blobs. It never decrypts SSH passwords or private keys. `sshctl list/run/status` and `ssm list/exec` check the remote ETag before reading the vault and auto-pull when it changed. Agent-facing host mutations remain local as transactions: use `sshctl --json push --only <transaction-id>` for one reviewed change, or `sshctl --json push --all` only after reviewing every mutation in the invocation-start pending set. Bare `push` is invalid and performs no vault unlock or HTTP request.
 
 ## Center Server
 
@@ -298,7 +298,7 @@ If sync is already configured, put master.pass and cloud.json in /root/.config/s
 Then run sshctl sync and verify with sshctl status and sshctl list.
 Use sshctl --json run <alias> --argv ... directly for simple fixed commands; use sshctl run <alias> --stream for repeated simple commands.
 For dynamic or untrusted input, prefer sshctl request --file <json>: put literal arguments in argv, scripts in script_file/script_args, and only paths in secret_files.
-Use host.upsert/host.update requests with verify:true; after success publish only its returned transaction_id with push --only. Use push --all only after reviewing every pending mutation.
+Use host.upsert/host.update requests with verify:true; after success publish only its returned transaction_id with sshctl --json push --only <transaction-id>. Use sshctl --json push --all only after reviewing every pending mutation.
 For compatible CLI calls use --argv for literals and --preflight -f for generated scripts; never wrap generated bodies in bash -c.
 ```
 

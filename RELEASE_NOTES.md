@@ -4,7 +4,7 @@
 
 ### Reviewed saved-key publication
 
-- `push --only <transaction-id>` now rejects unsatisfied cross-alias saved-key
+- `sshctl --json push --only <transaction-id>` now rejects unsatisfied cross-alias saved-key
   create, replace, rename, delete, prune, and reference prerequisites before
   any sync request.
 - The safe failure message lists every required stable transaction ID in
@@ -18,8 +18,9 @@
 ### Exact push scopes and empty-ledger safety
 
 - Bare `push` is invalid and is rejected before vault unlock or any sync HTTP
-  request. Callers must choose `push --only <transaction-id>` or `push --all`.
-- `push --all` publishes only the invocation-start ordered pending-ID snapshot;
+  request. Callers must choose `sshctl --json push --only <transaction-id>` or
+  `sshctl --json push --all`.
+- `sshctl --json push --all` publishes only the invocation-start ordered pending-ID snapshot;
   later transactions remain pending.
 - An empty `push --all` performs one identity HEAD and no GET or PUT. Identical
   local, cached, and remote encrypted-blob identities return `action:"noop"`;
