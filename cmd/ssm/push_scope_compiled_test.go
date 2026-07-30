@@ -13,7 +13,7 @@ import (
 	"ssm/internal/config"
 )
 
-const emptyLedgerRecoveryHint = "review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull to adopt remote, then reapply retained local inventory with ssm --offline --json import-json <reviewed-file> --merge or --replace --yes and publish only its transaction"
+const emptyLedgerRecoveryHint = "review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull to adopt remote, then use guarded ssm --offline --json import-json <reviewed-file> --merge and publish its reviewed transaction with sshctl --json push --only <transaction-id>"
 
 func TestEmptyLedgerPushNeverPuts(t *testing.T) {
 	t.Run("identical local cached and remote identities are an explicit no-op", func(t *testing.T) {

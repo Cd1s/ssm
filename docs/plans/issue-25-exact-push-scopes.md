@@ -7,6 +7,8 @@ delegates only opaque encrypted bytes and identities to
 `internal/synctransaction`, and finalizes only the selected stable IDs after
 the target identity is confirmed.
 
+<!-- documentation-contract: historical-begin -->
+
 ## BC-5 old/new compiled matrix
 
 The old side is the compiled `TestApprovedV2BreakingChangeBaselines` fixture at
@@ -29,6 +31,8 @@ BC-5 changes only bare-push validation and empty-ledger behavior. Stable
 transaction IDs, non-empty receipt fields, exact projections, dependency
 failures, durable intent states, request v1, and cross-platform persistence
 remain unchanged.
+
+<!-- documentation-contract: historical-end -->
 
 ## Empty-ledger identity state table
 
@@ -122,6 +126,13 @@ restart, and dependency evidence for both scopes.
 An empty-ledger conflict is not recoverable by retrying `push --all`; that
 command will never publish an untracked full blob.
 
+The emitted machine hint is deliberately merge-only and does not authorize
+replacement:
+
+```text
+review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull to adopt remote, then use guarded ssm --offline --json import-json <reviewed-file> --merge and publish its reviewed transaction with sshctl --json push --only <transaction-id>
+```
+
 1. Run `sshctl --offline --json doctor` and review the safe `sync_conflict`
    identities.
 2. Preserve private copies of the local encrypted vault,
@@ -155,11 +166,16 @@ This sequence makes the remote baseline explicit before a new reviewed
 transaction is created. There is no force flag, automatic repair, evidence
 deletion, or empty-ledger overwrite path.
 
-## Later public documentation source
+<!-- documentation-contract: historical-begin -->
 
-The later help/release documentation update should remove every statement that
-bare push is a compatibility push-all, describe `action=noop`, give the
-identity-HEAD/zero-PUT counts, and include the reviewed recovery sequence
-above. In particular, the current migration-era wording in `README.md`,
-`README.en.md`, and older `RELEASE_NOTES.md` sections must not be copied into a
-v2 release unchanged.
+## Historical documentation follow-up
+
+Before the public documentation update, this plan required removal of the
+then-current bare-push compatibility wording, documentation of `action=noop`
+and the identity-HEAD/zero-PUT counts, and inclusion of the reviewed recovery
+sequence above. It also prohibited copying the migration-era wording in
+`README.md`, `README.en.md`, and older `RELEASE_NOTES.md` sections into a v2
+release unchanged. Issue #25 superseded that wording with the current explicit
+scope contract.
+
+<!-- documentation-contract: historical-end -->

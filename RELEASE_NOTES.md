@@ -27,6 +27,11 @@
   both blobs and private identity evidence, and never publishes a full blob.
 - English, Chinese, agent-skill, command-help, and recovery guidance now use
   only explicit publication scopes.
+- The empty-ledger `sync_conflict` hint recommends the guarded `--merge`
+  recovery path. It does not suggest `--replace --yes`; the longer recovery
+  guide permits replacement only after explicit full-replacement review.
+
+<!-- documentation-contract: historical-begin -->
 
 ## Historical v1 release notes
 
@@ -263,3 +268,5 @@ current v2 command guidance; the v2 contract above supersedes them.
 ### Validation
 
 - Confirmed no remaining references to `AGENTS`, `OpenSpec`, `openspec`, `REVIEW_FINDINGS`, or `.codex`.
+
+<!-- documentation-contract: historical-end -->

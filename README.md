@@ -94,6 +94,12 @@ sshctl --json push --all
 
 重试 `push --all` 无法修复空 ledger 冲突，因为它绝不会发布未跟踪的完整 blob。
 
+实际输出的 machine hint 只推荐受保护的 merge，不授权整库替换：
+
+```text
+review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull to adopt remote, then use guarded ssm --offline --json import-json <reviewed-file> --merge and publish its reviewed transaction with sshctl --json push --only <transaction-id>
+```
+
 1. 运行 `sshctl --offline --json doctor`，审查安全的 `sync_conflict` 标识。
 2. 私下保存本地加密 vault、`remote.etag` 和 `sync-conflict.json` 的副本，并保持其私有权限。
 3. 将必须保留的本地 inventory 准备成已审查的 import 文件。secret 只保存在该私有文件中，绝不放入命令参数或日志。

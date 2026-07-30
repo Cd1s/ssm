@@ -94,6 +94,13 @@ When that invocation-start set is empty, `push --all` compares the exact local e
 
 Retrying `push --all` cannot repair an empty-ledger conflict because it never publishes an untracked full blob.
 
+The emitted machine hint deliberately recommends guarded merge and does not
+authorize full replacement:
+
+```text
+review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull to adopt remote, then use guarded ssm --offline --json import-json <reviewed-file> --merge and publish its reviewed transaction with sshctl --json push --only <transaction-id>
+```
+
 1. Run `sshctl --offline --json doctor` and review the safe `sync_conflict` identities.
 2. Preserve private copies of the local encrypted vault, `remote.etag`, and `sync-conflict.json`; keep their permissions private.
 3. Prepare the local inventory that must survive as a reviewed import file. Keep secrets in that private file, never in command arguments or logs.

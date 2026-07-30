@@ -105,6 +105,12 @@ An empty invocation-start set never publishes the full local blob. `push --all` 
 
 Retrying `push --all` cannot repair this conflict.
 
+The emitted machine hint is merge-only and does not authorize replacement:
+
+```text
+review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull to adopt remote, then use guarded ssm --offline --json import-json <reviewed-file> --merge and publish its reviewed transaction with sshctl --json push --only <transaction-id>
+```
+
 1. Run `sshctl --offline --json doctor` and review the safe `sync_conflict` identities.
 2. Preserve private copies of the local encrypted vault, `remote.etag`, and `sync-conflict.json`; keep their permissions private.
 3. Prepare the local inventory that must survive as a reviewed import file. Keep secrets in that private file, never in command arguments or logs.

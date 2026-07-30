@@ -1,5 +1,15 @@
 # SSM v2 Architecture Audit
 
+> **Historical pre-implementation record.** This audit describes the
+> repository at audited commit `eef46a7c6544` before the v2 ownership work was
+> implemented. Its observations and open questions are preserved as an audit
+> record, not current command guidance. Accepted ADRs, `CONTEXT.md`, the v2
+> decision log, and issue #25 supersede its former push-scope assumptions:
+> bare `push` is now invalid, while `push --only` and `push --all` are the only
+> publication scopes.
+
+<!-- documentation-contract: historical-begin -->
+
 <!-- markdownlint-configure-file {"MD024": {"siblings_only": true}} -->
 
 Status: proposed architecture plan, with no runtime changes
@@ -170,8 +180,10 @@ See `CONTEXT.md:14-17`, `CONTEXT.md:57-60`,
 - A successful reviewed host mutation returns a stable transaction ID.
 - `push --only <transaction-id>` publishes exactly that reviewed scope.
 - Unrelated pending mutations remain local.
-- Bare `push` and `push --all` remain compatibility paths for deliberate
-  publication of every pending mutation.
+- **Historical observation, superseded by issue #25:** at the audited commit,
+  bare `push` and `push --all` were compatibility paths for deliberate
+  publication of every pending mutation. The implemented #25 contract rejects
+  bare `push`.
 - A push failure leaves the local mutation pending.
 
 See `CONTEXT.md:24-29`, `CONTEXT.md:61-64`,
@@ -1084,9 +1096,12 @@ executables only. Release tests must not call GitHub publication APIs.
 1. Should legacy `ssm remove` and `ssm keys remove` continue to save and
    auto-push outside the reviewed transaction workflow, or should they become
    explicitly scoped mutations in a major version?
-2. Must bare `push` remain exactly synonymous with `push --all` indefinitely?
-   What should push-all do when no mutations are pending but the local encrypted
-   blob differs from the cached remote ETag?
+2. **Historical question, answered and superseded by issue #25:** must bare
+   `push` remain exactly synonymous with `push --all` indefinitely, and what
+   should push-all do when no mutations are pending but the local encrypted
+   blob differs from the cached remote ETag? Issue #25 rejects bare `push` and
+   makes empty `push --all` identity-check as a no-op or fail safely without a
+   PUT.
 3. Is same-alias ordering the complete scoped dependency rule, or must a shared
    saved-key change create dependencies across aliases?
 4. Should malformed `cloud.json` mean "not configured" for generic commands,
@@ -1307,3 +1322,5 @@ Output:
 Decision log with assumptions, strongest counterexample, required public tests,
 maintainer questions, and proceed/revise/reject for Candidates 1-3.
 ```
+
+<!-- documentation-contract: historical-end -->

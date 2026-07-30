@@ -74,7 +74,7 @@ func TestMachineContractMatrix(t *testing.T) {
 			name: "empty-ledger sync conflict", kind: EmptyLedgerSyncConflict,
 			details: Details{Message: "empty ledger diverged"},
 			code:    "sync_conflict", stage: "sync_compare",
-			hint: "review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull to adopt remote, then reapply retained local inventory with ssm --offline --json import-json <reviewed-file> --merge or --replace --yes and publish only its transaction", exit: 1,
+			hint: "review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull to adopt remote, then use guarded ssm --offline --json import-json <reviewed-file> --merge and publish its reviewed transaction with sshctl --json push --only <transaction-id>", exit: 1,
 		},
 		{
 			name: "sync pull", kind: SyncPullFailed,
