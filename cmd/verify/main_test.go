@@ -762,6 +762,18 @@ func TestCIWorkflowMatchesReviewedGoldenAndHasReadOnlyCredentialFreeJobs(t *test
 	if got, want := strings.Count(text, "        run: go run ./cmd/verify fast\n"), 1; got != want {
 		t.Fatalf("exact Windows fast invocation count = %d, want %d", got, want)
 	}
+	const nativeReplacementCommand = "        run: go test ./internal/update -run '^TestWindowsNativeReplacementSecurity$' -count=1\n"
+	if got, want := strings.Count(text, nativeReplacementCommand), 1; got != want {
+		t.Fatalf("exact native Windows replacement-security invocation count = %d, want %d", got, want)
+	}
+	if !strings.Contains(text,
+		"      - name: Verify native Windows replacement security\n"+
+			"        env:\n"+
+			"          SSM_REQUIRE_WINDOWS_PRIVILEGED_TEST: \"1\"\n"+
+			nativeReplacementCommand,
+	) {
+		t.Fatal("native Windows replacement-security gate is not explicit or does not require privileged coverage")
+	}
 	for _, exactUse := range []string{
 		"actions/checkout@v7",
 		"actions/setup-go@v6",

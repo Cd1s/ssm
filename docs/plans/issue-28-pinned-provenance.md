@@ -94,7 +94,7 @@ newest eligible release fails this check.
 | Downloaded digest matches checksum but differs from provenance | Subject digest comparison | Checksum cannot rescue the mismatch; no replacement. |
 | Unsupported, missing, misnamed, additional, or duplicate release asset | Strict manifest selection | No asset download and no fallback. |
 | Checksums over 16 KiB, provenance or release metadata over 1 MiB, or a binary over 64 MiB | Header-independent bounded stream, rejecting after at most limit plus one byte | No replacement; temporary output is bounded and removed; installed bytes and mode are unchanged. |
-| Windows cannot overwrite its mapped running `.exe` | Platform replacement | Open the exact non-reparse target and verified sibling stage, capture the target's complete backup security descriptor, and apply and verify it on the stage before renaming. Rename the running image to its fixed sibling rollback path, move the stage to the original path, reapply and verify the descriptor on the new canonical executable, and restore the rollback image on any later failure. A completed replacement is reported only after the new bytes and equivalent owner, primary group, DACL, SACL, and inheritance-protection state occupy the original path. |
+| Windows cannot overwrite its mapped running `.exe` | Platform replacement | Hold the fixed sibling update lock across inspection, moves, rollback, and cleanup; reject reparse points and multiple hard links; and revalidate volume/file IDs immediately before and after each name move. The ordinary tier captures, applies, and verifies owner, primary group, DACL, and DACL inheritance/protection without optional privileges. When all three backup/restore/security privileges can be enabled on a duplicated thread token, the full tier instead preserves and verifies the complete descriptor, including SACL-backed fields. An unavailable full tier is never claimed; failure to preserve the selected tier stops before the first move or restores the identity-bound rollback image. |
 
 `TestTrustFailurePreservesExecutable` records the original executable bytes and
 permission bits, injects a wrong-subject signed bundle, and proves both remain
@@ -114,29 +114,47 @@ after exactly 67,108,865 bytes. Both paths remove temporary artifacts and
 preserve the installed bytes and mode.
 
 Native Windows tests execute a copied Go test binary, so the target is a
-genuinely mapped `.exe` during replacement. Success proves the verified stage
-occupies the original path with the restrictive, protected descriptor of the
-old executable before the updater reports completion. The mapped old image
-remains at `.ssm.exe.old` only until a later launch can remove it. One failure
-fixture holds the verified stage with a native sharing lock; another injects a
-failure into the second native descriptor application after the new bytes
-occupy the canonical path. Both prove rollback restores the exact original
-bytes and descriptor, removes the fixed rollback path and staging path, and
-never reports success.
+genuinely mapped `.exe` during replacement. A restricted-token fixture proves
+ordinary operation with no backup, restore, or security privilege. A
+privileged fixture installs a protected audit SACL and requires exact
+full-descriptor equality; the official focused Windows gate fails rather than
+skips if the runner cannot exercise that tier. The suite also proves exact
+thread-token restoration, one `LocalFree` per native descriptor allocation,
+concurrent-updater and cleanup exclusion, hard-link/reparse rejection,
+identity-changing stage substitution, ordinary rollback, and rollback-failure
+evidence retention.
 
-Windows descriptor preservation uses `CreateFile` with
-`FILE_FLAG_OPEN_REPARSE_POINT`, `GetSecurityInfo` with
-`BACKUP_SECURITY_INFORMATION`, and `SetSecurityInfo` with explicit owner,
-primary-group, DACL, SACL, label, attribute, scope, and protected/unprotected
-ACL flags. The updater enables `SeBackupPrivilege`, `SeRestorePrivilege`, and
-`SeSecurityPrivilege` only on a self-impersonating, OS-thread-locked token and
-restores the prior token state before returning. Missing privileges, an
-unreadable owner or SACL, any application error, or any SDDL/control mismatch
-is a fail-closed updater error. Before the first rename the original executable
-is untouched; after it, the fixed `.old` image retains the original bytes and
-descriptor and is moved back on failure. These errors continue through the
-existing `update_failed` / `update` machine contract, and the updater's staging
-defer removes any verified temporary file that still has its staging name.
+The updater calls the native `GetSecurityInfo` entry point through x/sys'
+Windows loader and wraps each returned allocation in one idempotent owner.
+Every success and failure path calls `LocalFree` exactly once. Ordinary capture
+requests only owner, primary group, and DACL information and applies only
+components the current token can set; owner/group equality avoids requiring
+`WRITE_OWNER` when those fields already match. If a differing owner or group
+cannot be set, the update fails before rename. The full tier is selected only
+after `SeBackupPrivilege`, `SeRestorePrivilege`, and `SeSecurityPrivilege` all
+enable on a duplicated impersonation token pinned to the current OS thread.
+Closing the scope restores the exact prior thread token (or no token), closes
+the duplicate, and never changes the process token.
+
+The persistent hidden `.<exe>.update.lock` is opened without delete sharing
+and byte-range locked exclusively for inspection, both moves, rollback,
+ownership-record writes, and startup cleanup. Target, stage, lock, rollback,
+and record objects must be non-reparse single-link disk files. Validation
+handles share delete so they do not block the intended rename, but the updater
+reopens and compares volume/file IDs immediately before every destructive
+name operation and verifies the result afterward.
+
+Before the first move, a flushed `.<exe>.old.state` record binds the inspected
+old and staged file IDs. Success flushes it as completed and retains both it
+and `.<exe>.old` until a later cleanup owns the same lock and verifies the
+installed and rollback identities. An `.old` without a valid record, a
+prepared/incomplete record, or any identity mismatch is recovery evidence and
+is never deleted or overwritten by cleanup or a new update. Successful
+rollback restores the original identity and removes its record. Failed
+rollback retains the original at `.old`, the prepared record, and any
+remaining stage while reporting both the operation and rollback failure.
+These errors continue through the existing `update_failed` / `update` machine
+contract.
 
 The installer success fixture places a BSD-compatible `mktemp` shim ahead of
 the host implementation. It rejects every supplied template that does not end

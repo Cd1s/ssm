@@ -17,10 +17,12 @@
   1 MiB metadata/provenance, 16 KiB checksum, and 64 MiB binary ceilings.
 - The installer now uses a same-directory staging template accepted by both
   GNU and macOS/BSD `mktemp`. Windows self-update renames the mapped old image
-  aside, installs the verified sibling stage synchronously, preserves and
-  verifies its owner, ACLs, and inheritance protection, rolls back bytes and
-  security on a replacement failure, and removes the old image on a later
-  launch.
+  aside under an exclusive same-directory update lock, installs the
+  identity-checked sibling stage synchronously, and rolls back bytes and
+  security on failure. Ordinary users preserve and verify owner, primary
+  group, DACL, and DACL inheritance; tokens that can enable all three Windows
+  backup/restore/security privileges also preserve the complete descriptor.
+  A later launch removes only an identity-bound completed rollback image.
 - On a trust failure, keep using the preserved executable and wait for a
   repaired release through a reviewed identity. Installer users need a current
   GitHub CLI with attestation verification and `head -c`; there is no

@@ -75,14 +75,16 @@ GitHub CI installs and asserts its OS, OpenSSH, shell, JSON, hashing, and
 official prebuilt lint prerequisites visibly in workflow YAML, declares
 read-only repository permissions, disables checkout credential persistence,
 and invokes only `go run ./cmd/verify ci` in the Linux merge job. A separate
-native Windows job invokes `go run ./cmd/verify fast`, including the
-complete native Go test suite and its Windows-only no-follow/reparse and DACL
-tests plus mapped-executable update success, next-launch cleanup, and
-sharing-lock rollback tests. The mapped update tests also require equality of
-the complete Windows security descriptor under a restrictive protected DACL
-and prove a post-move descriptor-application failure restores bytes and
-descriptor, removes staging/rollback paths, and cannot report success, without
-duplicating command membership. Tests
+native Windows job first invokes the explicit security-critical
+`TestWindowsNativeReplacementSecurity` suite with privileged coverage
+required, then invokes `go run ./cmd/verify fast` for the complete native Go
+test suite. The focused suite covers restricted-token owner/group/DACL
+preservation, privileged
+full-descriptor/SACL preservation, privilege restoration and descriptor
+freeing, exclusive update/cleanup locking, file-ID revalidation,
+hard-link/reparse and substitution rejection, completed and unexplained stale
+rollback states, concurrent updaters, ordinary rollback, and rollback-failure
+evidence. Tests
 that execute a Unix remote shell or compare Bash script behavior are selected
 only on Unix; portable parsing, planning, host-key, environment-isolation, and
 security tests remain active on Windows.

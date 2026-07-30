@@ -175,8 +175,8 @@ func ClearFlag() {
 	_ = os.Remove(flagPath())
 }
 
-// CleanupPreviousExecutable removes the rollback image retained by a completed
-// Windows replacement after the process that mapped it has exited.
+// CleanupPreviousExecutable removes only an identity-bound rollback image from
+// a completed Windows replacement while holding the replacement update lock.
 func CleanupPreviousExecutable() {
 	exe, err := executablePath()
 	if err != nil {
