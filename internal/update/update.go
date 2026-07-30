@@ -111,6 +111,8 @@ func parseSemanticVersion(value string) (semanticVersion, bool) {
 const (
 	defaultRepo    = "Cd1s/ssm"
 	checksumsAsset = "checksums.txt"
+	maxChecksums   = 16 << 10
+	maxMetadata    = 1 << 20
 	cooldown       = 6 * time.Hour
 )
 
@@ -221,7 +223,7 @@ func DownloadVersionBeforeReplace(version string, verbose bool, beforeReplace fu
 	}
 
 	asset := assetName()
-	checksums, err := downloadReleaseAsset(repo, version, checksumsAsset)
+	checksums, err := downloadReleaseAssetLimited(repo, version, checksumsAsset, maxChecksums)
 	if err != nil {
 		return err
 	}
@@ -229,7 +231,12 @@ func DownloadVersionBeforeReplace(version string, verbose bool, beforeReplace fu
 	if err != nil {
 		return err
 	}
-	provenanceBundle, err := downloadReleaseAsset(repo, version, releaseasset.ProvenanceName(asset))
+	provenanceBundle, err := downloadReleaseAssetLimited(
+		repo,
+		version,
+		releaseasset.ProvenanceName(asset),
+		provenance.MaxBundleBytes,
+	)
 	if err != nil {
 		return err
 	}
@@ -348,13 +355,20 @@ func getReleaseAsset(repo, version, asset string) (*http.Response, error) {
 	return resp, nil
 }
 
-func downloadReleaseAsset(repo, version, asset string) ([]byte, error) {
+func downloadReleaseAssetLimited(repo, version, asset string, limit int64) ([]byte, error) {
 	resp, err := getReleaseAsset(repo, version, asset)
 	if err != nil {
 		return nil, fmt.Errorf("download failed: %w", err)
 	}
 	defer resp.Body.Close()
-	return io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", asset, err)
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%s exceeds %d-byte limit", asset, limit)
+	}
+	return data, nil
 }
 
 func checksumForAsset(data []byte, asset string) (string, error) {
@@ -442,7 +456,14 @@ func checkLatest() (string, error) {
 	var release struct {
 		TagName string `json:"tag_name"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxMetadata+1))
+	if err != nil {
+		return "", fmt.Errorf("read GitHub release metadata: %w", err)
+	}
+	if len(data) > maxMetadata {
+		return "", fmt.Errorf("GitHub release metadata exceeds %d-byte limit", maxMetadata)
+	}
+	if err := json.Unmarshal(data, &release); err != nil {
 		return "", err
 	}
 	return release.TagName, nil
@@ -462,8 +483,15 @@ func listReleases() ([]Release, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GitHub API: %s", resp.Status)
 	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxMetadata+1))
+	if err != nil {
+		return nil, fmt.Errorf("read GitHub release metadata: %w", err)
+	}
+	if len(data) > maxMetadata {
+		return nil, fmt.Errorf("GitHub release metadata exceeds %d-byte limit", maxMetadata)
+	}
 	var releases []Release
-	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+	if err := json.Unmarshal(data, &releases); err != nil {
 		return nil, err
 	}
 	return releases, nil

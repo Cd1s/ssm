@@ -429,7 +429,7 @@ func TestReleaseMetadataActions(t *testing.T) {
 	}
 	if err := os.WriteFile(
 		filepath.Join(repo, "RELEASE_NOTES.md"),
-		[]byte("# Release Notes\n\n## v2.3.4\n\n- Verified release.\n\n## v2.3.3\n\n- Older.\n"),
+		[]byte("# Release Notes\n\n## v3.0.0\n\n- Future release.\n\n## v2.3.4\n\n- Verified release.\n\n## v2.3.3\n\n- Older.\n"),
 		0o600,
 	); err != nil {
 		t.Fatal(err)
@@ -457,6 +457,19 @@ func TestReleaseMetadataActions(t *testing.T) {
 	)
 	if result.Status != statusFailed {
 		t.Fatalf("stale release notes status = %q, want failed", result.Status)
+	}
+}
+
+func TestTrackedReleaseNotesRetainExactV2Heading(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "RELEASE_NOTES.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(data), "\n## v2.0.0\n"); got != 1 {
+		t.Fatalf("exact v2 release heading count = %d, want 1", got)
+	}
+	if strings.Contains(string(data), "Upcoming v2.0.0") {
+		t.Fatal("v2 release heading drifted to a non-publishable draft form")
 	}
 }
 
@@ -835,7 +848,6 @@ func TestReleaseWorkflowProducesPinnedProvenance(t *testing.T) {
 		"binary artifact upload":      "            ${{ matrix.asset }}\n",
 		"bundle artifact upload":      "            ${{ matrix.asset }}.sigstore.json\n",
 		"workflow identity input":     "          RELEASE_WORKFLOW_REF: ${{ github.workflow_ref }}\n",
-		"main workflow identity":      `expected_workflow_ref="Cd1s/ssm/.github/workflows/release.yml@refs/heads/main"`,
 		"tag workflow identity":       `expected_workflow_ref="Cd1s/ssm/.github/workflows/release.yml@refs/tags/$tag"`,
 	} {
 		if !strings.Contains(workflow, required) {
@@ -860,60 +872,29 @@ func TestReleaseWorkflowProducesPinnedProvenance(t *testing.T) {
 	}
 }
 
-func TestReleaseWorkflowTreatsDispatchTagAsQuotedData(t *testing.T) {
+func TestReleaseWorkflowPublishesOnlySelectedTagIdentity(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	workflow := string(data)
-	const inputExpression = "${{ inputs.tag }}"
-	if got := strings.Count(workflow, inputExpression); got != 1 {
-		t.Errorf("workflow dispatch tag expression count = %d, want one env bridge", got)
+	for _, forbidden := range []string{
+		"workflow_dispatch:",
+		"${{ inputs.tag }}",
+		"refs/heads/main",
+	} {
+		if strings.Contains(workflow, forbidden) {
+			t.Errorf("release workflow retains unversioned publication path %q", forbidden)
+		}
 	}
-	if !strings.Contains(workflow, "          RELEASE_TAG_INPUT: "+inputExpression+"\n") {
-		t.Error("workflow dispatch tag is not passed through the release step environment")
-	}
-
 	script := releaseWorkflowIdentityScript(t, workflow)
-	if strings.Contains(script, inputExpression) {
-		t.Error("workflow dispatch tag expression appears directly in the release run block")
-	}
-	if !strings.Contains(script, `tag="$RELEASE_TAG_INPUT"`) {
-		t.Error("release run block does not read the workflow dispatch tag as quoted data")
-	}
-
-	outputPath := filepath.Join(t.TempDir(), "github-output")
-	fakeBin := t.TempDir()
-	fakeGit := filepath.Join(fakeBin, "git")
-	writeTestFile(t, fakeGit, "#!/bin/sh\nexit 2\n")
-	if err := os.Chmod(fakeGit, 0o700); err != nil { //nolint:gosec // executable test shim requires an execute bit and is private to t.TempDir
-		t.Fatal(err)
-	}
-	payload := `$(printf 'tag=v9.9.9\nversion=9.9.9\n' >> "$GITHUB_OUTPUT"; printf 'v1.4.3')`
-	renderedScript := strings.ReplaceAll(script, "${{ github.event_name }}", "workflow_dispatch")
-	renderedScript = strings.ReplaceAll(renderedScript, inputExpression, payload)
-	command := exec.Command("bash", "-c", renderedScript) //nolint:gosec // script is extracted from the tracked workflow; the adversarial value enters only through environment data
-	command.Dir = filepath.Join("..", "..")
-	command.Env = replaceEnvironmentValue(
-		os.Environ(),
-		"PATH",
-		fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
-	)
-	command.Env = append(
-		command.Env,
-		"GITHUB_REF_NAME=v1.4.3",
-		"GITHUB_OUTPUT="+outputPath,
-		"RELEASE_EVENT_NAME=workflow_dispatch",
-		"RELEASE_TAG_INPUT="+payload,
-	)
-	output, err := command.CombinedOutput()
-	if err == nil {
-		t.Errorf("release identity script accepted an injected dispatch tag; output:\n%s", output)
-	}
-	if forged, readErr := os.ReadFile(outputPath); readErr == nil { //nolint:gosec // outputPath is fixed beneath this test's private t.TempDir
-		t.Errorf("invalid dispatch tag forged release outputs before validation: %q", forged)
-	} else if !os.IsNotExist(readErr) {
-		t.Fatal(readErr)
+	for _, required := range []string{
+		`tag="${GITHUB_REF_NAME}"`,
+		`expected_workflow_ref="Cd1s/ssm/.github/workflows/release.yml@refs/tags/$tag"`,
+	} {
+		if !strings.Contains(script, required) {
+			t.Errorf("release identity script lacks selected-tag binding %q", required)
+		}
 	}
 }
 

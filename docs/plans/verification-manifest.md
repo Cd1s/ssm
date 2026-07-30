@@ -170,9 +170,9 @@ configuration that could supply publication authority. GitHub release
 publication remains explicit in `release.yml` and outside this verification
 driver. That workflow defaults to `contents: read`; its credential-free
 preflight checkout runs the actual `go run ./cmd/verify release` profile.
-Manual release tags cross into Bash through the validation step environment,
-remain quoted data, and must match the exact `vMAJOR.MINOR.PATCH` grammar
-before the step writes any release outputs.
+Tag-triggered publication reads `GITHUB_REF_NAME` as quoted data, requires the
+workflow identity to contain that exact tag, and requires the tag to match the
+exact `vMAJOR.MINOR.PATCH` grammar before the step writes any release outputs.
 Builds depend on that preflight and use the same six exact names and
 `-buildvcs=false` flags. The build job alone has explicit identity-token,
 attestation, and artifact-metadata write permission. It attests each exact

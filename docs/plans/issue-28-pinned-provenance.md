@@ -13,7 +13,7 @@ replacement remain separate compatibility boundaries.
 | Automatic same-major update | Adjacent `checksums.txt` selected the runtime asset; a matching SHA-256 authorized replacement. | The selected release must have the exact 14-name manifest. The downloaded bytes must match the selected checksum and an adjacent, cryptographically valid provenance subject under the pinned policy. | Automatic updates remain same-major only. |
 | Manual same-major update | The same checksum-only downloader was used. | The same release-manifest and provenance verifier as automatic update is used. | Manual ordinary update remains same-major only. |
 | Explicit major migration | Migration checked that the runtime binary was declared, then delegated to the checksum-only downloader after `--major --yes`. | Migration requires the exact release manifest, retains the explicit review/authorization callback, and delegates to the same digest-and-provenance verifier before replacement. | `--major --yes` remains mandatory and cannot authorize trust failure. |
-| `install.sh` replacement | Downloaded the latest asset and checksum, then installed directly after SHA-256 matched. | Downloads the adjacent bundle, independently matches SHA-256, verifies the exact single named subject and digest with GitHub CLI against the pinned repository/workflow/ref/issuer/predicate/runner/rotation policy, and stages a sibling file before rename. | There is no verification skip or fallback. A trust failure leaves an existing installation unchanged. |
+| `install.sh` replacement | Downloaded the latest asset and checksum, then installed directly after SHA-256 matched. | Validates bounded GitHub metadata contains the exact 14-name manifest, downloads bounded assets from that exact tag, independently matches SHA-256, verifies the exact single named subject and digest with GitHub CLI against the pinned repository/workflow/ref/issuer/predicate/runner/rotation policy, and stages a sibling file before rename. | There is no verification skip or fallback. A selection or trust failure leaves an existing installation unchanged. |
 
 An adjacent checksum remains release digest data, but it is no longer an
 authority by itself. The updater computes SHA-256 while copying the downloaded
@@ -51,12 +51,13 @@ The reviewed identity-set version introduced by BC-9 is:
 | Identity version | Exact certificate SAN form | Valid from | Valid until |
 | --- | --- | --- | --- |
 | `release-tag-v1` | `https://github.com/Cd1s/ssm/.github/workflows/release.yml@refs/tags/vMAJOR.MINOR.PATCH` for the selected version | 2026-07-30 00:00:00 UTC | open |
-| `release-main-v1` | `https://github.com/Cd1s/ssm/.github/workflows/release.yml@refs/heads/main` | 2026-07-30 00:00:00 UTC | open |
 
 No wildcard identity, repository alias, alternate issuer, self-hosted runner,
 unreviewed workflow, or unreviewed ref is accepted. The release workflow also
-checks its own `github.workflow_ref` before building: tag events must use the
-selected tag identity and manual dispatch must use the `main` identity.
+checks its own `github.workflow_ref` before building. Publication is tag
+triggered only, and the workflow identity must use that exact selected tag.
+An unversioned branch identity or a different release tag cannot authorize the
+selected release.
 
 ## Six-target release manifest
 
@@ -86,11 +87,13 @@ newest eligible release fails this check.
 | Invalid signature or untrusted certificate | Cryptographic verifier | Staged file is removed; installed bytes and mode are unchanged. |
 | Certificate expired or not yet valid | Certificate verifier | No replacement. |
 | Identity version expired or not yet active at a verified timestamp | Rotation policy | No replacement. |
+| Unversioned branch identity or a different release tag | Exact selected-tag policy | No replacement. |
 | Wrong repository, workflow/ref, issuer, or runner | Exact certificate policy | No replacement. |
 | Wrong subject name, additional subject, or non-SHA-256/extra digest | Statement policy | No replacement. |
 | Downloaded digest differs from checksum | Independent digest comparison | Provenance cannot rescue the mismatch; no replacement. |
 | Downloaded digest matches checksum but differs from provenance | Subject digest comparison | Checksum cannot rescue the mismatch; no replacement. |
 | Unsupported, missing, misnamed, additional, or duplicate release asset | Strict manifest selection | No asset download and no fallback. |
+| Checksums over 16 KiB, provenance over 1 MiB, or release metadata over 1 MiB | Bounded read before parsing | No replacement; installed bytes and mode are unchanged. |
 
 `TestTrustFailurePreservesExecutable` records the original executable bytes and
 permission bits, injects a wrong-subject signed bundle, and proves both remain
@@ -98,8 +101,10 @@ identical while the pre-replacement callback is never reached.
 `TestVerifiedReplacementPreservesPermissionsAndTarget` proves a valid
 replacement reaches the callback only after trust succeeds, renames only the
 intended sibling temporary target, preserves the prior permission bits, and
-does not modify an adjacent sentinel file. The Unix installer regression gives
-the same byte-and-mode proof for a failed external attestation verifier.
+does not modify an adjacent sentinel file. Unix installer regressions give the
+same byte-and-mode proof for a failed external attestation verifier,
+unversioned-identity replay, invalid exact manifests, and oversized metadata or
+trust inputs.
 
 ## Workflow permission review
 
@@ -124,9 +129,11 @@ data exactly once.
 leaf key, short-lived identity certificate, and signed SLSA statement in
 memory for each of the six temporary release builds. It verifies each bundle
 with the production verifier core and exact target manifest. The required
-`provenance-failure-paths` action exercises the identity matrix, independent
-digest binding, and byte preservation. It uses no production credential,
-GitHub publication, tag, upload, installed executable, or release-write API.
+`provenance-failure-paths` action exercises the selected-tag identity matrix,
+independent digest binding, and byte preservation. The inherited unit gate
+also exercises bounded updater and installer inputs and the installer's exact
+manifest. It uses no production credential, GitHub publication, tag, upload,
+installed executable, or release-write API.
 
 ## Identity rotation runbook
 
@@ -171,8 +178,9 @@ trust a checksum alone, or add `--skip-verification`.
 
 A trust error leaves the current executable in place. Retry only after the
 release owner repairs or republishes the exact asset/bundle set through a
-reviewed identity. For installer failures, install a current GitHub CLI that
-supports `gh attestation verify`; do not manually copy the downloaded binary.
+reviewed identity. For installer failures, install `jq` and a current GitHub
+CLI that supports `gh attestation verify`; do not manually copy the downloaded
+binary.
 For an explicit major migration, retain the prior executable until migration
 validation completes. If the repository announces an identity rotation, first
 install the reviewed overlap/bridge version through a still-valid provenance

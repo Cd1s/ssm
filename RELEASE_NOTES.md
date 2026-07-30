@@ -1,6 +1,6 @@
 # Release Notes Draft
 
-## Upcoming v2.0.0 (draft)
+## v2.0.0
 
 ### Pinned release provenance
 

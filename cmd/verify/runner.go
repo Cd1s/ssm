@@ -355,19 +355,16 @@ func validateReleaseNotes(repoRoot, version string) error {
 	found := false
 	var body []string
 	for _, line := range lines {
-		if strings.HasPrefix(line, "## v") {
-			if !found {
-				if line != header {
-					return fmt.Errorf("first release-note version is %q, want %q", line, header)
-				}
+		if !found {
+			if line == header {
 				found = true
-				continue
 			}
+			continue
+		}
+		if strings.HasPrefix(line, "## v") {
 			break
 		}
-		if found {
-			body = append(body, line)
-		}
+		body = append(body, line)
 	}
 	if !found {
 		return fmt.Errorf("release notes have no %q section", header)

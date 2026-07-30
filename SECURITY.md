@@ -13,8 +13,10 @@ We will respond within 48 hours and work on a fix as quickly as possible.
 ## Release Verification
 
 Official release replacements require the selected SHA-256 digest and
-keyless provenance pinned to the `Cd1s/ssm` release workflow and GitHub
-Actions OIDC issuer. A provenance failure preserves the installed executable.
-Do not work around a failed update by copying the downloaded binary or looking
-for a verification-skip option; report unexpected official-release failures
-privately through the channels above.
+keyless provenance pinned to the exact selected release tag in the `Cd1s/ssm`
+release workflow and GitHub Actions OIDC issuer. Release selection also
+requires the exact supported 14-asset manifest. A selection or provenance
+failure preserves the installed executable. Do not work around a failed update
+by copying the downloaded binary or looking for a verification-skip option;
+report unexpected official-release failures privately through the channels
+above.

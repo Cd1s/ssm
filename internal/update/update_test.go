@@ -242,6 +242,26 @@ func assertExecutableBytes(t *testing.T, path, want string) {
 	}
 }
 
+func assertExecutablePreserved(t *testing.T, path string, want []byte, mode os.FileMode) {
+	t.Helper()
+	data, err := os.ReadFile(path) //nolint:gosec // callers pass only test-owned executable paths beneath t.TempDir
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, want) || info.Mode().Perm() != mode {
+		t.Fatalf(
+			"executable was not preserved: bytes_equal=%t mode=%o want_mode=%o",
+			bytes.Equal(data, want),
+			info.Mode().Perm(),
+			mode,
+		)
+	}
+}
+
 func TestReleaseRepoCanBeDisabledByEnvironment(t *testing.T) {
 	for _, value := range []string{"off", "none", "disabled", " OFF "} {
 		t.Run(value, func(t *testing.T) {
@@ -463,6 +483,81 @@ func TestInvalidSelectedReleaseDoesNotFallBackOrDownload(t *testing.T) {
 	}
 }
 
+func TestOversizedReleaseMetadataPreservesExecutable(t *testing.T) {
+	restoreUpdateTestHooks(t)
+	setTestHome(t, t.TempDir())
+	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
+
+	exe := filepath.Join(t.TempDir(), "ssm")
+	original := []byte("original executable bytes")
+	if err := os.WriteFile(exe, original, 0o751); err != nil { //nolint:gosec // test-owned executable mode is part of preservation proof
+		t.Fatal(err)
+	}
+	before, err := os.Stat(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executablePath = func() (string, error) { return exe, nil }
+	evalSymlinks = func(path string) (string, error) { return path, nil }
+
+	const version = "v1.5.0"
+	payload := []byte("replacement bytes")
+	claims, err := provenancefixture.DefaultClaims(assetName(), version, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := provenancefixture.Generate(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyProvenance = func(_ context.Context, bundle []byte, request provenance.Request) error {
+		return provenance.VerifyBundle(bundle, request, provenance.Options{
+			TrustedMaterial: fixture.TrustedMaterial,
+		})
+	}
+	metadata := fmt.Sprintf(
+		`[{"tag_name":%q,"assets":[%s]}]`,
+		version,
+		releaseAssetMetadataJSON(),
+	)
+	metadata += strings.Repeat(" ", (1<<20)+1-len(metadata))
+	digest := sha256.Sum256(payload)
+	var paths []string
+	httpClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		paths = append(paths, request.URL.Path)
+		var body []byte
+		switch request.URL.Path {
+		case "/repos/owner/repo/releases":
+			body = []byte(metadata)
+		case "/owner/repo/releases/download/" + version + "/checksums.txt":
+			body = []byte(fmt.Sprintf("%x  %s\n", digest, assetName()))
+		case "/owner/repo/releases/download/" + version + "/" + releaseasset.ProvenanceName(assetName()):
+			body = fixture.Bundle
+		case "/owner/repo/releases/download/" + version + "/" + assetName():
+			body = payload
+		default:
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Status:     "404 Not Found",
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})}
+
+	if _, err := Download("v1.4.3"); err == nil {
+		t.Fatal("oversized release metadata authorized replacement")
+	}
+	assertExecutablePreserved(t, exe, original, before.Mode().Perm())
+	if want := []string{"/repos/owner/repo/releases"}; !reflect.DeepEqual(paths, want) {
+		t.Fatalf("oversized metadata request paths = %q, want metadata only %q", paths, want)
+	}
+}
+
 func TestChecksumForAssetRequiresMatchingAsset(t *testing.T) {
 	_, err := checksumForAsset([]byte(strings.Repeat("a", sha256.Size*2)+"  other\n"), "ssm-linux-amd64")
 	if err == nil {
@@ -475,6 +570,119 @@ func TestChecksumForAssetRejectsDuplicate(t *testing.T) {
 	if _, err := checksumForAsset([]byte(line+line), "ssm-linux-amd64"); err == nil {
 		t.Fatal("duplicate checksum records were accepted")
 	}
+}
+
+func TestOversizedChecksumPreservesExecutable(t *testing.T) {
+	restoreUpdateTestHooks(t)
+	setTestHome(t, t.TempDir())
+	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
+
+	exe := filepath.Join(t.TempDir(), "ssm")
+	original := []byte("original executable bytes")
+	if err := os.WriteFile(exe, original, 0o751); err != nil { //nolint:gosec // test-owned executable mode is part of preservation proof
+		t.Fatal(err)
+	}
+	before, err := os.Stat(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executablePath = func() (string, error) { return exe, nil }
+	evalSymlinks = func(path string) (string, error) { return path, nil }
+
+	const version = "v9.9.9"
+	payload := []byte("replacement bytes")
+	claims, err := provenancefixture.DefaultClaims(assetName(), version, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := provenancefixture.Generate(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyProvenance = func(_ context.Context, bundle []byte, request provenance.Request) error {
+		return provenance.VerifyBundle(bundle, request, provenance.Options{
+			TrustedMaterial: fixture.TrustedMaterial,
+		})
+	}
+	digest := sha256.Sum256(payload)
+	checksums := fmt.Sprintf("%x  %s\n", digest, assetName()) + strings.Repeat(" ", (16<<10)+1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/owner/repo/releases/download/" + version + "/checksums.txt":
+			_, _ = io.WriteString(w, checksums)
+		case "/owner/repo/releases/download/" + version + "/" + releaseasset.ProvenanceName(assetName()):
+			_, _ = w.Write(fixture.Bundle)
+		case "/owner/repo/releases/download/" + version + "/" + assetName():
+			_, _ = w.Write(payload)
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+	downloadBaseURL = server.URL
+	httpClient = server.Client()
+
+	if err := DownloadVersion(version, false); err == nil {
+		t.Fatal("oversized checksum data authorized replacement")
+	}
+	assertExecutablePreserved(t, exe, original, before.Mode().Perm())
+}
+
+func TestOversizedProvenanceBundlePreservesExecutable(t *testing.T) {
+	restoreUpdateTestHooks(t)
+	setTestHome(t, t.TempDir())
+	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
+
+	exe := filepath.Join(t.TempDir(), "ssm")
+	original := []byte("original executable bytes")
+	if err := os.WriteFile(exe, original, 0o751); err != nil { //nolint:gosec // test-owned executable mode is part of preservation proof
+		t.Fatal(err)
+	}
+	before, err := os.Stat(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executablePath = func() (string, error) { return exe, nil }
+	evalSymlinks = func(path string) (string, error) { return path, nil }
+
+	const version = "v9.9.9"
+	payload := []byte("replacement bytes")
+	claims, err := provenancefixture.DefaultClaims(assetName(), version, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := provenancefixture.Generate(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyProvenance = func(_ context.Context, bundle []byte, request provenance.Request) error {
+		return provenance.VerifyBundle(bundle, request, provenance.Options{
+			TrustedMaterial: fixture.TrustedMaterial,
+		})
+	}
+	oversizedBundle := append([]byte(nil), fixture.Bundle...)
+	oversizedBundle = append(oversizedBundle, bytes.Repeat([]byte(" "), (1<<20)+1-len(oversizedBundle))...)
+	digest := sha256.Sum256(payload)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/owner/repo/releases/download/" + version + "/checksums.txt":
+			_, _ = fmt.Fprintf(w, "%x  %s\n", digest, assetName())
+		case "/owner/repo/releases/download/" + version + "/" + releaseasset.ProvenanceName(assetName()):
+			_, _ = w.Write(oversizedBundle)
+		case "/owner/repo/releases/download/" + version + "/" + assetName():
+			_, _ = w.Write(payload)
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+	downloadBaseURL = server.URL
+	httpClient = server.Client()
+
+	if err := DownloadVersion(version, false); err == nil {
+		t.Fatal("oversized provenance bundle authorized replacement")
+	}
+	assertExecutablePreserved(t, exe, original, before.Mode().Perm())
 }
 
 func TestCopyAndVerifyRejectsChecksumMismatch(t *testing.T) {
@@ -676,11 +884,16 @@ func TestProvenanceIdentityMatrix(t *testing.T) {
 	}{
 		{name: "accepted release tag identity", wantSuccess: true},
 		{
-			name: "accepted release main identity",
+			name: "unversioned main identity replay",
 			mutate: func(claims *provenancefixture.Claims) {
 				claims.Ref = "refs/heads/main"
 			},
-			wantSuccess: true,
+		},
+		{
+			name: "older release tag downgrade",
+			mutate: func(claims *provenancefixture.Claims) {
+				claims.Ref = "refs/tags/v9.9.8"
+			},
 		},
 		{name: "cryptographically unverifiable provenance", tamperSignature: true},
 		{

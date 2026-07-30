@@ -22,26 +22,79 @@ esac
 ext=""
 [ "$os" = "windows" ] && ext=".exe"
 asset="ssm-$os-$arch$ext"
-latest_url="https://github.com/$repo/releases/latest"
-url="https://github.com/$repo/releases/latest/download/$asset"
-checksums_url="https://github.com/$repo/releases/latest/download/checksums.txt"
 provenance="$asset.sigstore.json"
-provenance_url="https://github.com/$repo/releases/latest/download/$provenance"
+metadata_limit=1048576
+checksums_limit=16384
+bundle_limit=1048576
+binary_limit=67108864
 
 tmp="$(mktemp)"
 checksums="$(mktemp)"
 bundle="$(mktemp)"
-trap 'rm -f "$tmp" "$checksums" "$bundle"' EXIT
-resolved_release_url="$(curl -fsSL -o /dev/null -w '%{url_effective}' "$latest_url")"
-release_tag="${resolved_release_url#*/releases/tag/}"
-release_tag="${release_tag%%[/?#]*}"
+release_metadata="$(mktemp)"
+trap 'rm -f "$tmp" "$checksums" "$bundle" "$release_metadata"' EXIT
+if ! command -v jq >/dev/null 2>&1; then
+  echo "jq is required for exact release manifest validation" >&2
+  exit 1
+fi
+download_bounded() {
+  download_url="$1"
+  download_output="$2"
+  download_limit="$3"
+  download_description="$4"
+  if ! curl -fsSL --max-filesize "$download_limit" "$download_url" -o "$download_output"; then
+    echo "failed to download bounded $download_description" >&2
+    return 1
+  fi
+  download_size="$(wc -c < "$download_output" | tr -d '[:space:]')"
+  if [ "$download_size" -gt "$download_limit" ]; then
+    echo "$download_description exceeds $download_limit-byte limit" >&2
+    return 1
+  fi
+}
+download_bounded \
+  "https://api.github.com/repos/$repo/releases/latest" \
+  "$release_metadata" \
+  "$metadata_limit" \
+  "release metadata"
+expected_assets='[
+  "ssm-linux-amd64",
+  "ssm-linux-arm64",
+  "ssm-darwin-amd64",
+  "ssm-darwin-arm64",
+  "ssm-windows-amd64.exe",
+  "ssm-windows-arm64.exe",
+  "ssm-linux-amd64.sigstore.json",
+  "ssm-linux-arm64.sigstore.json",
+  "ssm-darwin-amd64.sigstore.json",
+  "ssm-darwin-arm64.sigstore.json",
+  "ssm-windows-amd64.exe.sigstore.json",
+  "ssm-windows-arm64.exe.sigstore.json",
+  "install.sh",
+  "checksums.txt"
+]'
+if ! jq -e --argjson expected "$expected_assets" '
+  type == "object" and
+  (.tag_name | type == "string") and
+  (.assets | type == "array") and
+  (.assets | all(.[]; type == "object" and (.name | type == "string"))) and
+  (([.assets[].name] | length) == ($expected | length)) and
+  (([.assets[].name] | sort) == ($expected | sort))
+' "$release_metadata" >/dev/null; then
+  echo "latest release does not contain the exact supported 14-asset manifest" >&2
+  exit 1
+fi
+release_tag="$(jq -er '.tag_name' "$release_metadata")"
 if ! printf '%s\n' "$release_tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
   echo "resolved release identity is invalid" >&2
   exit 1
 fi
-curl -fsSL "$url" -o "$tmp"
-curl -fsSL "$checksums_url" -o "$checksums"
-curl -fsSL "$provenance_url" -o "$bundle"
+url="https://github.com/$repo/releases/download/$release_tag/$asset"
+checksums_url="https://github.com/$repo/releases/download/$release_tag/checksums.txt"
+provenance_url="https://github.com/$repo/releases/download/$release_tag/$provenance"
+download_bounded "$url" "$tmp" "$binary_limit" "$asset"
+download_bounded "$checksums_url" "$checksums" "$checksums_limit" "checksums.txt"
+download_bounded "$provenance_url" "$bundle" "$bundle_limit" "$provenance"
 expected="$(awk -v asset="$asset" '$2 == asset { print $1 }' "$checksums")"
 if [ -z "$expected" ]; then
   echo "checksum for $asset not found" >&2
@@ -90,15 +143,14 @@ verify_identity() {
   [ "$verified" = "true" ]
 }
 tag_identity="https://github.com/Cd1s/ssm/.github/workflows/release.yml@refs/tags/$release_tag"
-main_identity="https://github.com/Cd1s/ssm/.github/workflows/release.yml@refs/heads/main"
-if ! verify_identity "$tag_identity" 2>/dev/null && ! verify_identity "$main_identity"; then
-  echo "release provenance does not match the reviewed identity set" >&2
+if ! verify_identity "$tag_identity"; then
+  echo "release provenance does not match the selected release tag identity" >&2
   exit 1
 fi
 chmod 755 "$tmp"
 mkdir -p "$prefix" "$config_dir"
 staged="$(mktemp "$prefix/.ssm.XXXXXX.new")"
-trap 'rm -f "$tmp" "$checksums" "$bundle" "$staged"' EXIT
+trap 'rm -f "$tmp" "$checksums" "$bundle" "$release_metadata" "$staged"' EXIT
 install -m 755 "$tmp" "$staged"
 mv -f "$staged" "$prefix/ssm"
 staged=""

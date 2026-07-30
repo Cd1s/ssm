@@ -23,6 +23,7 @@ const (
 	ExpectedIssuer     = "https://token.actions.githubusercontent.com"
 	ExpectedWorkflow   = ".github/workflows/release.yml"
 	PredicateType      = "https://slsa.dev/provenance/v1"
+	MaxBundleBytes     = 1 << 20
 
 	repositoryURI = "https://github.com/" + ExpectedRepository
 	statementType = "https://in-toto.io/Statement/v1"
@@ -205,6 +206,9 @@ func VerifyBundle(data []byte, request Request, options Options) error {
 }
 
 func parseBundle(data []byte) (*sigstorebundle.Bundle, error) {
+	if len(data) > MaxBundleBytes {
+		return nil, fmt.Errorf("provenance bundle exceeds %d-byte limit", MaxBundleBytes)
+	}
 	protobufBundle := &bundlev1.Bundle{}
 	if err := protojson.Unmarshal(data, protobufBundle); err != nil {
 		return nil, fmt.Errorf("parse provenance bundle: %w", err)
@@ -227,11 +231,6 @@ func AcceptedIdentities(version string) ([]Identity, error) {
 		{
 			Version:   "release-tag-v1",
 			SAN:       base + "refs/tags/" + tag,
-			NotBefore: initialIdentityAcceptance,
-		},
-		{
-			Version:   "release-main-v1",
-			SAN:       base + "refs/heads/main",
 			NotBefore: initialIdentityAcceptance,
 		},
 	}, nil
