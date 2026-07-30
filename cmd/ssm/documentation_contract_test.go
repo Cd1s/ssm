@@ -664,6 +664,31 @@ func TestPushGuidanceScannerAdversarialFixtures(t *testing.T) {
 			wantError: true,
 		},
 		{
+			name:      "only equals all is conflicting",
+			document:  "sshctl --json push --only=--all\n",
+			wantError: true,
+		},
+		{
+			name:      "only equals rejects unknown option token",
+			document:  "sshctl --json push --only=--unknown\n",
+			wantError: true,
+		},
+		{
+			name:      "only equals rejects short option token",
+			document:  "sshctl --json push --only=-x\n",
+			wantError: true,
+		},
+		{
+			name:      "only equals rejects known long option token",
+			document:  "sshctl --json push --only=--json\n",
+			wantError: true,
+		},
+		{
+			name:      "only equals rejects known short option token",
+			document:  "sshctl --json push --only=-v\n",
+			wantError: true,
+		},
+		{
 			name:      "instructional prose requires a value",
 			document:  "Publish the returned transaction_id with push --only after review.\n",
 			wantError: true,
@@ -689,7 +714,7 @@ func TestPushGuidanceScannerAdversarialFixtures(t *testing.T) {
 			document: "sshctl --json push --only tx_reviewed\n" +
 				"sshctl --json push --only \"tx_reviewed_quoted\"\n" +
 				"sshctl --json push --only='tx_reviewed_equals'\n" +
-				"sshctl --json push --only=--nonempty-id\n",
+				"sshctl --json push --only=opaque:id/with=punctuation\n",
 		},
 		{
 			name:     "all is an explicit scope",

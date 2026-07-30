@@ -53,6 +53,12 @@ func TestPushScopeArgumentsFailBeforePublicationSideEffects(t *testing.T) {
 		{name: "empty only value", args: []string{"--only", ""}, want: onlyRequiredFailure},
 		{name: "whitespace only value", args: []string{"--only", " \t "}, want: onlyRequiredFailure},
 		{name: "empty only equals value", args: []string{"--only="}, want: onlyRequiredFailure},
+		{name: "only equals all", args: []string{"--only=--all"}, want: scopeConflictFailure},
+		{name: "only equals unknown option token", args: []string{"--only=--unknown"}, want: onlyRequiredFailure},
+		{name: "only equals short option token", args: []string{"--only=-x"}, want: onlyRequiredFailure},
+		{name: "only equals only option token", args: []string{"--only=--only"}, want: onlyRequiredFailure},
+		{name: "only equals known long option token", args: []string{"--only=--json"}, want: onlyRequiredFailure},
+		{name: "only equals known short option token", args: []string{"--only=-v"}, want: onlyRequiredFailure},
 		{name: "unknown flag", args: []string{"--unknown"}, want: invalidScopeFailure},
 		{name: "only rejects long option token", args: []string{"--only", "--unknown"}, want: onlyRequiredFailure},
 		{name: "only rejects short option token", args: []string{"--only", "-x"}, want: onlyRequiredFailure},
@@ -67,6 +73,7 @@ func TestPushScopeArgumentsFailBeforePublicationSideEffects(t *testing.T) {
 				unlockCanary := filepath.Join(cli.temp, "ISSUE25_UNLOCK_MUST_NOT_BE_TOUCHED_CANARY")
 				configDir := filepath.Join(cli.home, ".config", "ssm")
 				untouchedPaths := []string{
+					unlockCanary,
 					filepath.Join(configDir, "connections.enc"),
 					filepath.Join(configDir, "publication.lock"),
 					filepath.Join(configDir, "publishing-intent.json"),

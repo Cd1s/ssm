@@ -199,7 +199,10 @@ func parsePushScopeArguments(args []string) (string, *pushArgumentFailure) {
 				return "", failure
 			}
 			value := strings.TrimPrefix(args[i], "--only=")
-			if strings.TrimSpace(value) == "" {
+			if value == "--all" {
+				return "", &pushArgumentFailure{kind: machinecontract.PushScopeConflict, message: pushScopeConflictMessage}
+			}
+			if strings.TrimSpace(value) == "" || strings.HasPrefix(value, "-") {
 				return "", &pushArgumentFailure{kind: machinecontract.PushOnlyRequired, message: pushOnlyRequiredMessage}
 			}
 			only = value
