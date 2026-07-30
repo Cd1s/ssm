@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -37,7 +38,9 @@ const (
 
 func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("ordinary user preserves owner group DACL and inheritance", testWindowsOrdinaryUserReplacement)
-	t.Run("ordinary fixture uses a restricted impersonation token", testWindowsRestrictedImpersonationToken)
+	t.Run("effective token privilege detection cannot escape to the process token", testWindowsRestrictedImpersonationToken)
+	t.Run("ordinary inherited descriptor capture apply and verification are semantic", testWindowsInheritedOrdinaryDescriptorPreparation)
+	t.Run("ordinary descriptor differences identify the changed security component", testWindowsOrdinaryDescriptorDiagnostics)
 	t.Run("optional complete descriptor denial falls back to ordinary preservation", testWindowsOptionalFullTierFallback)
 	t.Run("complete descriptor is preserved when supported with ordinary fallback", testWindowsPrivilegedReplacement)
 	t.Run("privileges and thread identity are restored", testWindowsReplacementPrivilegeRestoration)
@@ -213,7 +216,6 @@ func testWindowsSecurityDescriptorApplyFailureRollsBack(t *testing.T) {
 	target := filepath.Join(directory, "ssm.exe")
 	stage := filepath.Join(directory, ".ssm.test-stage.exe")
 	copyWindowsTestExecutable(t, testExecutable, target, nil)
-	setRestrictiveWindowsTestDACL(t, target)
 	original, err := os.ReadFile(target) //nolint:gosec // test-owned executable fixture
 	if err != nil {
 		t.Fatal(err)
@@ -226,6 +228,7 @@ func testWindowsSecurityDescriptorApplyFailureRollsBack(t *testing.T) {
 		windowsReplacementChildEnv+"=1",
 		windowsReplacementStageEnv+"="+stage,
 		windowsDescriptorFailEnv+"=1",
+		windowsOrdinaryUserEnv+"=1",
 	)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("descriptor rollback fixture failed: %v; output=%q", err, output)
@@ -313,6 +316,7 @@ func testWindowsRestrictedImpersonationToken(t *testing.T) {
 			t.Fatalf("restricted token unexpectedly retains %s", privilege)
 		}
 	}
+	before := windowsTestTokenDescription(t, token)
 	scope, available, err := beginWindowsReplacementPrivileges()
 	if err != nil {
 		t.Fatalf("probe restricted optional privileges: %v", err)
@@ -325,10 +329,167 @@ func testWindowsRestrictedImpersonationToken(t *testing.T) {
 	if available {
 		t.Fatal("restricted token unexpectedly supports complete descriptor privileges")
 	}
+	after := windowsTestTokenDescription(t, windows.GetCurrentThreadEffectiveToken())
+	if after != before {
+		t.Fatalf(
+			"optional privilege probe escaped or changed the effective restricted identity: before=%q after=%q",
+			before,
+			after,
+		)
+	}
 	if err := restore(); err != nil {
 		t.Fatalf("restore ordinary non-privileged token: %v", err)
 	}
 	restore = nil
+}
+
+func testWindowsInheritedOrdinaryDescriptorPreparation(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "current.exe")
+	stage := filepath.Join(directory, ".current.stage.exe")
+	if err := os.WriteFile(target, []byte("current"), 0o700); err != nil { //nolint:gosec // test-owned descriptor fixture
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stage, []byte("stage"), 0o700); err != nil { //nolint:gosec // test-owned descriptor fixture
+		t.Fatal(err)
+	}
+	want := readWindowsTestOrdinarySecurityContract(t, target)
+	if want.protected {
+		t.Skip("test temp directory produced a protected file DACL instead of the standard inherited fixture")
+	}
+	if !want.hasInheritedACE {
+		t.Skip("test temp directory did not produce inherited file ACEs")
+	}
+
+	originalSetSecurityInfo := setWindowsSecurityInfo
+	applyCalls := 0
+	setWindowsSecurityInfo = func(
+		handle windows.Handle,
+		objectType windows.SE_OBJECT_TYPE,
+		securityInformation windows.SECURITY_INFORMATION,
+		owner *windows.SID,
+		group *windows.SID,
+		dacl *windows.ACL,
+		sacl *windows.ACL,
+	) error {
+		applyCalls++
+		return originalSetSecurityInfo(
+			handle,
+			objectType,
+			securityInformation,
+			owner,
+			group,
+			dacl,
+			sacl,
+		)
+	}
+	defer func() { setWindowsSecurityInfo = originalSetSecurityInfo }()
+
+	state, err := prepareWindowsReplacementOrdinarySecurity(stage, target)
+	if err != nil {
+		t.Fatalf("capture, apply, and verify standard inherited descriptor: %v", err)
+	}
+	if applyCalls != 1 {
+		t.Fatalf("ordinary inherited descriptor apply calls = %d, want 1", applyCalls)
+	}
+	if err := state.close(); err != nil {
+		t.Fatalf("close ordinary inherited descriptor state: %v", err)
+	}
+
+	got := readWindowsTestOrdinarySecurityContract(t, stage)
+	assertWindowsTestOrdinarySecurityContract(t, got, want)
+}
+
+func testWindowsOrdinaryDescriptorDiagnostics(t *testing.T) {
+	const baseline = "O:SYG:BAD:AI(A;ID;FR;;;BU)"
+	for _, test := range []struct {
+		name       string
+		want       string
+		got        string
+		difference string
+	}{
+		{
+			name:       "owner",
+			want:       baseline,
+			got:        "O:BAG:BAD:AI(A;ID;FR;;;BU)",
+			difference: "owner SID changed",
+		},
+		{
+			name:       "primary group",
+			want:       baseline,
+			got:        "O:SYG:SYD:AI(A;ID;FR;;;BU)",
+			difference: "primary group SID changed",
+		},
+		{
+			name:       "access broadening",
+			want:       baseline,
+			got:        "O:SYG:BAD:AI(A;ID;FA;;;BU)",
+			difference: "DACL ACE 0 changed",
+		},
+		{
+			name:       "inherited ACE state",
+			want:       baseline,
+			got:        "O:SYG:BAD:AI(A;;FR;;;BU)",
+			difference: "DACL ACE 0 changed",
+		},
+		{
+			name:       "ACE ordering",
+			want:       "O:SYG:BAD:(D;;FW;;;BU)(A;;FR;;;BU)",
+			got:        "O:SYG:BAD:(A;;FR;;;BU)(D;;FW;;;BU)",
+			difference: "DACL ACE 0 changed",
+		},
+		{
+			name:       "protection",
+			want:       baseline,
+			got:        "O:SYG:BAD:PAI(A;ID;FR;;;BU)",
+			difference: "DACL protection changed",
+		},
+		{
+			name:       "auto inheritance regression",
+			want:       baseline,
+			got:        "O:SYG:BAD:(A;ID;FR;;;BU)",
+			difference: "DACL auto-inherited state changed",
+		},
+		{
+			name:       "null versus empty DACL",
+			want:       "O:SYG:BAD:",
+			got:        "O:SYG:BAD:NO_ACCESS_CONTROL",
+			difference: "DACL state changed",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			want, err := windows.SecurityDescriptorFromString(test.want)
+			if err != nil {
+				t.Fatalf("build wanted descriptor: %v", err)
+			}
+			got, err := windows.SecurityDescriptorFromString(test.got)
+			if err != nil {
+				t.Fatalf("build changed descriptor: %v", err)
+			}
+			err = compareWindowsSecurityDescriptors(want, got, false)
+			if err == nil || !strings.Contains(err.Error(), test.difference) {
+				t.Fatalf(
+					"ordinary descriptor difference = %v, want diagnostic containing %q",
+					err,
+					test.difference,
+				)
+			}
+		})
+	}
+
+	t.Run("Windows auto-inheritance normalization", func(t *testing.T) {
+		want, err := windows.SecurityDescriptorFromString("O:SYG:BAD:(A;ID;FR;;;BU)")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := windows.SecurityDescriptorFromString(baseline)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := compareWindowsSecurityDescriptors(want, got, false); err != nil {
+			t.Fatalf("Windows-normalized auto-inherited metadata changed the security contract: %v", err)
+		}
+	})
 }
 
 func testWindowsOptionalFullTierFallback(t *testing.T) {
@@ -1362,6 +1523,9 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 		if !strings.Contains(err.Error(), "apply preserved Windows security descriptor") {
 			t.Fatalf("replacement did not fail at canonical descriptor application: %v", err)
 		}
+		if strings.Contains(err.Error(), "rollback failed") {
+			t.Fatalf("descriptor application failure did not restore the original object: %v", err)
+		}
 		return
 	}
 	err = replaceExecutable(stage, executable)
@@ -1650,6 +1814,119 @@ func assertWindowsFileBytes(t *testing.T, path string, want []byte) {
 type windowsTestSecurityDescriptor struct {
 	sddl    string
 	control windows.SECURITY_DESCRIPTOR_CONTROL
+}
+
+type windowsTestOrdinarySecurityContract struct {
+	ownerSID        string
+	groupSID        string
+	daclState       string
+	aces            []string
+	protected       bool
+	autoInherited   bool
+	hasInheritedACE bool
+}
+
+func readWindowsTestOrdinarySecurityContract(
+	t *testing.T,
+	path string,
+) windowsTestOrdinarySecurityContract {
+	t.Helper()
+	handle, err := openWindowsReplacementFile(path, windows.READ_CONTROL)
+	if err != nil {
+		t.Fatalf("open ordinary descriptor contract: %v", err)
+	}
+	defer windows.CloseHandle(handle)
+	owned, err := captureWindowsSecurityDescriptor(handle, windowsOrdinarySecurityInformation)
+	if err != nil {
+		t.Fatalf("capture ordinary descriptor contract: %v", err)
+	}
+	defer func() {
+		if err := owned.close(); err != nil {
+			t.Fatalf("free ordinary descriptor contract: %v", err)
+		}
+	}()
+
+	descriptor := owned.descriptor
+	owner, _, err := descriptor.Owner()
+	if err != nil || owner == nil {
+		t.Fatalf("read ordinary descriptor owner: %v", descriptorComponentError(err))
+	}
+	group, _, err := descriptor.Group()
+	if err != nil || group == nil {
+		t.Fatalf("read ordinary descriptor primary group: %v", descriptorComponentError(err))
+	}
+	control, _, err := descriptor.Control()
+	if err != nil {
+		t.Fatalf("read ordinary descriptor control: %v", err)
+	}
+	contract := windowsTestOrdinarySecurityContract{
+		ownerSID:      owner.String(),
+		groupSID:      group.String(),
+		protected:     control&windows.SE_DACL_PROTECTED != 0,
+		autoInherited: control&windows.SE_DACL_AUTO_INHERITED != 0,
+	}
+	dacl, _, err := descriptor.DACL()
+	switch {
+	case errors.Is(err, windows.ERROR_OBJECT_NOT_FOUND):
+		contract.daclState = "absent"
+		return contract
+	case err != nil:
+		t.Fatalf("read ordinary descriptor DACL: %v", err)
+	case dacl == nil:
+		contract.daclState = "null"
+		return contract
+	default:
+		contract.daclState = "present"
+	}
+	for index := uint32(0); index < uint32(dacl.AceCount); index++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, index, &ace); err != nil {
+			t.Fatalf("read ordinary descriptor DACL ACE %d: %v", index, err)
+		}
+		if ace == nil || ace.Header.AceSize < uint16(unsafe.Sizeof(windows.ACE_HEADER{})) {
+			t.Fatalf("ordinary descriptor DACL ACE %d is absent or truncated", index)
+		}
+		if ace.Header.AceFlags&windows.INHERITED_ACE != 0 {
+			contract.hasInheritedACE = true
+		}
+		contract.aces = append(
+			contract.aces,
+			fmt.Sprintf(
+				"%x",
+				unsafe.Slice((*byte)(unsafe.Pointer(ace)), int(ace.Header.AceSize)),
+			),
+		)
+	}
+	return contract
+}
+
+func assertWindowsTestOrdinarySecurityContract(
+	t *testing.T,
+	got,
+	want windowsTestOrdinarySecurityContract,
+) {
+	t.Helper()
+	if got.ownerSID != want.ownerSID {
+		t.Errorf("ordinary descriptor owner SID = %q, want %q", got.ownerSID, want.ownerSID)
+	}
+	if got.groupSID != want.groupSID {
+		t.Errorf("ordinary descriptor primary group SID = %q, want %q", got.groupSID, want.groupSID)
+	}
+	if got.daclState != want.daclState {
+		t.Errorf("ordinary descriptor DACL state = %q, want %q", got.daclState, want.daclState)
+	}
+	if !slices.Equal(got.aces, want.aces) {
+		t.Errorf("ordinary descriptor DACL ACEs = %v, want %v", got.aces, want.aces)
+	}
+	if got.protected != want.protected {
+		t.Errorf("ordinary descriptor DACL protected = %t, want %t", got.protected, want.protected)
+	}
+	if want.autoInherited && !got.autoInherited {
+		t.Errorf(
+			"ordinary descriptor DACL auto-inherited = %t, want retained true state",
+			got.autoInherited,
+		)
+	}
 }
 
 func setRestrictiveWindowsTestDACL(t *testing.T, path string) {

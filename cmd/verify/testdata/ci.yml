@@ -131,4 +131,5 @@ jobs:
         run: go test ./internal/update -run '^TestWindowsNativeReplacementSecurity$' -count=1
 
       - name: Verify native Windows fast profile
+        if: ${{ always() }}
         run: go run ./cmd/verify fast

@@ -3,6 +3,7 @@
 package update
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"runtime"
@@ -392,22 +393,37 @@ func (state *windowsReplacementSecurityState) stagedSecurityHandle() windows.Han
 	return state.staged
 }
 
+func (state *windowsReplacementSecurityState) closeStagedForRollback() error {
+	var errs []error
+	if state.stagedOwner != windows.InvalidHandle {
+		errs = append(errs, windows.CloseHandle(state.stagedOwner))
+		state.stagedOwner = windows.InvalidHandle
+	}
+	if state.staged != windows.InvalidHandle {
+		errs = append(errs, windows.CloseHandle(state.staged))
+		state.staged = windows.InvalidHandle
+	}
+	return errors.Join(errs...)
+}
+
 func validateWindowsSecurityDescriptor(descriptor *windows.SECURITY_DESCRIPTOR) error {
 	if descriptor == nil || !descriptor.IsValid() {
 		return fmt.Errorf("security descriptor is absent or invalid")
-	}
-	if descriptor.String() == "" {
-		return fmt.Errorf("security descriptor cannot be represented")
 	}
 	return nil
 }
 
 func compareWindowsSecurityDescriptors(want, got *windows.SECURITY_DESCRIPTOR, full bool) error {
-	if want.String() != got.String() {
-		if full {
-			return fmt.Errorf("complete security descriptor changed")
-		}
-		return fmt.Errorf("security descriptor owner, primary group, or DACL changed")
+	if !full {
+		return compareWindowsOrdinarySecurityDescriptors(want, got)
+	}
+	wantString := want.String()
+	gotString := got.String()
+	if wantString == "" || gotString == "" {
+		return fmt.Errorf("complete security descriptor cannot be represented")
+	}
+	if wantString != gotString {
+		return fmt.Errorf("complete security descriptor changed")
 	}
 	wantControl, _, err := want.Control()
 	if err != nil {
@@ -424,27 +440,199 @@ func compareWindowsSecurityDescriptors(want, got *windows.SECURITY_DESCRIPTOR, f
 			windows.SE_DACL_DEFAULTED |
 			windows.SE_DACL_AUTO_INHERIT_REQ |
 			windows.SE_DACL_AUTO_INHERITED |
-			windows.SE_DACL_PROTECTED,
-	)
-	if full {
-		relevantControl |= windows.SE_SACL_PRESENT |
+			windows.SE_DACL_PROTECTED |
+			windows.SE_SACL_PRESENT |
 			windows.SE_SACL_DEFAULTED |
 			windows.SE_SACL_AUTO_INHERIT_REQ |
 			windows.SE_SACL_AUTO_INHERITED |
 			windows.SE_SACL_PROTECTED |
-			windows.SE_RM_CONTROL_VALID
-	}
+			windows.SE_RM_CONTROL_VALID,
+	)
 	if wantControl&relevantControl != gotControl&relevantControl {
-		return fmt.Errorf("%s inheritance or defaulting state changed", stateDescriptorScope(full))
+		return fmt.Errorf("complete security descriptor inheritance or defaulting state changed")
 	}
 	return nil
 }
 
-func stateDescriptorScope(full bool) string {
-	if full {
-		return "complete security descriptor"
+type windowsDACLState uint8
+
+const (
+	windowsDACLAbsent windowsDACLState = iota
+	windowsDACLNull
+	windowsDACLPresent
+)
+
+type windowsDACLContract struct {
+	state windowsDACLState
+	aces  [][]byte
+}
+
+func compareWindowsOrdinarySecurityDescriptors(
+	want,
+	got *windows.SECURITY_DESCRIPTOR,
+) error {
+	wantOwner, _, err := want.Owner()
+	if err != nil || wantOwner == nil || !wantOwner.IsValid() {
+		return fmt.Errorf("read source owner SID: %w", descriptorComponentError(err))
 	}
-	return "owner/group/DACL"
+	gotOwner, _, err := got.Owner()
+	if err != nil || gotOwner == nil || !gotOwner.IsValid() {
+		return fmt.Errorf("read replacement owner SID: %w", descriptorComponentError(err))
+	}
+	if !windows.EqualSid(wantOwner, gotOwner) {
+		return fmt.Errorf(
+			"owner SID changed: got %s, want %s",
+			gotOwner.String(),
+			wantOwner.String(),
+		)
+	}
+
+	wantGroup, _, err := want.Group()
+	if err != nil || wantGroup == nil || !wantGroup.IsValid() {
+		return fmt.Errorf("read source primary group SID: %w", descriptorComponentError(err))
+	}
+	gotGroup, _, err := got.Group()
+	if err != nil || gotGroup == nil || !gotGroup.IsValid() {
+		return fmt.Errorf("read replacement primary group SID: %w", descriptorComponentError(err))
+	}
+	if !windows.EqualSid(wantGroup, gotGroup) {
+		return fmt.Errorf(
+			"primary group SID changed: got %s, want %s",
+			gotGroup.String(),
+			wantGroup.String(),
+		)
+	}
+
+	wantDACL, err := readWindowsDACLContract(want, "source")
+	if err != nil {
+		return err
+	}
+	gotDACL, err := readWindowsDACLContract(got, "replacement")
+	if err != nil {
+		return err
+	}
+	if wantDACL.state != gotDACL.state {
+		return fmt.Errorf(
+			"DACL state changed: got %s, want %s",
+			gotDACL.state,
+			wantDACL.state,
+		)
+	}
+	if len(wantDACL.aces) != len(gotDACL.aces) {
+		return fmt.Errorf(
+			"DACL ACE count changed: got %d, want %d",
+			len(gotDACL.aces),
+			len(wantDACL.aces),
+		)
+	}
+	for index := range wantDACL.aces {
+		if !bytes.Equal(wantDACL.aces[index], gotDACL.aces[index]) {
+			return fmt.Errorf(
+				"DACL ACE %d changed: got %s, want %s",
+				index,
+				describeWindowsACE(gotDACL.aces[index]),
+				describeWindowsACE(wantDACL.aces[index]),
+			)
+		}
+	}
+
+	wantControl, _, err := want.Control()
+	if err != nil {
+		return fmt.Errorf("read source descriptor control: %w", err)
+	}
+	gotControl, _, err := got.Control()
+	if err != nil {
+		return fmt.Errorf("read replacement descriptor control: %w", err)
+	}
+	wantProtected := wantControl&windows.SE_DACL_PROTECTED != 0
+	gotProtected := gotControl&windows.SE_DACL_PROTECTED != 0
+	if wantProtected != gotProtected {
+		return fmt.Errorf(
+			"DACL protection changed: got protected=%t, want protected=%t",
+			gotProtected,
+			wantProtected,
+		)
+	}
+	wantAutoInherited := wantControl&windows.SE_DACL_AUTO_INHERITED != 0
+	gotAutoInherited := gotControl&windows.SE_DACL_AUTO_INHERITED != 0
+	if wantAutoInherited && !gotAutoInherited {
+		return fmt.Errorf(
+			"DACL auto-inherited state changed: got auto-inherited=false, want auto-inherited=true",
+		)
+	}
+	// SetSecurityInfo can impose Windows' current inheritance model and add
+	// SE_DACL_AUTO_INHERITED. That one-way normalization is not an access
+	// change when protection and every ordered ACE, including INHERITED_ACE,
+	// remain identical.
+	return nil
+}
+
+func readWindowsDACLContract(
+	descriptor *windows.SECURITY_DESCRIPTOR,
+	description string,
+) (windowsDACLContract, error) {
+	dacl, _, err := descriptor.DACL()
+	switch {
+	case errors.Is(err, windows.ERROR_OBJECT_NOT_FOUND):
+		return windowsDACLContract{state: windowsDACLAbsent}, nil
+	case err != nil:
+		return windowsDACLContract{}, fmt.Errorf("read %s DACL: %w", description, err)
+	case dacl == nil:
+		return windowsDACLContract{state: windowsDACLNull}, nil
+	}
+
+	contract := windowsDACLContract{
+		state: windowsDACLPresent,
+		aces:  make([][]byte, 0, dacl.AceCount),
+	}
+	for index := uint32(0); index < uint32(dacl.AceCount); index++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, index, &ace); err != nil {
+			return windowsDACLContract{}, fmt.Errorf(
+				"read %s DACL ACE %d: %w",
+				description,
+				index,
+				err,
+			)
+		}
+		if ace == nil || ace.Header.AceSize < uint16(unsafe.Sizeof(windows.ACE_HEADER{})) {
+			return windowsDACLContract{}, fmt.Errorf(
+				"%s DACL ACE %d is absent or truncated",
+				description,
+				index,
+			)
+		}
+		raw := unsafe.Slice((*byte)(unsafe.Pointer(ace)), int(ace.Header.AceSize))
+		contract.aces = append(contract.aces, append([]byte(nil), raw...))
+	}
+	return contract, nil
+}
+
+func (state windowsDACLState) String() string {
+	switch state {
+	case windowsDACLAbsent:
+		return "absent"
+	case windowsDACLNull:
+		return "null"
+	case windowsDACLPresent:
+		return "present"
+	default:
+		return fmt.Sprintf("unknown(%d)", state)
+	}
+}
+
+func describeWindowsACE(ace []byte) string {
+	if len(ace) < int(unsafe.Sizeof(windows.ACE_HEADER{})) {
+		return fmt.Sprintf("truncated bytes=%x", ace)
+	}
+	header := (*windows.ACE_HEADER)(unsafe.Pointer(&ace[0]))
+	return fmt.Sprintf(
+		"type=%d flags=0x%02x size=%d bytes=%x",
+		header.AceType,
+		header.AceFlags,
+		header.AceSize,
+		ace,
+	)
 }
 
 func (state *windowsReplacementSecurityState) close() error {
@@ -494,7 +682,7 @@ func beginWindowsReplacementPrivileges() (*windowsReplacementPrivilegeScope, boo
 	if err := windows.OpenThreadToken(
 		windows.CurrentThread(),
 		windows.TOKEN_QUERY|windows.TOKEN_DUPLICATE|windows.TOKEN_IMPERSONATE,
-		true,
+		false,
 		&scope.previousToken,
 	); err == nil {
 		scope.hadPrevious = true
@@ -555,7 +743,38 @@ func enableWindowsReplacementPrivilege(token windows.Token, name string) error {
 	if err := windows.AdjustTokenPrivileges(token, false, &state, 0, nil, nil); err != nil {
 		return err
 	}
-	return windows.GetLastError()
+	enabled, err := windowsTokenPrivilegeEnabled(token, luid)
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		return windows.ERROR_NOT_ALL_ASSIGNED
+	}
+	return nil
+}
+
+func windowsTokenPrivilegeEnabled(token windows.Token, want windows.LUID) (bool, error) {
+	var size uint32
+	err := windows.GetTokenInformation(token, windows.TokenPrivileges, nil, 0, &size)
+	if !errors.Is(err, windows.ERROR_INSUFFICIENT_BUFFER) {
+		return false, fmt.Errorf("size adjusted token privileges: %w", err)
+	}
+	buffer := make([]byte, size)
+	if err := windows.GetTokenInformation(
+		token,
+		windows.TokenPrivileges,
+		&buffer[0],
+		uint32(len(buffer)),
+		&size,
+	); err != nil {
+		return false, fmt.Errorf("read adjusted token privileges: %w", err)
+	}
+	for _, privilege := range (*windows.Tokenprivileges)(unsafe.Pointer(&buffer[0])).AllPrivileges() {
+		if privilege.Luid == want {
+			return privilege.Attributes&windows.SE_PRIVILEGE_ENABLED != 0, nil
+		}
+	}
+	return false, nil
 }
 
 func (scope *windowsReplacementPrivilegeScope) close() error {

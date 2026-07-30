@@ -77,8 +77,9 @@ read-only repository permissions, disables checkout credential persistence,
 and invokes only `go run ./cmd/verify ci` in the Linux merge job. A separate
 native Windows job first invokes the explicit security-critical
 `TestWindowsNativeReplacementSecurity` suite without assuming elevated hosted
-runner privileges, then invokes `go run ./cmd/verify fast` for the complete
-native Go test suite. The focused suite always covers restricted-token
+runner privileges, then unconditionally invokes `go run ./cmd/verify fast`
+with `always()` for the complete native Go test suite even when the focused
+suite fails. The focused suite always covers restricted-token
 owner/group/DACL preservation and optional full-tier fallback; it covers
 full-descriptor/SACL preservation when the host proves that capture, apply,
 and verification are available. It also covers privilege restoration and

@@ -136,14 +136,25 @@ Every success and failure path calls `LocalFree` exactly once. Ordinary capture
 requests only owner, primary group, and DACL information and applies only
 components the current token can set; owner/group equality avoids requiring
 `WRITE_OWNER` when those fields already match. If a differing owner or group
-cannot be set, the update fails before rename. The updater attempts the full
-tier only after `SeBackupPrivilege`, `SeRestorePrivilege`, and
-`SeSecurityPrivilege` all enable on a duplicated impersonation token pinned to
-the current OS thread. It selects that tier only when the requested target and
-stage handles support complete descriptor capture, initial apply, and
-verification. An access/privilege/unsupported failure during that preparation
-restores the thread token, closes the privileged handles, and retries the
-ordinary tier from fresh handles.
+cannot be set, the update fails before rename. Ordinary verification compares
+owner and primary-group SIDs, null/empty/present DACL state, and every ordered
+ACE byte, including its type, access mask, trustee, and inheritance flags. It
+requires DACL protection to remain exact and never permits an existing
+auto-inherited state to disappear. It permits only Windows' one-way addition
+of `SE_DACL_AUTO_INHERITED` when `SetSecurityInfo` imposes the current
+inheritance model and the complete ordered ACE list remains identical;
+defaulted/request metadata and ACL header padding are not treated as access
+changes. The updater attempts the full tier only after `SeBackupPrivilege`,
+`SeRestorePrivilege`, and `SeSecurityPrivilege` all enable on a duplicated
+impersonation token pinned to the current OS thread. A present thread token is
+opened using that thread's effective security context, never the process
+context, and the updater queries the duplicate's actual enabled privilege set
+after adjustment. The process token is used only when the thread has no token.
+It selects the full tier only when the requested target and stage handles
+support complete descriptor capture, initial apply, and verification. An
+access/privilege/unsupported failure during that preparation restores the
+thread token, closes the privileged handles, and retries the ordinary tier from
+fresh handles.
 Closing the scope restores the exact prior thread token (or no token), closes
 the duplicate, and never changes the process token.
 
@@ -177,6 +188,13 @@ handle. Failed rollback retains the original at `.old`, the prepared record,
 and any remaining stage while reporting both the operation and rollback
 failure. These errors continue through the existing `update_failed` /
 `update` machine contract.
+
+The verified stage remains protected by its non-delete-sharing handles through
+normal installation and the completed-record write. If an operation has
+already failed and rollback must replace the installed stage, only those
+destination-stage handles are closed before the handle-bound original is
+restored over whatever occupies the canonical name; the trusted original
+handle, its identity checks, the lock, and the prepared record remain held.
 
 The installer success fixture places a BSD-compatible `mktemp` shim ahead of
 the host implementation. It rejects every supplied template that does not end

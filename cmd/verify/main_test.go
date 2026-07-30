@@ -772,6 +772,13 @@ func TestCIWorkflowMatchesReviewedGoldenAndHasReadOnlyCredentialFreeJobs(t *test
 	) {
 		t.Fatal("native Windows replacement-security gate is not explicit")
 	}
+	if !strings.Contains(text,
+		"      - name: Verify native Windows fast profile\n"+
+			"        if: ${{ always() }}\n"+
+			"        run: go run ./cmd/verify fast\n",
+	) {
+		t.Fatal("native Windows fast profile is not unconditional after the focused security suite")
+	}
 	if strings.Contains(text, "SSM_REQUIRE_WINDOWS_PRIVILEGED_TEST") {
 		t.Fatal("native Windows gate incorrectly requires optional host privileges")
 	}

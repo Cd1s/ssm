@@ -445,6 +445,9 @@ func rollbackWindowsReplacement(
 	} else if !isWindowsPathNotFound(openErr) {
 		return openErr
 	}
+	if err := security.closeStagedForRollback(); err != nil {
+		return fmt.Errorf("release failed installed Windows executable handles for rollback: %w", err)
+	}
 	if err := renameWindowsReplacementHandle(security.target, target, true); err != nil {
 		return err
 	}
