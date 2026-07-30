@@ -30,6 +30,7 @@ func isSSHCTLInvocation(path string) bool {
 }
 
 func main() {
+	update.CleanupPreviousExecutable()
 	defer func() {
 		if r := recover(); r != nil {
 			if streamMachine {

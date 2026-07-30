@@ -3,7 +3,7 @@
 Status: implemented by GitHub Issue #28
 
 BC-9 changes only release trust. Same-major selection, explicit cross-major
-authorization, release naming, machine failure contracts, and atomic
+authorization, release naming, machine failure contracts, and platform-safe
 replacement remain separate compatibility boundaries.
 
 ## Old and new trust matrix
@@ -20,7 +20,7 @@ authority by itself. The updater computes SHA-256 while copying the downloaded
 bytes into a sibling temporary file. That computed digest must match both the
 unique selected `checksums.txt` record and the unique provenance subject.
 Provenance verification completes before the pre-replacement callback and
-atomic rename.
+platform replacement.
 
 ## Subject and identity policy
 
@@ -94,6 +94,7 @@ newest eligible release fails this check.
 | Downloaded digest matches checksum but differs from provenance | Subject digest comparison | Checksum cannot rescue the mismatch; no replacement. |
 | Unsupported, missing, misnamed, additional, or duplicate release asset | Strict manifest selection | No asset download and no fallback. |
 | Checksums over 16 KiB, provenance or release metadata over 1 MiB, or a binary over 64 MiB | Header-independent bounded stream, rejecting after at most limit plus one byte | No replacement; temporary output is bounded and removed; installed bytes and mode are unchanged. |
+| Windows cannot overwrite its mapped running `.exe` | Platform replacement | Rename the running image to its fixed sibling rollback path, move the verified sibling stage to the original path, and restore the rollback image if that move fails. A completed replacement is reported only after the new bytes occupy the original path. |
 
 `TestTrustFailurePreservesExecutable` records the original executable bytes and
 permission bits, injects a wrong-subject signed bundle, and proves both remain
@@ -111,6 +112,23 @@ than first writing an unlimited response to disk. The Go updater separately
 proves declared-length early rejection and a redirected chunked binary stopped
 after exactly 67,108,865 bytes. Both paths remove temporary artifacts and
 preserve the installed bytes and mode.
+
+Native Windows tests execute a copied Go test binary, so the target is a
+genuinely mapped `.exe` during replacement. Success proves the verified stage
+occupies the original path before the updater reports completion. The mapped
+old image remains at `.ssm.exe.old` only until a later launch can remove it.
+The failure fixture holds the verified stage with a native sharing lock,
+proves the running image was first renamed, and then proves rollback restores
+the exact original bytes at the canonical path. Replacement failures return
+through the existing updater failure contract, and the updater's staging defer
+removes the verified temporary file.
+
+The installer success fixture places a BSD-compatible `mktemp` shim ahead of
+the host implementation. It rejects every supplied template that does not end
+in `XXXXXX`, then proves the installer uses a collision-safe template in the
+destination directory, installs the verified bytes with mode `0755`, creates
+the `sshctl` link, and leaves no sibling staging file. The destination rename
+therefore remains on one filesystem on macOS as well as GNU/Linux.
 
 ## Workflow permission review
 

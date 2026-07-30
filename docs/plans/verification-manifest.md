@@ -77,10 +77,11 @@ read-only repository permissions, disables checkout credential persistence,
 and invokes only `go run ./cmd/verify ci` in the Linux merge job. A separate
 native Windows job invokes `go run ./cmd/verify fast`, including the
 complete native Go test suite and its Windows-only no-follow/reparse and DACL
-tests, without duplicating command membership. Tests that execute a Unix
-remote shell or compare Bash script behavior are selected only on Unix;
-portable parsing, planning, host-key, environment-isolation, and security
-tests remain active on Windows.
+tests plus mapped-executable update success, next-launch cleanup, and
+sharing-lock rollback tests, without duplicating command membership. Tests
+that execute a Unix remote shell or compare Bash script behavior are selected
+only on Unix; portable parsing, planning, host-key, environment-isolation, and
+security tests remain active on Windows.
 The complete reviewed workflow is checked in as a test golden, with semantic
 assertions for both jobs, exact setup action versions, exact adapter
 invocations, job permissions, and checkout credential handling. The driver

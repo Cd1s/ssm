@@ -67,6 +67,50 @@ func TestInstallerTrustFailurePreservesExecutable(t *testing.T) {
 	}
 }
 
+func TestInstallerStagesWithBSDMktemp(t *testing.T) {
+	result := runInstallerFixture(t, installerFixtureOptions{
+		metadata:  installerReleaseMetadata(releaseasset.ExpectedReleaseNames()),
+		bundle:    []byte("{}\n"),
+		ghPolicy:  "success",
+		bsdMktemp: true,
+	})
+	if result.err != nil {
+		t.Fatalf("installer failed with BSD mktemp behavior: %v; output=%q", result.err, result.output)
+	}
+	installed, err := os.ReadFile(result.executable) //nolint:gosec // path is constrained to the fixture's t.TempDir
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(installed, result.replacement) {
+		t.Fatalf("installed executable differs from verified fixture; output=%q", result.output)
+	}
+	info, err := os.Stat(result.executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("installed executable mode = %o, want 755", info.Mode().Perm())
+	}
+	linkTarget, err := os.Readlink(result.alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linkTarget != result.executable {
+		t.Fatalf("sshctl link target = %q, want %q", linkTarget, result.executable)
+	}
+	if !strings.HasPrefix(result.stagingTemplate, filepath.Dir(result.executable)+string(os.PathSeparator)) ||
+		!strings.HasSuffix(result.stagingTemplate, "XXXXXX") {
+		t.Fatalf("BSD mktemp staging template = %q, want same-directory template ending in XXXXXX", result.stagingTemplate)
+	}
+	staged, err := filepath.Glob(filepath.Join(filepath.Dir(result.executable), ".ssm.*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(staged) != 0 {
+		t.Fatalf("installer retained staging files: %q", staged)
+	}
+}
+
 func TestInstallerRejectsProvenanceReplayAndDowngrade(t *testing.T) {
 	for _, test := range []struct {
 		name     string
@@ -265,20 +309,24 @@ func TestInstallerPinsProvenanceTrustPolicy(t *testing.T) {
 }
 
 type installerResult struct {
-	output        []byte
-	err           error
-	executable    string
-	original      []byte
-	mode          os.FileMode
-	ghCalled      bool
-	redirected    bool
-	downloadSizes []string
+	output          []byte
+	err             error
+	executable      string
+	alias           string
+	original        []byte
+	mode            os.FileMode
+	replacement     []byte
+	ghCalled        bool
+	redirected      bool
+	downloadSizes   []string
+	stagingTemplate string
 }
 
 type installerFixtureOptions struct {
 	metadata         []byte
 	bundle           []byte
 	ghPolicy         string
+	bsdMktemp        bool
 	metadataPadding  int
 	checksumsPadding int
 	bundlePadding    int
@@ -303,7 +351,13 @@ func runInstallerFixture(t *testing.T, options installerFixtureOptions) installe
 		t.Fatal(err)
 	}
 
-	asset := "ssm-" + runtime.GOOS + "-" + runtime.GOARCH
+	fixtureOS := runtime.GOOS
+	fixtureArch := runtime.GOARCH
+	if options.bsdMktemp {
+		fixtureOS = "darwin"
+		fixtureArch = "arm64"
+	}
+	asset := "ssm-" + fixtureOS + "-" + fixtureArch
 	payload := []byte("#!/bin/sh\nexit 0\n")
 	payload = append(payload, bytes.Repeat([]byte(" "), options.binaryPadding)...)
 	digest := sha256.Sum256(payload)
@@ -434,6 +488,48 @@ esac
 	if err := os.Chmod(ghPath, 0o700); err != nil { //nolint:gosec // test-owned command shim
 		t.Fatal(err)
 	}
+	realMktemp, err := exec.LookPath("mktemp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mktempMarker := filepath.Join(t.TempDir(), "mktemp-template")
+	mktempPath := filepath.Join(fakeBin, "mktemp")
+	writeTestFile(t, mktempPath, `#!/bin/sh
+set -eu
+if [ "$#" -eq 0 ]; then
+  exec "$REAL_MKTEMP"
+fi
+template="$1"
+printf '%s\n' "$template" >"$MKTEMP_MARKER"
+if [ "$BSD_MKTEMP_FIXTURE" = true ]; then
+  case "$template" in
+    *XXXXXX) ;;
+    *) exit 93 ;;
+  esac
+fi
+exec "$REAL_MKTEMP" "$template"
+`)
+	if err := os.Chmod(mktempPath, 0o700); err != nil { //nolint:gosec // test-owned command shim
+		t.Fatal(err)
+	}
+	realUname, err := exec.LookPath("uname")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unamePath := filepath.Join(fakeBin, "uname")
+	writeTestFile(t, unamePath, `#!/bin/sh
+set -eu
+if [ "$DARWIN_FIXTURE" = true ]; then
+  case "${1:-}" in
+    -s) printf 'Darwin\n'; exit 0 ;;
+    -m) printf 'arm64\n'; exit 0 ;;
+  esac
+fi
+exec "$REAL_UNAME" "$@"
+`)
+	if err := os.Chmod(unamePath, 0o700); err != nil { //nolint:gosec // test-owned command shim
+		t.Fatal(err)
+	}
 
 	command := exec.Command("sh", filepath.Join("..", "..", "install.sh")) //nolint:gosec // fixed tracked installer executes only against test-owned paths and command shims
 	command.Env = append(
@@ -453,6 +549,11 @@ esac
 		"REDIRECT_MARKER="+redirectMarker,
 		"REAL_TEE="+realTee,
 		"REAL_WC="+realWC,
+		"REAL_MKTEMP="+realMktemp,
+		"MKTEMP_MARKER="+mktempMarker,
+		"BSD_MKTEMP_FIXTURE="+fmt.Sprint(options.bsdMktemp),
+		"REAL_UNAME="+realUname,
+		"DARWIN_FIXTURE="+fmt.Sprint(options.bsdMktemp),
 		"WC_CAPTURE="+filepath.Join(t.TempDir(), "wc-capture"),
 		"DOWNLOAD_SIZE_MARKER="+downloadSizeMarker,
 	)
@@ -463,15 +564,22 @@ esac
 	if sizeErr != nil && !os.IsNotExist(sizeErr) {
 		t.Fatal(sizeErr)
 	}
+	templateData, templateErr := os.ReadFile(mktempMarker) //nolint:gosec // test-owned observation marker
+	if templateErr != nil && !os.IsNotExist(templateErr) {
+		t.Fatal(templateErr)
+	}
 	return installerResult{
-		output:        output,
-		err:           runErr,
-		executable:    executable,
-		original:      original,
-		mode:          before.Mode().Perm(),
-		ghCalled:      markerErr == nil,
-		redirected:    redirectErr == nil,
-		downloadSizes: strings.Fields(string(sizeData)),
+		output:          output,
+		err:             runErr,
+		executable:      executable,
+		alias:           filepath.Join(prefix, "sshctl"),
+		original:        original,
+		mode:            before.Mode().Perm(),
+		replacement:     payload,
+		ghCalled:        markerErr == nil,
+		redirected:      redirectErr == nil,
+		downloadSizes:   strings.Fields(string(sizeData)),
+		stagingTemplate: strings.TrimSpace(string(templateData)),
 	}
 }
 

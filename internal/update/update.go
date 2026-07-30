@@ -175,6 +175,20 @@ func ClearFlag() {
 	_ = os.Remove(flagPath())
 }
 
+// CleanupPreviousExecutable removes the rollback image retained by a completed
+// Windows replacement after the process that mapped it has exited.
+func CleanupPreviousExecutable() {
+	exe, err := executablePath()
+	if err != nil {
+		return
+	}
+	exe, err = evalSymlinks(exe)
+	if err != nil {
+		return
+	}
+	_ = cleanupPreviousExecutable(exe)
+}
+
 type OrdinaryResult struct {
 	Installed           string
 	CrossMajorAvailable string
@@ -314,7 +328,7 @@ func DownloadVersionBeforeReplace(version string, verbose bool, beforeReplace fu
 			return err
 		}
 	}
-	if err := os.Rename(tmp, exe); err != nil {
+	if err := replaceExecutable(tmp, exe); err != nil {
 		return err
 	}
 	keepTmp = true

@@ -176,7 +176,7 @@ if ! verify_identity "$tag_identity"; then
 fi
 chmod 755 "$tmp"
 mkdir -p "$prefix" "$config_dir"
-staged="$(mktemp "$prefix/.ssm.XXXXXX.new")"
+staged="$(mktemp "$prefix/.ssm.new.XXXXXX")"
 trap 'rm -f "$tmp" "$checksums" "$bundle" "$release_metadata" "$curl_status" "$staged"' EXIT
 install -m 755 "$tmp" "$staged"
 mv -f "$staged" "$prefix/ssm"

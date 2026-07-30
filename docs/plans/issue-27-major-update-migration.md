@@ -32,7 +32,7 @@ ordinary auto/manual
   -> enumerate stable releases
   -> select newest newer release in installed major
   -> cross-major target may be reported
-  -> digest verification -> atomic same-major replacement
+  -> digest and provenance verification -> platform-safe same-major replacement
 
 update --major
   -> enumerate stable releases -> choose newest higher-major target
@@ -48,7 +48,7 @@ update --major --yes
   -> download to adjacent staging path and verify digest
   -> digest/staging failure: classified failure, preserve executable
   -> emit the complete authorized review while the old executable is still installed
-  -> atomic replacement
+  -> platform-safe replacement
 ```
 
 No state reads stdin, opens a prompt, or depends on a TTY. `--yes` without
@@ -84,8 +84,10 @@ download. A production callback test observes the original executable from the
 review boundary and proves replacement happens only after that callback returns.
 Tests compare the complete original byte sequence after missing authorization,
 failed preflight, and digest mismatch. Unsupported/missing assets and replacement
-errors likewise leave the old path in place. Existing executable permissions and
-atomic rename behavior remain unchanged.
+errors likewise leave the old path in place. Unix retains one atomic sibling
+rename. Windows renames the mapped current image to a sibling rollback path,
+moves the verified stage to the canonical path, restores the old image if that
+move fails, and removes the no-longer-mapped rollback image on a later launch.
 
 Authorization does not authenticate an artifact. SHA-256 verification remains
 mandatory here. Pinned keyless provenance is independently required by ADR
