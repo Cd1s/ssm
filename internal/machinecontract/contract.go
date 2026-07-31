@@ -1156,7 +1156,7 @@ func ClassifySSH(err error, context SSHContext) Failure {
 
 func isTimeoutErrorMessage(message string) bool {
 	message = strings.ToLower(message)
-	return strings.Contains(message, "timeout") || strings.Contains(message, "timed out")
+	return strings.Contains(message, "timeout")
 }
 
 func isDialFailure(err error, context SSHContext) bool {

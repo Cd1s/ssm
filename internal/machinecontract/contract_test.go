@@ -2024,7 +2024,7 @@ func (failure *testTransferFailureCarrier) ContractFailure() Failure {
 	return failure.failure
 }
 
-func TestSSHTimeoutClassificationPreservesHistoricalVariants(t *testing.T) {
+func TestSSHTimeoutClassificationPreservesAgentHeadlessSyncPredicate(t *testing.T) {
 	t.Parallel()
 	context := SSHContext{Alias: "prod", Host: "192.0.2.1", Port: 22}
 	for _, message := range []string{
@@ -2038,8 +2038,6 @@ func TestSSHTimeoutClassificationPreservesHistoricalVariants(t *testing.T) {
 		"timeout while connecting",
 		"timeout while connecting to 192.0.2.1",
 		"connection timeout",
-		"connect to host 192.0.2.1 port 22: Connection timed out",
-		"operation timed out during SSH negotiation",
 	} {
 		message := message
 		t.Run(message, func(t *testing.T) {
@@ -2049,6 +2047,172 @@ func TestSSHTimeoutClassificationPreservesHistoricalVariants(t *testing.T) {
 				got.Exit != ExitConnectionFailed || ProcessExit(got) != ExitConnectionFailed ||
 				got.Hint != "network/host unreachable or filtered; verify host online/firewall/IPv6. Not an ssm quote bug." {
 				t.Fatalf("ClassifySSH(%q) = %+v, want historical dial_timeout/dial/255 tuple", message, got)
+			}
+		})
+	}
+}
+
+func TestSSHTimedOutMessagesMatchAgentHeadlessSyncBaseline(t *testing.T) {
+	t.Parallel()
+
+	// These literals are frozen from origin/agent-headless-sync at
+	// aca236d614cf7a6e9a0eab8c2d3a0a484ca1e9fb. That baseline recognized the
+	// contiguous word "timeout" only; a plain "timed out" error remained an
+	// internal failure, while the historical dial heuristic independently
+	// selected process exit 255 for messages containing "connect".
+	for _, test := range []struct {
+		name       string
+		message    string
+		exit       int
+		wantHuman  string
+		wantJSON   string
+		wantStream string
+	}{
+		{
+			name:      "connection timed out",
+			message:   "Connection timed out",
+			exit:      ExitConnectionFailed,
+			wantHuman: "ssm: error=internal alias=prod address=192.0.2.1:22\nError: Connection timed out\n",
+			wantJSON: "{\n" +
+				"  \"ok\": false,\n" +
+				"  \"error\": \"internal\",\n" +
+				"  \"message\": \"Connection timed out\",\n" +
+				"  \"alias\": \"prod\",\n" +
+				"  \"exit\": 255\n" +
+				"}\n",
+			wantStream: "{\"ok\":false,\"error\":\"internal\",\"message\":\"Connection timed out\",\"alias\":\"prod\",\"exit\":255}\n",
+		},
+		{
+			name:      "operation timed out",
+			message:   "operation timed out",
+			exit:      1,
+			wantHuman: "ssm: error=internal alias=prod address=192.0.2.1:22\nError: operation timed out\n",
+			wantJSON: "{\n" +
+				"  \"ok\": false,\n" +
+				"  \"error\": \"internal\",\n" +
+				"  \"message\": \"operation timed out\",\n" +
+				"  \"alias\": \"prod\",\n" +
+				"  \"exit\": 1\n" +
+				"}\n",
+			wantStream: "{\"ok\":false,\"error\":\"internal\",\"message\":\"operation timed out\",\"alias\":\"prod\",\"exit\":1}\n",
+		},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			failure := ClassifySSH(errors.New(test.message), SSHContext{
+				Alias: "prod", Host: "192.0.2.1", Port: 22,
+			})
+			if failure.Error != CodeInternal || failure.Stage != "" || failure.Hint != "" ||
+				failure.Exit != test.exit || ProcessExit(failure) != test.exit {
+				t.Fatalf("ClassifySSH(%q) = %+v, want baseline internal/no-stage/no-hint/%d", test.message, failure, test.exit)
+			}
+			for _, rendering := range []struct {
+				name   string
+				format Format
+				want   string
+			}{
+				{name: "human", format: Human, want: test.wantHuman},
+				{name: "JSON", format: JSONDocument, want: test.wantJSON},
+				{name: "stream", format: NDJSON, want: test.wantStream},
+			} {
+				rendering := rendering
+				t.Run(rendering.name, func(t *testing.T) {
+					t.Parallel()
+					var stdout, stderr bytes.Buffer
+					if err := RenderFailure(rendering.format, Streams{Stdout: &stdout, Stderr: &stderr}, failure); err != nil {
+						t.Fatal(err)
+					}
+					if rendering.format == Human {
+						if stdout.Len() != 0 || stderr.String() != rendering.want {
+							t.Fatalf("human stdout=%q stderr=%q, want stderr=%q", stdout.String(), stderr.String(), rendering.want)
+						}
+						return
+					}
+					if stdout.String() != rendering.want || stderr.Len() != 0 {
+						t.Fatalf("machine stdout=%q stderr=%q, want stdout=%q", stdout.String(), stderr.String(), rendering.want)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDownloadTimedOutPathRenderingMatchesAgentHeadlessSyncBaseline(t *testing.T) {
+	t.Parallel()
+
+	const message = `create C:\fixtures\timed out\download: path not found`
+	cause := errors.New(message)
+	failure := ClassifyDownload(&testTransferFailureCarrier{
+		failure: Classify(TransferDownloadLocalWrite, Details{Cause: cause}),
+		cause:   cause,
+	}, SSHContext{
+		Alias: "download", Host: "192.0.2.1", Port: 22,
+	})
+	if failure.Error != "local_write_failed" || failure.Stage != "local_write" ||
+		failure.Hint != "check local path permissions and available space; the final local path was not replaced" ||
+		failure.Exit != 1 || ProcessExit(failure) != 1 {
+		t.Fatalf("download machine tuple = %+v, want baseline local_write_failed/local_write/1", failure)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := Render(Human, Streams{Stdout: &stdout, Stderr: &stderr}, failure); err != nil {
+		t.Fatal(err)
+	}
+	wantHuman := "ssm: error=internal alias=download address=192.0.2.1:22\n" +
+		"Error: create C:\\fixtures\\timed out\\download: path not found\n"
+	if stdout.Len() != 0 || stderr.String() != wantHuman {
+		t.Fatalf("download human stdout=%q stderr=%q, want stderr=%q", stdout.String(), stderr.String(), wantHuman)
+	}
+
+	received := int64(0)
+	atomic := false
+	document := TransferFailureOutcome(failure, TransferOutcome{
+		Direction:     "get",
+		Kind:          "file",
+		Alias:         "download",
+		Local:         `C:\fixtures\timed out\download`,
+		Remote:        "/remote/artifact",
+		BytesReceived: &received,
+		Integrity:     "not_checked",
+		Atomic:        &atomic,
+		Resume:        "unsupported",
+	})
+	wantJSON := "{\n" +
+		"  \"ok\": false,\n" +
+		"  \"error\": \"local_write_failed\",\n" +
+		"  \"message\": \"create C:\\\\fixtures\\\\timed out\\\\download: path not found\",\n" +
+		"  \"hint\": \"check local path permissions and available space; the final local path was not replaced\",\n" +
+		"  \"exit\": 1,\n" +
+		"  \"direction\": \"get\",\n" +
+		"  \"kind\": \"file\",\n" +
+		"  \"alias\": \"download\",\n" +
+		"  \"local\": \"C:\\\\fixtures\\\\timed out\\\\download\",\n" +
+		"  \"remote\": \"/remote/artifact\",\n" +
+		"  \"stage\": \"local_write\",\n" +
+		"  \"bytes_received\": 0,\n" +
+		"  \"integrity\": \"not_checked\",\n" +
+		"  \"atomic\": false,\n" +
+		"  \"resume\": \"unsupported\"\n" +
+		"}\n"
+	wantNDJSON := "{\"ok\":false,\"error\":\"local_write_failed\",\"message\":\"create C:\\\\fixtures\\\\timed out\\\\download: path not found\",\"hint\":\"check local path permissions and available space; the final local path was not replaced\",\"exit\":1,\"direction\":\"get\",\"kind\":\"file\",\"alias\":\"download\",\"local\":\"C:\\\\fixtures\\\\timed out\\\\download\",\"remote\":\"/remote/artifact\",\"stage\":\"local_write\",\"bytes_received\":0,\"integrity\":\"not_checked\",\"atomic\":false,\"resume\":\"unsupported\"}\n"
+	for _, test := range []struct {
+		name   string
+		format Format
+		want   string
+	}{
+		{name: "JSON", format: JSONDocument, want: wantJSON},
+		{name: "stream", format: NDJSON, want: wantNDJSON},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var stdout, stderr bytes.Buffer
+			if err := RenderFailure(test.format, Streams{Stdout: &stdout, Stderr: &stderr}, document); err != nil {
+				t.Fatal(err)
+			}
+			if stdout.String() != test.want || stderr.Len() != 0 {
+				t.Fatalf("stdout=%q stderr=%q, want stdout=%q", stdout.String(), stderr.String(), test.want)
 			}
 		})
 	}

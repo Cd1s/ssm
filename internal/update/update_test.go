@@ -1700,6 +1700,50 @@ func TestUnixVerifiedReplacementRejectsAuthenticatedCopyHardLink(t *testing.T) {
 	assertExecutableBytes(t, exe, "old")
 }
 
+func TestUnixVerifiedReplacementRejectsCommitBoundarySubstitution(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix replacement contract")
+	}
+	restoreUpdateTestHooks(t)
+	setTestHome(t, t.TempDir())
+	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
+
+	directory := t.TempDir()
+	exe := filepath.Join(directory, "ssm")
+	if err := os.WriteFile(exe, []byte("old"), 0o751); err != nil { //nolint:gosec // test-owned executable fixture
+		t.Fatal(err)
+	}
+	executablePath = func() (string, error) { return exe, nil }
+	evalSymlinks = func(path string) (string, error) { return path, nil }
+
+	payload := []byte("authenticated replacement before commit-boundary substitution")
+	version := serveAuthenticatedUpdate(t, payload)
+
+	hookCalled := false
+	unixReplacementTestHook = func(phase, _, install string) error {
+		if phase != "before_commit" {
+			return nil
+		}
+		hookCalled = true
+		if err := os.Rename(install, install+".verified"); err != nil {
+			return fmt.Errorf("move authenticated install inode: %w", err)
+		}
+		if err := os.WriteFile(install, []byte("attacker bytes"), 0o751); err != nil { //nolint:gosec // adversarial pathname substitution is intentional
+			return fmt.Errorf("substitute unauthenticated install pathname: %w", err)
+		}
+		return nil
+	}
+
+	err := DownloadVersion(version, false)
+	if !hookCalled {
+		t.Fatal("commit-boundary substitution did not reach the final authenticated seam")
+	}
+	if err == nil {
+		t.Fatal("commit-boundary pathname substitution reported success")
+	}
+	assertExecutablePreserved(t, exe, []byte("old"), 0o751)
+}
+
 func TestUnixVerifiedReplacementRejectsCallbackObjectMutation(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix replacement contract")
