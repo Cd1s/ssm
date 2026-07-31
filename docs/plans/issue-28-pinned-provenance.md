@@ -94,7 +94,7 @@ newest eligible release fails this check.
 | Downloaded digest matches checksum but differs from provenance | Subject digest comparison | Checksum cannot rescue the mismatch; no replacement. |
 | Unsupported, missing, misnamed, additional, or duplicate release asset | Strict manifest selection | No asset download and no fallback. |
 | Checksums over 16 KiB, provenance or release metadata over 1 MiB, or a binary over 64 MiB | Header-independent bounded stream, rejecting after at most limit plus one byte | No replacement; temporary output is bounded and removed; installed bytes and mode are unchanged. |
-| Windows cannot overwrite its mapped running `.exe` | Platform replacement | Hold the fixed sibling update lock across inspection, handle-bound moves, rollback, and cleanup; reject reparse points and multiple hard links; and keep non-delete-sharing handles on the validated original and stage until the completed record is durable. `SetFileInformationByHandle(FileRenameInfoEx)` renames those exact objects. Replacement uses replace, POSIX, and ignore-read-only semantics so a file inserted at the temporarily vacant canonical name cannot become canonical or prevent restoration. The ordinary tier captures, applies, and verifies owner, primary group, DACL, and DACL inheritance/protection without optional privileges. When all three backup/restore/security privileges can be enabled on a duplicated thread token and the requested handles support complete capture, apply, and verification, the full tier instead preserves and verifies the complete descriptor, including SACL-backed fields. An unavailable full tier is never claimed; failure to preserve the selected tier stops before the first move or restores the still-held original over any unexpected canonical file. |
+| Windows cannot overwrite its mapped running `.exe` | Platform replacement | Hold the fixed sibling update lock across inspection, handle-bound moves, rollback, recovery, and cleanup; reject reparse points and multiple hard links; and keep non-delete-sharing handles on the validated original and stage until the completed record is durable. `SetFileInformationByHandle(FileRenameInfoEx)` renames those exact source objects. Replace, POSIX, and ignore-read-only semantics replace an unlocked object inserted at the temporarily vacant canonical name. Windows cannot replace that object while an external handle withholds delete sharing: installation and synchronous rollback then fail closed, retain the original at `.old` plus the authenticated prepared record, and block cleanup and later updates. After the hostile handle is released, serialized recovery restores the retained original by handle, verifies its file ID at the canonical path, and only then clears the record. The ordinary tier captures, applies, and verifies owner, primary group, DACL, and DACL inheritance/protection without optional privileges. When all three backup/restore/security privileges can be enabled on a duplicated thread token and the requested handles support complete capture, apply, and verification, the full tier instead preserves and verifies the complete descriptor, including SACL-backed fields. An unavailable full tier is never claimed; failure to preserve the selected tier stops before the first move, restores the still-held original, or retains authenticated recovery evidence when an external sharing lock makes immediate restoration impossible. |
 
 `TestTrustFailurePreservesExecutable` records the original executable bytes and
 permission bits, injects a wrong-subject signed bundle, and proves both remain
@@ -126,9 +126,10 @@ thread-token restoration, one `LocalFree` per native descriptor allocation,
 concurrent-updater and cleanup exclusion, hard-link/reparse rejection,
 identity-changing source substitution at both former validation/rename gaps,
 canonical-name substitution with a non-delete-sharing attacker handle,
-replacement of an unexpected canonical file during rollback, ordinary
+fail-closed retention while that handle prevents replacement, exact-object
+recovery after its release, late target/stage hard-link recovery, ordinary
 rollback, forged control records, owner/DACL rejection, and rollback-failure
-evidence retention.
+evidence retention and retry.
 
 The updater calls the native `GetSecurityInfo` entry point through x/sys'
 Windows loader and wraps each returned allocation in one idempotent owner.
@@ -180,14 +181,23 @@ validated Windows owner and DACL, not from the checksum. Success flushes the
 record as completed and retains both it and `.<exe>.old` until a later cleanup
 owns the same trusted lock, holds the record/target/rollback objects against
 substitution, and verifies the installed and rollback identities. An `.old`
-without a trusted record, a prepared/incomplete record, an untrusted owner or
-DACL, or any identity mismatch is recovery evidence and is never deleted or
-overwritten by cleanup or a new update. Successful rollback restores the
-original handle over the canonical name and deletes its exact record by
-handle. Failed rollback retains the original at `.old`, the prepared record,
-and any remaining stage while reporting both the operation and rollback
-failure. These errors continue through the existing `update_failed` /
-`update` machine contract.
+without a trusted record, an untrusted owner or DACL, or any identity mismatch
+is recovery evidence and is never deleted or overwritten by cleanup or a new
+update. A prepared record blocks a new update and authorizes only a serialized
+rollback retry: recovery protectively opens the recorded single-link original,
+rejects a reparse point or identity mismatch, rejects a non-single-link
+canonical object, and renames the original handle over an unlocked canonical
+name. It then verifies the same original file ID through both the retained
+handle and canonical path before deleting the exact record by handle. If the
+original is already canonical after a prior rollback but record deletion did
+not finish, recovery holds and verifies that exact original handle while
+clearing the record. A sharing lock, remaining hard link, missing original, or
+identity mismatch keeps the prepared record and any `.old` intact and keeps
+cleanup and later updates blocked. Successful synchronous rollback follows the
+same exact-object rule. Failed rollback retains the original at `.old`, the
+prepared record, and any remaining stage while reporting both the operation
+and rollback failure. These errors continue through the existing
+`update_failed` / `update` machine contract.
 
 The verified stage remains protected by its non-delete-sharing handles through
 normal installation and the completed-record write. If an operation has

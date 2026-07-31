@@ -85,11 +85,13 @@ full-descriptor/SACL preservation when the host proves that capture, apply,
 and verification are available. It also covers privilege restoration and
 descriptor freeing, exclusive update/cleanup locking, file-ID revalidation,
 hard-link/reparse rejection, non-delete-sharing source handles and exact-object
-handle renames, canonical-name substitution, rollback over an unexpected
-canonical file, explicit owner-only protected lock/state DACLs, rejection of
-valid-CRC forged, inherited/writable, and wrong-owner control state, completed
-and unexplained stale rollback states, concurrent updaters, ordinary rollback,
-and rollback-failure evidence. Tests
+handle renames, fail-closed canonical-name substitution while a hostile handle
+withholds delete sharing, exact-object recovery after handle release, late
+target/stage hard-link recovery after link removal, explicit owner-only
+protected lock/state DACLs, rejection of valid-CRC forged, inherited/writable,
+and wrong-owner control state, completed and unexplained stale rollback states,
+concurrent updaters, ordinary rollback, and rollback-failure evidence and retry.
+Tests
 that execute a Unix remote shell or compare Bash script behavior are selected
 only on Unix; portable parsing, planning, host-key, environment-isolation, and
 security tests remain active on Windows.

@@ -872,7 +872,10 @@ func cleanupCompletedWindowsRollbackUnderLockWithPolicy(
 		}
 	}()
 	if record.data.state != windowsReplacementRecordCompleted {
-		return fmt.Errorf("incomplete Windows executable replacement requires recovery")
+		if err := recoverPreparedWindowsReplacement(target, backup, record); err != nil {
+			return fmt.Errorf("recover incomplete Windows executable replacement: %w", err)
+		}
+		return nil
 	}
 	targetHandle, err := openWindowsProtectedReplacementFile(target, 0)
 	if err != nil {
@@ -946,6 +949,128 @@ func cleanupCompletedWindowsRollbackUnderLockWithPolicy(
 	backupOpen = false
 	if err := record.remove(); err != nil {
 		return fmt.Errorf("remove completed Windows rollback ownership record: %w", err)
+	}
+	return nil
+}
+
+func recoverPreparedWindowsReplacement(
+	target,
+	backup string,
+	record *windowsReplacementRecordState,
+) (resultErr error) {
+	backupHandle, err := openWindowsProtectedReplacementFile(backup, windows.DELETE)
+	if err != nil && isWindowsPathNotFound(err) {
+		return completePreparedWindowsRecoveryAtCanonical(target, record)
+	}
+	if err != nil {
+		return fmt.Errorf("open Windows rollback image for recovery: %w", err)
+	}
+	defer func() {
+		if backupHandle != windows.InvalidHandle {
+			if closeErr := windows.CloseHandle(backupHandle); closeErr != nil {
+				resultErr = errors.Join(
+					resultErr,
+					fmt.Errorf("close Windows rollback recovery image: %w", closeErr),
+				)
+			}
+		}
+	}()
+	backupIdentity, err := inspectWindowsReplacementHandle(
+		backupHandle,
+		"Windows rollback recovery image",
+	)
+	if err != nil {
+		return err
+	}
+	if backupIdentity != record.data.original {
+		return fmt.Errorf("prepared Windows rollback record does not match the rollback image")
+	}
+	if err := validateWindowsRecoveryCanonicalTarget(target); err != nil {
+		return err
+	}
+	if err := renameWindowsReplacementHandle(backupHandle, target, true); err != nil {
+		return fmt.Errorf("restore Windows rollback image: %w", err)
+	}
+	if err := requireWindowsReplacementHandleIdentity(
+		backupHandle,
+		record.data.original,
+		"recovered Windows executable",
+	); err != nil {
+		return err
+	}
+	if err := requireWindowsReplacementPathIdentity(
+		target,
+		record.data.original,
+		"recovered Windows executable",
+	); err != nil {
+		return err
+	}
+	if err := record.remove(); err != nil {
+		return fmt.Errorf("remove recovered Windows rollback ownership record: %w", err)
+	}
+	if err := record.close(); err != nil {
+		return fmt.Errorf("close recovered Windows rollback ownership record: %w", err)
+	}
+	return nil
+}
+
+func completePreparedWindowsRecoveryAtCanonical(
+	target string,
+	record *windowsReplacementRecordState,
+) (resultErr error) {
+	targetHandle, err := openWindowsProtectedReplacementFile(target, 0)
+	if err != nil {
+		if isWindowsPathNotFound(err) {
+			return fmt.Errorf("prepared Windows rollback record has no original executable")
+		}
+		return fmt.Errorf("open recovered Windows executable: %w", err)
+	}
+	defer func() {
+		if targetHandle != windows.InvalidHandle {
+			if closeErr := windows.CloseHandle(targetHandle); closeErr != nil {
+				resultErr = errors.Join(
+					resultErr,
+					fmt.Errorf("close recovered Windows executable: %w", closeErr),
+				)
+			}
+		}
+	}()
+	targetIdentity, err := inspectWindowsReplacementHandle(
+		targetHandle,
+		"recovered Windows executable",
+	)
+	if err != nil {
+		return err
+	}
+	if targetIdentity != record.data.original {
+		return fmt.Errorf("prepared Windows rollback record has no matching rollback image")
+	}
+	if err := record.remove(); err != nil {
+		return fmt.Errorf("remove recovered Windows rollback ownership record: %w", err)
+	}
+	if err := record.close(); err != nil {
+		return fmt.Errorf("close recovered Windows rollback ownership record: %w", err)
+	}
+	return nil
+}
+
+func validateWindowsRecoveryCanonicalTarget(target string) error {
+	targetHandle, err := openWindowsProtectedReplacementFile(target, 0)
+	if err != nil {
+		if isWindowsPathNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("open canonical Windows executable for recovery: %w", err)
+	}
+	if _, inspectErr := inspectWindowsReplacementHandle(
+		targetHandle,
+		"canonical Windows executable awaiting recovery",
+	); inspectErr != nil {
+		_ = windows.CloseHandle(targetHandle)
+		return inspectErr
+	}
+	if err := windows.CloseHandle(targetHandle); err != nil {
+		return fmt.Errorf("close canonical Windows executable awaiting recovery: %w", err)
 	}
 	return nil
 }

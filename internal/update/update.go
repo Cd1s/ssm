@@ -175,8 +175,9 @@ func ClearFlag() {
 	_ = os.Remove(flagPath())
 }
 
-// CleanupPreviousExecutable removes only an identity-bound rollback image from
-// a completed Windows replacement while holding the replacement update lock.
+// CleanupPreviousExecutable reconciles only authenticated, identity-bound
+// Windows rollback state while holding the replacement update lock. Completed
+// state is cleaned; prepared state retries restoration of the exact original.
 func CleanupPreviousExecutable() {
 	exe, err := executablePath()
 	if err != nil {
