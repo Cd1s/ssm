@@ -55,12 +55,19 @@ func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("optional complete descriptor denial falls back to ordinary preservation", testWindowsOptionalFullTierFallback)
 	t.Run("complete descriptor is preserved when supported with ordinary fallback", testWindowsPrivilegedReplacement)
 	t.Run("privileges and thread identity are restored", testWindowsReplacementPrivilegeRestoration)
+	t.Run("SetThreadToken restoration failure is retried before unlock", testWindowsPreviousTokenRestorationFailure)
+	t.Run("RevertToSelf restoration failure is retried before unlock", testWindowsNoTokenRestorationFailure)
+	t.Run("privilege restoration is confirmed before unlock", testWindowsPrivilegeRestorationConfirmation)
+	t.Run("persistent privilege restoration failure fail-stops before unlock", testWindowsPrivilegeRestorationFailStop)
 	t.Run("native descriptor buffers are freed exactly once", testWindowsSecurityDescriptorOwnership)
 	t.Run("mapped executable is replaced and completed rollback is cleaned", testWindowsMappedExecutableReplacementSucceedsAndCleansOnNextLaunch)
 	t.Run("install failure rolls back", testWindowsMappedExecutableReplacementFailureRollsBack)
 	t.Run("descriptor failure rolls back", testWindowsSecurityDescriptorApplyFailureRollsBack)
+	t.Run("returned replacement failure preserves the canonical executable", testWindowsReturnedReplacementFailurePreservesCanonical)
+	t.Run("post-commit cleanup failures are deferred success", testWindowsPostCommitCleanupFailuresAreDeferred)
 	t.Run("concurrent updaters are excluded", testWindowsConcurrentUpdaters)
 	t.Run("cleanup cannot delete a live updater rollback", testWindowsConcurrentCleanup)
+	t.Run("ordinary startup discovery creates no sibling state", testWindowsOrdinaryStartupDiscoveryIsNonMutating)
 	t.Run("unexplained stale rollback is preserved", testWindowsUnexplainedRollbackIsPreserved)
 	t.Run("stage substitution fails closed", testWindowsStageSubstitutionFailsClosed)
 	t.Run("source substitution at the rename gap is blocked", testWindowsSourceSubstitutionAtRenameGap)
@@ -260,6 +267,113 @@ func testWindowsSecurityDescriptorApplyFailureRollsBack(t *testing.T) {
 	}
 	if _, err := os.Stat(stage); !os.IsNotExist(err) {
 		t.Fatalf("descriptor failure retained staging file: %v", err)
+	}
+}
+
+func testWindowsReturnedReplacementFailurePreservesCanonical(t *testing.T) {
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	target := filepath.Join(directory, "ssm.exe")
+	stage := filepath.Join(directory, ".ssm.precommit-failure-stage.exe")
+	copyWindowsTestExecutable(t, testExecutable, target, []byte("\nPRECOMMIT_ORIGINAL\n"))
+	copyWindowsTestExecutable(t, testExecutable, stage, []byte("\nPRECOMMIT_REPLACEMENT\n"))
+	original, err := os.ReadFile(target) //nolint:gosec // test-owned replacement fixture
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	originalHook := windowsReplacementTestHook
+	windowsReplacementTestHook = func(phase string) error {
+		if phase == windowsReplacementPhaseBeforeStageMove {
+			return windows.ERROR_GEN_FAILURE
+		}
+		return nil
+	}
+	err = replaceExecutable(stage, target)
+	windowsReplacementTestHook = originalHook
+	if err == nil ||
+		!strings.Contains(err.Error(), "revalidate verified Windows replacement before install") {
+		t.Fatalf("pre-commit replacement error = %v", err)
+	}
+	assertWindowsFileBytes(t, target, original)
+	if _, err := os.Stat(windowsReplacementBackup(target)); !os.IsNotExist(err) {
+		t.Fatalf("reported replacement failure retained rollback image: %v", err)
+	}
+	if _, err := os.Stat(windowsReplacementRecord(target)); !os.IsNotExist(err) {
+		t.Fatalf("reported replacement failure retained rollback record: %v", err)
+	}
+}
+
+func testWindowsPostCommitCleanupFailuresAreDeferred(t *testing.T) {
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name  string
+		phase string
+	}{
+		{name: "security state close", phase: windowsReplacementPhaseSecurityClose},
+		{name: "replacement lock close", phase: windowsReplacementPhaseLockClose},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			target := filepath.Join(directory, "ssm.exe")
+			stage := filepath.Join(directory, ".ssm.postcommit-stage.exe")
+			copyWindowsTestExecutable(t, testExecutable, target, []byte("\nPOSTCOMMIT_ORIGINAL\n"))
+			copyWindowsTestExecutable(t, testExecutable, stage, []byte("\nPOSTCOMMIT_REPLACEMENT\n"))
+			replacement, err := os.ReadFile(stage) //nolint:gosec // test-owned replacement fixture
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			originalHook := windowsReplacementTestHook
+			injected := 0
+			windowsReplacementTestHook = func(phase string) error {
+				if phase == test.phase {
+					injected++
+					return windows.ERROR_GEN_FAILURE
+				}
+				return nil
+			}
+			err = replaceExecutable(stage, target)
+			windowsReplacementTestHook = originalHook
+			if err != nil {
+				t.Fatalf("committed replacement was reported as failed: %v", err)
+			}
+			if injected != 1 {
+				t.Fatalf("%s injections = %d, want 1", test.name, injected)
+			}
+			assertWindowsFileBytes(t, target, replacement)
+
+			recordBytes, err := os.ReadFile(windowsReplacementRecord(target)) //nolint:gosec // test-owned authenticated recovery fixture
+			if err != nil {
+				t.Fatalf("read deferred-cleanup rollback record: %v", err)
+			}
+			record, err := decodeWindowsReplacementRecord(recordBytes)
+			if err != nil {
+				t.Fatalf("decode deferred-cleanup rollback record: %v", err)
+			}
+			if record.state != windowsReplacementRecordCompleted {
+				t.Fatalf("deferred-cleanup rollback state = %d, want completed", record.state)
+			}
+			if _, err := os.Stat(windowsReplacementBackup(target)); err != nil {
+				t.Fatalf("deferred cleanup lost rollback image: %v", err)
+			}
+
+			if err := cleanupPreviousExecutable(target); err != nil {
+				t.Fatalf("authenticated deferred cleanup failed: %v", err)
+			}
+			if _, err := os.Stat(windowsReplacementBackup(target)); !os.IsNotExist(err) {
+				t.Fatalf("deferred cleanup retained rollback image: %v", err)
+			}
+			if _, err := os.Stat(windowsReplacementRecord(target)); !os.IsNotExist(err) {
+				t.Fatalf("deferred cleanup retained rollback record: %v", err)
+			}
+		})
 	}
 }
 
@@ -886,6 +1000,246 @@ func testWindowsReplacementPrivilegeRestoration(t *testing.T) {
 	}
 }
 
+func testWindowsPreviousTokenRestorationFailure(t *testing.T) {
+	scope, beforeThread, cleanup := newWindowsTestRestorationScope(t, true)
+	defer cleanup()
+
+	restoreCalls := 0
+	scope.setThreadToken = func(token windows.Token) error {
+		restoreCalls++
+		if restoreCalls == 1 {
+			return windows.ERROR_GEN_FAILURE
+		}
+		return windows.SetThreadToken(nil, token)
+	}
+	if err := scope.restore(); err == nil ||
+		!strings.Contains(err.Error(), "restore previous Windows thread token") {
+		t.Fatalf("first previous-token restoration error = %v", err)
+	}
+	if !scope.installed {
+		t.Fatal("failed previous-token restoration marked the privileged token uninstalled")
+	}
+	if err := scope.close(); err != nil {
+		t.Fatalf("retry previous-token restoration: %v", err)
+	}
+	if restoreCalls != 2 {
+		t.Fatalf("previous-token restoration calls = %d, want 2", restoreCalls)
+	}
+	afterThread, _ := windowsTestTokenState(t)
+	if afterThread != beforeThread {
+		t.Fatalf("restored previous thread token = %q, want %q", afterThread, beforeThread)
+	}
+}
+
+func testWindowsNoTokenRestorationFailure(t *testing.T) {
+	scope, _, cleanup := newWindowsTestRestorationScope(t, false)
+	defer cleanup()
+
+	restoreCalls := 0
+	scope.revertToSelf = func() error {
+		restoreCalls++
+		if restoreCalls == 1 {
+			return windows.ERROR_GEN_FAILURE
+		}
+		return windows.RevertToSelf()
+	}
+	if err := scope.restore(); err == nil ||
+		!strings.Contains(err.Error(), "revert Windows thread token") {
+		t.Fatalf("first no-token restoration error = %v", err)
+	}
+	if !scope.installed {
+		t.Fatal("failed RevertToSelf marked the privileged token uninstalled")
+	}
+	if err := scope.close(); err != nil {
+		t.Fatalf("retry RevertToSelf restoration: %v", err)
+	}
+	if restoreCalls != 2 {
+		t.Fatalf("RevertToSelf calls = %d, want 2", restoreCalls)
+	}
+	assertWindowsTestThreadHasNoToken(t)
+}
+
+func testWindowsPrivilegeRestorationConfirmation(t *testing.T) {
+	scope, _, cleanup := newWindowsTestRestorationScope(t, false)
+	defer cleanup()
+
+	scope.revertToSelf = func() error {
+		return nil
+	}
+	if err := scope.restore(); err == nil ||
+		!strings.Contains(err.Error(), "confirm Windows thread token restoration") {
+		t.Fatalf("unconfirmed restoration error = %v", err)
+	}
+	if !scope.installed {
+		t.Fatal("unconfirmed restoration marked the privileged token uninstalled")
+	}
+	scope.revertToSelf = windows.RevertToSelf
+	if err := scope.close(); err != nil {
+		t.Fatalf("restore after false-success injection: %v", err)
+	}
+	assertWindowsTestThreadHasNoToken(t)
+}
+
+func testWindowsPrivilegeRestorationFailStop(t *testing.T) {
+	scope, _, cleanup := newWindowsTestRestorationScope(t, false)
+	defer cleanup()
+
+	scope.revertToSelf = func() error {
+		return windows.ERROR_GEN_FAILURE
+	}
+	unlockCalls := 0
+	scope.unlockOSThread = func() {
+		unlockCalls++
+	}
+	failStopErr := error(nil)
+	failStopMarker := errors.New("test privilege restoration fail-stop")
+	scope.failSafe = func(err error) {
+		failStopErr = err
+		panic(failStopMarker)
+	}
+
+	var recovered any
+	func() {
+		defer func() {
+			recovered = recover()
+		}()
+		_ = scope.close()
+	}()
+	if recovered != failStopMarker {
+		t.Fatalf("persistent restoration failure panic = %v, want fail-stop marker", recovered)
+	}
+	if failStopErr == nil ||
+		!strings.Contains(failStopErr.Error(), "revert Windows thread token") {
+		t.Fatalf("persistent restoration fail-stop error = %v", failStopErr)
+	}
+	if unlockCalls != 0 {
+		t.Fatalf("persistent restoration failure unlocked OS thread %d times", unlockCalls)
+	}
+	if !scope.active || !scope.installed {
+		t.Fatal("persistent restoration failure released the active privileged scope")
+	}
+}
+
+func newWindowsTestRestorationScope(
+	t *testing.T,
+	hadPrevious bool,
+) (*windowsReplacementPrivilegeScope, string, func()) {
+	t.Helper()
+
+	var restoreOuter func() error
+	if hadPrevious {
+		var err error
+		restoreOuter, err = impersonateWindowsTestTokenWithoutPrivileges()
+		if err != nil {
+			t.Fatalf("install test previous impersonation token: %v", err)
+		}
+	} else {
+		runtime.LockOSThread()
+		assertWindowsTestThreadHasNoToken(t)
+		restoreOuter = func() error {
+			runtime.UnlockOSThread()
+			return nil
+		}
+	}
+	beforeThread, _ := windowsTestTokenState(t)
+	runtime.LockOSThread()
+
+	scope := &windowsReplacementPrivilegeScope{
+		closeToken:  func(token windows.Token) error { return token.Close() },
+		hadPrevious: hadPrevious,
+		installed:   true,
+		active:      true,
+		setThreadToken: func(token windows.Token) error {
+			return windows.SetThreadToken(nil, token)
+		},
+		revertToSelf:   windows.RevertToSelf,
+		unlockOSThread: runtime.UnlockOSThread,
+		failSafe:       failWindowsPrivilegeRestoration,
+	}
+	if hadPrevious {
+		if err := windows.OpenThreadToken(
+			windows.CurrentThread(),
+			windows.TOKEN_QUERY|windows.TOKEN_DUPLICATE|windows.TOKEN_IMPERSONATE,
+			false,
+			&scope.previousToken,
+		); err != nil {
+			runtime.UnlockOSThread()
+			_ = restoreOuter()
+			t.Fatalf("open test previous impersonation token: %v", err)
+		}
+	}
+
+	source := scope.previousToken
+	var processToken windows.Token
+	if !hadPrevious {
+		if err := windows.OpenProcessToken(
+			windows.CurrentProcess(),
+			windows.TOKEN_QUERY|windows.TOKEN_DUPLICATE,
+			&processToken,
+		); err != nil {
+			runtime.UnlockOSThread()
+			_ = restoreOuter()
+			t.Fatalf("open test process token: %v", err)
+		}
+		source = processToken
+	}
+	if err := windows.DuplicateTokenEx(
+		source,
+		windows.TOKEN_QUERY|windows.TOKEN_IMPERSONATE,
+		nil,
+		windows.SecurityImpersonation,
+		windows.TokenImpersonation,
+		&scope.token,
+	); err != nil {
+		_ = processToken.Close()
+		_ = scope.previousToken.Close()
+		runtime.UnlockOSThread()
+		_ = restoreOuter()
+		t.Fatalf("duplicate test installed impersonation token: %v", err)
+	}
+	if processToken != 0 {
+		if err := processToken.Close(); err != nil {
+			_ = scope.token.Close()
+			_ = scope.previousToken.Close()
+			runtime.UnlockOSThread()
+			_ = restoreOuter()
+			t.Fatalf("close test process token: %v", err)
+		}
+	}
+	if err := windows.SetThreadToken(nil, scope.token); err != nil {
+		_ = scope.token.Close()
+		_ = scope.previousToken.Close()
+		runtime.UnlockOSThread()
+		_ = restoreOuter()
+		t.Fatalf("install test replacement impersonation token: %v", err)
+	}
+
+	cleanup := func() {
+		if scope.active {
+			if scope.hadPrevious && scope.previousToken != 0 {
+				_ = windows.SetThreadToken(nil, scope.previousToken)
+			} else {
+				_ = windows.RevertToSelf()
+			}
+			if scope.token != 0 {
+				_ = scope.token.Close()
+				scope.token = 0
+			}
+			if scope.previousToken != 0 {
+				_ = scope.previousToken.Close()
+				scope.previousToken = 0
+			}
+			scope.active = false
+			scope.installed = false
+			runtime.UnlockOSThread()
+		}
+		if err := restoreOuter(); err != nil {
+			t.Fatalf("restore outer test token state: %v", err)
+		}
+	}
+	return scope, beforeThread, cleanup
+}
+
 func testWindowsSecurityDescriptorOwnership(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "descriptor-owner.exe")
 	if err := os.WriteFile(path, []byte("test-owned descriptor"), 0o600); err != nil { //nolint:gosec // test-owned fixture
@@ -1022,6 +1376,28 @@ func testWindowsConcurrentCleanup(t *testing.T) {
 	}
 	if err := updater.Wait(); err != nil {
 		t.Fatalf("updater failed after cleanup exclusion: %v; output=%q", err, updaterOutput.String())
+	}
+}
+
+func testWindowsOrdinaryStartupDiscoveryIsNonMutating(t *testing.T) {
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "ssm.exe")
+	copyWindowsTestExecutable(t, testExecutable, target, nil)
+
+	if err := cleanupPreviousExecutable(target); err != nil {
+		t.Fatalf("ordinary startup discovery failed: %v", err)
+	}
+	for _, path := range []string{
+		windowsReplacementLock(target),
+		windowsReplacementRecord(target),
+		windowsReplacementBackup(target),
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("ordinary startup discovery mutated sibling %s: %v", filepath.Base(path), err)
+		}
 	}
 }
 
@@ -2140,17 +2516,29 @@ func testWindowsInheritedUpdateLockIsRejected(t *testing.T) {
 	}
 	directory := t.TempDir()
 	target := filepath.Join(directory, "ssm.exe")
+	stage := filepath.Join(directory, ".ssm.untrusted-lock-stage.exe")
 	lockPath := windowsReplacementLock(target)
 	copyWindowsTestExecutable(t, testExecutable, target, nil)
+	copyWindowsTestExecutable(t, testExecutable, stage, []byte("\nUNTRUSTED_LOCK_STAGE\n"))
+	original, err := os.ReadFile(target) //nolint:gosec // test-owned replacement fixture
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(lockPath, []byte("attacker-controlled lock"), 0o666); err != nil { //nolint:gosec // intentionally inherited attacker-forgeable test lock
 		t.Fatal(err)
 	}
 	setWritableWindowsTestDACL(t, lockPath, false)
 
 	err = cleanupPreviousExecutable(target)
+	if err != nil {
+		t.Fatalf("ordinary recovery discovery trusted an unauthenticated lock: %v", err)
+	}
+
+	err = replaceExecutable(stage, target)
 	if err == nil || !strings.Contains(err.Error(), "security policy") {
 		t.Fatalf("inherited update lock error = %v, want security-policy rejection", err)
 	}
+	assertWindowsFileBytes(t, target, original)
 	if _, err := os.Stat(lockPath); err != nil {
 		t.Fatalf("untrusted update lock was not preserved: %v", err)
 	}

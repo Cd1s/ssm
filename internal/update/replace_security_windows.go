@@ -955,6 +955,13 @@ func describeWindowsACE(ace []byte) string {
 	)
 }
 
+func (state *windowsReplacementSecurityState) restorePrivileges() error {
+	if state == nil || state.scope == nil {
+		return nil
+	}
+	return state.scope.restore()
+}
+
 func (state *windowsReplacementSecurityState) close() error {
 	var errs []error
 	if state.sourceDescriptor != nil {
@@ -981,13 +988,17 @@ func (state *windowsReplacementSecurityState) close() error {
 }
 
 type windowsReplacementPrivilegeScope struct {
-	token         windows.Token
-	processToken  windows.Token
-	previousToken windows.Token
-	closeToken    windowsCloseTokenFunc
-	hadPrevious   bool
-	installed     bool
-	active        bool
+	token          windows.Token
+	processToken   windows.Token
+	previousToken  windows.Token
+	closeToken     windowsCloseTokenFunc
+	setThreadToken windowsSetThreadTokenFunc
+	revertToSelf   windowsRevertToSelfFunc
+	unlockOSThread func()
+	failSafe       windowsPrivilegeRestorationFailSafe
+	hadPrevious    bool
+	installed      bool
+	active         bool
 }
 
 func beginWindowsReplacementPrivileges() (*windowsReplacementPrivilegeScope, bool, error) {
@@ -1012,6 +1023,12 @@ type windowsOpenProcessTokenFunc func(
 
 type windowsCloseTokenFunc func(token windows.Token) error
 
+type windowsSetThreadTokenFunc func(token windows.Token) error
+
+type windowsRevertToSelfFunc func() error
+
+type windowsPrivilegeRestorationFailSafe func(error)
+
 func beginWindowsReplacementPrivilegesWithTokenOpen(
 	openThreadToken windowsOpenThreadTokenFunc,
 	openProcessToken windowsOpenProcessTokenFunc,
@@ -1033,7 +1050,13 @@ func beginWindowsReplacementPrivilegesWithTokenOpenAndClose(
 	runtime.LockOSThread()
 	scope := &windowsReplacementPrivilegeScope{
 		closeToken: closeToken,
-		active:     true,
+		setThreadToken: func(token windows.Token) error {
+			return windows.SetThreadToken(nil, token)
+		},
+		revertToSelf:   windows.RevertToSelf,
+		unlockOSThread: runtime.UnlockOSThread,
+		failSafe:       failWindowsPrivilegeRestoration,
+		active:         true,
 	}
 	fallback := func() (*windowsReplacementPrivilegeScope, bool, error) {
 		if err := scope.close(); err != nil {
@@ -1140,18 +1163,115 @@ func windowsTokenPrivilegeEnabled(token windows.Token, want windows.LUID) (bool,
 	return false, nil
 }
 
+type windowsTokenStatistics struct {
+	tokenID            windows.LUID
+	authenticationID   windows.LUID
+	expirationTime     int64
+	tokenType          uint32
+	impersonationLevel uint32
+	dynamicCharged     uint32
+	dynamicAvailable   uint32
+	groupCount         uint32
+	privilegeCount     uint32
+	modifiedID         windows.LUID
+}
+
+func windowsTokenID(token windows.Token) (windows.LUID, error) {
+	var statistics windowsTokenStatistics
+	var size uint32
+	if err := windows.GetTokenInformation(
+		token,
+		windows.TokenStatistics,
+		(*byte)(unsafe.Pointer(&statistics)),
+		uint32(unsafe.Sizeof(statistics)),
+		&size,
+	); err != nil {
+		return windows.LUID{}, err
+	}
+	if size != uint32(unsafe.Sizeof(statistics)) {
+		return windows.LUID{}, fmt.Errorf(
+			"Windows token statistics size is %d, want %d",
+			size,
+			unsafe.Sizeof(statistics),
+		)
+	}
+	return statistics.tokenID, nil
+}
+
+func (scope *windowsReplacementPrivilegeScope) confirmRestored() error {
+	var current windows.Token
+	err := windows.OpenThreadToken(
+		windows.CurrentThread(),
+		windows.TOKEN_QUERY,
+		false,
+		&current,
+	)
+	if !scope.hadPrevious {
+		if errors.Is(err, windows.ERROR_NO_TOKEN) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		_ = current.Close()
+		return fmt.Errorf("Windows thread still has an impersonation token")
+	}
+	if err != nil {
+		return err
+	}
+	defer current.Close()
+	currentID, err := windowsTokenID(current)
+	if err != nil {
+		return fmt.Errorf("read restored Windows thread token identity: %w", err)
+	}
+	previousID, err := windowsTokenID(scope.previousToken)
+	if err != nil {
+		return fmt.Errorf("read previous Windows thread token identity: %w", err)
+	}
+	if currentID != previousID {
+		return fmt.Errorf("Windows thread token identity was not restored")
+	}
+	return nil
+}
+
+func (scope *windowsReplacementPrivilegeScope) restore() error {
+	if scope == nil || !scope.active || !scope.installed {
+		return nil
+	}
+	var err error
+	if scope.hadPrevious {
+		err = scope.setThreadToken(scope.previousToken)
+		if err != nil {
+			return fmt.Errorf("restore previous Windows thread token: %w", err)
+		}
+	} else {
+		err = scope.revertToSelf()
+		if err != nil {
+			return fmt.Errorf("revert Windows thread token: %w", err)
+		}
+	}
+	if err := scope.confirmRestored(); err != nil {
+		return fmt.Errorf("confirm Windows thread token restoration: %w", err)
+	}
+	scope.installed = false
+	return nil
+}
+
+func failWindowsPrivilegeRestoration(_ error) {
+	_ = windows.TerminateProcess(windows.CurrentProcess(), 1)
+	runtime.Goexit()
+}
+
 func (scope *windowsReplacementPrivilegeScope) close() error {
 	if scope == nil || !scope.active {
 		return nil
 	}
 	var errs []error
 	if scope.installed {
-		if scope.hadPrevious {
-			errs = append(errs, windows.SetThreadToken(nil, scope.previousToken))
-		} else {
-			errs = append(errs, windows.RevertToSelf())
+		if err := scope.restore(); err != nil {
+			scope.failSafe(err)
+			panic("Windows privilege restoration fail-safe returned")
 		}
-		scope.installed = false
 	}
 	if scope.token != 0 {
 		errs = append(errs, scope.closeToken(scope.token))
@@ -1166,6 +1286,6 @@ func (scope *windowsReplacementPrivilegeScope) close() error {
 		scope.previousToken = 0
 	}
 	scope.active = false
-	runtime.UnlockOSThread()
+	scope.unlockOSThread()
 	return errors.Join(errs...)
 }

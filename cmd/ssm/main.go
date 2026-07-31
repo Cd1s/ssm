@@ -29,18 +29,85 @@ func isSSHCTLInvocation(path string) bool {
 	return strings.EqualFold(base, "sshctl")
 }
 
+// startupOutputMode selects only the renderer needed before command dispatch.
+// It deliberately avoids the stateful global parser so executable recovery
+// cannot cause config, vault, or network work before a startup failure is
+// rendered.
+func startupOutputMode(executable string, rawArgs []string) (jsonMode, streamMode bool) {
+	jsonMode = hasJSONFlagBeforeDash(rawArgs)
+	if !isSSHCTLInvocation(executable) {
+		return jsonMode, false
+	}
+
+	args := make([]string, 0, len(rawArgs))
+	seenCommand := false
+	for i := 0; i < len(rawArgs); i++ {
+		arg := rawArgs[i]
+		switch {
+		case !seenCommand && (arg == "--json" || arg == "--offline"):
+			continue
+		case !seenCommand && arg == "--master-pass-file":
+			if i+1 < len(rawArgs) {
+				i++
+			}
+			continue
+		case !seenCommand && strings.HasPrefix(arg, "--master-pass-file="):
+			continue
+		default:
+			args = append(args, arg)
+			if !seenCommand && (arg == "--version" || arg == "-v" ||
+				arg == "--help" || arg == "-h" || arg == "help" ||
+				!strings.HasPrefix(arg, "-")) {
+				seenCommand = true
+			}
+		}
+	}
+	if len(args) == 0 {
+		return jsonMode, false
+	}
+	if _, _, help := sshctlHelpRequest(args); help {
+		return jsonMode, false
+	}
+
+	var runArgs []string
+	switch args[0] {
+	case "run", "exec":
+		if runStreamRequested(args[1:]) {
+			return true, true
+		}
+		_, parsedRunArgs, err := splitRunAlias(args[1:])
+		if err != nil {
+			return jsonMode, false
+		}
+		runArgs = parsedRunArgs
+	default:
+		if len(args) == 1 {
+			return jsonMode, false
+		}
+		runArgs = args[1:]
+	}
+	_, streamMode, _ = parseRunStreamArgs(runArgs)
+	if streamMode {
+		jsonMode = true
+	}
+	return jsonMode, streamMode
+}
+
 func main() {
 	rawArgs := os.Args[1:]
-	machineJSON = hasJSONFlagBeforeDash(rawArgs)
+	machineJSON, streamMachine = startupOutputMode(os.Args[0], rawArgs)
 	if err := update.CleanupPreviousExecutable(); err != nil {
-		os.Exit(machinecontract.WriteClassified(
-			machineJSON,
+		failure := machinecontract.Classify(
 			machinecontract.UpdateFailed,
 			machinecontract.Details{
 				Message: fmt.Sprintf("startup executable recovery failed: %v", err),
 				Cause:   err,
 			},
-		))
+		)
+		if streamMachine {
+			os.Exit(writeStreamFailure(os.Stdout, failure))
+		}
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
 	}
 	defer func() {
 		if r := recover(); r != nil {

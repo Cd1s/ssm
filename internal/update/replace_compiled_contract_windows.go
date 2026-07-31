@@ -15,6 +15,17 @@ func init() {
 	if alias == "" {
 		return
 	}
+	executable, setupErr := os.Executable()
+	if setupErr == nil {
+		executable, setupErr = filepath.EvalSymlinks(executable)
+	}
+	pattern := ""
+	if setupErr == nil {
+		pattern = filepath.Join(
+			filepath.Dir(executable),
+			"."+filepath.Base(executable)+".*.new",
+		)
+	}
 	originalHook := windowsReplacementTestHook
 	linked := false
 	windowsReplacementTestHook = func(phase string) error {
@@ -26,18 +37,9 @@ func init() {
 		if phase != windowsReplacementPhaseStageRenameGap || linked {
 			return nil
 		}
-		executable, err := os.Executable()
-		if err != nil {
-			return fmt.Errorf("resolve compiled-contract executable: %w", err)
+		if setupErr != nil {
+			return fmt.Errorf("resolve compiled-contract executable before replacement: %w", setupErr)
 		}
-		executable, err = filepath.EvalSymlinks(executable)
-		if err != nil {
-			return fmt.Errorf("resolve compiled-contract executable links: %w", err)
-		}
-		pattern := filepath.Join(
-			filepath.Dir(executable),
-			"."+filepath.Base(executable)+".*.new",
-		)
 		stages, err := filepath.Glob(pattern)
 		if err != nil {
 			return fmt.Errorf("find compiled-contract replacement stage: %w", err)
