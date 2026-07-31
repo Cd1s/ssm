@@ -1752,15 +1752,21 @@ func TestMachineContractTransferContext(t *testing.T) {
 		t.Fatalf("carried transfer failure = %+v, want %+v", got, carried)
 	}
 
-	localCause := errors.New("stat /tmp/rm-timeout-remediation/missing: no such file")
-	localCarried := Classify(TransferLocalRead, Details{Cause: localCause})
-	local := ClassifyTransferOperation(localCause, SSHContext{
-		Alias: "transfer", Host: "192.0.2.1", Port: 22,
-	}, localCarried)
-	if local.Error != "local_read_failed" || local.Stage != "local_read" ||
-		local.Exit != 1 || ProcessExit(local) != 1 ||
-		local.humanProjection == nil || local.humanProjection.Error != CodeInternal {
-		t.Fatalf("local path containing timeout changed transfer classification = %+v", local)
+	for _, message := range []string{
+		"stat /tmp/rm-timeout-remediation/missing: no such file",
+		`open C:\fixtures\timeout\missing: file not found`,
+		"read timeout.txt: no such file",
+	} {
+		localCause := errors.New(message)
+		localCarried := Classify(TransferLocalRead, Details{Cause: localCause})
+		local := ClassifyTransferOperation(localCause, SSHContext{
+			Alias: "transfer", Host: "192.0.2.1", Port: 22,
+		}, localCarried)
+		if local.Error != "local_read_failed" || local.Stage != "local_read" ||
+			local.Exit != 1 || ProcessExit(local) != 1 ||
+			local.humanProjection == nil || local.humanProjection.Error != CodeInternal {
+			t.Fatalf("local path %q containing timeout changed transfer classification = %+v", message, local)
+		}
 	}
 
 	sessionCarried := Classify(TransferSessionOpenFailed, Details{Message: "session rejected"})
@@ -1807,34 +1813,90 @@ func TestMachineContractTransferContext(t *testing.T) {
 		strings.Contains(stderr.String(), " stage=") {
 		t.Fatalf("download human context stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
+
+	for _, test := range []struct {
+		message   string
+		kind      Kind
+		wantError string
+		wantStage string
+	}{
+		{
+			message:   `create C:\fixtures\timeout\download: access denied`,
+			kind:      TransferDownloadLocalWrite,
+			wantError: "local_write_failed",
+			wantStage: "local_write",
+		},
+		{
+			message:   "rename /tmp/timeout-download-stage /tmp/final: permission denied",
+			kind:      TransferDownloadPublish,
+			wantError: "publish_failed",
+			wantStage: "publish",
+		},
+		{
+			message:   `rename C:\fixtures\timeout\backup C:\fixtures\final: access denied`,
+			kind:      TransferDownloadRestoreFailed,
+			wantError: "publish_failed",
+			wantStage: "publish",
+		},
+	} {
+		localDownloadCause := errors.New(test.message)
+		localDownloadCarried := Classify(test.kind, Details{Cause: localDownloadCause})
+		localDownload := ClassifyDownload(&testTransferFailureCarrier{
+			failure: localDownloadCarried,
+			cause:   localDownloadCause,
+		}, SSHContext{
+			Alias: "download", Host: "192.0.2.1", Port: 22,
+		})
+		if localDownload.Error != test.wantError || localDownload.Stage != test.wantStage ||
+			localDownload.Exit != 1 || ProcessExit(localDownload) != 1 ||
+			localDownload.humanProjection == nil || localDownload.humanProjection.Error != CodeInternal {
+			t.Fatalf("local download path %q containing timeout changed transfer classification = %+v", test.message, localDownload)
+		}
+	}
 }
 
-func TestSSHTimeoutClassificationUsesConnectionBoundaries(t *testing.T) {
+type testTransferFailureCarrier struct {
+	failure Failure
+	cause   error
+}
+
+func (failure *testTransferFailureCarrier) Error() string {
+	return failure.cause.Error()
+}
+
+func (failure *testTransferFailureCarrier) Unwrap() error {
+	return failure.cause
+}
+
+func (failure *testTransferFailureCarrier) ContractFailure() Failure {
+	return failure.failure
+}
+
+func TestSSHTimeoutClassificationPreservesHistoricalVariants(t *testing.T) {
 	t.Parallel()
 	context := SSHContext{Alias: "prod", Host: "192.0.2.1", Port: 22}
-	for _, test := range []struct {
-		message string
-		want    string
-	}{
-		{message: "timeout", want: "dial_timeout"},
-		{message: "ssh: handshake failed: timeout", want: "dial_timeout"},
-		{message: "dial tcp 192.0.2.1:22: i/o timeout", want: "dial_timeout"},
-		{message: "timeout while connecting", want: "dial_timeout"},
-		{message: "timeout while connecting to 192.0.2.1", want: "dial_timeout"},
-		{message: "connection timeout", want: "dial_timeout"},
-		{message: "connect to host 192.0.2.1 port 22: Connection timed out", want: "dial_timeout"},
-		{message: "stat /tmp/rm-timeout-remediation/missing: no such file", want: "internal"},
-		{message: "stat /tmp/connection timeout/missing: no such file", want: "internal"},
-		{message: "open /tmp/timeout while connecting/missing: no such file", want: "internal"},
-		{message: "read /tmp/connect to host timed out/data: no such file", want: "internal"},
-		{message: `open C:\fixtures\timeout\missing: file not found`, want: "internal"},
-		{message: "read timeout.txt: no such file", want: "internal"},
+	for _, message := range []string{
+		"timeout",
+		"ssh: handshake failed: timeout",
+		"ssh: handshake failed: TLS handshake timeout",
+		"ssh: handshake failed: key exchange timeout",
+		"ssh: handshake failed: banner timeout",
+		"dial tcp 192.0.2.1:22: i/o timeout",
+		"proxy negotiation timeout awaiting response",
+		"timeout while connecting",
+		"timeout while connecting to 192.0.2.1",
+		"connection timeout",
+		"connect to host 192.0.2.1 port 22: Connection timed out",
+		"operation timed out during SSH negotiation",
 	} {
-		test := test
-		t.Run(test.message, func(t *testing.T) {
+		message := message
+		t.Run(message, func(t *testing.T) {
 			t.Parallel()
-			if got := ClassifySSH(errors.New(test.message), context); got.Error != test.want {
-				t.Fatalf("ClassifySSH(%q).Error = %q, want %q", test.message, got.Error, test.want)
+			got := ClassifySSH(errors.New(message), context)
+			if got.Error != CodeDialTimeout || got.Stage != "dial" ||
+				got.Exit != ExitConnectionFailed || ProcessExit(got) != ExitConnectionFailed ||
+				got.Hint != "network/host unreachable or filtered; verify host online/firewall/IPv6. Not an ssm quote bug." {
+				t.Fatalf("ClassifySSH(%q) = %+v, want historical dial_timeout/dial/255 tuple", message, got)
 			}
 		})
 	}

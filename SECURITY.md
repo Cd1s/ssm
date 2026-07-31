@@ -21,6 +21,9 @@ by copying the downloaded binary or looking for a verification-skip option;
 report unexpected official-release failures privately through the channels
 above.
 
+The tag text is identity data, not a display version. Distinct Git tags such as
+`1.2.3` and `v1.2.3` do not authorize one another's provenance.
+
 Release downloads are streamed with hard ceilings of 1,048,576 bytes for
 release metadata, 16,384 bytes for checksums, 1,048,576 bytes for each
 provenance bundle, and 67,108,864 bytes for a binary. The updater and installer

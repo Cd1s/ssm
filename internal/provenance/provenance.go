@@ -246,7 +246,7 @@ func identityForSAN(identities []Identity, san string) (Identity, bool) {
 }
 
 func releaseTag(version string) (string, error) {
-	value := strings.TrimPrefix(strings.TrimSpace(version), "v")
+	value := strings.TrimPrefix(version, "v")
 	parts := strings.Split(value, ".")
 	if len(parts) != 3 {
 		return "", fmt.Errorf("release version %q is not accepted", version)
@@ -261,5 +261,5 @@ func releaseTag(version string) (string, error) {
 			}
 		}
 	}
-	return "v" + value, nil
+	return version, nil
 }

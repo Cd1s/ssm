@@ -1419,6 +1419,251 @@ func TestTrustFailurePreservesExecutable(t *testing.T) {
 	}
 }
 
+func TestUnixVerifiedReplacementRejectsCallbackSubstitution(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix replacement contract")
+	}
+	restoreUpdateTestHooks(t)
+	setTestHome(t, t.TempDir())
+	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
+
+	directory := t.TempDir()
+	exe := filepath.Join(directory, "ssm")
+	if err := os.WriteFile(exe, []byte("old"), 0o751); err != nil { //nolint:gosec // test-owned executable fixture
+		t.Fatal(err)
+	}
+	executablePath = func() (string, error) { return exe, nil }
+	evalSymlinks = func(path string) (string, error) { return path, nil }
+
+	payload := []byte("authenticated replacement")
+	version := serveAuthenticatedUpdate(t, payload)
+
+	callbackCalled := false
+	err := DownloadVersionBeforeReplace(version, false, func() error {
+		callbackCalled = true
+		matches, globErr := filepath.Glob(filepath.Join(directory, ".ssm.*.new"))
+		if globErr != nil || len(matches) != 1 {
+			return fmt.Errorf("find authenticated stage: matches=%v err=%w", matches, globErr)
+		}
+		if renameErr := os.Rename(matches[0], matches[0]+".authenticated"); renameErr != nil {
+			return fmt.Errorf("move authenticated stage: %w", renameErr)
+		}
+		if writeErr := os.WriteFile(matches[0], []byte("callback substitute"), 0o751); writeErr != nil { //nolint:gosec // adversarial test-owned replacement
+			return fmt.Errorf("write callback substitute: %w", writeErr)
+		}
+		return nil
+	})
+	if !callbackCalled {
+		t.Fatal("verified replacement did not reach callback")
+	}
+	if err == nil || !strings.Contains(err.Error(), "authenticated bytes") {
+		t.Fatalf("callback substitution error = %v, want authenticated-byte rejection", err)
+	}
+	assertExecutableBytes(t, exe, "old")
+}
+
+func TestUnixVerifiedReplacementUsesOpenedStageAcrossPathRename(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix replacement contract")
+	}
+	restoreUpdateTestHooks(t)
+	setTestHome(t, t.TempDir())
+	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
+
+	directory := t.TempDir()
+	exe := filepath.Join(directory, "ssm")
+	if err := os.WriteFile(exe, []byte("old"), 0o751); err != nil { //nolint:gosec // test-owned executable fixture
+		t.Fatal(err)
+	}
+	executablePath = func() (string, error) { return exe, nil }
+	evalSymlinks = func(path string) (string, error) { return path, nil }
+
+	payload := []byte("authenticated opened replacement")
+	version := serveAuthenticatedUpdate(t, payload)
+
+	hookCalled := false
+	unixReplacementTestHook = func(phase, staged, _ string) error {
+		if phase != "source_open" {
+			return nil
+		}
+		hookCalled = true
+		if err := os.Rename(staged, staged+".opened"); err != nil {
+			return fmt.Errorf("rename opened stage pathname: %w", err)
+		}
+		if err := os.WriteFile(staged, []byte("concurrent pathname replacement"), 0o751); err != nil { //nolint:gosec // adversarial test-owned replacement
+			return fmt.Errorf("replace opened stage pathname: %w", err)
+		}
+		return nil
+	}
+
+	if err := DownloadVersion(version, false); err != nil {
+		t.Fatalf("opened-stage replacement failed: %v", err)
+	}
+	if !hookCalled {
+		t.Fatal("opened-stage pathname race did not reach the replacement seam")
+	}
+	assertExecutableBytes(t, exe, string(payload))
+}
+
+func TestUnixVerifiedReplacementRejectsInPlaceCopyMutation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix replacement contract")
+	}
+	restoreUpdateTestHooks(t)
+	setTestHome(t, t.TempDir())
+	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
+
+	directory := t.TempDir()
+	exe := filepath.Join(directory, "ssm")
+	if err := os.WriteFile(exe, []byte("old"), 0o751); err != nil { //nolint:gosec // test-owned executable fixture
+		t.Fatal(err)
+	}
+	executablePath = func() (string, error) { return exe, nil }
+	evalSymlinks = func(path string) (string, error) { return path, nil }
+
+	payload := []byte("authenticated replacement before in-place mutation")
+	version := serveAuthenticatedUpdate(t, payload)
+
+	hookCalled := false
+	unixReplacementTestHook = func(phase, _, install string) error {
+		if phase != "copy_ready" {
+			return nil
+		}
+		hookCalled = true
+		file, err := os.OpenFile(install, os.O_WRONLY|os.O_APPEND, 0) //nolint:gosec // adversarial test-owned mutation
+		if err != nil {
+			return fmt.Errorf("open authenticated copy for mutation: %w", err)
+		}
+		if _, err := file.Write([]byte("\nin-place mutation\n")); err != nil {
+			_ = file.Close()
+			return fmt.Errorf("mutate authenticated copy: %w", err)
+		}
+		return file.Close()
+	}
+
+	err := DownloadVersion(version, false)
+	if !hookCalled {
+		t.Fatal("in-place mutation did not reach the authenticated-copy race seam")
+	}
+	if err == nil || !strings.Contains(err.Error(), "authenticated bytes") {
+		t.Fatalf("in-place copy mutation error = %v, want authenticated-byte rejection", err)
+	}
+	assertExecutableBytes(t, exe, "old")
+}
+
+func TestUnixVerifiedReplacementRejectsAuthenticatedCopyHardLink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix replacement contract")
+	}
+	restoreUpdateTestHooks(t)
+	setTestHome(t, t.TempDir())
+	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
+
+	directory := t.TempDir()
+	exe := filepath.Join(directory, "ssm")
+	if err := os.WriteFile(exe, []byte("old"), 0o751); err != nil { //nolint:gosec // test-owned executable fixture
+		t.Fatal(err)
+	}
+	executablePath = func() (string, error) { return exe, nil }
+	evalSymlinks = func(path string) (string, error) { return path, nil }
+
+	payload := []byte("authenticated replacement before hard link")
+	version := serveAuthenticatedUpdate(t, payload)
+
+	hookCalled := false
+	unixReplacementTestHook = func(phase, _, install string) error {
+		if phase != "copy_ready" {
+			return nil
+		}
+		hookCalled = true
+		if err := os.Link(install, install+".alias"); err != nil {
+			return fmt.Errorf("create authenticated-copy hard link: %w", err)
+		}
+		return nil
+	}
+
+	err := DownloadVersion(version, false)
+	if !hookCalled {
+		t.Fatal("hard-link mutation did not reach the authenticated-copy race seam")
+	}
+	if err == nil || !strings.Contains(err.Error(), "hard links") {
+		t.Fatalf("authenticated-copy hard-link error = %v, want hard-link rejection", err)
+	}
+	assertExecutableBytes(t, exe, "old")
+}
+
+func TestUnixVerifiedReplacementRejectsCallbackObjectMutation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix replacement contract")
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(string) error
+	}{
+		{
+			name: "same path in place",
+			mutate: func(stage string) error {
+				file, err := os.OpenFile(stage, os.O_WRONLY|os.O_APPEND, 0) //nolint:gosec // adversarial test-owned mutation
+				if err != nil {
+					return err
+				}
+				if _, err := file.Write([]byte("\ncallback mutation\n")); err != nil {
+					_ = file.Close()
+					return err
+				}
+				return file.Close()
+			},
+		},
+		{
+			name: "through hard link",
+			mutate: func(stage string) error {
+				alias := stage + ".alias"
+				if err := os.Link(stage, alias); err != nil {
+					return err
+				}
+				file, err := os.OpenFile(alias, os.O_WRONLY|os.O_APPEND, 0) //nolint:gosec // adversarial test-owned mutation
+				if err != nil {
+					return err
+				}
+				if _, err := file.Write([]byte("\nhard-link mutation\n")); err != nil {
+					_ = file.Close()
+					return err
+				}
+				return file.Close()
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			restoreUpdateTestHooks(t)
+			setTestHome(t, t.TempDir())
+			t.Setenv("SSM_UPDATE_REPO", "owner/repo")
+
+			directory := t.TempDir()
+			exe := filepath.Join(directory, "ssm")
+			if err := os.WriteFile(exe, []byte("old"), 0o751); err != nil { //nolint:gosec // test-owned executable fixture
+				t.Fatal(err)
+			}
+			executablePath = func() (string, error) { return exe, nil }
+			evalSymlinks = func(path string) (string, error) { return path, nil }
+
+			payload := []byte("authenticated replacement before callback mutation")
+			version := serveAuthenticatedUpdate(t, payload)
+
+			err := DownloadVersionBeforeReplace(version, false, func() error {
+				matches, globErr := filepath.Glob(filepath.Join(directory, ".ssm.*.new"))
+				if globErr != nil || len(matches) != 1 {
+					return fmt.Errorf("find authenticated stage: matches=%v err=%w", matches, globErr)
+				}
+				return test.mutate(matches[0])
+			})
+			if err == nil || !strings.Contains(err.Error(), "authenticated bytes") {
+				t.Fatalf("callback object mutation error = %v, want authenticated-byte rejection", err)
+			}
+			assertExecutableBytes(t, exe, "old")
+		})
+	}
+}
+
 func TestVerifiedReplacementPreservesPermissionsAndTarget(t *testing.T) {
 	restoreUpdateTestHooks(t)
 	setTestHome(t, t.TempDir())
@@ -1493,6 +1738,41 @@ func TestVerifiedReplacementPreservesPermissionsAndTarget(t *testing.T) {
 	assertExecutableBytes(t, sentinel, "preserve")
 }
 
+func serveAuthenticatedUpdate(t *testing.T, payload []byte) string {
+	t.Helper()
+	const version = "v9.9.9"
+	claims, err := provenancefixture.DefaultClaims(assetName(), version, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := provenancefixture.Generate(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyProvenance = func(_ context.Context, bundle []byte, request provenance.Request) error {
+		return provenance.VerifyBundle(bundle, request, provenance.Options{
+			TrustedMaterial: fixture.TrustedMaterial,
+		})
+	}
+	sum := sha256.Sum256(payload)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/owner/repo/releases/download/" + version + "/checksums.txt":
+			_, _ = fmt.Fprintf(w, "%x  %s\n", sum, assetName())
+		case "/owner/repo/releases/download/" + version + "/" + releaseasset.ProvenanceName(assetName()):
+			_, _ = w.Write(fixture.Bundle)
+		case "/owner/repo/releases/download/" + version + "/" + assetName():
+			_, _ = w.Write(payload)
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	t.Cleanup(server.Close)
+	downloadBaseURL = server.URL
+	httpClient = server.Client()
+	return version
+}
+
 func tamperProvenanceSignature(t *testing.T, bundle []byte) []byte {
 	t.Helper()
 	protobufBundle := &bundlev1.Bundle{}
@@ -1543,6 +1823,7 @@ func restoreUpdateTestHooks(t *testing.T) {
 	oldExecutablePath := executablePath
 	oldEvalSymlinks := evalSymlinks
 	oldVerifyProvenance := verifyProvenance
+	oldUnixReplacementTestHook := unixReplacementTestHook
 	t.Cleanup(func() {
 		httpClient = oldHTTPClient
 		apiBaseURL = oldAPIBaseURL
@@ -1550,6 +1831,7 @@ func restoreUpdateTestHooks(t *testing.T) {
 		executablePath = oldExecutablePath
 		evalSymlinks = oldEvalSymlinks
 		verifyProvenance = oldVerifyProvenance
+		unixReplacementTestHook = oldUnixReplacementTestHook
 	})
 	httpClient = &http.Client{}
 	apiBaseURL = "https://api.github.com"
@@ -1557,6 +1839,7 @@ func restoreUpdateTestHooks(t *testing.T) {
 	executablePath = os.Executable
 	evalSymlinks = filepath.EvalSymlinks
 	verifyProvenance = provenance.VerifyPublicGoodBundle
+	unixReplacementTestHook = nil
 }
 
 func releaseAssetMetadataJSON() string {

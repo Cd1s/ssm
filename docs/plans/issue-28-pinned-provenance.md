@@ -50,14 +50,17 @@ The reviewed identity-set version introduced by BC-9 is:
 
 | Identity version | Exact certificate SAN form | Valid from | Valid until |
 | --- | --- | --- | --- |
-| `release-tag-v1` | `https://github.com/Cd1s/ssm/.github/workflows/release.yml@refs/tags/vMAJOR.MINOR.PATCH` for the selected version | 2026-07-30 00:00:00 UTC | open |
+| `release-tag-v1` | `https://github.com/Cd1s/ssm/.github/workflows/release.yml@refs/tags/EXACT_SELECTED_TAG` | 2026-07-30 00:00:00 UTC | open |
 
 No wildcard identity, repository alias, alternate issuer, self-hosted runner,
 unreviewed workflow, or unreviewed ref is accepted. The release workflow also
 checks its own `github.workflow_ref` before building. Publication is tag
 triggered only, and the workflow identity must use that exact selected tag.
-An unversioned branch identity or a different release tag cannot authorize the
-selected release.
+The updater's compatible version parser continues to accept both
+`MAJOR.MINOR.PATCH` and `vMAJOR.MINOR.PATCH`, but provenance identity never
+normalizes between them: Git tags `1.2.3` and `v1.2.3` are distinct identities.
+An unversioned branch identity or any different release tag cannot authorize
+the selected release.
 
 ## Six-target release manifest
 
@@ -94,6 +97,7 @@ newest eligible release fails this check.
 | Downloaded digest matches checksum but differs from provenance | Subject digest comparison | Checksum cannot rescue the mismatch; no replacement. |
 | Unsupported, missing, misnamed, additional, or duplicate release asset | Strict manifest selection | No asset download and no fallback. |
 | Checksums over 16 KiB, provenance or release metadata over 1 MiB, or a binary over 64 MiB | Header-independent bounded stream, rejecting after at most limit plus one byte | No replacement; temporary output is bounded and removed; installed bytes and mode are unchanged. |
+| A Unix callback or concurrent writer substitutes the staged pathname, mutates the staged object, or hard-links the authenticated install copy | Portable same-directory replacement boundary | The post-callback stage is opened once and copied only from that handle; both the handle stream and fresh sibling copy must equal the provenance-authenticated SHA-256, and the sibling must still be a single-link regular file before its atomic rename. No unverified bytes replace the installed executable. |
 | Windows cannot overwrite its mapped running `.exe` | Platform replacement | Pass the verified SHA-256 into the platform boundary, hold the fixed sibling update lock across inspection, handle-bound moves, rollback, recovery, and cleanup, and hash the exact non-write-sharing stage handle before any canonical mutation. Reject reparse points and multiple hard links, require `GetFileInformationByHandleEx(FileIdInfo)` volume serial plus 128-bit identity, and keep non-delete-sharing handles on the validated original and stage until the completed record is durable. `SetFileInformationByHandle(FileRenameInfoEx)` renames those exact source objects. Replace, POSIX, and ignore-read-only semantics replace an unlocked object inserted at the temporarily vacant canonical name. Windows cannot replace that object while an external handle withholds delete sharing: installation and synchronous rollback then fail closed, retain the original at `.old` plus the authenticated prepared record, and block cleanup, startup command dispatch, and later updates. After the hostile handle is released, serialized recovery restores the retained original by handle, verifies its strong identity, authenticated executable digest, and security-descriptor contract at the canonical path, and only then clears the record. The ordinary tier captures, applies, and verifies owner, primary group, DACL, and DACL inheritance/protection without optional privileges. When all three backup/restore/security privileges can be enabled on a duplicated thread token and the filesystem supports whole-descriptor application, the full tier instead preserves and verifies the complete descriptor, including SACL-backed fields and RM control. An unavailable full tier is never claimed; failure to preserve the selected tier stops before the first move, restores the still-held original, or retains authenticated recovery evidence when an external sharing lock makes immediate restoration impossible. |
 
 `TestTrustFailurePreservesExecutable` records the original executable bytes and
@@ -106,7 +110,12 @@ verifier seam and proves the installed bytes remain unchanged.
 `TestVerifiedReplacementPreservesPermissionsAndTarget` proves a valid
 replacement reaches the callback only after trust succeeds, renames only the
 intended sibling temporary target, preserves the prior permission bits, and
-does not modify an adjacent sentinel file. Unix installer regressions give the
+does not modify an adjacent sentinel file. The Unix updater race suite proves
+callback substitution and same-object or hard-link mutation fail closed,
+pathname replacement after source-open cannot retarget the copied object, the
+fresh authenticated copy is rehashed and rejects extra hard links, and
+unchanged authenticated bytes retain the established atomic replacement and
+permission behavior. Unix installer regressions give the
 same byte-and-mode proof for a failed external attestation verifier,
 unversioned-identity replay, invalid exact manifests, and oversized metadata or
 trust inputs. Redirected, unknown-length installer fixtures prove that release
@@ -135,6 +144,8 @@ recovery after its release, late target/stage hard-link recovery, ordinary
 rollback, forged control records, owner/DACL rejection, callback-time stage
 substitution and same-object content mutation rejection, same-strong-ID
 rollback byte/descriptor mutation rejection and retry after exact restoration,
+including descriptor verification on the synchronous rollback path before any
+restore or evidence deletion,
 compiled CLI startup refusal while a hostile sharing handle blocks prepared
 recovery, and rollback-failure evidence retention and retry.
 
@@ -225,10 +236,13 @@ remaining hard link, missing original, identity/digest mismatch, unavailable
 required full tier, or descriptor mismatch keeps the prepared record and any
 `.old` intact and keeps cleanup and later updates blocked. Startup surfaces
 that failure through the existing `update_failed` / `update` machine contract,
-returns nonzero, and does not dispatch the requested command. Successful
-synchronous rollback follows the same exact-object rule. Failed rollback
-retains the original at `.old`, the prepared record, and any remaining stage
-while reporting both the operation and rollback failure.
+returns nonzero, and does not dispatch the requested command. Synchronous
+rollback verifies that same canonical descriptor binding in addition to strong
+File ID and rollback SHA-256 before restoring the original or deleting the
+prepared record. Successful synchronous rollback therefore follows the same
+exact-object rule as startup recovery. Failed rollback retains the original at
+`.old`, the prepared record, and any remaining stage while reporting both the
+operation and rollback failure.
 
 The verified stage remains protected by its non-delete- and non-write-sharing
 handles after its handle-bound digest check through normal installation and the
@@ -242,6 +256,18 @@ Startup rollback discovery is Windows-only. On other platforms it returns as a
 true no-op before executable or symlink resolution, so an already-running
 unlinked executable retains the established help, version, and unrelated
 command behavior.
+
+The Go updater's non-Windows replacement uses a portable same-directory copy
+because Linux, macOS, and BSD do not share one handle-only rename API. After
+the pre-replacement callback, it opens and inspects the exact staged regular
+file object, then copies only from that open handle into a newly created sibling
+file. Replacing the staged pathname cannot change the copy source. In-place or
+hard-link writes to that source are accepted only if the copied stream still
+has the provenance-authenticated SHA-256. The updater flushes and rehashes the
+fresh copy from its still-open handle immediately before confirming that its
+pathname still names the same single-link regular file and atomically renaming
+that sibling over the executable. No callback or other updater-controlled pause
+exists between that final binding check and the rename.
 
 The installer success fixture places a BSD-compatible `mktemp` shim ahead of
 the host implementation. It rejects every supplied template that does not end

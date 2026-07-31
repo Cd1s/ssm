@@ -118,12 +118,13 @@ const (
 )
 
 var (
-	httpClient       = &http.Client{Timeout: 15 * time.Second}
-	apiBaseURL       = "https://api.github.com"
-	downloadBaseURL  = "https://github.com"
-	executablePath   = os.Executable
-	evalSymlinks     = filepath.EvalSymlinks
-	verifyProvenance = provenance.VerifyPublicGoodBundle
+	httpClient              = &http.Client{Timeout: 15 * time.Second}
+	apiBaseURL              = "https://api.github.com"
+	downloadBaseURL         = "https://github.com"
+	executablePath          = os.Executable
+	evalSymlinks            = filepath.EvalSymlinks
+	verifyProvenance        = provenance.VerifyPublicGoodBundle
+	unixReplacementTestHook func(phase, staged, install string) error
 )
 
 func flagPath() string {
@@ -297,11 +298,8 @@ func DownloadVersionBeforeReplace(version string, verbose bool, beforeReplace fu
 		return err
 	}
 	tmp := tmpFile.Name()
-	keepTmp := false
 	defer func() {
-		if !keepTmp {
-			_ = os.Remove(tmp)
-		}
+		_ = os.Remove(tmp)
 	}()
 
 	if err := tmpFile.Chmod(executableInfo.Mode().Perm()); err != nil {
@@ -335,7 +333,6 @@ func DownloadVersionBeforeReplace(version string, verbose bool, beforeReplace fu
 	if err := replaceExecutable(tmp, exe, actualDigest); err != nil {
 		return err
 	}
-	keepTmp = true
 
 	ClearFlag()
 	if verbose {

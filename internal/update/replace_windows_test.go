@@ -62,6 +62,7 @@ func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("mapped executable is replaced and completed rollback is cleaned", testWindowsMappedExecutableReplacementSucceedsAndCleansOnNextLaunch)
 	t.Run("install failure rolls back", testWindowsMappedExecutableReplacementFailureRollsBack)
 	t.Run("descriptor failure rolls back", testWindowsSecurityDescriptorApplyFailureRollsBack)
+	t.Run("synchronous rollback authenticates the full descriptor binding", testWindowsSynchronousRollbackRejectsDescriptorMutation)
 	t.Run("returned replacement failure preserves the canonical executable", testWindowsReturnedReplacementFailurePreservesCanonical)
 	t.Run("post-commit cleanup failures are deferred success", testWindowsPostCommitCleanupFailuresAreDeferred)
 	t.Run("concurrent updaters are excluded", testWindowsConcurrentUpdaters)
@@ -271,6 +272,97 @@ func testWindowsSecurityDescriptorApplyFailureRollsBack(t *testing.T) {
 	if _, err := os.Stat(stage); !os.IsNotExist(err) {
 		t.Fatalf("descriptor failure retained staging file: %v", err)
 	}
+}
+
+func testWindowsSynchronousRollbackRejectsDescriptorMutation(t *testing.T) {
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	target := filepath.Join(directory, "ssm.exe")
+	stage := filepath.Join(directory, ".ssm.synchronous-descriptor-stage.exe")
+	copyWindowsTestExecutable(t, testExecutable, target, []byte("\nSYNCHRONOUS_DESCRIPTOR_ORIGINAL\n"))
+	setRestrictiveWindowsTestDACL(t, target)
+	copyWindowsTestExecutable(t, testExecutable, stage, []byte("\nSYNCHRONOUS_DESCRIPTOR_STAGE\n"))
+	original, err := os.ReadFile(target) //nolint:gosec // test-owned mapped executable
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalIdentity, err := inspectWindowsReplacementPath(
+		target,
+		"synchronous descriptor original executable",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalDescriptor := readWindowsTestSecurityDescriptor(t, target)
+
+	originalBegin := beginWindowsReplacementSecurityPrivileges
+	beginWindowsReplacementSecurityPrivileges = func() (*windowsReplacementPrivilegeScope, bool, error) {
+		return nil, false, nil
+	}
+	defer func() { beginWindowsReplacementSecurityPrivileges = originalBegin }()
+
+	originalHook := windowsReplacementTestHook
+	defer func() { windowsReplacementTestHook = originalHook }()
+	mutatedIdentity := windowsFileIdentity{}
+	windowsReplacementTestHook = func(phase string) error {
+		if phase != windowsReplacementPhaseAfterBackup {
+			return nil
+		}
+		backup := windowsReplacementBackup(target)
+		before, err := inspectWindowsReplacementPath(
+			backup,
+			"synchronous rollback image before descriptor mutation",
+		)
+		if err != nil {
+			return err
+		}
+		setWritableWindowsTestDACL(t, backup, true)
+		mutatedIdentity, err = inspectWindowsReplacementPath(
+			backup,
+			"synchronous rollback image after descriptor mutation",
+		)
+		if err != nil {
+			return err
+		}
+		if mutatedIdentity != before {
+			return fmt.Errorf("descriptor mutation changed rollback File ID")
+		}
+		return windows.ERROR_GEN_FAILURE
+	}
+	err = replaceExecutable(stage, target, windowsTestFileDigest(t, stage))
+	if err == nil ||
+		!strings.Contains(err.Error(), "rollback failed") ||
+		!strings.Contains(err.Error(), "security descriptor contract changed") {
+		t.Fatalf("synchronous descriptor mutation error = %v, want descriptor-bound rollback rejection", err)
+	}
+	if mutatedIdentity != originalIdentity {
+		t.Fatalf(
+			"same-File-ID descriptor mutation identity = %+v, want %+v",
+			mutatedIdentity,
+			originalIdentity,
+		)
+	}
+	backup := windowsReplacementBackup(target)
+	assertWindowsFileBytes(t, backup, original)
+	if _, err := os.Stat(windowsReplacementRecord(target)); err != nil {
+		t.Fatalf("synchronous descriptor mismatch lost rollback record: %v", err)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("synchronous descriptor mismatch restored unauthenticated evidence: %v", err)
+	}
+
+	setRestrictiveWindowsTestDACL(t, backup)
+	runWindowsRecoveryCleanup(t, testExecutable, target)
+	assertWindowsRecoveredOriginal(
+		t,
+		target,
+		originalIdentity,
+		original,
+		originalDescriptor,
+	)
 }
 
 func testWindowsReturnedReplacementFailurePreservesCanonical(t *testing.T) {

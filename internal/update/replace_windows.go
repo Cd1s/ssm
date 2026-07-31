@@ -162,7 +162,12 @@ func replaceExecutable(
 		return fmt.Errorf("%s: %w", operation, operationErr)
 	}
 	failAfterBackup := func(operation string, operationErr error) error {
-		rollbackErr := rollbackWindowsReplacement(target, security, record.data.rollbackDigest)
+		rollbackErr := rollbackWindowsReplacement(
+			target,
+			security,
+			record.data.rollbackDigest,
+			record.data.securityBinding,
+		)
 		if rollbackErr == nil {
 			if removeErr := record.remove(); removeErr != nil {
 				rollbackErr = fmt.Errorf("remove Windows rollback ownership record: %w", removeErr)
@@ -523,6 +528,7 @@ func rollbackWindowsReplacement(
 	target string,
 	security *windowsReplacementSecurityState,
 	expectedDigest [sha256.Size]byte,
+	expectedSecurity windowsSecurityBinding,
 ) error {
 	if security == nil || security.target == windows.InvalidHandle {
 		return fmt.Errorf("Windows rollback image handle is unavailable")
@@ -537,6 +543,13 @@ func rollbackWindowsReplacement(
 	if err := requireWindowsReplacementHandleDigest(
 		security.target,
 		expectedDigest,
+		"Windows rollback image",
+	); err != nil {
+		return err
+	}
+	if err := verifyWindowsRollbackSecurityBinding(
+		security.target,
+		expectedSecurity,
 		"Windows rollback image",
 	); err != nil {
 		return err
@@ -578,6 +591,26 @@ func rollbackWindowsReplacement(
 		security.targetIdentity,
 		"restored Windows executable",
 	)
+}
+
+func verifyWindowsRollbackSecurityBinding(
+	handle windows.Handle,
+	binding windowsSecurityBinding,
+	description string,
+) (resultErr error) {
+	verifier, err := newWindowsSecurityBindingVerifier(binding)
+	if err != nil {
+		return fmt.Errorf("prepare %s security descriptor verification: %w", description, err)
+	}
+	defer func() {
+		if closeErr := verifier.close(); closeErr != nil {
+			resultErr = errors.Join(
+				resultErr,
+				fmt.Errorf("release %s security descriptor verification: %w", description, closeErr),
+			)
+		}
+	}()
+	return verifier.verify(handle, description)
 }
 
 type windowsFileRenameInfo struct {

@@ -58,15 +58,11 @@ func DefaultClaims(asset, version string, payload []byte) (Claims, error) {
 	if err != nil {
 		return Claims{}, err
 	}
-	tag := "v" + version
-	if len(version) > 0 && version[0] == 'v' {
-		tag = version
-	}
 	now := time.Now()
 	return Claims{
 		Repository:    provenance.ExpectedRepository,
 		Workflow:      provenance.ExpectedWorkflow,
-		Ref:           "refs/tags/" + tag,
+		Ref:           "refs/tags/" + version,
 		Issuer:        provenance.ExpectedIssuer,
 		Runner:        "github-hosted",
 		PredicateType: provenance.PredicateType,
