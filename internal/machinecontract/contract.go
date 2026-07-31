@@ -1206,8 +1206,7 @@ func ClassifyTransferOperation(err error, context SSHContext, carried Failure) F
 	if err == nil {
 		return Failure{}
 	}
-	localProjection := isLocalTransferProjection(carried)
-	human := classifyTransferHumanProjection(err, context, localProjection)
+	human := ClassifySSH(err, context)
 	human.Stage = ""
 	if carried.Error != "" {
 		// Preserve the pre-BC-7 human guidance for regular-file remote-write
@@ -1216,7 +1215,7 @@ func ClassifyTransferOperation(err error, context SSHContext, carried Failure) F
 		if carried.Error == CodeRemoteWrite && human.Error == CodeAuth {
 			human.Hint = "verify user and credential file; password/private-key contents are never shown"
 		}
-		carried.Exit = transferProjectionExit(err, carried, localProjection)
+		carried.Exit = ExitForError(err)
 		carried.processExit = carried.Exit
 		carried.humanProjection = &human
 		return carried
@@ -1229,50 +1228,16 @@ func ClassifyTransferOperation(err error, context SSHContext, carried Failure) F
 	return failure
 }
 
-func classifyTransferHumanProjection(err error, context SSHContext, local bool) Failure {
-	if local {
-		port := context.Port
-		if port == 0 {
-			port = 22
-		}
-		return Classify(InternalFailure, Details{
-			Cause:   err,
-			Alias:   context.Alias,
-			Address: net.JoinHostPort(context.Host, strconv.Itoa(port)),
-		})
-	}
-	return ClassifySSH(err, context)
-}
-
-func isLocalTransferProjection(failure Failure) bool {
-	return failure.Stage == "local_read" || failure.Stage == "local_write"
-}
-
-func transferProjectionExit(err error, carried Failure, local bool) int {
-	if local {
-		if carried.Exit != 0 {
-			return carried.Exit
-		}
-		return 1
-	}
-	return ExitForError(err)
-}
-
 // ClassifyDownload preserves the generic pre-BC-7 download failure envelope,
 // which omits stage even when its SSH classification has one.
 func ClassifyDownload(err error, context SSHContext) Failure {
 	classifyContext := context
 	classifyContext.Stage = ""
-	carried, hasCarried := FailureFromError(err)
 	failure := ClassifySSH(err, classifyContext)
-	localProjection := hasCarried && isLocalDownloadProjection(carried)
-	if hasCarried {
-		failure = classifyTransferHumanProjection(err, classifyContext, localProjection)
-	}
 	human := failure
 	human.Stage = ""
-	if hasCarried && isDownloadOutcomeFailure(carried) {
-		carried.Exit = transferProjectionExit(err, carried, localProjection)
+	if carried, ok := FailureFromError(err); ok && isDownloadOutcomeFailure(carried) {
+		carried.Exit = ExitForError(err)
 		carried.processExit = carried.Exit
 		carried.Alias = RedactString(context.Alias)
 		carried.humanAlias = RedactString(context.ResolvedAlias)
@@ -1290,10 +1255,6 @@ func ClassifyDownload(err error, context SSHContext) Failure {
 	humanProjection.Stage = ""
 	failure.humanProjection = &humanProjection
 	return failure
-}
-
-func isLocalDownloadProjection(failure Failure) bool {
-	return failure.Stage == "local_write" || failure.Error == "publish_failed"
 }
 
 func isDownloadOutcomeFailure(failure Failure) bool {

@@ -29,9 +29,13 @@ const (
 )
 
 var (
-	renameWindowsReplacementHandle      = renameWindowsFileHandle
-	getWindowsFileInformationByHandleEx = windows.GetFileInformationByHandleEx
-	windowsReplacementTestHook          func(string) error
+	renameWindowsReplacementHandle        = renameWindowsFileHandle
+	getWindowsFileInformationByHandleEx   = windows.GetFileInformationByHandleEx
+	windowsReplacementTestHook            func(string) error
+	windowsRollbackAuthenticationTestHook func(
+		string,
+		*windowsReplacementSecurityState,
+	) error
 )
 
 func replaceExecutable(
@@ -585,6 +589,14 @@ func rollbackWindowsReplacement(
 	if err := security.closeStagedForRollback(); err != nil {
 		return requireRecovery(fmt.Errorf("release failed installed Windows executable handles for rollback: %w", err))
 	}
+	if windowsRollbackAuthenticationTestHook != nil {
+		if err := windowsRollbackAuthenticationTestHook(
+			windowsReplacementBackup(target),
+			security,
+		); err != nil {
+			return requireRecovery(fmt.Errorf("continue before restoring Windows executable: %w", err))
+		}
+	}
 	if err := renameWindowsReplacementHandle(security.target, target, true); err != nil {
 		return requireRecovery(err)
 	}
@@ -602,7 +614,59 @@ func rollbackWindowsReplacement(
 	); err != nil {
 		return requireRecovery(err)
 	}
+	if err := verifyWindowsRollbackSecurityBinding(
+		security.target,
+		expectedSecurity,
+		"restored Windows executable",
+	); err != nil {
+		return retainWindowsRollbackAuthenticationEvidence(target, security, err)
+	}
+	if err := requireWindowsReplacementHandleDigest(
+		security.target,
+		expectedDigest,
+		"restored Windows executable",
+	); err != nil {
+		return retainWindowsRollbackAuthenticationEvidence(target, security, err)
+	}
 	return nil
+}
+
+func retainWindowsRollbackAuthenticationEvidence(
+	target string,
+	security *windowsReplacementSecurityState,
+	authenticationErr error,
+) error {
+	backup := windowsReplacementBackup(target)
+	if err := requireWindowsReplacementPathAbsent(
+		backup,
+		"retained Windows rollback image",
+	); err != nil {
+		return requireRecovery(errors.Join(
+			authenticationErr,
+			fmt.Errorf("retain unauthenticated Windows rollback evidence: %w", err),
+		))
+	}
+	if err := renameWindowsReplacementHandle(security.target, backup, false); err != nil {
+		return requireRecovery(errors.Join(
+			authenticationErr,
+			fmt.Errorf("retain unauthenticated Windows rollback evidence: %w", err),
+		))
+	}
+	if err := requireWindowsReplacementHandleIdentity(
+		security.target,
+		security.targetIdentity,
+		"retained Windows rollback image",
+	); err != nil {
+		return requireRecovery(errors.Join(authenticationErr, err))
+	}
+	if err := requireWindowsReplacementPathIdentity(
+		backup,
+		security.targetIdentity,
+		"retained Windows rollback image",
+	); err != nil {
+		return requireRecovery(errors.Join(authenticationErr, err))
+	}
+	return requireRecovery(authenticationErr)
 }
 
 func verifyWindowsRollbackSecurityBinding(

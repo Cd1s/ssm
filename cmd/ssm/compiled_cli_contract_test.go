@@ -1703,20 +1703,24 @@ func TestCompiledTransferAdaptersPreserveFailureProjections(t *testing.T) {
 		}
 	}
 
-	missingLocal := filepath.Join(cli.temp, "missing-transfer-source")
+	// These literals freeze the origin/agent-headless-sync projection. Its
+	// historical broad timeout classifier applies even when the matching text
+	// comes from a local path error.
+	missingLocal := filepath.Join(cli.temp, "missing-timeout-transfer-source")
 	_, statErr := os.Stat(missingLocal)
 	if statErr == nil {
 		t.Fatalf("missing transfer source unexpectedly exists: %s", missingLocal)
 	}
 	carriedHuman := cli.Run(t, "sshctl", nil, "--offline", "put", alias, missingLocal, "/remote/carried")
-	assertHuman(t, carriedHuman, 1,
-		"ssm: error=internal alias="+alias+" address="+server.Address()+"\n"+
-			"Error: "+statErr.Error()+"\n",
+	assertHuman(t, carriedHuman, machinecontract.ExitConnectionFailed,
+		"ssm: error=dial_timeout alias="+alias+" address="+server.Address()+"\n"+
+			"Error: connection timed out to "+server.Address()+"\n"+
+			"ssm: hint=network/host unreachable or filtered; verify host online/firewall/IPv6. Not an ssm quote bug.\n",
 	)
 	carriedMachine := cli.Run(t, "sshctl", nil, "--offline", "--json", "put", alias, missingLocal, "/remote/carried")
 	assertCompiledTransferSnapshot(t, carriedMachine, map[string]any{
 		"ok": false, "error": "local_read_failed", "message": statErr.Error(),
-		"hint": "verify the local path and read permissions", "exit": 1, "stage": "local_read",
+		"hint": "verify the local path and read permissions", "exit": machinecontract.ExitConnectionFailed, "stage": "local_read",
 		"direction": "put", "kind": "unknown",
 		"alias": alias, "bytes_sent": 0, "integrity": "not_checked", "atomic": false, "resume": "unsupported",
 	})

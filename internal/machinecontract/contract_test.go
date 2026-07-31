@@ -1827,9 +1827,13 @@ func TestMachineContractTransferContext(t *testing.T) {
 			Alias: "transfer", Host: "192.0.2.1", Port: 22,
 		}, localCarried)
 		if local.Error != "local_read_failed" || local.Stage != "local_read" ||
-			local.Exit != 1 || ProcessExit(local) != 1 ||
-			local.humanProjection == nil || local.humanProjection.Error != CodeInternal {
-			t.Fatalf("local path %q containing timeout changed transfer classification = %+v", message, local)
+			local.Exit != ExitConnectionFailed || ProcessExit(local) != ExitConnectionFailed ||
+			local.humanProjection == nil || local.humanProjection.Error != CodeDialTimeout {
+			t.Fatalf(
+				"local path %q projection = %+v, want origin/agent-headless-sync dial_timeout/255 baseline",
+				message,
+				local,
+			)
 		}
 	}
 
@@ -1885,19 +1889,19 @@ func TestMachineContractTransferContext(t *testing.T) {
 		wantStage string
 	}{
 		{
-			message:   `create C:\fixtures\timeout\download: access denied`,
+			message:   `create C:\fixtures\timeout\download: path not found`,
 			kind:      TransferDownloadLocalWrite,
 			wantError: "local_write_failed",
 			wantStage: "local_write",
 		},
 		{
-			message:   "rename /tmp/timeout-download-stage /tmp/final: permission denied",
+			message:   "rename /tmp/timeout-download-stage /tmp/final: invalid cross-device link",
 			kind:      TransferDownloadPublish,
 			wantError: "publish_failed",
 			wantStage: "publish",
 		},
 		{
-			message:   `rename C:\fixtures\timeout\backup C:\fixtures\final: access denied`,
+			message:   `rename C:\fixtures\timeout\backup C:\fixtures\final: file not found`,
 			kind:      TransferDownloadRestoreFailed,
 			wantError: "publish_failed",
 			wantStage: "publish",
@@ -1912,10 +1916,94 @@ func TestMachineContractTransferContext(t *testing.T) {
 			Alias: "download", Host: "192.0.2.1", Port: 22,
 		})
 		if localDownload.Error != test.wantError || localDownload.Stage != test.wantStage ||
-			localDownload.Exit != 1 || ProcessExit(localDownload) != 1 ||
-			localDownload.humanProjection == nil || localDownload.humanProjection.Error != CodeInternal {
-			t.Fatalf("local download path %q containing timeout changed transfer classification = %+v", test.message, localDownload)
+			localDownload.Exit != ExitConnectionFailed || ProcessExit(localDownload) != ExitConnectionFailed ||
+			localDownload.humanProjection == nil || localDownload.humanProjection.Error != CodeDialTimeout {
+			t.Fatalf(
+				"local download path %q projection = %+v, want origin/agent-headless-sync dial_timeout/255 baseline",
+				test.message,
+				localDownload,
+			)
 		}
+	}
+}
+
+func TestDownloadTimeoutPathRenderingMatchesAgentHeadlessSyncBaseline(t *testing.T) {
+	t.Parallel()
+
+	const message = `create C:\fixtures\timeout\download: path not found`
+	cause := errors.New(message)
+	failure := ClassifyDownload(&testTransferFailureCarrier{
+		failure: Classify(TransferDownloadLocalWrite, Details{Cause: cause}),
+		cause:   cause,
+	}, SSHContext{
+		Alias: "download", Host: "192.0.2.1", Port: 22,
+	})
+	if failure.Error != "local_write_failed" || failure.Stage != "local_write" ||
+		failure.Exit != ExitConnectionFailed || ProcessExit(failure) != ExitConnectionFailed {
+		t.Fatalf("download machine tuple = %+v, want local_write_failed/local_write/255", failure)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := Render(Human, Streams{Stdout: &stdout, Stderr: &stderr}, failure); err != nil {
+		t.Fatal(err)
+	}
+	wantHuman := "ssm: error=dial_timeout alias=download address=192.0.2.1:22\n" +
+		"Error: connection timed out to 192.0.2.1:22\n" +
+		"ssm: hint=network/host unreachable or filtered; verify host online/firewall/IPv6. Not an ssm quote bug.\n"
+	if stdout.Len() != 0 || stderr.String() != wantHuman {
+		t.Fatalf("download human stdout=%q stderr=%q, want stderr=%q", stdout.String(), stderr.String(), wantHuman)
+	}
+
+	received := int64(0)
+	atomic := false
+	document := TransferFailureOutcome(failure, TransferOutcome{
+		Direction:     "get",
+		Kind:          "file",
+		Alias:         "download",
+		Local:         `C:\fixtures\timeout\download`,
+		Remote:        "/remote/artifact",
+		BytesReceived: &received,
+		Integrity:     "not_checked",
+		Atomic:        &atomic,
+		Resume:        "unsupported",
+	})
+	wantJSON := "{\n" +
+		"  \"ok\": false,\n" +
+		"  \"error\": \"local_write_failed\",\n" +
+		"  \"message\": \"create C:\\\\fixtures\\\\timeout\\\\download: path not found\",\n" +
+		"  \"hint\": \"check local path permissions and available space; the final local path was not replaced\",\n" +
+		"  \"exit\": 255,\n" +
+		"  \"direction\": \"get\",\n" +
+		"  \"kind\": \"file\",\n" +
+		"  \"alias\": \"download\",\n" +
+		"  \"local\": \"C:\\\\fixtures\\\\timeout\\\\download\",\n" +
+		"  \"remote\": \"/remote/artifact\",\n" +
+		"  \"stage\": \"local_write\",\n" +
+		"  \"bytes_received\": 0,\n" +
+		"  \"integrity\": \"not_checked\",\n" +
+		"  \"atomic\": false,\n" +
+		"  \"resume\": \"unsupported\"\n" +
+		"}\n"
+	wantNDJSON := "{\"ok\":false,\"error\":\"local_write_failed\",\"message\":\"create C:\\\\fixtures\\\\timeout\\\\download: path not found\",\"hint\":\"check local path permissions and available space; the final local path was not replaced\",\"exit\":255,\"direction\":\"get\",\"kind\":\"file\",\"alias\":\"download\",\"local\":\"C:\\\\fixtures\\\\timeout\\\\download\",\"remote\":\"/remote/artifact\",\"stage\":\"local_write\",\"bytes_received\":0,\"integrity\":\"not_checked\",\"atomic\":false,\"resume\":\"unsupported\"}\n"
+	for _, test := range []struct {
+		name   string
+		format Format
+		want   string
+	}{
+		{name: "JSON", format: JSONDocument, want: wantJSON},
+		{name: "stream", format: NDJSON, want: wantNDJSON},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var stdout, stderr bytes.Buffer
+			if err := RenderFailure(test.format, Streams{Stdout: &stdout, Stderr: &stderr}, document); err != nil {
+				t.Fatal(err)
+			}
+			if stdout.String() != test.want || stderr.Len() != 0 {
+				t.Fatalf("stdout=%q stderr=%q, want stdout=%q", stdout.String(), stderr.String(), test.want)
+			}
+		})
 	}
 }
 
