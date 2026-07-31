@@ -148,8 +148,9 @@ then adds, in order:
 6. in-memory SHA-256 computation for the six assets and `install.sh`;
 7. synthetic, test-owned keyless provenance generation and verification for
    every temporary release asset;
-8. pinned identity, digest binding, and byte-preserving provenance failure
-   tests through the updater's production verifier core;
+8. pinned certificate and statement identity, exact one-subject/one-SHA-256
+   digest binding, and byte-preserving provenance failure tests through the
+   updater's production verifier core;
 9. updater checksum selection, mismatch, and no-replacement failure tests.
 
 No separate check called “release source policy” is added. The live Issue #18

@@ -4,6 +4,7 @@ package update
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -36,12 +37,9 @@ const (
 	windowsReplacementReadyEnv  = "SSM_TEST_WINDOWS_REPLACEMENT_READY"
 	windowsReplacementGoEnv     = "SSM_TEST_WINDOWS_REPLACEMENT_GO"
 	windowsSubstituteStageEnv   = "SSM_TEST_WINDOWS_SUBSTITUTE_STAGE"
+	windowsMutateStageEnv       = "SSM_TEST_WINDOWS_MUTATE_STAGE"
 	windowsRollbackFailEnv      = "SSM_TEST_WINDOWS_ROLLBACK_FAIL"
 )
-
-var setWindowsTestFileSecurityProcedure = windows.NewLazySystemDLL(
-	"advapi32.dll",
-).NewProc("SetFileSecurityW")
 
 func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("ordinary user preserves owner group DACL and inheritance", testWindowsOrdinaryUserReplacement)
@@ -51,7 +49,8 @@ func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("ordinary inherited descriptor capture apply and verification are semantic", testWindowsInheritedOrdinaryDescriptorPreparation)
 	t.Run("ordinary descriptor differences identify the changed security component", testWindowsOrdinaryDescriptorDiagnostics)
 	t.Run("complete descriptor RM control binding is byte exact", testWindowsCompleteDescriptorRMControlBinding)
-	t.Run("authenticated rollback record binds a versioned descriptor contract", testWindowsReplacementRecordDescriptorBinding)
+	t.Run("strong file identity is required", testWindowsStrongFileIdentityRequired)
+	t.Run("authenticated rollback record binds strong identities descriptor and bytes", testWindowsReplacementRecordDescriptorBinding)
 	t.Run("optional complete descriptor denial falls back to ordinary preservation", testWindowsOptionalFullTierFallback)
 	t.Run("complete descriptor is preserved when supported with ordinary fallback", testWindowsPrivilegedReplacement)
 	t.Run("privileges and thread identity are restored", testWindowsReplacementPrivilegeRestoration)
@@ -69,12 +68,16 @@ func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("cleanup cannot delete a live updater rollback", testWindowsConcurrentCleanup)
 	t.Run("ordinary startup discovery creates no sibling state", testWindowsOrdinaryStartupDiscoveryIsNonMutating)
 	t.Run("unexplained stale rollback is preserved", testWindowsUnexplainedRollbackIsPreserved)
+	t.Run("verified download callback races fail closed", testWindowsVerifiedDownloadCallbackRacesFailClosed)
 	t.Run("stage substitution fails closed", testWindowsStageSubstitutionFailsClosed)
+	t.Run("same-object stage mutation fails closed", testWindowsStageContentMutationFailsClosed)
 	t.Run("source substitution at the rename gap is blocked", testWindowsSourceSubstitutionAtRenameGap)
 	t.Run("canonical substitution at the rename gap fails closed until recovery", testWindowsCanonicalSubstitutionAtRenameGap)
 	t.Run("rollback over a locked canonical substitute fails closed until recovery", testWindowsRollbackReplacesCanonicalSubstitute)
 	t.Run("rollback rejects a late hard link to its image", testWindowsRollbackRejectsLateHardLink)
 	t.Run("late hard links retain recovery evidence until safe recovery", testWindowsLateHardLinksCannotCompromiseTarget)
+	t.Run("prepared and canonical recovery authenticate rollback bytes", testWindowsRecoveryRejectsSameIdentityContentMutation)
+	t.Run("completed cleanup authenticates rollback bytes", testWindowsCompletedCleanupRejectsSameIdentityContentMutation)
 	t.Run("prepared recovery rejects descriptor mutation with the same file ID", testWindowsPreparedRecoveryRejectsDescriptorMutation)
 	t.Run("prepared full recovery rejects same-ID RM control mutation", testWindowsPreparedFullRecoveryRejectsRMControlMutation)
 	t.Run("hard-linked targets and stages fail closed", testWindowsHardLinksFailClosed)
@@ -292,7 +295,7 @@ func testWindowsReturnedReplacementFailurePreservesCanonical(t *testing.T) {
 		}
 		return nil
 	}
-	err = replaceExecutable(stage, target)
+	err = replaceExecutable(stage, target, windowsTestFileDigest(t, stage))
 	windowsReplacementTestHook = originalHook
 	if err == nil ||
 		!strings.Contains(err.Error(), "revalidate verified Windows replacement before install") {
@@ -339,7 +342,7 @@ func testWindowsPostCommitCleanupFailuresAreDeferred(t *testing.T) {
 				}
 				return nil
 			}
-			err = replaceExecutable(stage, target)
+			err = replaceExecutable(stage, target, windowsTestFileDigest(t, stage))
 			windowsReplacementTestHook = originalHook
 			if err != nil {
 				t.Fatalf("committed replacement was reported as failed: %v", err)
@@ -854,34 +857,49 @@ func testWindowsCompleteDescriptorRMControlBinding(t *testing.T) {
 }
 
 func testWindowsReplacementRecordDescriptorBinding(t *testing.T) {
-	var digest [32]byte
-	for index := range digest {
-		digest[index] = byte(index + 1)
+	var descriptorDigest [sha256.Size]byte
+	var rollbackDigest [sha256.Size]byte
+	for index := range descriptorDigest {
+		descriptorDigest[index] = byte(index + 1)
+		rollbackDigest[index] = byte(0x80 + index)
 	}
 	want := windowsReplacementRecordData{
 		state: windowsReplacementRecordPrepared,
 		original: windowsFileIdentity{
-			volumeSerialNumber: 1,
-			fileIndexHigh:      2,
-			fileIndexLow:       3,
+			volumeSerialNumber: 0x0807060504030201,
+			fileID: [16]byte{
+				0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+				0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+			},
 		},
 		installed: windowsFileIdentity{
-			volumeSerialNumber: 4,
-			fileIndexHigh:      5,
-			fileIndexLow:       6,
+			volumeSerialNumber: 0x2827262524232221,
+			fileID: [16]byte{
+				0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
+				0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f,
+			},
 		},
+		rollbackDigest: rollbackDigest,
 		securityBinding: windowsSecurityBinding{
 			metadata: windowsSecurityBindingOrdinary |
 				windowsSecurityBindingDACLAutoInheritedRequired,
-			digest: digest,
+			digest: descriptorDigest,
 		},
 	}
 	encoded := encodeWindowsReplacementRecord(want)
-	if len(encoded) != 80 {
-		t.Fatalf("authenticated rollback record size = %d, want 80", len(encoded))
+	if len(encoded) != 136 {
+		t.Fatalf("authenticated rollback record size = %d, want 136", len(encoded))
 	}
-	if got := binary.LittleEndian.Uint32(encoded[8:12]); got != 2 {
-		t.Fatalf("authenticated rollback record version = %d, want 2", got)
+	if got := binary.LittleEndian.Uint32(encoded[8:12]); got != 3 {
+		t.Fatalf("authenticated rollback record version = %d, want 3", got)
+	}
+	wantOriginalEncoding := []byte{
+		1, 2, 3, 4, 5, 6, 7, 8,
+		0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+		0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+	}
+	if !bytes.Equal(encoded[16:40], wantOriginalEncoding) {
+		t.Fatalf("strong file identity encoding = %x, want %x", encoded[16:40], wantOriginalEncoding)
 	}
 	got, err := decodeWindowsReplacementRecord(encoded)
 	if err != nil {
@@ -892,33 +910,68 @@ func testWindowsReplacementRecordDescriptorBinding(t *testing.T) {
 	}
 
 	corruptDigest := append([]byte(nil), encoded...)
-	corruptDigest[44] ^= 0xff
+	corruptDigest[68] ^= 0xff
 	if _, err := decodeWindowsReplacementRecord(corruptDigest); err == nil ||
 		!strings.Contains(err.Error(), "checksum is invalid") {
 		t.Fatalf("descriptor-binding corruption error = %v, want checksum rejection", err)
 	}
 
 	invalidBinding := append([]byte(nil), encoded...)
-	binary.LittleEndian.PutUint32(invalidBinding[40:44], 0)
+	binary.LittleEndian.PutUint32(invalidBinding[64:68], 0)
 	binary.LittleEndian.PutUint32(
-		invalidBinding[76:80],
-		crc32.ChecksumIEEE(invalidBinding[:76]),
+		invalidBinding[132:136],
+		crc32.ChecksumIEEE(invalidBinding[:132]),
 	)
 	if _, err := decodeWindowsReplacementRecord(invalidBinding); err == nil ||
 		!strings.Contains(err.Error(), "security descriptor binding is invalid") {
 		t.Fatalf("invalid descriptor-binding metadata error = %v, want binding rejection", err)
 	}
 
-	legacy := make([]byte, 44)
-	copy(legacy[:8], []byte{'S', 'S', 'M', 'O', 'L', 'D', '1', 0})
-	binary.LittleEndian.PutUint32(legacy[8:12], 1)
+	legacy := make([]byte, 80)
+	copy(legacy[:8], []byte{'S', 'S', 'M', 'O', 'L', 'D', '2', 0})
+	binary.LittleEndian.PutUint32(legacy[8:12], 2)
 	binary.LittleEndian.PutUint32(legacy[12:16], windowsReplacementRecordPrepared)
-	putWindowsFileIdentity(legacy[16:28], want.original)
-	putWindowsFileIdentity(legacy[28:40], want.installed)
-	binary.LittleEndian.PutUint32(legacy[40:44], crc32.ChecksumIEEE(legacy[:40]))
+	binary.LittleEndian.PutUint32(legacy[16:20], 1)
+	binary.LittleEndian.PutUint32(legacy[20:24], 2)
+	binary.LittleEndian.PutUint32(legacy[24:28], 3)
+	binary.LittleEndian.PutUint32(legacy[28:32], 4)
+	binary.LittleEndian.PutUint32(legacy[32:36], 5)
+	binary.LittleEndian.PutUint32(legacy[36:40], 6)
+	binary.LittleEndian.PutUint32(legacy[40:44], windowsSecurityBindingOrdinary)
+	copy(legacy[44:76], descriptorDigest[:])
+	binary.LittleEndian.PutUint32(legacy[76:80], crc32.ChecksumIEEE(legacy[:76]))
 	if _, err := decodeWindowsReplacementRecord(legacy); err == nil ||
-		!strings.Contains(err.Error(), "record size is 44, want 80") {
-		t.Fatalf("legacy unbound rollback record error = %v, want fail-closed size rejection", err)
+		!strings.Contains(err.Error(), "legacy Windows rollback ownership record version 2") {
+		t.Fatalf("legacy weak-identity rollback record error = %v, want fail-closed version rejection", err)
+	}
+}
+
+func testWindowsStrongFileIdentityRequired(t *testing.T) {
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "identity.exe")
+	copyWindowsTestExecutable(t, testExecutable, path, nil)
+	handle, err := openWindowsReplacementFile(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(handle)
+
+	original := getWindowsFileInformationByHandleEx
+	getWindowsFileInformationByHandleEx = func(
+		windows.Handle,
+		uint32,
+		*byte,
+		uint32,
+	) error {
+		return windows.ERROR_NOT_SUPPORTED
+	}
+	defer func() { getWindowsFileInformationByHandleEx = original }()
+	if _, _, err := inspectWindowsReplacementHandleObject(handle, "identity fixture"); err == nil ||
+		!strings.Contains(err.Error(), "strong file identity") {
+		t.Fatalf("strong-identity capability error = %v, want fail-closed rejection", err)
 	}
 }
 
@@ -1447,11 +1500,24 @@ func testWindowsStageSubstitutionFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, phase := range []string{
-		windowsReplacementPhaseBeforeTargetMove,
-		windowsReplacementPhaseBeforeStageMove,
+	for _, test := range []struct {
+		phase         string
+		expectedError string
+	}{
+		{
+			phase:         windowsReplacementPhaseAfterLock,
+			expectedError: "digest does not match authenticated bytes",
+		},
+		{
+			phase:         windowsReplacementPhaseBeforeTargetMove,
+			expectedError: "rename inspected stage",
+		},
+		{
+			phase:         windowsReplacementPhaseBeforeStageMove,
+			expectedError: "rename inspected stage",
+		},
 	} {
-		t.Run(phase, func(t *testing.T) {
+		t.Run(test.phase, func(t *testing.T) {
 			directory := t.TempDir()
 			target := filepath.Join(directory, "ssm.exe")
 			stage := filepath.Join(directory, ".ssm.substituted-stage.exe")
@@ -1464,8 +1530,8 @@ func testWindowsStageSubstitutionFailsClosed(t *testing.T) {
 
 			command := windowsReplacementTestCommand(target, stage)
 			command.Env = append(command.Env,
-				windowsSubstituteStageEnv+"="+phase,
-				windowsExpectedFailureEnv+"=rename inspected stage",
+				windowsSubstituteStageEnv+"="+test.phase,
+				windowsExpectedFailureEnv+"="+test.expectedError,
 			)
 			if output, err := command.CombinedOutput(); err != nil {
 				t.Fatalf("stage substitution fixture failed: %v; output=%q", err, output)
@@ -1478,6 +1544,113 @@ func testWindowsStageSubstitutionFailsClosed(t *testing.T) {
 				t.Fatalf("stage substitution retained rollback ownership state: %v", err)
 			}
 		})
+	}
+}
+
+func testWindowsVerifiedDownloadCallbackRacesFailClosed(t *testing.T) {
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, string)
+	}{
+		{
+			name: "path substitution before replacement handle acquisition",
+			mutate: func(t *testing.T, stage string) {
+				t.Helper()
+				if err := os.Rename(stage, stage+".verified"); err != nil {
+					t.Fatal(err)
+				}
+				copyWindowsTestExecutable(t, testExecutable, stage, []byte("\nCALLBACK_SUBSTITUTE\n"))
+			},
+		},
+		{
+			name: "same-object in-place mutation",
+			mutate: func(t *testing.T, stage string) {
+				t.Helper()
+				file, err := os.OpenFile(stage, os.O_WRONLY|os.O_APPEND, 0) //nolint:gosec // test-owned callback race fixture
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := file.Write([]byte("\nCALLBACK_IN_PLACE_MUTATION\n")); err != nil {
+					_ = file.Close()
+					t.Fatal(err)
+				}
+				if err := file.Close(); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			restoreUpdateTestHooks(t)
+			setTestHome(t, t.TempDir())
+			t.Setenv("SSM_UPDATE_REPO", "owner/repo")
+			directory := t.TempDir()
+			target := filepath.Join(directory, "ssm.exe")
+			copyWindowsTestExecutable(t, testExecutable, target, nil)
+			original, err := os.ReadFile(target) //nolint:gosec // test-owned executable fixture
+			if err != nil {
+				t.Fatal(err)
+			}
+			executablePath = func() (string, error) { return target, nil }
+			evalSymlinks = func(path string) (string, error) { return path, nil }
+			const version = "v9.9.9"
+			payload := appendTestExecutableMarker(t, testExecutable, "\nVERIFIED_CALLBACK_STAGE\n")
+			httpClient = migrationHTTPClient(t, version, payload, true)
+
+			callbackCalled := false
+			err = DownloadVersionBeforeReplace(version, false, func() error {
+				callbackCalled = true
+				matches, globErr := filepath.Glob(filepath.Join(directory, ".ssm.exe.*.new"))
+				if globErr != nil {
+					return globErr
+				}
+				if len(matches) != 1 {
+					return fmt.Errorf("verified callback stage count = %d, want 1", len(matches))
+				}
+				test.mutate(t, matches[0])
+				return nil
+			})
+			if err == nil || !strings.Contains(err.Error(), "digest does not match authenticated bytes") {
+				t.Fatalf("callback race error = %v, want authenticated-digest rejection", err)
+			}
+			if !callbackCalled {
+				t.Fatal("verified callback race did not reach the callback")
+			}
+			assertWindowsFileBytes(t, target, original)
+			if _, err := os.Stat(windowsReplacementBackup(target)); !os.IsNotExist(err) {
+				t.Fatalf("callback race created rollback evidence: %v", err)
+			}
+		})
+	}
+}
+
+func testWindowsStageContentMutationFailsClosed(t *testing.T) {
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	target := filepath.Join(directory, "ssm.exe")
+	stage := filepath.Join(directory, ".ssm.mutated-stage.exe")
+	copyWindowsTestExecutable(t, testExecutable, target, nil)
+	copyWindowsTestExecutable(t, testExecutable, stage, []byte("\nVERIFIED_STAGE\n"))
+	original := appendTestExecutableMarker(t, testExecutable, "")
+
+	command := windowsReplacementTestCommand(target, stage)
+	command.Env = append(command.Env,
+		windowsMutateStageEnv+"="+windowsReplacementPhaseAfterLock,
+		windowsExpectedFailureEnv+"=digest does not match authenticated bytes",
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("stage content-mutation fixture failed: %v; output=%q", err, output)
+	}
+	assertWindowsFileBytes(t, target, original)
+	if _, err := os.Stat(windowsReplacementBackup(target)); !os.IsNotExist(err) {
+		t.Fatalf("stage content mutation created rollback state: %v", err)
 	}
 }
 
@@ -2148,6 +2321,210 @@ func testWindowsPreparedRecoveryRejectsDescriptorMutation(t *testing.T) {
 	)
 }
 
+func testWindowsRecoveryRejectsSameIdentityContentMutation(t *testing.T) {
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, alreadyCanonical := range []bool{false, true} {
+		name := "prepared rollback image"
+		if alreadyCanonical {
+			name = "already canonical rollback image"
+		}
+		t.Run(name, func(t *testing.T) {
+			directory := t.TempDir()
+			target := filepath.Join(directory, "ssm.exe")
+			stage := filepath.Join(directory, ".ssm.content-mutation-stage.exe")
+			copyWindowsTestExecutable(t, testExecutable, target, nil)
+			copyWindowsTestExecutable(t, testExecutable, stage, []byte("\nCONTENT_MUTATION_STAGE\n"))
+			original, err := os.ReadFile(target) //nolint:gosec // test-owned mapped executable
+			if err != nil {
+				t.Fatal(err)
+			}
+			originalIdentity, err := inspectWindowsReplacementPath(
+				target,
+				"content-mutation original executable",
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			originalDescriptor := readWindowsTestSecurityDescriptor(t, target)
+
+			command := windowsReplacementTestCommand(target, stage)
+			command.Env = append(command.Env,
+				windowsReplacementFailEnv+"=1",
+				windowsRollbackFailEnv+"=1",
+				windowsExpectedFailureEnv+"=rollback failed",
+			)
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("prepare content-mutation recovery fixture: %v; output=%q", err, output)
+			}
+
+			backup := windowsReplacementBackup(target)
+			mutatedPath := backup
+			if alreadyCanonical {
+				if err := os.Rename(backup, target); err != nil {
+					t.Fatalf("place rollback image at canonical path: %v", err)
+				}
+				mutatedPath = target
+			}
+			beforeMutation, err := inspectWindowsReplacementPath(
+				mutatedPath,
+				"rollback image before content mutation",
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mutated := append([]byte(nil), original...)
+			mutated[len(mutated)-1] ^= 0xff
+			writeWindowsTestFileInPlace(t, mutatedPath, mutated)
+			afterMutation, err := inspectWindowsReplacementPath(
+				mutatedPath,
+				"rollback image after content mutation",
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if afterMutation != beforeMutation || afterMutation != originalIdentity {
+				t.Fatalf(
+					"content mutation changed strong file identity: got %+v, want %+v",
+					afterMutation,
+					originalIdentity,
+				)
+			}
+
+			cleanup := exec.Command(
+				testExecutable,
+				"-test.run=^TestWindowsCleanupPreviousExecutableChildProcess$",
+				"-test.count=1",
+			) //nolint:gosec // fixed test-owned executable and arguments
+			cleanup.Env = append(os.Environ(),
+				windowsCleanupChildEnv+"=1",
+				windowsCleanupTargetEnv+"="+target,
+				windowsExpectedFailureEnv+"=digest does not match authenticated bytes",
+			)
+			if output, err := cleanup.CombinedOutput(); err != nil {
+				t.Fatalf("content-mutation recovery fixture failed: %v; output=%q", err, output)
+			}
+			assertWindowsFileBytes(t, mutatedPath, mutated)
+			if _, err := os.Stat(windowsReplacementRecord(target)); err != nil {
+				t.Fatalf("content mismatch lost authenticated recovery record: %v", err)
+			}
+
+			writeWindowsTestFileInPlace(t, mutatedPath, original)
+			restoredIdentity, err := inspectWindowsReplacementPath(
+				mutatedPath,
+				"rollback image after exact content restoration",
+			)
+			if err != nil || restoredIdentity != originalIdentity {
+				t.Fatalf(
+					"exact content restoration identity = %+v err=%v, want %+v",
+					restoredIdentity,
+					err,
+					originalIdentity,
+				)
+			}
+			runWindowsRecoveryCleanup(t, testExecutable, target)
+			assertWindowsRecoveredOriginal(
+				t,
+				target,
+				originalIdentity,
+				original,
+				originalDescriptor,
+			)
+		})
+	}
+}
+
+func testWindowsCompletedCleanupRejectsSameIdentityContentMutation(t *testing.T) {
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	target := filepath.Join(directory, "ssm.exe")
+	stage := filepath.Join(directory, ".ssm.completed-content-stage.exe")
+	copyWindowsTestExecutable(t, testExecutable, target, nil)
+	copyWindowsTestExecutable(t, testExecutable, stage, []byte("\nCOMPLETED_CONTENT_STAGE\n"))
+	original, err := os.ReadFile(target) //nolint:gosec // test-owned executable fixture
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed, err := os.ReadFile(stage) //nolint:gosec // test-owned executable fixture
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	command := windowsReplacementTestCommand(target, stage)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("prepare completed content-mutation fixture: %v; output=%q", err, output)
+	}
+	backup := windowsReplacementBackup(target)
+	backupIdentity, err := inspectWindowsReplacementPath(
+		backup,
+		"completed rollback image before content mutation",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutated := append([]byte(nil), original...)
+	mutated[len(mutated)-1] ^= 0xff
+	writeWindowsTestFileInPlace(t, backup, mutated)
+	mutatedIdentity, err := inspectWindowsReplacementPath(
+		backup,
+		"completed rollback image after content mutation",
+	)
+	if err != nil || mutatedIdentity != backupIdentity {
+		t.Fatalf(
+			"completed rollback content mutation identity = %+v err=%v, want %+v",
+			mutatedIdentity,
+			err,
+			backupIdentity,
+		)
+	}
+
+	cleanup := exec.Command(
+		testExecutable,
+		"-test.run=^TestWindowsCleanupPreviousExecutableChildProcess$",
+		"-test.count=1",
+	) //nolint:gosec // fixed test-owned executable and arguments
+	cleanup.Env = append(os.Environ(),
+		windowsCleanupChildEnv+"=1",
+		windowsCleanupTargetEnv+"="+target,
+		windowsExpectedFailureEnv+"=digest does not match authenticated bytes",
+	)
+	if output, err := cleanup.CombinedOutput(); err != nil {
+		t.Fatalf("completed content-mutation cleanup fixture failed: %v; output=%q", err, output)
+	}
+	assertWindowsFileBytes(t, backup, mutated)
+	assertWindowsFileBytes(t, target, installed)
+	if _, err := os.Stat(windowsReplacementRecord(target)); err != nil {
+		t.Fatalf("completed content mismatch lost authenticated recovery record: %v", err)
+	}
+
+	writeWindowsTestFileInPlace(t, backup, original)
+	restoredIdentity, err := inspectWindowsReplacementPath(
+		backup,
+		"completed rollback image after exact content restoration",
+	)
+	if err != nil || restoredIdentity != backupIdentity {
+		t.Fatalf(
+			"completed rollback exact restoration identity = %+v err=%v, want %+v",
+			restoredIdentity,
+			err,
+			backupIdentity,
+		)
+	}
+	runWindowsRecoveryCleanup(t, testExecutable, target)
+	assertWindowsFileBytes(t, target, installed)
+	if _, err := os.Stat(backup); !os.IsNotExist(err) {
+		t.Fatalf("exactly restored completed rollback image was not cleaned: %v", err)
+	}
+	if _, err := os.Stat(windowsReplacementRecord(target)); !os.IsNotExist(err) {
+		t.Fatalf("exactly restored completed rollback record was not cleaned: %v", err)
+	}
+}
+
 func testWindowsPreparedFullRecoveryRejectsRMControlMutation(t *testing.T) {
 	const (
 		expectedRMControl = byte(42)
@@ -2163,10 +2540,11 @@ func testWindowsPreparedFullRecoveryRejectsRMControlMutation(t *testing.T) {
 	probeStage := filepath.Join(directory, "rm-control-probe-stage.exe")
 	copyWindowsTestExecutable(t, testExecutable, probeTarget, nil)
 	copyWindowsTestExecutable(t, testExecutable, probeStage, nil)
-	for _, path := range []string{probeTarget, probeStage} {
-		if available, reason := trySetWindowsTestRMControl(t, path, expectedRMControl); !available {
-			t.Skipf("host cannot persist file RM control for the complete descriptor tier: %s", reason)
-		}
+	if available, reason := trySetWindowsTestRMControl(t, probeTarget, expectedRMControl); !available {
+		t.Skipf("host cannot persist file RM control for the complete descriptor tier: %s", reason)
+	}
+	if available, reason := trySetWindowsTestRMControl(t, probeStage, mutatedRMControl); !available {
+		t.Skipf("host cannot persist a different fresh-stage RM control value: %s", reason)
 	}
 	probeState, err := prepareWindowsReplacementSecurity(probeStage, probeTarget)
 	if err != nil {
@@ -2194,10 +2572,24 @@ func testWindowsPreparedFullRecoveryRejectsRMControlMutation(t *testing.T) {
 		stage,
 		[]byte("\nRM_CONTROL_MUTATION_STAGE\n"),
 	)
-	for _, path := range []string{target, stage} {
-		if available, reason := trySetWindowsTestRMControl(t, path, expectedRMControl); !available {
-			t.Fatalf("RM-control capability became unavailable for %s: %s", path, reason)
-		}
+	if available, reason := trySetWindowsTestRMControl(t, target, expectedRMControl); !available {
+		t.Fatalf("RM-control capability became unavailable for target: %s", reason)
+	}
+	if available, reason := trySetWindowsTestRMControl(t, stage, mutatedRMControl); !available {
+		t.Fatalf("RM-control capability became unavailable for fresh stage: %s", reason)
+	}
+	stageDescriptor, available, reason := tryReadWindowsTestCompleteSecurityDescriptor(t, stage)
+	if !available {
+		t.Fatalf("read fresh-stage complete descriptor: %s", reason)
+	}
+	if stageDescriptor.control&windows.SE_RM_CONTROL_VALID == 0 ||
+		stageDescriptor.rmControl != mutatedRMControl {
+		t.Fatalf(
+			"fresh-stage RM control = present:%t value:%d, want present:true value:%d",
+			stageDescriptor.control&windows.SE_RM_CONTROL_VALID != 0,
+			stageDescriptor.rmControl,
+			mutatedRMControl,
+		)
 	}
 	original, err := os.ReadFile(target) //nolint:gosec // test-owned mapped executable
 	if err != nil {
@@ -2534,7 +2926,7 @@ func testWindowsInheritedUpdateLockIsRejected(t *testing.T) {
 		t.Fatalf("ordinary recovery discovery trusted an unauthenticated lock: %v", err)
 	}
 
-	err = replaceExecutable(stage, target)
+	err = replaceExecutable(stage, target, windowsTestFileDigest(t, stage))
 	if err == nil || !strings.Contains(err.Error(), "security policy") {
 		t.Fatalf("inherited update lock error = %v, want security-policy rejection", err)
 	}
@@ -2597,11 +2989,11 @@ func testWindowsHardLinksFailClosed(t *testing.T) {
 		if err := os.Symlink(stageTarget, stage); err != nil {
 			t.Skipf("file symlinks are unavailable: %v", err)
 		}
-		if err := replaceExecutable(stageTarget, targetLink); err == nil ||
+		if err := replaceExecutable(stageTarget, targetLink, windowsTestFileDigest(t, stageTarget)); err == nil ||
 			!strings.Contains(err.Error(), "reparse point") && !strings.Contains(err.Error(), "not a regular file") {
 			t.Fatalf("target reparse point error = %v", err)
 		}
-		if err := replaceExecutable(stage, target); err == nil ||
+		if err := replaceExecutable(stage, target, windowsTestFileDigest(t, stageTarget)); err == nil ||
 			!strings.Contains(err.Error(), "reparse point") && !strings.Contains(err.Error(), "not a regular file") {
 			t.Fatalf("stage reparse point error = %v", err)
 		}
@@ -2678,6 +3070,7 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 		executable = target
 	}
 	stage := os.Getenv(windowsReplacementStageEnv)
+	stageDigest := windowsTestFileDigest(t, stage)
 	if os.Getenv(windowsOrdinaryUserEnv) == "1" {
 		restore, err := impersonateWindowsTestTokenWithoutPrivileges()
 		if err != nil {
@@ -2692,8 +3085,10 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 	if os.Getenv(windowsFullTierDeniedEnv) == "1" {
 		originalBegin := beginWindowsReplacementSecurityPrivileges
 		originalCapture := captureWindowsReplacementDescriptor
+		originalCompleteApply := applyWindowsCompleteSecurity
 		fullSelections := 0
 		fullCaptures := 0
+		fullApplyCalls := 0
 		ordinaryCaptures := 0
 		beginWindowsReplacementSecurityPrivileges = func() (*windowsReplacementPrivilegeScope, bool, error) {
 			fullSelections++
@@ -2705,25 +3100,33 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 		) (*ownedWindowsSecurityDescriptor, error) {
 			if information == windowsFullSecurityInformation {
 				fullCaptures++
-				return nil, windows.ERROR_ACCESS_DENIED
+				return originalCapture(handle, windowsOrdinarySecurityInformation)
 			}
 			ordinaryCaptures++
 			return originalCapture(handle, information)
 		}
+		applyWindowsCompleteSecurity = func(string, *windows.SECURITY_DESCRIPTOR) error {
+			fullApplyCalls++
+			return errWindowsRMControlUnavailable
+		}
 		defer func() {
 			beginWindowsReplacementSecurityPrivileges = originalBegin
 			captureWindowsReplacementDescriptor = originalCapture
+			applyWindowsCompleteSecurity = originalCompleteApply
 		}()
 
-		err = replaceExecutable(stage, executable)
+		err = replaceExecutable(stage, executable, stageDigest)
 		if err != nil {
 			t.Fatalf("replacement did not fall back from optional complete descriptor capture: %v", err)
 		}
 		if fullSelections != 1 {
 			t.Fatalf("complete descriptor tier selections = %d, want 1", fullSelections)
 		}
-		if fullCaptures > 1 {
-			t.Fatalf("complete descriptor capture calls = %d, want at most 1 denied probe", fullCaptures)
+		if fullCaptures != 1 {
+			t.Fatalf("complete descriptor capture calls = %d, want 1", fullCaptures)
+		}
+		if fullApplyCalls != 1 {
+			t.Fatalf("complete descriptor application calls = %d, want 1 capability probe", fullApplyCalls)
 		}
 		if ordinaryCaptures == 0 {
 			t.Fatal("ordinary descriptor capture was not reached after denied complete capture")
@@ -2731,7 +3134,8 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 		return
 	}
 	if pause := os.Getenv(windowsReplacementPauseEnv); pause != "" ||
-		os.Getenv(windowsSubstituteStageEnv) != "" {
+		os.Getenv(windowsSubstituteStageEnv) != "" ||
+		os.Getenv(windowsMutateStageEnv) != "" {
 		originalHook := windowsReplacementTestHook
 		windowsReplacementTestHook = func(phase string) error {
 			if phase == os.Getenv(windowsSubstituteStageEnv) {
@@ -2746,6 +3150,19 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 				data = append(data, []byte("\nSUBSTITUTED_STAGE\n")...)
 				if err := os.WriteFile(stage, data, 0o700); err != nil { //nolint:gosec // test-owned race fixture
 					return fmt.Errorf("write substituted stage: %w", err)
+				}
+			}
+			if phase == os.Getenv(windowsMutateStageEnv) {
+				file, err := os.OpenFile(stage, os.O_WRONLY|os.O_APPEND, 0) //nolint:gosec // test-owned race fixture
+				if err != nil {
+					return fmt.Errorf("open verified stage for in-place mutation: %w", err)
+				}
+				if _, err := file.Write([]byte("\nIN_PLACE_MUTATION\n")); err != nil {
+					_ = file.Close()
+					return fmt.Errorf("mutate verified stage in place: %w", err)
+				}
+				if err := file.Close(); err != nil {
+					return fmt.Errorf("close mutated verified stage: %w", err)
 				}
 			}
 			if phase == pause {
@@ -2778,7 +3195,7 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 		defer func() { renameWindowsReplacementHandle = originalRename }()
 	}
 	if os.Getenv(windowsReplacementFailEnv) == "1" {
-		err = replaceExecutable(stage, executable)
+		err = replaceExecutable(stage, executable, stageDigest)
 		if assertExpectedWindowsReplacementFailure(t, err) {
 			return
 		}
@@ -2821,7 +3238,7 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 		}
 		defer func() { setWindowsSecurityInfo = originalSetSecurityInfo }()
 
-		err = replaceExecutable(stage, executable)
+		err = replaceExecutable(stage, executable, stageDigest)
 		if assertExpectedWindowsReplacementFailure(t, err) {
 			return
 		}
@@ -2839,7 +3256,7 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 		}
 		return
 	}
-	err = replaceExecutable(stage, executable)
+	err = replaceExecutable(stage, executable, stageDigest)
 	if assertExpectedWindowsReplacementFailure(t, err) {
 		return
 	}
@@ -2950,6 +3367,9 @@ func assertWindowsPreparedRecoveryEvidence(
 	}
 	if record.installed != stageIdentity {
 		t.Fatalf("retained Windows rollback stage identity = %+v, want %+v", record.installed, stageIdentity)
+	}
+	if wantDigest := sha256.Sum256(original); record.rollbackDigest != wantDigest {
+		t.Fatalf("retained Windows rollback digest = %x, want %x", record.rollbackDigest, wantDigest)
 	}
 	assertWindowsControlFileSecurity(t, recordPath)
 }
@@ -3257,6 +3677,30 @@ func copyWindowsTestExecutable(t *testing.T, source, target string, suffix []byt
 	}
 	data = append(data, suffix...)
 	if err := os.WriteFile(target, data, 0o700); err != nil { //nolint:gosec // test-owned executable fixture
+		t.Fatal(err)
+	}
+}
+
+func windowsTestFileDigest(t *testing.T, path string) [sha256.Size]byte {
+	t.Helper()
+	data, err := os.ReadFile(path) //nolint:gosec // test-owned executable fixture
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sha256.Sum256(data)
+}
+
+func writeWindowsTestFileInPlace(t *testing.T, path string, data []byte) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0) //nolint:gosec // test-owned mutation fixture
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -3599,22 +4043,9 @@ func trySetWindowsTestRMControl(
 	if err := validateWindowsSecurityDescriptor(descriptor.descriptor); err != nil {
 		t.Fatalf("set test RM control in complete descriptor: %v", err)
 	}
-	pathPointer, err := windows.UTF16PtrFromString(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, _, callErr := setWindowsTestFileSecurityProcedure.Call(
-		uintptr(unsafe.Pointer(pathPointer)),
-		uintptr(windowsFullSecurityInformation),
-		uintptr(unsafe.Pointer(descriptor.descriptor)),
-	)
-	if result == 0 {
-		if callErr == nil || errors.Is(callErr, windows.ERROR_SUCCESS) {
-			callErr = windows.ERROR_GEN_FAILURE
-		}
+	if callErr := applyWindowsCompleteSecurityDescriptor(path, descriptor.descriptor); callErr != nil {
 		if isWindowsCompleteSecurityUnavailable(callErr) ||
-			errors.Is(callErr, windows.ERROR_INVALID_FUNCTION) ||
-			errors.Is(callErr, windows.ERROR_INVALID_PARAMETER) {
+			errors.Is(callErr, windows.ERROR_SHARING_VIOLATION) {
 			return false, fmt.Sprintf("persist complete descriptor RM control: %v", callErr)
 		}
 		t.Fatalf("persist complete descriptor RM control: %v", callErr)

@@ -1507,7 +1507,7 @@
         },
         {
           "id": "provenance-failure-paths",
-          "description": "Exercise pinned identity, digest binding, and byte-preserving trust failures through the updater verifier.",
+          "description": "Exercise pinned certificate/statement identity, exact digest binding, and byte-preserving trust failures through the updater verifier.",
           "requirement": "required",
           "action": {
             "kind": "command",

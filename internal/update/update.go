@@ -179,6 +179,9 @@ func ClearFlag() {
 // Windows rollback state while holding the replacement update lock. Completed
 // state is cleaned; prepared state retries restoration of the exact original.
 func CleanupPreviousExecutable() error {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
 	exe, err := executablePath()
 	if err != nil {
 		return fmt.Errorf("find current executable: %w", err)
@@ -329,7 +332,7 @@ func DownloadVersionBeforeReplace(version string, verbose bool, beforeReplace fu
 			return err
 		}
 	}
-	if err := replaceExecutable(tmp, exe); err != nil {
+	if err := replaceExecutable(tmp, exe, actualDigest); err != nil {
 		return err
 	}
 	keepTmp = true

@@ -2,9 +2,12 @@
 
 package update
 
-import "os"
+import (
+	"crypto/sha256"
+	"os"
+)
 
-func replaceExecutable(staged, target string) error {
+func replaceExecutable(staged, target string, _ [sha256.Size]byte) error {
 	return os.Rename(staged, target)
 }
 

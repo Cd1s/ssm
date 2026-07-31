@@ -25,11 +25,15 @@ const (
 
 var (
 	getWindowsSecurityInfoProcedure           = windows.NewLazySystemDLL("advapi32.dll").NewProc("GetSecurityInfo")
+	setWindowsFileSecurityProcedure           = windows.NewLazySystemDLL("advapi32.dll").NewProc("SetFileSecurityW")
 	localFreeWindowsSecurityDescriptor        = windows.LocalFree
 	setWindowsSecurityInfo                    = windows.SetSecurityInfo
+	applyWindowsCompleteSecurity              = applyWindowsCompleteSecurityDescriptor
 	beginWindowsReplacementSecurityPrivileges = beginWindowsReplacementPrivileges
 	captureWindowsReplacementDescriptor       = captureWindowsSecurityDescriptor
 )
+
+var errWindowsRMControlUnavailable = errors.New("filesystem cannot preserve Windows resource manager control")
 
 type ownedWindowsSecurityDescriptor struct {
 	descriptor *windows.SECURITY_DESCRIPTOR
@@ -424,7 +428,7 @@ func prepareWindowsReplacementSecurityTier(
 	var err error
 	state.target, err = openWindowsProtectedReplacementFile(
 		target,
-		tier.targetAccess|windows.DELETE,
+		tier.targetAccess|windows.DELETE|windows.GENERIC_READ,
 	)
 	if err != nil {
 		return fail(fmt.Errorf("open current executable %s: %w", tier.name, err))
@@ -436,23 +440,6 @@ func prepareWindowsReplacementSecurityTier(
 	if err != nil {
 		return fail(err)
 	}
-	state.staged, err = openWindowsProtectedReplacementFile(
-		staged,
-		tier.stageAccess|windows.DELETE,
-	)
-	if err != nil {
-		return fail(fmt.Errorf("open verified replacement %s: %w", tier.name, err))
-	}
-	state.stageIdentity, err = inspectWindowsReplacementHandle(
-		state.staged,
-		"verified Windows replacement",
-	)
-	if err != nil {
-		return fail(err)
-	}
-	if state.targetIdentity == state.stageIdentity {
-		return fail(fmt.Errorf("verified Windows replacement aliases the current executable"))
-	}
 
 	state.sourceDescriptor, err = captureWindowsReplacementDescriptor(state.target, tier.information)
 	if err != nil {
@@ -461,16 +448,77 @@ func prepareWindowsReplacementSecurityTier(
 	if err := validateWindowsSecurityDescriptor(state.sourceDescriptor.descriptor); err != nil {
 		return fail(fmt.Errorf("capture current executable %s: %w", tier.name, err))
 	}
-	if !tier.full {
+	if tier.full {
+		stageInspection, openErr := openWindowsReplacementFileWithShare(
+			staged,
+			0,
+			windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+		)
+		if openErr != nil {
+			return fail(fmt.Errorf("inspect verified replacement %s: %w", tier.name, openErr))
+		}
+		inspectedIdentity, inspectErr := inspectWindowsReplacementHandle(
+			stageInspection,
+			"verified Windows replacement",
+		)
+		if inspectErr == nil && state.targetIdentity == inspectedIdentity {
+			inspectErr = fmt.Errorf("verified Windows replacement aliases the current executable")
+		}
+		if inspectErr == nil {
+			inspectErr = applyWindowsCompleteSecurity(
+				staged,
+				state.sourceDescriptor.descriptor,
+			)
+		}
+		if closeErr := windows.CloseHandle(stageInspection); closeErr != nil {
+			inspectErr = errors.Join(inspectErr, fmt.Errorf("close verified replacement descriptor application guard: %w", closeErr))
+		}
+		if inspectErr != nil {
+			return fail(fmt.Errorf("apply current %s to verified replacement: %w", tier.name, inspectErr))
+		}
+		state.staged, err = openWindowsProtectedReplacementFile(
+			staged,
+			tier.stageAccess|windows.DELETE|windows.GENERIC_READ,
+		)
+		if err != nil {
+			return fail(fmt.Errorf("open verified replacement %s: %w", tier.name, err))
+		}
+		state.stageIdentity, err = inspectWindowsReplacementHandle(
+			state.staged,
+			"verified Windows replacement",
+		)
+		if err != nil {
+			return fail(err)
+		}
+		if state.stageIdentity != inspectedIdentity {
+			return fail(fmt.Errorf("verified Windows replacement identity changed during complete descriptor application"))
+		}
+		state.applyOwner = true
+		state.applyGroup = true
+	} else {
+		state.staged, err = openWindowsProtectedReplacementFile(
+			staged,
+			tier.stageAccess|windows.DELETE|windows.GENERIC_READ,
+		)
+		if err != nil {
+			return fail(fmt.Errorf("open verified replacement %s: %w", tier.name, err))
+		}
+		state.stageIdentity, err = inspectWindowsReplacementHandle(
+			state.staged,
+			"verified Windows replacement",
+		)
+		if err != nil {
+			return fail(err)
+		}
+		if state.targetIdentity == state.stageIdentity {
+			return fail(fmt.Errorf("verified Windows replacement aliases the current executable"))
+		}
 		if err := state.prepareOrdinaryOwnerAndGroup(staged); err != nil {
 			return fail(err)
 		}
-	} else {
-		state.applyOwner = true
-		state.applyGroup = true
-	}
-	if err := state.apply(); err != nil {
-		return fail(fmt.Errorf("apply current %s to verified replacement: %w", tier.name, err))
+		if err := state.apply(); err != nil {
+			return fail(fmt.Errorf("apply current %s to verified replacement: %w", tier.name, err))
+		}
 	}
 	if err := state.verify(); err != nil {
 		return fail(fmt.Errorf("verify current %s on verified replacement: %w", tier.name, err))
@@ -481,7 +529,35 @@ func prepareWindowsReplacementSecurityTier(
 func isWindowsCompleteSecurityUnavailable(err error) bool {
 	return errors.Is(err, windows.ERROR_ACCESS_DENIED) ||
 		errors.Is(err, windows.ERROR_PRIVILEGE_NOT_HELD) ||
-		errors.Is(err, windows.ERROR_NOT_SUPPORTED)
+		errors.Is(err, windows.ERROR_NOT_SUPPORTED) ||
+		errors.Is(err, windows.ERROR_INVALID_FUNCTION) ||
+		errors.Is(err, windows.ERROR_INVALID_PARAMETER) ||
+		errors.Is(err, errWindowsRMControlUnavailable)
+}
+
+func applyWindowsCompleteSecurityDescriptor(
+	path string,
+	descriptor *windows.SECURITY_DESCRIPTOR,
+) error {
+	if err := validateWindowsSecurityDescriptor(descriptor); err != nil {
+		return err
+	}
+	pathPointer, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	result, _, callErr := setWindowsFileSecurityProcedure.Call(
+		uintptr(unsafe.Pointer(pathPointer)),
+		uintptr(windowsFullSecurityInformation),
+		uintptr(unsafe.Pointer(descriptor)),
+	)
+	if result != 0 {
+		return nil
+	}
+	if callErr == nil || errors.Is(callErr, windows.ERROR_SUCCESS) {
+		return windows.ERROR_GEN_FAILURE
+	}
+	return callErr
 }
 
 func (state *windowsReplacementSecurityState) prepareOrdinaryOwnerAndGroup(
@@ -544,6 +620,13 @@ func descriptorComponentError(err error) error {
 }
 
 func (state *windowsReplacementSecurityState) apply() error {
+	if state.tier.full {
+		// The complete descriptor is applied through SetFileSecurityW while a
+		// non-delete-sharing guard binds its pathname to the inspected stage.
+		// Same-directory rename preserves that exact file object's descriptor;
+		// the caller verifies it again after the handle-bound rename.
+		return nil
+	}
 	descriptor := state.sourceDescriptor.descriptor
 	owner, _, err := descriptor.Owner()
 	if err != nil || owner == nil {
@@ -665,14 +748,6 @@ func compareWindowsSecurityDescriptors(want, got *windows.SECURITY_DESCRIPTOR, f
 	if !full {
 		return compareWindowsOrdinarySecurityDescriptors(want, got)
 	}
-	wantString := want.String()
-	gotString := got.String()
-	if wantString == "" || gotString == "" {
-		return fmt.Errorf("complete security descriptor cannot be represented")
-	}
-	if wantString != gotString {
-		return fmt.Errorf("complete security descriptor changed")
-	}
 	wantControl, _, err := want.Control()
 	if err != nil {
 		return fmt.Errorf("read source descriptor control: %w", err)
@@ -681,11 +756,12 @@ func compareWindowsSecurityDescriptors(want, got *windows.SECURITY_DESCRIPTOR, f
 	if err != nil {
 		return fmt.Errorf("read replacement descriptor control: %w", err)
 	}
-	relevantControl := windowsSecurityBindingFullControlMask()
-	if wantControl&relevantControl != gotControl&relevantControl {
-		return fmt.Errorf("complete security descriptor inheritance or defaulting state changed")
+	wantRMControlPresent := wantControl&windows.SE_RM_CONTROL_VALID != 0
+	gotRMControlPresent := gotControl&windows.SE_RM_CONTROL_VALID != 0
+	if wantRMControlPresent != gotRMControlPresent {
+		return fmt.Errorf("%w: presence changed", errWindowsRMControlUnavailable)
 	}
-	if wantControl&windows.SE_RM_CONTROL_VALID != 0 {
+	if wantRMControlPresent {
 		wantRMControl, err := want.RMControl()
 		if err != nil {
 			return fmt.Errorf("read source descriptor resource manager control: %w", err)
@@ -696,11 +772,24 @@ func compareWindowsSecurityDescriptors(want, got *windows.SECURITY_DESCRIPTOR, f
 		}
 		if wantRMControl != gotRMControl {
 			return fmt.Errorf(
-				"complete security descriptor resource manager control changed: got %d, want %d",
+				"%w: replacement has %d, source has %d",
+				errWindowsRMControlUnavailable,
 				gotRMControl,
 				wantRMControl,
 			)
 		}
+	}
+	wantString := want.String()
+	gotString := got.String()
+	if wantString == "" || gotString == "" {
+		return fmt.Errorf("complete security descriptor cannot be represented")
+	}
+	if wantString != gotString {
+		return fmt.Errorf("complete security descriptor changed")
+	}
+	relevantControl := windowsSecurityBindingFullControlMask()
+	if wantControl&relevantControl != gotControl&relevantControl {
+		return fmt.Errorf("complete security descriptor inheritance or defaulting state changed")
 	}
 	return nil
 }

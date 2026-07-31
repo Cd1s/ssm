@@ -31,16 +31,19 @@ const payloadType = "application/vnd.in-toto+json"
 
 // Claims contains the signed identity and subject inputs for a synthetic bundle.
 type Claims struct {
-	Repository    string
-	Workflow      string
-	Ref           string
-	Issuer        string
-	Runner        string
-	PredicateType string
-	SubjectName   string
-	SubjectDigest [sha256.Size]byte
-	NotBefore     time.Time
-	NotAfter      time.Time
+	Repository               string
+	Workflow                 string
+	Ref                      string
+	Issuer                   string
+	Runner                   string
+	PredicateType            string
+	SubjectName              string
+	SubjectDigest            [sha256.Size]byte
+	AdditionalSubjectNames   []string
+	AdditionalDigestValues   map[string]string
+	ExcludeSHA256SubjectHash bool
+	NotBefore                time.Time
+	NotAfter                 time.Time
 }
 
 // Fixture contains a serialized Sigstore bundle and its independent test root.
@@ -101,6 +104,32 @@ func Generate(claims Claims) (Fixture, error) {
 		return Fixture{}, err
 	}
 
+	subjectDigest := make(map[string]string, len(claims.AdditionalDigestValues)+1)
+	if !claims.ExcludeSHA256SubjectHash {
+		subjectDigest["sha256"] = fmt.Sprintf("%x", claims.SubjectDigest)
+	}
+	for algorithm, value := range claims.AdditionalDigestValues {
+		subjectDigest[algorithm] = value
+	}
+	subjects := []struct {
+		Name   string            `json:"name"`
+		Digest map[string]string `json:"digest"`
+	}{{
+		Name:   claims.SubjectName,
+		Digest: subjectDigest,
+	}}
+	for _, name := range claims.AdditionalSubjectNames {
+		subjects = append(subjects, struct {
+			Name   string            `json:"name"`
+			Digest map[string]string `json:"digest"`
+		}{
+			Name: name,
+			Digest: map[string]string{
+				"sha256": fmt.Sprintf("%x", claims.SubjectDigest),
+			},
+		})
+	}
+
 	statement, err := json.Marshal(struct {
 		Type    string `json:"_type"`
 		Subject []struct {
@@ -110,16 +139,8 @@ func Generate(claims Claims) (Fixture, error) {
 		PredicateType string         `json:"predicateType"`
 		Predicate     map[string]any `json:"predicate"`
 	}{
-		Type: "https://in-toto.io/Statement/v1",
-		Subject: []struct {
-			Name   string            `json:"name"`
-			Digest map[string]string `json:"digest"`
-		}{{
-			Name: claims.SubjectName,
-			Digest: map[string]string{
-				"sha256": fmt.Sprintf("%x", claims.SubjectDigest),
-			},
-		}},
+		Type:          "https://in-toto.io/Statement/v1",
+		Subject:       subjects,
 		PredicateType: claims.PredicateType,
 		Predicate:     map[string]any{"buildDefinition": map[string]any{"buildType": "synthetic-test-owned"}},
 	})

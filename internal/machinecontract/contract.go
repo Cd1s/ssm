@@ -1152,10 +1152,31 @@ func ClassifySSH(err error, context SSHContext) Failure {
 
 func isTimeoutErrorMessage(message string) bool {
 	message = strings.TrimSpace(strings.ToLower(message))
-	return message == "timeout" ||
-		strings.HasSuffix(message, ": timeout") ||
-		strings.Contains(message, "i/o timeout") ||
-		strings.Contains(message, "timed out")
+	for _, component := range strings.Split(message, ": ") {
+		component = strings.TrimSpace(component)
+		switch {
+		case component == "timeout", component == "i/o timeout":
+			return true
+		case component == "timeout while connecting" ||
+			strings.HasPrefix(component, "timeout while connecting "):
+			return true
+		case component == "timeout connecting" ||
+			strings.HasPrefix(component, "timeout connecting "):
+			return true
+		case component == "connection timeout", component == "connect timeout":
+			return true
+		case component == "dial timeout", component == "handshake timeout":
+			return true
+		case strings.HasPrefix(component, "dial ") &&
+			(strings.Contains(component, "i/o timeout") || strings.Contains(component, "timed out")):
+			return true
+		case strings.HasPrefix(component, "connect ") && strings.Contains(component, "timed out"):
+			return true
+		case strings.HasPrefix(component, "connection ") && strings.Contains(component, "timed out"):
+			return true
+		}
+	}
+	return false
 }
 
 func isDialFailure(err error, context SSHContext) bool {

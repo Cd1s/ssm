@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -63,6 +64,26 @@ func TestNewerVersion(t *testing.T) {
 }
 
 func TestCleanupPreviousExecutableSurfacesResolutionFailures(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		restoreUpdateTestHooks(t)
+		resolverCalled := false
+		executablePath = func() (string, error) {
+			resolverCalled = true
+			return "", errors.New("executable path unavailable")
+		}
+		evalSymlinks = func(string) (string, error) {
+			resolverCalled = true
+			return "", errors.New("canonical path unavailable")
+		}
+		if err := CleanupPreviousExecutable(); err != nil {
+			t.Fatalf("non-Windows cleanup = %v, want no-op", err)
+		}
+		if resolverCalled {
+			t.Fatal("non-Windows cleanup resolved the executable path")
+		}
+		return
+	}
+
 	t.Run("executable path", func(t *testing.T) {
 		restoreUpdateTestHooks(t)
 		executablePath = func() (string, error) {
@@ -1132,6 +1153,37 @@ func TestProvenanceIdentityMatrix(t *testing.T) {
 			name: "wrong issuer",
 			mutate: func(claims *provenancefixture.Claims) {
 				claims.Issuer = "https://issuer.example.invalid"
+			},
+		},
+		{
+			name: "wrong runner",
+			mutate: func(claims *provenancefixture.Claims) {
+				claims.Runner = "self-hosted"
+			},
+		},
+		{
+			name: "wrong predicate",
+			mutate: func(claims *provenancefixture.Claims) {
+				claims.PredicateType = "https://example.invalid/unreviewed-predicate/v1"
+			},
+		},
+		{
+			name: "additional subject",
+			mutate: func(claims *provenancefixture.Claims) {
+				claims.AdditionalSubjectNames = []string{"unreviewed-release-asset"}
+			},
+		},
+		{
+			name: "additional digest algorithm",
+			mutate: func(claims *provenancefixture.Claims) {
+				claims.AdditionalDigestValues = map[string]string{"sha512": strings.Repeat("a", 128)}
+			},
+		},
+		{
+			name: "non-SHA-256-only digest",
+			mutate: func(claims *provenancefixture.Claims) {
+				claims.ExcludeSHA256SubjectHash = true
+				claims.AdditionalDigestValues = map[string]string{"sha512": strings.Repeat("b", 128)}
 			},
 		},
 		{

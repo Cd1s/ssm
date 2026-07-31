@@ -1809,6 +1809,37 @@ func TestMachineContractTransferContext(t *testing.T) {
 	}
 }
 
+func TestSSHTimeoutClassificationUsesConnectionBoundaries(t *testing.T) {
+	t.Parallel()
+	context := SSHContext{Alias: "prod", Host: "192.0.2.1", Port: 22}
+	for _, test := range []struct {
+		message string
+		want    string
+	}{
+		{message: "timeout", want: "dial_timeout"},
+		{message: "ssh: handshake failed: timeout", want: "dial_timeout"},
+		{message: "dial tcp 192.0.2.1:22: i/o timeout", want: "dial_timeout"},
+		{message: "timeout while connecting", want: "dial_timeout"},
+		{message: "timeout while connecting to 192.0.2.1", want: "dial_timeout"},
+		{message: "connection timeout", want: "dial_timeout"},
+		{message: "connect to host 192.0.2.1 port 22: Connection timed out", want: "dial_timeout"},
+		{message: "stat /tmp/rm-timeout-remediation/missing: no such file", want: "internal"},
+		{message: "stat /tmp/connection timeout/missing: no such file", want: "internal"},
+		{message: "open /tmp/timeout while connecting/missing: no such file", want: "internal"},
+		{message: "read /tmp/connect to host timed out/data: no such file", want: "internal"},
+		{message: `open C:\fixtures\timeout\missing: file not found`, want: "internal"},
+		{message: "read timeout.txt: no such file", want: "internal"},
+	} {
+		test := test
+		t.Run(test.message, func(t *testing.T) {
+			t.Parallel()
+			if got := ClassifySSH(errors.New(test.message), context); got.Error != test.want {
+				t.Fatalf("ClassifySSH(%q).Error = %q, want %q", test.message, got.Error, test.want)
+			}
+		})
+	}
+}
+
 func TestMachineContractRunExecutionContext(t *testing.T) {
 	t.Parallel()
 

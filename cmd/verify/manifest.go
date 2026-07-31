@@ -223,7 +223,7 @@ func releaseChecks() []Check {
 		},
 		Check{
 			ID:          "provenance-failure-paths",
-			Description: "Exercise pinned identity, digest binding, and byte-preserving trust failures through the updater verifier.",
+			Description: "Exercise pinned certificate/statement identity, exact digest binding, and byte-preserving trust failures through the updater verifier.",
 			Requirement: requirementRequired,
 			Action: commandAction("go", []string{
 				"test", "./internal/update", "-run",
