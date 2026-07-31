@@ -302,11 +302,6 @@ func DownloadVersionBeforeReplace(version string, verbose bool, beforeReplace fu
 		_ = os.Remove(tmp)
 	}()
 
-	if err := tmpFile.Chmod(executableInfo.Mode().Perm()); err != nil {
-		_ = tmpFile.Close()
-		return err
-	}
-
 	h := sha256.New()
 	actualDigest, err := copyAndVerifyDigest(tmpFile, resp.Body, h, expected)
 	if err != nil {
@@ -330,7 +325,7 @@ func DownloadVersionBeforeReplace(version string, verbose bool, beforeReplace fu
 			return err
 		}
 	}
-	if err := replaceExecutable(tmp, exe, actualDigest); err != nil {
+	if err := replaceExecutable(tmp, exe, actualDigest, executableInfo.Mode().Perm()); err != nil {
 		return err
 	}
 

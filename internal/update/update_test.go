@@ -941,7 +941,7 @@ func TestDownloadVersionVerifiesChecksumBeforeReplace(t *testing.T) {
 	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
 
 	exe := filepath.Join(t.TempDir(), "ssm")
-	if err := os.WriteFile(exe, []byte("old"), 0755); err != nil {
+	if err := os.WriteFile(exe, []byte("old"), 0755); err != nil { //nolint:gosec // test-owned executable fixture requires executable permissions
 		t.Fatalf("write executable: %v", err)
 	}
 	executablePath = func() (string, error) { return exe, nil }
@@ -954,7 +954,7 @@ func TestDownloadVersionVerifiesChecksumBeforeReplace(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/owner/repo/releases/download/v9.9.9/checksums.txt":
-			fmt.Fprintf(w, "%s  %s\n", strings.Repeat("0", sha256.Size*2), assetName())
+			_, _ = fmt.Fprintf(w, "%s  %s\n", strings.Repeat("0", sha256.Size*2), assetName())
 		case "/owner/repo/releases/download/v9.9.9/" + releaseasset.ProvenanceName(assetName()):
 			_, _ = w.Write([]byte("{}"))
 		case "/owner/repo/releases/download/v9.9.9/" + assetName():
@@ -971,7 +971,7 @@ func TestDownloadVersionVerifiesChecksumBeforeReplace(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected checksum mismatch")
 	}
-	data, readErr := os.ReadFile(exe)
+	data, readErr := os.ReadFile(exe) //nolint:gosec // path is constrained to t.TempDir
 	if readErr != nil {
 		t.Fatalf("read executable: %v", readErr)
 	}
@@ -987,7 +987,7 @@ func TestDownloadVersionReplacesAfterChecksumMatch(t *testing.T) {
 	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
 
 	exe := filepath.Join(t.TempDir(), "ssm")
-	if err := os.WriteFile(exe, []byte("old"), 0755); err != nil {
+	if err := os.WriteFile(exe, []byte("old"), 0755); err != nil { //nolint:gosec // test-owned executable fixture requires executable permissions
 		t.Fatalf("write executable: %v", err)
 	}
 	executablePath = func() (string, error) { return exe, nil }
@@ -1011,7 +1011,7 @@ func TestDownloadVersionReplacesAfterChecksumMatch(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/owner/repo/releases/download/v9.9.9/checksums.txt":
-			fmt.Fprintf(w, "%x  %s\n", sum, assetName())
+			_, _ = fmt.Fprintf(w, "%x  %s\n", sum, assetName())
 		case "/owner/repo/releases/download/v9.9.9/" + releaseasset.ProvenanceName(assetName()):
 			_, _ = w.Write(fixture.Bundle)
 		case "/owner/repo/releases/download/v9.9.9/" + assetName():
@@ -1027,7 +1027,7 @@ func TestDownloadVersionReplacesAfterChecksumMatch(t *testing.T) {
 	if err := DownloadVersion("v9.9.9", false); err != nil {
 		t.Fatalf("DownloadVersion: %v", err)
 	}
-	data, err := os.ReadFile(exe)
+	data, err := os.ReadFile(exe) //nolint:gosec // path is constrained to t.TempDir
 	if err != nil {
 		t.Fatalf("read executable: %v", err)
 	}
@@ -1459,7 +1459,87 @@ func TestUnixVerifiedReplacementRejectsCallbackSubstitution(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "authenticated bytes") {
 		t.Fatalf("callback substitution error = %v, want authenticated-byte rejection", err)
 	}
-	assertExecutableBytes(t, exe, "old")
+	assertExecutablePreserved(t, exe, []byte("old"), 0o751)
+}
+
+func TestUnixVerifiedReplacementPreservesOriginalModeAcrossCallbackStagingChmod(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix replacement contract")
+	}
+	restoreUpdateTestHooks(t)
+	setTestHome(t, t.TempDir())
+	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
+
+	directory := t.TempDir()
+	exe := filepath.Join(directory, "ssm")
+	if err := os.WriteFile(exe, []byte("old"), 0o751); err != nil { //nolint:gosec // test-owned executable mode is the authoritative replacement mode
+		t.Fatal(err)
+	}
+	executablePath = func() (string, error) { return exe, nil }
+	evalSymlinks = func(path string) (string, error) { return path, nil }
+
+	payload := []byte("authenticated replacement with preserved mode")
+	version := serveAuthenticatedUpdate(t, payload)
+
+	callbackCalled := false
+	err := DownloadVersionBeforeReplace(version, false, func() error {
+		callbackCalled = true
+		matches, globErr := filepath.Glob(filepath.Join(directory, ".ssm.*.new"))
+		if globErr != nil || len(matches) != 1 {
+			return fmt.Errorf("find authenticated stage: matches=%v err=%w", matches, globErr)
+		}
+		if chmodErr := os.Chmod(matches[0], 0o777); chmodErr != nil { //nolint:gosec // adversarial test-owned mode mutation is intentional
+			return fmt.Errorf("change authenticated staging mode: %w", chmodErr)
+		}
+		return nil
+	})
+	if err != nil || !callbackCalled {
+		t.Fatalf("verified replacement error=%v callback_called=%t", err, callbackCalled)
+	}
+	assertExecutablePreserved(t, exe, payload, 0o751)
+}
+
+func TestUnixVerifiedReplacementPreservesExecuteOnlyOriginalMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix replacement contract")
+	}
+	restoreUpdateTestHooks(t)
+	setTestHome(t, t.TempDir())
+	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
+
+	directory := t.TempDir()
+	exe := filepath.Join(directory, "ssm")
+	if err := os.WriteFile(exe, []byte("old"), 0o700); err != nil { //nolint:gosec // mode is restricted below after fixture creation
+		t.Fatal(err)
+	}
+	if err := os.Chmod(exe, 0o111); err != nil { //nolint:gosec // test-owned restrictive executable mode is the behavior under test
+		t.Skipf("execute-only executable mode is not supported: %v", err)
+	}
+	executablePath = func() (string, error) { return exe, nil }
+	evalSymlinks = func(path string) (string, error) { return path, nil }
+
+	payload := []byte("authenticated execute-only replacement")
+	version := serveAuthenticatedUpdate(t, payload)
+
+	callbackCalled := false
+	err := DownloadVersionBeforeReplace(version, false, func() error {
+		callbackCalled = true
+		return nil
+	})
+	if err != nil || !callbackCalled {
+		t.Fatalf("execute-only replacement error=%v callback_called=%t", err, callbackCalled)
+	}
+	info, err := os.Stat(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o111 {
+		t.Fatalf("execute-only replacement mode = %o, want 111", info.Mode().Perm())
+	}
+	if err := os.Chmod(exe, 0o511); err != nil { //nolint:gosec // test-owned fixture is made readable only for byte verification
+		t.Fatalf("make execute-only replacement readable for byte verification: %v", err)
+	}
+	assertExecutableBytes(t, exe, string(payload))
 }
 
 func TestUnixVerifiedReplacementUsesOpenedStageAcrossPathRename(t *testing.T) {

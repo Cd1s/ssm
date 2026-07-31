@@ -332,7 +332,7 @@ func testWindowsSynchronousRollbackRejectsDescriptorMutation(t *testing.T) {
 		}
 		return windows.ERROR_GEN_FAILURE
 	}
-	err = replaceExecutable(stage, target, windowsTestFileDigest(t, stage))
+	err = replaceExecutable(stage, target, windowsTestFileDigest(t, stage), 0)
 	if err == nil ||
 		!strings.Contains(err.Error(), "rollback failed") ||
 		!strings.Contains(err.Error(), "security descriptor contract changed") {
@@ -387,7 +387,7 @@ func testWindowsReturnedReplacementFailurePreservesCanonical(t *testing.T) {
 		}
 		return nil
 	}
-	err = replaceExecutable(stage, target, windowsTestFileDigest(t, stage))
+	err = replaceExecutable(stage, target, windowsTestFileDigest(t, stage), 0)
 	windowsReplacementTestHook = originalHook
 	if err == nil ||
 		!strings.Contains(err.Error(), "revalidate verified Windows replacement before install") {
@@ -434,7 +434,7 @@ func testWindowsPostCommitCleanupFailuresAreDeferred(t *testing.T) {
 				}
 				return nil
 			}
-			err = replaceExecutable(stage, target, windowsTestFileDigest(t, stage))
+			err = replaceExecutable(stage, target, windowsTestFileDigest(t, stage), 0)
 			windowsReplacementTestHook = originalHook
 			if err != nil {
 				t.Fatalf("committed replacement was reported as failed: %v", err)
@@ -3018,7 +3018,7 @@ func testWindowsInheritedUpdateLockIsRejected(t *testing.T) {
 		t.Fatalf("ordinary recovery discovery trusted an unauthenticated lock: %v", err)
 	}
 
-	err = replaceExecutable(stage, target, windowsTestFileDigest(t, stage))
+	err = replaceExecutable(stage, target, windowsTestFileDigest(t, stage), 0)
 	if err == nil || !strings.Contains(err.Error(), "security policy") {
 		t.Fatalf("inherited update lock error = %v, want security-policy rejection", err)
 	}
@@ -3081,11 +3081,11 @@ func testWindowsHardLinksFailClosed(t *testing.T) {
 		if err := os.Symlink(stageTarget, stage); err != nil {
 			t.Skipf("file symlinks are unavailable: %v", err)
 		}
-		if err := replaceExecutable(stageTarget, targetLink, windowsTestFileDigest(t, stageTarget)); err == nil ||
+		if err := replaceExecutable(stageTarget, targetLink, windowsTestFileDigest(t, stageTarget), 0); err == nil ||
 			!strings.Contains(err.Error(), "reparse point") && !strings.Contains(err.Error(), "not a regular file") {
 			t.Fatalf("target reparse point error = %v", err)
 		}
-		if err := replaceExecutable(stage, target, windowsTestFileDigest(t, stageTarget)); err == nil ||
+		if err := replaceExecutable(stage, target, windowsTestFileDigest(t, stageTarget), 0); err == nil ||
 			!strings.Contains(err.Error(), "reparse point") && !strings.Contains(err.Error(), "not a regular file") {
 			t.Fatalf("stage reparse point error = %v", err)
 		}
@@ -3207,7 +3207,7 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 			applyWindowsCompleteSecurity = originalCompleteApply
 		}()
 
-		err = replaceExecutable(stage, executable, stageDigest)
+		err = replaceExecutable(stage, executable, stageDigest, 0)
 		if err != nil {
 			t.Fatalf("replacement did not fall back from optional complete descriptor capture: %v", err)
 		}
@@ -3287,7 +3287,7 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 		defer func() { renameWindowsReplacementHandle = originalRename }()
 	}
 	if os.Getenv(windowsReplacementFailEnv) == "1" {
-		err = replaceExecutable(stage, executable, stageDigest)
+		err = replaceExecutable(stage, executable, stageDigest, 0)
 		if assertExpectedWindowsReplacementFailure(t, err) {
 			return
 		}
@@ -3330,7 +3330,7 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 		}
 		defer func() { setWindowsSecurityInfo = originalSetSecurityInfo }()
 
-		err = replaceExecutable(stage, executable, stageDigest)
+		err = replaceExecutable(stage, executable, stageDigest, 0)
 		if assertExpectedWindowsReplacementFailure(t, err) {
 			return
 		}
@@ -3348,7 +3348,7 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 		}
 		return
 	}
-	err = replaceExecutable(stage, executable, stageDigest)
+	err = replaceExecutable(stage, executable, stageDigest, 0)
 	if assertExpectedWindowsReplacementFailure(t, err) {
 		return
 	}

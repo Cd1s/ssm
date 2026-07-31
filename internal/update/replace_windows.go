@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"unsafe"
@@ -37,6 +38,7 @@ func replaceExecutable(
 	staged,
 	target string,
 	expectedDigest [sha256.Size]byte,
+	_ os.FileMode,
 ) (resultErr error) {
 	committed := false
 	stagedDirectory, err := filepath.Abs(filepath.Clean(filepath.Dir(staged)))

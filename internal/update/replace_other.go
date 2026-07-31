@@ -15,8 +15,15 @@ import (
 // and authenticates that copy immediately before the atomic rename. The open
 // source cannot be changed by replacing staged's pathname during the copy; an
 // in-place or hard-link write can only be installed if the resulting bytes
-// still match the provenance-authenticated digest.
-func replaceExecutable(staged, target string, expectedDigest [sha256.Size]byte) error {
+// still match the provenance-authenticated digest. originalMode comes from the
+// installed executable inspected before staging and is deliberately independent
+// of mutable staging metadata.
+func replaceExecutable(
+	staged,
+	target string,
+	expectedDigest [sha256.Size]byte,
+	originalMode os.FileMode,
+) error {
 	source, err := os.Open(staged) //nolint:gosec // caller-owned sibling stage
 	if err != nil {
 		return fmt.Errorf("open verified replacement: %w", err)
@@ -50,10 +57,6 @@ func replaceExecutable(staged, target string, expectedDigest [sha256.Size]byte) 
 			_ = os.Remove(installPath)
 		}
 	}()
-	if err := install.Chmod(sourceInfo.Mode().Perm()); err != nil {
-		return fmt.Errorf("set authenticated replacement permissions: %w", err)
-	}
-
 	sourceHash := sha256.New()
 	written, err := io.Copy(
 		io.MultiWriter(install, sourceHash),
@@ -103,6 +106,12 @@ func replaceExecutable(staged, target string, expectedDigest [sha256.Size]byte) 
 	}
 	if !pathInfo.Mode().IsRegular() || !os.SameFile(installInfo, pathInfo) {
 		return fmt.Errorf("authenticated replacement pathname changed before install")
+	}
+	if err := install.Chmod(originalMode.Perm()); err != nil {
+		return fmt.Errorf("set authenticated replacement permissions: %w", err)
+	}
+	if err := install.Sync(); err != nil {
+		return fmt.Errorf("sync authenticated replacement permissions: %w", err)
 	}
 	if err := os.Rename(installPath, target); err != nil {
 		return fmt.Errorf("install authenticated replacement: %w", err)
