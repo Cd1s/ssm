@@ -1120,7 +1120,7 @@ func ClassifySSH(err error, context SSHContext) Failure {
 		case errors.As(err, &networkError) && networkError.Timeout():
 			kind = DialTimeout
 			details.Message = fmt.Sprintf("dial tcp %s: i/o timeout", address)
-		case strings.Contains(lower, "i/o timeout") || strings.Contains(lower, "timeout"):
+		case isTimeoutErrorMessage(lower):
 			kind = DialTimeout
 			details.Message = fmt.Sprintf("connection timed out to %s", address)
 		case strings.Contains(lower, "connection refused"):
@@ -1148,6 +1148,14 @@ func ClassifySSH(err error, context SSHContext) Failure {
 		failure.processExit = ExitConnectionFailed
 	}
 	return failure
+}
+
+func isTimeoutErrorMessage(message string) bool {
+	message = strings.TrimSpace(strings.ToLower(message))
+	return message == "timeout" ||
+		strings.HasSuffix(message, ": timeout") ||
+		strings.Contains(message, "i/o timeout") ||
+		strings.Contains(message, "timed out")
 }
 
 func isDialFailure(err error, context SSHContext) bool {

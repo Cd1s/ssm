@@ -338,6 +338,15 @@ func TestRaceActivationIsTruthfulByNativeHost(t *testing.T) {
 	if got, want := race.Activation, "native_supported_host_with_cgo_and_c_compiler"; got != want {
 		t.Fatalf("race activation = %q, want %q", got, want)
 	}
+	wantAction := commandAction(
+		"go",
+		[]string{"test", "-race", "-timeout=15m", "./..."},
+		nil,
+		"",
+	)
+	if !reflect.DeepEqual(race.Action, wantAction) {
+		t.Fatalf("race action = %#v, want %#v", race.Action, wantAction)
+	}
 	wantPrerequisite := Prerequisite{
 		Kind:    "capability",
 		Name:    "native-race",

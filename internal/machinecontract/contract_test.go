@@ -1752,6 +1752,17 @@ func TestMachineContractTransferContext(t *testing.T) {
 		t.Fatalf("carried transfer failure = %+v, want %+v", got, carried)
 	}
 
+	localCause := errors.New("stat /tmp/rm-timeout-remediation/missing: no such file")
+	localCarried := Classify(TransferLocalRead, Details{Cause: localCause})
+	local := ClassifyTransferOperation(localCause, SSHContext{
+		Alias: "transfer", Host: "192.0.2.1", Port: 22,
+	}, localCarried)
+	if local.Error != "local_read_failed" || local.Stage != "local_read" ||
+		local.Exit != 1 || ProcessExit(local) != 1 ||
+		local.humanProjection == nil || local.humanProjection.Error != CodeInternal {
+		t.Fatalf("local path containing timeout changed transfer classification = %+v", local)
+	}
+
 	sessionCarried := Classify(TransferSessionOpenFailed, Details{Message: "session rejected"})
 	session := ClassifyTransferOperation(errors.New("ssh: rejected: fixture session rejected"), SSHContext{
 		Alias: "transfer", Host: "192.0.2.1", Port: 22,

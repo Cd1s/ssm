@@ -343,7 +343,12 @@ func raceCheck() Check {
 		RequiredContexts: []string{
 			"github_actions_linux",
 		},
-		Action:        commandAction("go", []string{"test", "-race", "./..."}, nil, ""),
+		Action: commandAction(
+			"go",
+			[]string{"test", "-race", "-timeout=15m", "./..."},
+			nil,
+			"",
+		),
 		Prerequisites: goPrerequisites(),
 	}
 	check.Prerequisites = append(check.Prerequisites, Prerequisite{

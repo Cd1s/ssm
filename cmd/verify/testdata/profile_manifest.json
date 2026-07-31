@@ -341,6 +341,7 @@
               "args": [
                 "test",
                 "-race",
+                "-timeout=15m",
                 "./..."
               ]
             }
@@ -874,6 +875,7 @@
               "args": [
                 "test",
                 "-race",
+                "-timeout=15m",
                 "./..."
               ]
             }

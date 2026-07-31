@@ -46,7 +46,7 @@ func reviewedActionPolicy() map[string]Action {
 		),
 		"race": reviewedCommand(
 			"go",
-			[]string{"test", "-race", "./..."},
+			[]string{"test", "-race", "-timeout=15m", "./..."},
 			nil,
 			"",
 		),

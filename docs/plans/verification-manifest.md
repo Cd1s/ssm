@@ -65,7 +65,7 @@ The old GitHub CI membership and its new manifest entries are:
 | 4 | `go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...` | `vulnerability` |
 | 5 | `go build ./cmd/ssm` | `build`, with a temporary output |
 | 6 | `go test ./...` | `unit` |
-| 7 | `go test -race ./...` | `race` |
+| 7 | `go test -race -timeout=15m ./...` | `race` |
 | 8 | `jq empty skills/agent-ssm/test-prompts.json` | `agent-prompts-json` |
 | 9 | `jq empty skills/agent-ssm/references/request-v1.schema.json` | `request-schema-json` |
 | 10 | `bash -n scripts/ssh_matrix_test.sh` | `ssh-matrix-shell-syntax` |
@@ -116,6 +116,8 @@ It is deliberately not merge-equivalent and not release-equivalent.
 `ci` is the ordered 11-check profile in the table above. `race` is conditional
 on a natively supported OS/architecture, `CGO_ENABLED=1`, and an available C
 compiler, and is explicitly required in the `github_actions_linux` context.
+Its reviewed command sets Go's suite timeout to 15 minutes so the complete
+race suite is not cut off by Go's 10-minute default.
 It is truthfully unavailable on unsupported native tuples such as
 Windows/arm64; cross-compilation is not treated as runtime race evidence.
 `ssh-matrix` is

@@ -39,6 +39,10 @@ const (
 	windowsRollbackFailEnv      = "SSM_TEST_WINDOWS_ROLLBACK_FAIL"
 )
 
+var setWindowsTestFileSecurityProcedure = windows.NewLazySystemDLL(
+	"advapi32.dll",
+).NewProc("SetFileSecurityW")
+
 func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("ordinary user preserves owner group DACL and inheritance", testWindowsOrdinaryUserReplacement)
 	t.Run("effective token privilege detection cannot escape to the process token", testWindowsRestrictedImpersonationToken)
@@ -46,6 +50,7 @@ func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("process token fallback requires ERROR_NO_TOKEN", testWindowsProcessTokenFallbackRequiresNoThreadToken)
 	t.Run("ordinary inherited descriptor capture apply and verification are semantic", testWindowsInheritedOrdinaryDescriptorPreparation)
 	t.Run("ordinary descriptor differences identify the changed security component", testWindowsOrdinaryDescriptorDiagnostics)
+	t.Run("complete descriptor RM control binding is byte exact", testWindowsCompleteDescriptorRMControlBinding)
 	t.Run("authenticated rollback record binds a versioned descriptor contract", testWindowsReplacementRecordDescriptorBinding)
 	t.Run("optional complete descriptor denial falls back to ordinary preservation", testWindowsOptionalFullTierFallback)
 	t.Run("complete descriptor is preserved when supported with ordinary fallback", testWindowsPrivilegedReplacement)
@@ -64,6 +69,7 @@ func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("rollback rejects a late hard link to its image", testWindowsRollbackRejectsLateHardLink)
 	t.Run("late hard links retain recovery evidence until safe recovery", testWindowsLateHardLinksCannotCompromiseTarget)
 	t.Run("prepared recovery rejects descriptor mutation with the same file ID", testWindowsPreparedRecoveryRejectsDescriptorMutation)
+	t.Run("prepared full recovery rejects same-ID RM control mutation", testWindowsPreparedFullRecoveryRejectsRMControlMutation)
 	t.Run("hard-linked targets and stages fail closed", testWindowsHardLinksFailClosed)
 	t.Run("rollback failure preserves recovery evidence", testWindowsRollbackFailurePreservesEvidence)
 	t.Run("forged rollback control state is rejected", testWindowsForgedRollbackControlStateIsRejected)
@@ -686,6 +692,51 @@ func testWindowsOrdinaryDescriptorDiagnostics(t *testing.T) {
 			t.Fatal("changed SACL retained the authenticated complete-descriptor binding")
 		}
 	})
+}
+
+func testWindowsCompleteDescriptorRMControlBinding(t *testing.T) {
+	newDescriptor := func(t *testing.T) *windows.SECURITY_DESCRIPTOR {
+		t.Helper()
+		descriptor, err := windows.SecurityDescriptorFromString(
+			"O:SYG:BAD:(A;;FR;;;BU)S:(AU;SA;FR;;;BU)",
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return descriptor
+	}
+	bind := func(t *testing.T, descriptor *windows.SECURITY_DESCRIPTOR) windowsSecurityBinding {
+		t.Helper()
+		binding, err := bindWindowsSecurityDescriptor(descriptor, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return binding
+	}
+
+	absent := bind(t, newDescriptor(t))
+	presentZeroDescriptor := newDescriptor(t)
+	presentZeroDescriptor.SetRMControl(0)
+	presentZero := bind(t, presentZeroDescriptor)
+	if err := compareWindowsSecurityBindings(absent, presentZero); err == nil {
+		t.Fatal("present zero RM control retained the absent RM-control binding")
+	}
+
+	expectedDescriptor := newDescriptor(t)
+	expectedDescriptor.SetRMControl(42)
+	expected := bind(t, expectedDescriptor)
+	mutatedDescriptor := newDescriptor(t)
+	mutatedDescriptor.SetRMControl(43)
+	mutated := bind(t, mutatedDescriptor)
+	if err := compareWindowsSecurityBindings(expected, mutated); err == nil {
+		t.Fatal("changed RM-control byte retained the authenticated complete-descriptor binding")
+	}
+
+	mutatedDescriptor.SetRMControl(42)
+	restored := bind(t, mutatedDescriptor)
+	if err := compareWindowsSecurityBindings(expected, restored); err != nil {
+		t.Fatalf("restored exact RM-control byte did not restore the binding: %v", err)
+	}
 }
 
 func testWindowsReplacementRecordDescriptorBinding(t *testing.T) {
@@ -1721,6 +1772,253 @@ func testWindowsPreparedRecoveryRejectsDescriptorMutation(t *testing.T) {
 	)
 }
 
+func testWindowsPreparedFullRecoveryRejectsRMControlMutation(t *testing.T) {
+	const (
+		expectedRMControl = byte(42)
+		mutatedRMControl  = byte(43)
+	)
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+
+	probeTarget := filepath.Join(directory, "rm-control-probe-target.exe")
+	probeStage := filepath.Join(directory, "rm-control-probe-stage.exe")
+	copyWindowsTestExecutable(t, testExecutable, probeTarget, nil)
+	copyWindowsTestExecutable(t, testExecutable, probeStage, nil)
+	for _, path := range []string{probeTarget, probeStage} {
+		if available, reason := trySetWindowsTestRMControl(t, path, expectedRMControl); !available {
+			t.Skipf("host cannot persist file RM control for the complete descriptor tier: %s", reason)
+		}
+	}
+	probeState, err := prepareWindowsReplacementSecurity(probeStage, probeTarget)
+	if err != nil {
+		t.Skipf("host cannot preserve file RM control through the complete descriptor tier: %v", err)
+	}
+	if !probeState.tier.full {
+		if err := probeState.close(); err != nil {
+			t.Fatalf("close ordinary RM-control capability probe: %v", err)
+		}
+		t.Skip("host selected the ordinary descriptor tier for the RM-control capability probe")
+	}
+	if err := probeState.close(); err != nil {
+		t.Fatalf("close complete RM-control capability probe: %v", err)
+	}
+
+	target := filepath.Join(directory, "ssm.exe")
+	stage := filepath.Join(directory, ".ssm.rm-control-stage.exe")
+	stageAlias := filepath.Join(directory, "rm-control-stage-alias.exe")
+	ready := filepath.Join(directory, "rm-control.ready")
+	proceed := filepath.Join(directory, "rm-control.proceed")
+	copyWindowsTestExecutable(t, testExecutable, target, nil)
+	copyWindowsTestExecutable(
+		t,
+		testExecutable,
+		stage,
+		[]byte("\nRM_CONTROL_MUTATION_STAGE\n"),
+	)
+	for _, path := range []string{target, stage} {
+		if available, reason := trySetWindowsTestRMControl(t, path, expectedRMControl); !available {
+			t.Fatalf("RM-control capability became unavailable for %s: %s", path, reason)
+		}
+	}
+	original, err := os.ReadFile(target) //nolint:gosec // test-owned mapped executable
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed, err := os.ReadFile(stage) //nolint:gosec // test-owned verified stage
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalIdentity, err := inspectWindowsReplacementPath(
+		target,
+		"RM-control original executable",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stageIdentity, err := inspectWindowsReplacementPath(
+		stage,
+		"RM-control verified stage",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalDescriptor, available, reason :=
+		tryReadWindowsTestCompleteSecurityDescriptor(t, target)
+	if !available {
+		t.Fatalf("complete descriptor capability became unavailable: %s", reason)
+	}
+	if originalDescriptor.control&windows.SE_RM_CONTROL_VALID == 0 ||
+		originalDescriptor.rmControl != expectedRMControl {
+		t.Fatalf(
+			"original RM control = present:%t value:%d, want present:true value:%d",
+			originalDescriptor.control&windows.SE_RM_CONTROL_VALID != 0,
+			originalDescriptor.rmControl,
+			expectedRMControl,
+		)
+	}
+
+	updater := windowsReplacementTestCommand(target, stage)
+	updater.Env = append(updater.Env,
+		windowsReplacementPauseEnv+"="+windowsReplacementPhaseStageRenameGap,
+		windowsReplacementReadyEnv+"="+ready,
+		windowsReplacementGoEnv+"="+proceed,
+		windowsExpectedFailureEnv+"=hard links",
+	)
+	var updaterOutput bytes.Buffer
+	updater.Stdout = &updaterOutput
+	updater.Stderr = &updaterOutput
+	if err := updater.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForWindowsTestPath(t, ready)
+	linkErr := os.Link(stage, stageAlias)
+	if err := os.WriteFile(proceed, []byte("continue"), 0o600); err != nil { //nolint:gosec // test-owned synchronization fixture
+		t.Fatal(err)
+	}
+	waitErr := updater.Wait()
+	if linkErr != nil {
+		t.Fatalf(
+			"create RM-control recovery adversarial link: %v; updater_error=%v output=%q",
+			linkErr,
+			waitErr,
+			updaterOutput.String(),
+		)
+	}
+	if waitErr != nil {
+		t.Fatalf("prepare RM-control recovery fixture: %v; output=%q", waitErr, updaterOutput.String())
+	}
+	if err := os.Remove(stageAlias); err != nil {
+		t.Fatalf("release RM-control recovery hard link: %v", err)
+	}
+
+	backup := windowsReplacementBackup(target)
+	assertWindowsFileBytes(t, backup, original)
+	assertWindowsFileBytes(t, target, installed)
+	backupIdentity, err := inspectWindowsReplacementPath(
+		backup,
+		"RM-control rollback image before mutation",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backupIdentity != originalIdentity {
+		t.Fatalf(
+			"RM-control rollback identity = %+v, want %+v",
+			backupIdentity,
+			originalIdentity,
+		)
+	}
+	recordPath := windowsReplacementRecord(target)
+	recordBytes, err := os.ReadFile(recordPath) //nolint:gosec // test-owned authenticated recovery fixture
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := decodeWindowsReplacementRecord(recordBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.state != windowsReplacementRecordPrepared ||
+		record.original != originalIdentity ||
+		record.installed != stageIdentity {
+		t.Fatalf("RM-control prepared recovery record = %#v", record)
+	}
+	if record.securityBinding.metadata&windowsSecurityBindingTierMask != windowsSecurityBindingFull {
+		t.Fatalf(
+			"RM-control recovery binding tier = %d, want full",
+			record.securityBinding.metadata&windowsSecurityBindingTierMask,
+		)
+	}
+	assertWindowsControlFileSecurity(t, recordPath)
+
+	if available, reason := trySetWindowsTestRMControl(t, backup, mutatedRMControl); !available {
+		t.Fatalf("mutate rollback RM control: %s", reason)
+	}
+	mutatedIdentity, err := inspectWindowsReplacementPath(
+		backup,
+		"RM-control rollback image after mutation",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mutatedIdentity != backupIdentity {
+		t.Fatalf(
+			"RM-control mutation changed rollback File ID: got %+v, want %+v",
+			mutatedIdentity,
+			backupIdentity,
+		)
+	}
+
+	cleanup := exec.Command(
+		testExecutable,
+		"-test.run=^TestWindowsCleanupPreviousExecutableChildProcess$",
+		"-test.count=1",
+	) //nolint:gosec // fixed test-owned executable and arguments
+	cleanup.Env = append(os.Environ(),
+		windowsCleanupChildEnv+"=1",
+		windowsCleanupTargetEnv+"="+target,
+		windowsExpectedFailureEnv+"=security descriptor contract changed",
+	)
+	if output, err := cleanup.CombinedOutput(); err != nil {
+		t.Fatalf("RM-control mutation recovery fixture failed: %v; output=%q", err, output)
+	}
+	assertWindowsFileBytes(t, backup, original)
+	assertWindowsFileBytes(t, target, installed)
+	if _, err := os.Stat(recordPath); err != nil {
+		t.Fatalf("RM-control mismatch did not retain authenticated recovery evidence: %v", err)
+	}
+	retainedIdentity, err := inspectWindowsReplacementPath(
+		backup,
+		"retained RM-control-mutated rollback image",
+	)
+	if err != nil || retainedIdentity != originalIdentity {
+		t.Fatalf(
+			"RM-control mismatch changed retained rollback identity: got %+v err=%v, want %+v",
+			retainedIdentity,
+			err,
+			originalIdentity,
+		)
+	}
+
+	if available, reason := trySetWindowsTestRMControl(t, backup, expectedRMControl); !available {
+		t.Fatalf("restore exact rollback RM control: %s", reason)
+	}
+	runWindowsRecoveryCleanup(t, testExecutable, target)
+	assertWindowsFileBytes(t, target, original)
+	recoveredIdentity, err := inspectWindowsReplacementPath(
+		target,
+		"RM-control recovered executable",
+	)
+	if err != nil || recoveredIdentity != originalIdentity {
+		t.Fatalf(
+			"RM-control recovered identity = %+v err=%v, want %+v",
+			recoveredIdentity,
+			err,
+			originalIdentity,
+		)
+	}
+	recoveredDescriptor, available, reason :=
+		tryReadWindowsTestCompleteSecurityDescriptor(t, target)
+	if !available {
+		t.Fatalf("read recovered complete descriptor: %s", reason)
+	}
+	if recoveredDescriptor != originalDescriptor {
+		t.Fatalf(
+			"recovered complete descriptor = %#v, want %#v",
+			recoveredDescriptor,
+			originalDescriptor,
+		)
+	}
+	if _, err := os.Stat(backup); !os.IsNotExist(err) {
+		t.Fatalf("successful RM-control recovery retained rollback image: %v", err)
+	}
+	if _, err := os.Stat(recordPath); !os.IsNotExist(err) {
+		t.Fatalf("successful RM-control recovery retained ownership state: %v", err)
+	}
+}
+
 func testWindowsForgedRollbackControlStateIsRejected(t *testing.T) {
 	testExecutable, err := os.Executable()
 	if err != nil {
@@ -2596,8 +2894,9 @@ func assertWindowsFileBytes(t *testing.T, path string, want []byte) {
 }
 
 type windowsTestSecurityDescriptor struct {
-	sddl    string
-	control windows.SECURITY_DESCRIPTOR_CONTROL
+	sddl      string
+	control   windows.SECURITY_DESCRIPTOR_CONTROL
+	rmControl byte
 }
 
 type windowsTestOrdinarySecurityContract struct {
@@ -2859,6 +3158,113 @@ func assertWindowsControlFileSecurity(t *testing.T, path string) {
 	}
 }
 
+func trySetWindowsTestRMControl(
+	t *testing.T,
+	path string,
+	value byte,
+) (bool, string) {
+	t.Helper()
+	scope, available, err := beginWindowsReplacementPrivileges()
+	if err != nil {
+		t.Fatalf("enable test RM-control privileges: %v", err)
+	}
+	if !available {
+		return false, "current token lacks the complete descriptor privileges"
+	}
+	defer func() {
+		if err := scope.close(); err != nil {
+			t.Fatalf("restore test RM-control privileges: %v", err)
+		}
+	}()
+
+	handle, err := openWindowsReplacementFile(
+		path,
+		windows.READ_CONTROL|windows.ACCESS_SYSTEM_SECURITY,
+	)
+	if err != nil {
+		if isWindowsCompleteSecurityUnavailable(err) {
+			return false, fmt.Sprintf("open complete descriptor for RM control: %v", err)
+		}
+		t.Fatalf("open complete descriptor for RM control: %v", err)
+	}
+	defer func() {
+		if err := windows.CloseHandle(handle); err != nil {
+			t.Fatalf("close RM-control test file: %v", err)
+		}
+	}()
+	descriptor, err := captureWindowsSecurityDescriptor(
+		handle,
+		windowsFullSecurityInformation,
+	)
+	if err != nil {
+		if isWindowsCompleteSecurityUnavailable(err) {
+			return false, fmt.Sprintf("capture complete descriptor for RM control: %v", err)
+		}
+		t.Fatalf("capture complete descriptor for RM control: %v", err)
+	}
+	defer func() {
+		if err := descriptor.close(); err != nil {
+			t.Fatalf("free RM-control test descriptor: %v", err)
+		}
+	}()
+	descriptor.descriptor.SetRMControl(value)
+	if err := validateWindowsSecurityDescriptor(descriptor.descriptor); err != nil {
+		t.Fatalf("set test RM control in complete descriptor: %v", err)
+	}
+	pathPointer, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, callErr := setWindowsTestFileSecurityProcedure.Call(
+		uintptr(unsafe.Pointer(pathPointer)),
+		uintptr(windowsFullSecurityInformation),
+		uintptr(unsafe.Pointer(descriptor.descriptor)),
+	)
+	if result == 0 {
+		if callErr == nil || errors.Is(callErr, windows.ERROR_SUCCESS) {
+			callErr = windows.ERROR_GEN_FAILURE
+		}
+		if isWindowsCompleteSecurityUnavailable(callErr) ||
+			errors.Is(callErr, windows.ERROR_INVALID_FUNCTION) ||
+			errors.Is(callErr, windows.ERROR_INVALID_PARAMETER) {
+			return false, fmt.Sprintf("persist complete descriptor RM control: %v", callErr)
+		}
+		t.Fatalf("persist complete descriptor RM control: %v", callErr)
+	}
+
+	got, err := captureWindowsSecurityDescriptor(
+		handle,
+		windowsFullSecurityInformation,
+	)
+	if err != nil {
+		t.Fatalf("recapture complete descriptor RM control: %v", err)
+	}
+	defer func() {
+		if err := got.close(); err != nil {
+			t.Fatalf("free recaptured RM-control test descriptor: %v", err)
+		}
+	}()
+	control, _, err := got.descriptor.Control()
+	if err != nil {
+		t.Fatalf("read recaptured RM-control descriptor control: %v", err)
+	}
+	if control&windows.SE_RM_CONTROL_VALID == 0 {
+		return false, "filesystem did not retain SE_RM_CONTROL_VALID"
+	}
+	gotValue, err := got.descriptor.RMControl()
+	if err != nil {
+		t.Fatalf("read recaptured RM-control byte: %v", err)
+	}
+	if gotValue != value {
+		return false, fmt.Sprintf(
+			"filesystem retained RM-control byte %d, want %d",
+			gotValue,
+			value,
+		)
+	}
+	return true, ""
+}
+
 func trySetWindowsTestSACL(t *testing.T, path string) (bool, string) {
 	t.Helper()
 	scope, available, err := beginWindowsReplacementPrivileges()
@@ -2971,7 +3377,18 @@ func tryReadWindowsTestCompleteSecurityDescriptor(
 	if sddl == "" {
 		t.Fatal("convert security descriptor to SDDL")
 	}
-	return windowsTestSecurityDescriptor{sddl: sddl, control: control}, true, ""
+	var rmControl byte
+	if control&windows.SE_RM_CONTROL_VALID != 0 {
+		rmControl, err = descriptor.descriptor.RMControl()
+		if err != nil {
+			t.Fatalf("read security descriptor RM control: %v", err)
+		}
+	}
+	return windowsTestSecurityDescriptor{
+		sddl:      sddl,
+		control:   control,
+		rmControl: rmControl,
+	}, true, ""
 }
 
 func readWindowsTestSecurityDescriptor(t *testing.T, path string) windowsTestSecurityDescriptor {
@@ -3004,5 +3421,16 @@ func readWindowsTestSecurityDescriptor(t *testing.T, path string) windowsTestSec
 	if sddl == "" {
 		t.Fatal("convert security descriptor to SDDL")
 	}
-	return windowsTestSecurityDescriptor{sddl: sddl, control: control}
+	var rmControl byte
+	if control&windows.SE_RM_CONTROL_VALID != 0 {
+		rmControl, err = descriptor.descriptor.RMControl()
+		if err != nil {
+			t.Fatalf("read security descriptor RM control: %v", err)
+		}
+	}
+	return windowsTestSecurityDescriptor{
+		sddl:      sddl,
+		control:   control,
+		rmControl: rmControl,
+	}
 }

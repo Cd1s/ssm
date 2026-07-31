@@ -178,7 +178,10 @@ Before the first move, a flushed, fixed 80-byte version-2
 selected ordinary/full descriptor tier, and a SHA-256 digest of a bounded
 canonical semantic descriptor contract. The canonical input contains copied
 SID and ordered ACE bytes, ACL state/revision, and the required protection and
-full-tier control/SACL state; it never persists native self-relative pointers.
+full-tier control/SACL state. When `SE_RM_CONTROL_VALID` is set, the full-tier
+contract also contains an explicit presence marker and the exact resource
+manager control byte; absence and a present zero byte are distinct. It never
+persists native self-relative pointers.
 The record is created with the same explicit owner-only protected security
 policy as the lock and remains open without delete sharing throughout
 replacement. Cleanup protectively opens and validates that policy before

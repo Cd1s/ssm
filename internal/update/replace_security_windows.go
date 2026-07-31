@@ -196,6 +196,16 @@ func bindWindowsSecurityDescriptor(
 			digest,
 			uint32(control&windowsSecurityBindingFullControlMask()),
 		)
+		rmControlPresent := control&windows.SE_RM_CONTROL_VALID != 0
+		var rmControl byte
+		if rmControlPresent {
+			rmControl, err = descriptor.RMControl()
+			if err != nil {
+				return windowsSecurityBinding{},
+					fmt.Errorf("read security descriptor resource manager control: %w", err)
+			}
+		}
+		writeWindowsSecurityContractRMControl(digest, rmControlPresent, rmControl)
 	} else if control&windows.SE_DACL_AUTO_INHERITED != 0 {
 		binding.metadata |= windowsSecurityBindingDACLAutoInheritedRequired
 	}
@@ -674,6 +684,23 @@ func compareWindowsSecurityDescriptors(want, got *windows.SECURITY_DESCRIPTOR, f
 	relevantControl := windowsSecurityBindingFullControlMask()
 	if wantControl&relevantControl != gotControl&relevantControl {
 		return fmt.Errorf("complete security descriptor inheritance or defaulting state changed")
+	}
+	if wantControl&windows.SE_RM_CONTROL_VALID != 0 {
+		wantRMControl, err := want.RMControl()
+		if err != nil {
+			return fmt.Errorf("read source descriptor resource manager control: %w", err)
+		}
+		gotRMControl, err := got.RMControl()
+		if err != nil {
+			return fmt.Errorf("read replacement descriptor resource manager control: %w", err)
+		}
+		if wantRMControl != gotRMControl {
+			return fmt.Errorf(
+				"complete security descriptor resource manager control changed: got %d, want %d",
+				gotRMControl,
+				wantRMControl,
+			)
+		}
 	}
 	return nil
 }
