@@ -4,8 +4,10 @@ package update
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,6 +46,7 @@ func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("process token fallback requires ERROR_NO_TOKEN", testWindowsProcessTokenFallbackRequiresNoThreadToken)
 	t.Run("ordinary inherited descriptor capture apply and verification are semantic", testWindowsInheritedOrdinaryDescriptorPreparation)
 	t.Run("ordinary descriptor differences identify the changed security component", testWindowsOrdinaryDescriptorDiagnostics)
+	t.Run("authenticated rollback record binds a versioned descriptor contract", testWindowsReplacementRecordDescriptorBinding)
 	t.Run("optional complete descriptor denial falls back to ordinary preservation", testWindowsOptionalFullTierFallback)
 	t.Run("complete descriptor is preserved when supported with ordinary fallback", testWindowsPrivilegedReplacement)
 	t.Run("privileges and thread identity are restored", testWindowsReplacementPrivilegeRestoration)
@@ -60,6 +63,7 @@ func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("rollback over a locked canonical substitute fails closed until recovery", testWindowsRollbackReplacesCanonicalSubstitute)
 	t.Run("rollback rejects a late hard link to its image", testWindowsRollbackRejectsLateHardLink)
 	t.Run("late hard links retain recovery evidence until safe recovery", testWindowsLateHardLinksCannotCompromiseTarget)
+	t.Run("prepared recovery rejects descriptor mutation with the same file ID", testWindowsPreparedRecoveryRejectsDescriptorMutation)
 	t.Run("hard-linked targets and stages fail closed", testWindowsHardLinksFailClosed)
 	t.Run("rollback failure preserves recovery evidence", testWindowsRollbackFailurePreservesEvidence)
 	t.Run("forged rollback control state is rejected", testWindowsForgedRollbackControlStateIsRejected)
@@ -618,6 +622,17 @@ func testWindowsOrdinaryDescriptorDiagnostics(t *testing.T) {
 					test.difference,
 				)
 			}
+			wantBinding, err := bindWindowsSecurityDescriptor(want, false)
+			if err != nil {
+				t.Fatalf("bind wanted ordinary descriptor: %v", err)
+			}
+			gotBinding, err := bindWindowsSecurityDescriptor(got, false)
+			if err != nil {
+				t.Fatalf("bind changed ordinary descriptor: %v", err)
+			}
+			if err := compareWindowsSecurityBindings(wantBinding, gotBinding); err == nil {
+				t.Fatal("changed ordinary descriptor retained the authenticated recovery binding")
+			}
 		})
 	}
 
@@ -633,7 +648,113 @@ func testWindowsOrdinaryDescriptorDiagnostics(t *testing.T) {
 		if err := compareWindowsSecurityDescriptors(want, got, false); err != nil {
 			t.Fatalf("Windows-normalized auto-inherited metadata changed the security contract: %v", err)
 		}
+		wantBinding, err := bindWindowsSecurityDescriptor(want, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotBinding, err := bindWindowsSecurityDescriptor(got, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := compareWindowsSecurityBindings(wantBinding, gotBinding); err != nil {
+			t.Fatalf("Windows-normalized auto-inherited metadata changed the recovery binding: %v", err)
+		}
 	})
+
+	t.Run("complete descriptor SACL", func(t *testing.T) {
+		want, err := windows.SecurityDescriptorFromString(
+			"O:SYG:BAD:(A;;FR;;;BU)S:(AU;SA;FR;;;BU)",
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := windows.SecurityDescriptorFromString(
+			"O:SYG:BAD:(A;;FR;;;BU)S:(AU;SA;FW;;;BU)",
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantBinding, err := bindWindowsSecurityDescriptor(want, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotBinding, err := bindWindowsSecurityDescriptor(got, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := compareWindowsSecurityBindings(wantBinding, gotBinding); err == nil {
+			t.Fatal("changed SACL retained the authenticated complete-descriptor binding")
+		}
+	})
+}
+
+func testWindowsReplacementRecordDescriptorBinding(t *testing.T) {
+	var digest [32]byte
+	for index := range digest {
+		digest[index] = byte(index + 1)
+	}
+	want := windowsReplacementRecordData{
+		state: windowsReplacementRecordPrepared,
+		original: windowsFileIdentity{
+			volumeSerialNumber: 1,
+			fileIndexHigh:      2,
+			fileIndexLow:       3,
+		},
+		installed: windowsFileIdentity{
+			volumeSerialNumber: 4,
+			fileIndexHigh:      5,
+			fileIndexLow:       6,
+		},
+		securityBinding: windowsSecurityBinding{
+			metadata: windowsSecurityBindingOrdinary |
+				windowsSecurityBindingDACLAutoInheritedRequired,
+			digest: digest,
+		},
+	}
+	encoded := encodeWindowsReplacementRecord(want)
+	if len(encoded) != 80 {
+		t.Fatalf("authenticated rollback record size = %d, want 80", len(encoded))
+	}
+	if got := binary.LittleEndian.Uint32(encoded[8:12]); got != 2 {
+		t.Fatalf("authenticated rollback record version = %d, want 2", got)
+	}
+	got, err := decodeWindowsReplacementRecord(encoded)
+	if err != nil {
+		t.Fatalf("decode authenticated rollback record: %v", err)
+	}
+	if got != want {
+		t.Fatalf("authenticated rollback record = %#v, want %#v", got, want)
+	}
+
+	corruptDigest := append([]byte(nil), encoded...)
+	corruptDigest[44] ^= 0xff
+	if _, err := decodeWindowsReplacementRecord(corruptDigest); err == nil ||
+		!strings.Contains(err.Error(), "checksum is invalid") {
+		t.Fatalf("descriptor-binding corruption error = %v, want checksum rejection", err)
+	}
+
+	invalidBinding := append([]byte(nil), encoded...)
+	binary.LittleEndian.PutUint32(invalidBinding[40:44], 0)
+	binary.LittleEndian.PutUint32(
+		invalidBinding[76:80],
+		crc32.ChecksumIEEE(invalidBinding[:76]),
+	)
+	if _, err := decodeWindowsReplacementRecord(invalidBinding); err == nil ||
+		!strings.Contains(err.Error(), "security descriptor binding is invalid") {
+		t.Fatalf("invalid descriptor-binding metadata error = %v, want binding rejection", err)
+	}
+
+	legacy := make([]byte, 44)
+	copy(legacy[:8], []byte{'S', 'S', 'M', 'O', 'L', 'D', '1', 0})
+	binary.LittleEndian.PutUint32(legacy[8:12], 1)
+	binary.LittleEndian.PutUint32(legacy[12:16], windowsReplacementRecordPrepared)
+	putWindowsFileIdentity(legacy[16:28], want.original)
+	putWindowsFileIdentity(legacy[28:40], want.installed)
+	binary.LittleEndian.PutUint32(legacy[40:44], crc32.ChecksumIEEE(legacy[:40]))
+	if _, err := decodeWindowsReplacementRecord(legacy); err == nil ||
+		!strings.Contains(err.Error(), "record size is 44, want 80") {
+		t.Fatalf("legacy unbound rollback record error = %v, want fail-closed size rejection", err)
+	}
 }
 
 func testWindowsOptionalFullTierFallback(t *testing.T) {
@@ -1445,6 +1566,159 @@ func testWindowsLateHardLinksCannotCompromiseTarget(t *testing.T) {
 			})
 		})
 	}
+}
+
+func testWindowsPreparedRecoveryRejectsDescriptorMutation(t *testing.T) {
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	target := filepath.Join(directory, "ssm.exe")
+	stage := filepath.Join(directory, ".ssm.descriptor-mutation-stage.exe")
+	stageAlias := filepath.Join(directory, "descriptor-mutation-stage-alias.exe")
+	ready := filepath.Join(directory, "descriptor-mutation.ready")
+	proceed := filepath.Join(directory, "descriptor-mutation.proceed")
+	copyWindowsTestExecutable(t, testExecutable, target, nil)
+	setRestrictiveWindowsTestDACL(t, target)
+	original, err := os.ReadFile(target) //nolint:gosec // test-owned mapped executable
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalIdentity, err := inspectWindowsReplacementPath(
+		target,
+		"descriptor-mutation original executable",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalDescriptor := readWindowsTestSecurityDescriptor(t, target)
+	copyWindowsTestExecutable(
+		t,
+		testExecutable,
+		stage,
+		[]byte("\nDESCRIPTOR_MUTATION_STAGE\n"),
+	)
+	stageIdentity, err := inspectWindowsReplacementPath(
+		stage,
+		"descriptor-mutation verified stage",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := os.ReadFile(stage) //nolint:gosec // test-owned verified stage
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updater := windowsReplacementTestCommand(target, stage)
+	updater.Env = append(updater.Env,
+		windowsOrdinaryUserEnv+"=1",
+		windowsReplacementPauseEnv+"="+windowsReplacementPhaseStageRenameGap,
+		windowsReplacementReadyEnv+"="+ready,
+		windowsReplacementGoEnv+"="+proceed,
+		windowsExpectedFailureEnv+"=hard links",
+	)
+	var updaterOutput bytes.Buffer
+	updater.Stdout = &updaterOutput
+	updater.Stderr = &updaterOutput
+	if err := updater.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForWindowsTestPath(t, ready)
+	linkErr := os.Link(stage, stageAlias)
+	if err := os.WriteFile(proceed, []byte("continue"), 0o600); err != nil { //nolint:gosec // test-owned synchronization fixture
+		t.Fatal(err)
+	}
+	waitErr := updater.Wait()
+	if linkErr != nil {
+		t.Fatalf(
+			"create descriptor-mutation adversarial link: %v; updater_error=%v output=%q",
+			linkErr,
+			waitErr,
+			updaterOutput.String(),
+		)
+	}
+	if waitErr != nil {
+		t.Fatalf("prepare descriptor-mutation recovery fixture: %v; output=%q", waitErr, updaterOutput.String())
+	}
+	assertWindowsPreparedRecoveryEvidence(
+		t,
+		target,
+		originalIdentity,
+		stageIdentity,
+		1,
+		original,
+		originalDescriptor,
+	)
+	assertWindowsFileBytes(t, target, verified)
+	if err := os.Remove(stageAlias); err != nil {
+		t.Fatalf("release descriptor-mutation hard link: %v", err)
+	}
+
+	backup := windowsReplacementBackup(target)
+	beforeMutationIdentity, err := inspectWindowsReplacementPath(
+		backup,
+		"rollback image before descriptor mutation",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setWritableWindowsTestDACL(t, backup, true)
+	afterMutationIdentity, err := inspectWindowsReplacementPath(
+		backup,
+		"rollback image after descriptor mutation",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterMutationIdentity != beforeMutationIdentity {
+		t.Fatalf(
+			"descriptor mutation changed rollback File ID: got %+v, want %+v",
+			afterMutationIdentity,
+			beforeMutationIdentity,
+		)
+	}
+
+	cleanup := exec.Command(
+		testExecutable,
+		"-test.run=^TestWindowsCleanupPreviousExecutableChildProcess$",
+		"-test.count=1",
+	) //nolint:gosec // fixed test-owned executable and arguments
+	cleanup.Env = append(os.Environ(),
+		windowsCleanupChildEnv+"=1",
+		windowsCleanupTargetEnv+"="+target,
+		windowsExpectedFailureEnv+"=security descriptor contract changed",
+	)
+	if output, err := cleanup.CombinedOutput(); err != nil {
+		t.Fatalf("descriptor-mutation recovery fixture failed: %v; output=%q", err, output)
+	}
+	assertWindowsFileBytes(t, backup, original)
+	assertWindowsFileBytes(t, target, verified)
+	if _, err := os.Stat(windowsReplacementRecord(target)); err != nil {
+		t.Fatalf("descriptor mismatch did not preserve authenticated recovery state: %v", err)
+	}
+	if gotIdentity, err := inspectWindowsReplacementPath(
+		backup,
+		"retained descriptor-mutated rollback image",
+	); err != nil || gotIdentity != originalIdentity {
+		t.Fatalf(
+			"descriptor mismatch changed retained rollback identity: got %+v err=%v, want %+v",
+			gotIdentity,
+			err,
+			originalIdentity,
+		)
+	}
+
+	setRestrictiveWindowsTestDACL(t, backup)
+	runWindowsRecoveryCleanup(t, testExecutable, target)
+	assertWindowsRecoveredOriginal(
+		t,
+		target,
+		originalIdentity,
+		original,
+		originalDescriptor,
+	)
 }
 
 func testWindowsForgedRollbackControlStateIsRejected(t *testing.T) {

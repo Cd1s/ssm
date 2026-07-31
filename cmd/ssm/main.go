@@ -30,7 +30,18 @@ func isSSHCTLInvocation(path string) bool {
 }
 
 func main() {
-	update.CleanupPreviousExecutable()
+	rawArgs := os.Args[1:]
+	machineJSON = hasJSONFlagBeforeDash(rawArgs)
+	if err := update.CleanupPreviousExecutable(); err != nil {
+		os.Exit(machinecontract.WriteClassified(
+			machineJSON,
+			machinecontract.UpdateFailed,
+			machinecontract.Details{
+				Message: fmt.Sprintf("startup executable recovery failed: %v", err),
+				Cause:   err,
+			},
+		))
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			if streamMachine {
@@ -56,7 +67,6 @@ func main() {
 	if version == "dev" {
 		config.EnableDebug()
 	}
-	rawArgs := os.Args[1:]
 	sshctlInvocation := isSSHCTLInvocation(os.Args[0])
 	args, err := parseGlobalArgs(rawArgs)
 	if err != nil {

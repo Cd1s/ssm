@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -59,6 +60,35 @@ func TestNewerVersion(t *testing.T) {
 			t.Fatalf("newerVersion(%q, %q) = %v, want %v", tc.latest, tc.current, got, tc.want)
 		}
 	}
+}
+
+func TestCleanupPreviousExecutableSurfacesResolutionFailures(t *testing.T) {
+	t.Run("executable path", func(t *testing.T) {
+		restoreUpdateTestHooks(t)
+		executablePath = func() (string, error) {
+			return "", errors.New("executable path unavailable")
+		}
+
+		err := CleanupPreviousExecutable()
+		if err == nil || !strings.Contains(err.Error(), "find current executable") {
+			t.Fatalf("cleanup error = %v, want executable-path failure", err)
+		}
+	})
+
+	t.Run("canonical path", func(t *testing.T) {
+		restoreUpdateTestHooks(t)
+		executablePath = func() (string, error) {
+			return filepath.Join(t.TempDir(), "ssm"), nil
+		}
+		evalSymlinks = func(string) (string, error) {
+			return "", errors.New("canonical path unavailable")
+		}
+
+		err := CleanupPreviousExecutable()
+		if err == nil || !strings.Contains(err.Error(), "resolve current executable") {
+			t.Fatalf("cleanup error = %v, want canonical-path failure", err)
+		}
+	})
 }
 
 func TestSameMajorSelection(t *testing.T) {

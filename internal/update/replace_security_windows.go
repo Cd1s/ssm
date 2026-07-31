@@ -4,8 +4,11 @@ package update
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash"
 	"runtime"
 	"syscall"
 	"unsafe"
@@ -112,6 +115,241 @@ type windowsReplacementSecurityState struct {
 	sourceDescriptor *ownedWindowsSecurityDescriptor
 	applyOwner       bool
 	applyGroup       bool
+}
+
+const (
+	windowsSecurityBindingOrdinary                  = uint32(1)
+	windowsSecurityBindingFull                      = uint32(2)
+	windowsSecurityBindingTierMask                  = uint32(0xff)
+	windowsSecurityBindingDACLAutoInheritedRequired = uint32(1 << 8)
+	windowsSecurityContractMaxACLBytes              = 64 << 10
+	windowsSecurityContractMaxSIDBytes              = 256
+)
+
+type windowsSecurityBinding struct {
+	metadata uint32
+	digest   [sha256.Size]byte
+}
+
+type windowsSecurityBindingVerifier struct {
+	binding     windowsSecurityBinding
+	information windows.SECURITY_INFORMATION
+	access      uint32
+	scope       *windowsReplacementPrivilegeScope
+}
+
+func bindWindowsSecurityDescriptor(
+	descriptor *windows.SECURITY_DESCRIPTOR,
+	full bool,
+) (windowsSecurityBinding, error) {
+	if err := validateWindowsSecurityDescriptor(descriptor); err != nil {
+		return windowsSecurityBinding{}, err
+	}
+	control, _, err := descriptor.Control()
+	if err != nil {
+		return windowsSecurityBinding{}, fmt.Errorf("read security descriptor control: %w", err)
+	}
+	owner, _, err := descriptor.Owner()
+	if err != nil || owner == nil || !owner.IsValid() {
+		return windowsSecurityBinding{}, fmt.Errorf(
+			"read security descriptor owner: %w",
+			descriptorComponentError(err),
+		)
+	}
+	group, _, err := descriptor.Group()
+	if err != nil || group == nil || !group.IsValid() {
+		return windowsSecurityBinding{}, fmt.Errorf(
+			"read security descriptor primary group: %w",
+			descriptorComponentError(err),
+		)
+	}
+	dacl, err := readWindowsDACLContract(descriptor, "security descriptor")
+	if err != nil {
+		return windowsSecurityBinding{}, err
+	}
+
+	binding := windowsSecurityBinding{metadata: windowsSecurityBindingOrdinary}
+	digest := sha256.New()
+	_, _ = digest.Write([]byte("SSM-WINDOWS-SECURITY-CONTRACT-V1\x00"))
+	writeWindowsSecurityContractUint32(digest, windowsSecurityBindingOrdinary)
+	if err := writeWindowsSecurityContractSID(digest, owner, "owner"); err != nil {
+		return windowsSecurityBinding{}, err
+	}
+	if err := writeWindowsSecurityContractSID(digest, group, "primary group"); err != nil {
+		return windowsSecurityBinding{}, err
+	}
+	writeWindowsSecurityContractACL(digest, dacl)
+	writeWindowsSecurityContractUint32(
+		digest,
+		uint32(control&windows.SE_DACL_PROTECTED),
+	)
+
+	if full {
+		binding.metadata = windowsSecurityBindingFull
+		sacl, err := readWindowsSACLContract(descriptor, "security descriptor")
+		if err != nil {
+			return windowsSecurityBinding{}, err
+		}
+		writeWindowsSecurityContractUint32(digest, windowsSecurityBindingFull)
+		writeWindowsSecurityContractACL(digest, sacl)
+		writeWindowsSecurityContractUint32(
+			digest,
+			uint32(control&windowsSecurityBindingFullControlMask()),
+		)
+	} else if control&windows.SE_DACL_AUTO_INHERITED != 0 {
+		binding.metadata |= windowsSecurityBindingDACLAutoInheritedRequired
+	}
+	copy(binding.digest[:], digest.Sum(nil))
+	return binding, nil
+}
+
+func validateWindowsSecurityBinding(binding windowsSecurityBinding) error {
+	switch binding.metadata & windowsSecurityBindingTierMask {
+	case windowsSecurityBindingOrdinary:
+		if binding.metadata & ^(windowsSecurityBindingTierMask|
+			windowsSecurityBindingDACLAutoInheritedRequired) != 0 {
+			return fmt.Errorf("ordinary Windows security descriptor binding flags are invalid")
+		}
+	case windowsSecurityBindingFull:
+		if binding.metadata != windowsSecurityBindingFull {
+			return fmt.Errorf("complete Windows security descriptor binding flags are invalid")
+		}
+	default:
+		return fmt.Errorf("Windows security descriptor binding tier is invalid")
+	}
+	return nil
+}
+
+func newWindowsSecurityBindingVerifier(
+	binding windowsSecurityBinding,
+) (*windowsSecurityBindingVerifier, error) {
+	if err := validateWindowsSecurityBinding(binding); err != nil {
+		return nil, err
+	}
+	verifier := &windowsSecurityBindingVerifier{
+		binding:     binding,
+		information: windowsOrdinarySecurityInformation,
+		access:      windows.READ_CONTROL,
+	}
+	if binding.metadata&windowsSecurityBindingTierMask != windowsSecurityBindingFull {
+		return verifier, nil
+	}
+	scope, available, err := beginWindowsReplacementSecurityPrivileges()
+	if err != nil {
+		return nil, fmt.Errorf("enable complete Windows descriptor recovery privileges: %w", err)
+	}
+	if !available {
+		return nil, fmt.Errorf("complete Windows descriptor recovery privileges are unavailable")
+	}
+	verifier.scope = scope
+	verifier.information = windowsFullSecurityInformation
+	verifier.access |= windows.ACCESS_SYSTEM_SECURITY
+	return verifier, nil
+}
+
+func (verifier *windowsSecurityBindingVerifier) verify(
+	handle windows.Handle,
+	description string,
+) (resultErr error) {
+	descriptor, err := captureWindowsReplacementDescriptor(handle, verifier.information)
+	if err != nil {
+		return fmt.Errorf("capture %s security descriptor: %w", description, err)
+	}
+	defer func() {
+		if closeErr := descriptor.close(); closeErr != nil {
+			resultErr = errors.Join(
+				resultErr,
+				fmt.Errorf("free %s security descriptor: %w", description, closeErr),
+			)
+		}
+	}()
+	got, err := bindWindowsSecurityDescriptor(
+		descriptor.descriptor,
+		verifier.binding.metadata&windowsSecurityBindingTierMask == windowsSecurityBindingFull,
+	)
+	if err != nil {
+		return fmt.Errorf("bind %s security descriptor: %w", description, err)
+	}
+	if err := compareWindowsSecurityBindings(verifier.binding, got); err != nil {
+		return fmt.Errorf("%s security descriptor contract changed", description)
+	}
+	return nil
+}
+
+func compareWindowsSecurityBindings(want, got windowsSecurityBinding) error {
+	if err := validateWindowsSecurityBinding(want); err != nil {
+		return fmt.Errorf("wanted Windows security descriptor binding is invalid: %w", err)
+	}
+	if err := validateWindowsSecurityBinding(got); err != nil {
+		return fmt.Errorf("captured Windows security descriptor binding is invalid: %w", err)
+	}
+	if want.metadata&windowsSecurityBindingTierMask !=
+		got.metadata&windowsSecurityBindingTierMask {
+		return fmt.Errorf("Windows security descriptor binding tier changed")
+	}
+	if got.digest != want.digest {
+		return fmt.Errorf("Windows security descriptor binding digest changed")
+	}
+	if want.metadata&windowsSecurityBindingDACLAutoInheritedRequired != 0 &&
+		got.metadata&windowsSecurityBindingDACLAutoInheritedRequired == 0 {
+		return fmt.Errorf("Windows security descriptor auto-inherited state regressed")
+	}
+	return nil
+}
+
+func (verifier *windowsSecurityBindingVerifier) close() error {
+	if verifier == nil || verifier.scope == nil {
+		return nil
+	}
+	err := verifier.scope.close()
+	verifier.scope = nil
+	return err
+}
+
+func writeWindowsSecurityContractSID(
+	digest hash.Hash,
+	sid *windows.SID,
+	description string,
+) error {
+	size := sid.Len()
+	if size <= 0 || size > windowsSecurityContractMaxSIDBytes {
+		return fmt.Errorf("%s SID size %d is invalid", description, size)
+	}
+	writeWindowsSecurityContractUint32(digest, uint32(size))
+	_, _ = digest.Write(unsafe.Slice((*byte)(unsafe.Pointer(sid)), size))
+	return nil
+}
+
+func writeWindowsSecurityContractACL(digest hash.Hash, contract windowsDACLContract) {
+	writeWindowsSecurityContractUint32(digest, uint32(contract.state))
+	writeWindowsSecurityContractUint32(digest, uint32(contract.revision))
+	writeWindowsSecurityContractUint32(digest, uint32(len(contract.aces)))
+	for _, ace := range contract.aces {
+		writeWindowsSecurityContractUint32(digest, uint32(len(ace)))
+		_, _ = digest.Write(ace)
+	}
+}
+
+func writeWindowsSecurityContractUint32(digest hash.Hash, value uint32) {
+	var encoded [4]byte
+	binary.LittleEndian.PutUint32(encoded[:], value)
+	_, _ = digest.Write(encoded[:])
+}
+
+func windowsSecurityBindingFullControlMask() windows.SECURITY_DESCRIPTOR_CONTROL {
+	return windows.SE_OWNER_DEFAULTED |
+		windows.SE_GROUP_DEFAULTED |
+		windows.SE_DACL_PRESENT |
+		windows.SE_DACL_DEFAULTED |
+		windows.SE_DACL_AUTO_INHERIT_REQ |
+		windows.SE_DACL_AUTO_INHERITED |
+		windows.SE_DACL_PROTECTED |
+		windows.SE_SACL_PRESENT |
+		windows.SE_SACL_DEFAULTED |
+		windows.SE_SACL_AUTO_INHERIT_REQ |
+		windows.SE_SACL_AUTO_INHERITED |
+		windows.SE_SACL_PROTECTED |
+		windows.SE_RM_CONTROL_VALID
 }
 
 func prepareWindowsReplacementSecurity(
@@ -433,21 +671,7 @@ func compareWindowsSecurityDescriptors(want, got *windows.SECURITY_DESCRIPTOR, f
 	if err != nil {
 		return fmt.Errorf("read replacement descriptor control: %w", err)
 	}
-	relevantControl := windows.SECURITY_DESCRIPTOR_CONTROL(
-		windows.SE_OWNER_DEFAULTED |
-			windows.SE_GROUP_DEFAULTED |
-			windows.SE_DACL_PRESENT |
-			windows.SE_DACL_DEFAULTED |
-			windows.SE_DACL_AUTO_INHERIT_REQ |
-			windows.SE_DACL_AUTO_INHERITED |
-			windows.SE_DACL_PROTECTED |
-			windows.SE_SACL_PRESENT |
-			windows.SE_SACL_DEFAULTED |
-			windows.SE_SACL_AUTO_INHERIT_REQ |
-			windows.SE_SACL_AUTO_INHERITED |
-			windows.SE_SACL_PROTECTED |
-			windows.SE_RM_CONTROL_VALID,
-	)
+	relevantControl := windowsSecurityBindingFullControlMask()
 	if wantControl&relevantControl != gotControl&relevantControl {
 		return fmt.Errorf("complete security descriptor inheritance or defaulting state changed")
 	}
@@ -463,8 +687,9 @@ const (
 )
 
 type windowsDACLContract struct {
-	state windowsDACLState
-	aces  [][]byte
+	state    windowsDACLState
+	revision byte
+	aces     [][]byte
 }
 
 func compareWindowsOrdinarySecurityDescriptors(
@@ -516,6 +741,13 @@ func compareWindowsOrdinarySecurityDescriptors(
 			"DACL state changed: got %s, want %s",
 			gotDACL.state,
 			wantDACL.state,
+		)
+	}
+	if wantDACL.revision != gotDACL.revision {
+		return fmt.Errorf(
+			"DACL revision changed: got %d, want %d",
+			gotDACL.revision,
+			wantDACL.revision,
 		)
 	}
 	if len(wantDACL.aces) != len(gotDACL.aces) {
@@ -582,9 +814,11 @@ func readWindowsDACLContract(
 	}
 
 	contract := windowsDACLContract{
-		state: windowsDACLPresent,
-		aces:  make([][]byte, 0, dacl.AceCount),
+		state:    windowsDACLPresent,
+		revision: *(*byte)(unsafe.Pointer(dacl)),
+		aces:     make([][]byte, 0, dacl.AceCount),
 	}
+	totalBytes := 0
 	for index := uint32(0); index < uint32(dacl.AceCount); index++ {
 		var ace *windows.ACCESS_ALLOWED_ACE
 		if err := windows.GetAce(dacl, index, &ace); err != nil {
@@ -600,6 +834,65 @@ func readWindowsDACLContract(
 				"%s DACL ACE %d is absent or truncated",
 				description,
 				index,
+			)
+		}
+		totalBytes += int(ace.Header.AceSize)
+		if totalBytes > windowsSecurityContractMaxACLBytes {
+			return windowsDACLContract{}, fmt.Errorf(
+				"%s DACL exceeds the %d-byte security contract limit",
+				description,
+				windowsSecurityContractMaxACLBytes,
+			)
+		}
+		raw := unsafe.Slice((*byte)(unsafe.Pointer(ace)), int(ace.Header.AceSize))
+		contract.aces = append(contract.aces, append([]byte(nil), raw...))
+	}
+	return contract, nil
+}
+
+func readWindowsSACLContract(
+	descriptor *windows.SECURITY_DESCRIPTOR,
+	description string,
+) (windowsDACLContract, error) {
+	sacl, _, err := descriptor.SACL()
+	switch {
+	case errors.Is(err, windows.ERROR_OBJECT_NOT_FOUND):
+		return windowsDACLContract{state: windowsDACLAbsent}, nil
+	case err != nil:
+		return windowsDACLContract{}, fmt.Errorf("read %s SACL: %w", description, err)
+	case sacl == nil:
+		return windowsDACLContract{state: windowsDACLNull}, nil
+	}
+
+	contract := windowsDACLContract{
+		state:    windowsDACLPresent,
+		revision: *(*byte)(unsafe.Pointer(sacl)),
+		aces:     make([][]byte, 0, sacl.AceCount),
+	}
+	totalBytes := 0
+	for index := uint32(0); index < uint32(sacl.AceCount); index++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(sacl, index, &ace); err != nil {
+			return windowsDACLContract{}, fmt.Errorf(
+				"read %s SACL ACE %d: %w",
+				description,
+				index,
+				err,
+			)
+		}
+		if ace == nil || ace.Header.AceSize < uint16(unsafe.Sizeof(windows.ACE_HEADER{})) {
+			return windowsDACLContract{}, fmt.Errorf(
+				"%s SACL ACE %d is absent or truncated",
+				description,
+				index,
+			)
+		}
+		totalBytes += int(ace.Header.AceSize)
+		if totalBytes > windowsSecurityContractMaxACLBytes {
+			return windowsDACLContract{}, fmt.Errorf(
+				"%s SACL exceeds the %d-byte security contract limit",
+				description,
+				windowsSecurityContractMaxACLBytes,
 			)
 		}
 		raw := unsafe.Slice((*byte)(unsafe.Pointer(ace)), int(ace.Header.AceSize))

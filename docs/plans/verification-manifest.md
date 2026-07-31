@@ -89,8 +89,11 @@ handle renames, fail-closed canonical-name substitution while a hostile handle
 withholds delete sharing, exact-object recovery after handle release, late
 target/stage hard-link recovery after link removal, explicit owner-only
 protected lock/state DACLs, rejection of valid-CRC forged, inherited/writable,
-and wrong-owner control state, completed and unexplained stale rollback states,
-concurrent updaters, ordinary rollback, and rollback-failure evidence and retry.
+and wrong-owner control state, descriptor-bound versioned state and legacy
+record rejection, same-File-ID descriptor mutation rejection, compiled startup
+refusal while hostile sharing blocks prepared recovery, completed and
+unexplained stale rollback states, concurrent updaters, ordinary rollback, and
+rollback-failure evidence and retry.
 Tests
 that execute a Unix remote shell or compare Bash script behavior are selected
 only on Unix; portable parsing, planning, host-key, environment-isolation, and

@@ -178,16 +178,16 @@ func ClearFlag() {
 // CleanupPreviousExecutable reconciles only authenticated, identity-bound
 // Windows rollback state while holding the replacement update lock. Completed
 // state is cleaned; prepared state retries restoration of the exact original.
-func CleanupPreviousExecutable() {
+func CleanupPreviousExecutable() error {
 	exe, err := executablePath()
 	if err != nil {
-		return
+		return fmt.Errorf("find current executable: %w", err)
 	}
 	exe, err = evalSymlinks(exe)
 	if err != nil {
-		return
+		return fmt.Errorf("resolve current executable: %w", err)
 	}
-	_ = cleanupPreviousExecutable(exe)
+	return cleanupPreviousExecutable(exe)
 }
 
 type OrdinaryResult struct {

@@ -90,11 +90,19 @@ func replaceExecutable(staged, target string) (resultErr error) {
 	if err := runWindowsReplacementTestHook(windowsReplacementPhaseBeforeTargetMove); err != nil {
 		return failBeforeRecord("continue before preserving Windows executable", err)
 	}
+	securityBinding, err := bindWindowsSecurityDescriptor(
+		security.sourceDescriptor.descriptor,
+		security.tier.full,
+	)
+	if err != nil {
+		return failBeforeRecord("bind Windows executable security descriptor", err)
+	}
 
 	record, err := createWindowsReplacementRecord(
 		target,
 		targetIdentity,
 		stageIdentity,
+		securityBinding,
 		updateLock.policy,
 	)
 	if err != nil {
@@ -579,18 +587,24 @@ func (state *windowsReplacementLockState) close() error {
 }
 
 const (
-	windowsReplacementRecordSize      = 44
-	windowsReplacementRecordVersion   = uint32(1)
+	windowsReplacementRecordSize      = 80
+	windowsReplacementRecordVersion   = uint32(2)
 	windowsReplacementRecordPrepared  = uint32(1)
 	windowsReplacementRecordCompleted = uint32(2)
 )
 
-var windowsReplacementRecordMagic = [8]byte{'S', 'S', 'M', 'O', 'L', 'D', '1', 0}
+// Version 2 is a fixed, bounded record:
+// magic/version/state | original ID | installed ID | descriptor metadata |
+// SHA-256 semantic descriptor binding | CRC32. The validated owner-only,
+// protected state-file DACL authenticates the record; CRC32 only detects
+// accidental corruption or torn writes.
+var windowsReplacementRecordMagic = [8]byte{'S', 'S', 'M', 'O', 'L', 'D', '2', 0}
 
 type windowsReplacementRecordData struct {
-	state     uint32
-	original  windowsFileIdentity
-	installed windowsFileIdentity
+	state           uint32
+	original        windowsFileIdentity
+	installed       windowsFileIdentity
+	securityBinding windowsSecurityBinding
 }
 
 type windowsReplacementRecordState struct {
@@ -603,8 +617,12 @@ func createWindowsReplacementRecord(
 	target string,
 	original,
 	installed windowsFileIdentity,
+	securityBinding windowsSecurityBinding,
 	policy *windowsControlSecurityPolicy,
 ) (*windowsReplacementRecordState, error) {
+	if err := validateWindowsSecurityBinding(securityBinding); err != nil {
+		return nil, fmt.Errorf("validate Windows security descriptor binding: %w", err)
+	}
 	path := windowsReplacementRecord(target)
 	if err := requireWindowsReplacementPathAbsent(path, "Windows rollback ownership record"); err != nil {
 		return nil, err
@@ -628,9 +646,10 @@ func createWindowsReplacementRecord(
 	state := &windowsReplacementRecordState{
 		handle: handle,
 		data: windowsReplacementRecordData{
-			state:     windowsReplacementRecordPrepared,
-			original:  original,
-			installed: installed,
+			state:           windowsReplacementRecordPrepared,
+			original:        original,
+			installed:       installed,
+			securityBinding: securityBinding,
 		},
 	}
 	_, err = inspectWindowsReplacementHandle(
@@ -716,7 +735,9 @@ func encodeWindowsReplacementRecord(record windowsReplacementRecordData) []byte 
 	binary.LittleEndian.PutUint32(data[12:16], record.state)
 	putWindowsFileIdentity(data[16:28], record.original)
 	putWindowsFileIdentity(data[28:40], record.installed)
-	binary.LittleEndian.PutUint32(data[40:44], crc32.ChecksumIEEE(data[:40]))
+	binary.LittleEndian.PutUint32(data[40:44], record.securityBinding.metadata)
+	copy(data[44:76], record.securityBinding.digest[:])
+	binary.LittleEndian.PutUint32(data[76:80], crc32.ChecksumIEEE(data[:76]))
 	return data
 }
 
@@ -738,7 +759,7 @@ func decodeWindowsReplacementRecord(data []byte) (windowsReplacementRecordData, 
 			windowsReplacementRecordVersion,
 		)
 	}
-	if got, want := binary.LittleEndian.Uint32(data[40:44]), crc32.ChecksumIEEE(data[:40]); got != want {
+	if got, want := binary.LittleEndian.Uint32(data[76:80]), crc32.ChecksumIEEE(data[:76]); got != want {
 		return windowsReplacementRecordData{}, fmt.Errorf("Windows rollback ownership record checksum is invalid")
 	}
 	state := binary.LittleEndian.Uint32(data[12:16])
@@ -748,11 +769,22 @@ func decodeWindowsReplacementRecord(data []byte) (windowsReplacementRecordData, 
 			state,
 		)
 	}
-	return windowsReplacementRecordData{
+	record := windowsReplacementRecordData{
 		state:     state,
 		original:  getWindowsFileIdentity(data[16:28]),
 		installed: getWindowsFileIdentity(data[28:40]),
-	}, nil
+		securityBinding: windowsSecurityBinding{
+			metadata: binary.LittleEndian.Uint32(data[40:44]),
+		},
+	}
+	copy(record.securityBinding.digest[:], data[44:76])
+	if err := validateWindowsSecurityBinding(record.securityBinding); err != nil {
+		return windowsReplacementRecordData{}, fmt.Errorf(
+			"Windows rollback ownership record security descriptor binding is invalid: %w",
+			err,
+		)
+	}
+	return record, nil
 }
 
 func putWindowsFileIdentity(data []byte, identity windowsFileIdentity) {
@@ -958,9 +990,24 @@ func recoverPreparedWindowsReplacement(
 	backup string,
 	record *windowsReplacementRecordState,
 ) (resultErr error) {
-	backupHandle, err := openWindowsProtectedReplacementFile(backup, windows.DELETE)
+	verifier, err := newWindowsSecurityBindingVerifier(record.data.securityBinding)
+	if err != nil {
+		return fmt.Errorf("prepare Windows rollback security descriptor verification: %w", err)
+	}
+	defer func() {
+		if closeErr := verifier.close(); closeErr != nil {
+			resultErr = errors.Join(
+				resultErr,
+				fmt.Errorf("release Windows rollback security descriptor verification: %w", closeErr),
+			)
+		}
+	}()
+	backupHandle, err := openWindowsProtectedReplacementFile(
+		backup,
+		windows.DELETE|verifier.access,
+	)
 	if err != nil && isWindowsPathNotFound(err) {
-		return completePreparedWindowsRecoveryAtCanonical(target, record)
+		return completePreparedWindowsRecoveryAtCanonical(target, record, verifier)
 	}
 	if err != nil {
 		return fmt.Errorf("open Windows rollback image for recovery: %w", err)
@@ -985,6 +1032,9 @@ func recoverPreparedWindowsReplacement(
 	if backupIdentity != record.data.original {
 		return fmt.Errorf("prepared Windows rollback record does not match the rollback image")
 	}
+	if err := verifier.verify(backupHandle, "Windows rollback recovery image"); err != nil {
+		return err
+	}
 	if err := validateWindowsRecoveryCanonicalTarget(target); err != nil {
 		return err
 	}
@@ -1005,6 +1055,12 @@ func recoverPreparedWindowsReplacement(
 	); err != nil {
 		return err
 	}
+	if err := verifier.verify(backupHandle, "recovered Windows executable"); err != nil {
+		return err
+	}
+	if err := verifier.close(); err != nil {
+		return fmt.Errorf("release Windows rollback security descriptor verification: %w", err)
+	}
 	if err := record.remove(); err != nil {
 		return fmt.Errorf("remove recovered Windows rollback ownership record: %w", err)
 	}
@@ -1017,8 +1073,9 @@ func recoverPreparedWindowsReplacement(
 func completePreparedWindowsRecoveryAtCanonical(
 	target string,
 	record *windowsReplacementRecordState,
+	verifier *windowsSecurityBindingVerifier,
 ) (resultErr error) {
-	targetHandle, err := openWindowsProtectedReplacementFile(target, 0)
+	targetHandle, err := openWindowsProtectedReplacementFile(target, verifier.access)
 	if err != nil {
 		if isWindowsPathNotFound(err) {
 			return fmt.Errorf("prepared Windows rollback record has no original executable")
@@ -1044,6 +1101,12 @@ func completePreparedWindowsRecoveryAtCanonical(
 	}
 	if targetIdentity != record.data.original {
 		return fmt.Errorf("prepared Windows rollback record has no matching rollback image")
+	}
+	if err := verifier.verify(targetHandle, "recovered Windows executable"); err != nil {
+		return err
+	}
+	if err := verifier.close(); err != nil {
+		return fmt.Errorf("release Windows rollback security descriptor verification: %w", err)
 	}
 	if err := record.remove(); err != nil {
 		return fmt.Errorf("remove recovered Windows rollback ownership record: %w", err)
