@@ -98,7 +98,7 @@ func main() {
 	machineJSON, streamMachine = startupOutputMode(os.Args[0], rawArgs)
 	if err := update.CleanupPreviousExecutable(); err != nil {
 		failure := machinecontract.Classify(
-			machinecontract.UpdateFailed,
+			updateFailureKind(err, machinecontract.UpdateFailed),
 			machinecontract.Details{
 				Message: fmt.Sprintf("startup executable recovery failed: %v", err),
 				Cause:   err,
@@ -144,7 +144,16 @@ func main() {
 		os.Exit(machinecontract.WriteClassified(machineJSON, kind, machinecontract.Details{Cause: err}))
 	}
 	if !offlineMode && !isInformationalInvocation(rawArgs) {
-		checkUpdate()
+		if err := checkUpdate(); err != nil {
+			failure := machinecontract.Classify(
+				updateFailureKind(err, machinecontract.UpdateFailed),
+				machinecontract.Details{Cause: err},
+			)
+			if streamMachine {
+				os.Exit(writeStreamFailure(os.Stdout, failure))
+			}
+			os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+		}
 	}
 
 	if sshctlInvocation {
@@ -412,7 +421,7 @@ func runUpdate(args []string) {
 			if !reviewRendered {
 				renderFailure(err)
 			}
-			failure := machinecontract.Classify(machinecontract.UpdateMigrationFailed, machinecontract.Details{Cause: err})
+			failure := machinecontract.Classify(updateFailureKind(err, machinecontract.UpdateMigrationFailed), machinecontract.Details{Cause: err})
 			if machineJSON {
 				if finishMachineReview != nil {
 					_ = finishMachineReview(false, failure)
@@ -438,7 +447,7 @@ func runUpdate(args []string) {
 	}
 	result, err := update.Download(version)
 	if err != nil {
-		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.UpdateFailed, machinecontract.Details{Cause: err}))
+		os.Exit(machinecontract.WriteClassified(machineJSON, updateFailureKind(err, machinecontract.UpdateFailed), machinecontract.Details{Cause: err}))
 	}
 	if result.Installed != "" && !machineJSON {
 		fmt.Printf("Updated to %s\n", result.Installed)
@@ -584,11 +593,26 @@ func parseGlobalArgs(args []string) ([]string, error) {
 	return out, nil
 }
 
-func checkUpdate() {
+func updateFailureKind(err error, fallback machinecontract.Kind) machinecontract.Kind {
+	if update.IsRecoveryRequired(err) {
+		return machinecontract.UpdateRecoveryRequired
+	}
+	if update.IsRecoveryBlocked(err) {
+		return machinecontract.InternalFailure
+	}
+	return fallback
+}
+
+func checkUpdate() error {
 	settings := config.LoadSettings()
 	if settings.AutoUpdate && version != "dev" {
-		_ = update.Auto(version)
+		if err := update.Auto(version); err != nil {
+			if update.IsRecoveryRequired(err) || update.IsRecoveryBlocked(err) {
+				return err
+			}
+		}
 	}
+	return nil
 }
 
 func unlock() {

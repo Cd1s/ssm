@@ -36,7 +36,9 @@ func TestCompiledWindowsBlockedPreparedRecoveryStopsStartupDispatch(t *testing.T
 		windowsCompiledContractStageLinkEnv: stageAlias,
 	}, "update")
 	if result.ProcessExit != 1 ||
-		!strings.Contains(result.Stderr, "rollback failed") {
+		!strings.Contains(result.Stderr, "ssm: error=update_recovery_required stage=update_recovery") ||
+		!strings.Contains(result.Stderr, "rollback failed") ||
+		!strings.Contains(result.Stderr, "authenticated original evidence was preserved; canonical restoration remains required before retrying") {
 		t.Fatalf(
 			"compiled prepared-recovery setup did not fail closed; output=%s",
 			compiledOutputIdentity(result),
@@ -82,8 +84,10 @@ func TestCompiledWindowsBlockedPreparedRecoveryStopsStartupDispatch(t *testing.T
 	}, "--version")
 	if blocked.ProcessExit != 1 ||
 		blocked.Stdout != "" ||
+		!strings.Contains(blocked.Stderr, "ssm: error=update_recovery_required stage=update_recovery") ||
 		!strings.Contains(blocked.Stderr, "startup executable recovery failed") ||
-		!strings.Contains(blocked.Stderr, "restore Windows rollback image") {
+		!strings.Contains(blocked.Stderr, "restore Windows rollback image") ||
+		!strings.Contains(blocked.Stderr, "authenticated original evidence was preserved; canonical restoration remains required before retrying") {
 		t.Fatalf(
 			"blocked compiled startup dispatched a successful command; output=%s",
 			compiledOutputIdentity(blocked),
@@ -99,11 +103,11 @@ func TestCompiledWindowsBlockedPreparedRecoveryStopsStartupDispatch(t *testing.T
 	}, "--json", "--version")
 	assertCompiledMachineContract(t, machineBlocked, compiledMachineContract{
 		OK:          false,
-		Error:       "update_failed",
-		Stage:       "update",
+		Error:       "update_recovery_required",
+		Stage:       "update_recovery",
 		JSONExit:    1,
 		ProcessExit: 1,
-		Hint:        "the prior executable was preserved; retry after resolving the reported update failure",
+		Hint:        "authenticated original evidence was preserved; canonical restoration remains required before retrying",
 	})
 	for _, path := range []string{backup, record} {
 		if _, err := os.Stat(path); err != nil {
@@ -174,8 +178,9 @@ func TestCompiledWindowsBlockedPreparedRecoveryStopsStartupDispatch(t *testing.T
 				t.Fatalf("decode blocked stream startup failure: %v", err)
 			}
 			if failure["ok"] != false ||
-				failure["error"] != "update_failed" ||
-				failure["stage"] != "update" ||
+				failure["error"] != "update_recovery_required" ||
+				failure["stage"] != "update_recovery" ||
+				failure["hint"] != "authenticated original evidence was preserved; canonical restoration remains required before retrying" ||
 				!compiledJSONExitEquals(failure["exit"], 1) {
 				t.Fatalf(
 					"blocked compiled stream startup contract = %v; output=%s",

@@ -6,6 +6,11 @@ BC-9 changes only release trust. Same-major selection, explicit cross-major
 authorization, release naming, machine failure contracts, and platform-safe
 replacement remain separate compatibility boundaries.
 
+The Issue #28 Windows amendment adds one narrowly scoped terminal state for a
+mapped executable whose forward commit and authenticated rollback are both
+refused after the original has moved. It does not change provenance trust or
+any Unix replacement path.
+
 ## Old and new trust matrix
 
 | Replacement path | Before BC-9 | After BC-9 | Authorization unchanged |
@@ -98,7 +103,28 @@ newest eligible release fails this check.
 | Unsupported, missing, misnamed, additional, or duplicate release asset | Strict manifest selection | No asset download and no fallback. |
 | Checksums over 16 KiB, provenance or release metadata over 1 MiB, or a binary over 64 MiB | Header-independent bounded stream, rejecting after at most limit plus one byte | No replacement; temporary output is bounded and removed; installed bytes and mode are unchanged. |
 | A Unix callback or concurrent writer substitutes the staged pathname, mutates the staged object, or hard-links the authenticated install copy | Portable same-directory replacement boundary | The post-callback stage is opened once and copied only from that handle; both the handle stream and fresh sibling copy must equal the provenance-authenticated SHA-256, and the sibling must still be a single-link regular file before its atomic rename. No unverified bytes replace the installed executable. |
-| Windows cannot overwrite its mapped running `.exe` | Platform replacement | Pass the verified SHA-256 into the platform boundary, hold the fixed sibling update lock across inspection, handle-bound moves, rollback, recovery, and cleanup, and hash the exact non-write-sharing stage handle before any canonical mutation. Reject reparse points and multiple hard links, require `GetFileInformationByHandleEx(FileIdInfo)` volume serial plus 128-bit identity, and keep non-delete-sharing handles on the validated original and stage until the completed record is durable. `SetFileInformationByHandle(FileRenameInfoEx)` renames those exact source objects. Replace, POSIX, and ignore-read-only semantics replace an unlocked object inserted at the temporarily vacant canonical name. Windows cannot replace that object while an external handle withholds delete sharing: installation and synchronous rollback then fail closed, retain the original at `.old` plus the authenticated prepared record, and block cleanup, startup command dispatch, and later updates. After the hostile handle is released, serialized recovery restores the retained original by handle, verifies its strong identity, authenticated executable digest, and security-descriptor contract at the canonical path, and only then clears the record. The ordinary tier captures, applies, and verifies owner, primary group, DACL, and DACL inheritance/protection without optional privileges. When all three backup/restore/security privileges can be enabled on a duplicated thread token and the filesystem supports whole-descriptor application, the full tier instead preserves and verifies the complete descriptor, including SACL-backed fields and RM control. An unavailable full tier is never claimed; failure to preserve the selected tier stops before the first move, restores the still-held original, or retains authenticated recovery evidence when an external sharing lock makes immediate restoration impossible. |
+| Windows cannot overwrite its mapped running `.exe` | Platform replacement | Pass the verified SHA-256 into the platform boundary, hold the fixed sibling update lock across inspection, handle-bound moves, rollback, recovery, and cleanup, and hash the exact non-write-sharing stage handle before any canonical mutation. Reject reparse points and multiple hard links, require `GetFileInformationByHandleEx(FileIdInfo)` volume serial plus 128-bit identity, and keep non-delete-sharing handles on the validated original and stage until the completed record is durable. `SetFileInformationByHandle(FileRenameInfoEx)` renames those exact source objects. Replace, POSIX, and ignore-read-only semantics replace an unlocked object inserted at the temporarily vacant canonical name. Windows cannot replace that object while an external handle withholds delete sharing: installation and synchronous rollback then fail closed as `update_recovery_required`, retain the original at `.old` plus the authenticated prepared record, and block cleanup, startup command dispatch, and later updates. After the hostile handle is released, serialized recovery restores the retained original by handle, verifies its strong identity, authenticated executable digest, and security-descriptor contract at the canonical path, and only then clears the record. The ordinary tier captures, applies, and verifies owner, primary group, DACL, and DACL inheritance/protection without optional privileges. When all three backup/restore/security privileges can be enabled on a duplicated thread token and the filesystem supports whole-descriptor application, the full tier instead preserves and verifies the complete descriptor, including SACL-backed fields and RM control. An unavailable full tier is never claimed; failure to preserve the selected tier stops before the first move, restores the still-held original, or retains authenticated recovery evidence when an external sharing lock makes immediate restoration impossible. |
+
+## Windows replacement terminal-state matrix
+
+| Boundary | Classification and guarantee |
+| --- | --- |
+| Provenance, trust, descriptor capability, lock-policy, stage authentication, or other preflight refusal before the original moves | Ordinary `update_failed` / `update` / exit 1. The exact original strong File ID, SHA-256, descriptor binding, bytes, and mode remain canonical. |
+| Failure after the original moves, followed by successful authenticated rollback | Ordinary `update_failed` / `update` / exit 1 with the same exact-canonical guarantee. Failure to remove or close prepared evidence after successful rollback does not change this classification. |
+| Handle-bound forward commit and authenticated rollback both refuse after the original moves | `update_recovery_required` / `update_recovery` / exit 1. No success is reported. The secret-safe stable hint is `authenticated original evidence was preserved; canonical restoration remains required before retrying`. The exact original `.old` object and prepared authenticated record are retained. |
+| Startup or a later update finds valid prepared evidence but authenticated canonical restoration is still refused | The same recovery-required contract; command dispatch, stdin consumption for `run --stream`, and later replacement remain blocked. |
+| Startup authenticates and restores the exact original | The canonical path is rechecked against the record's strong File ID, SHA-256, and descriptor binding before the exact record and `.old` state are cleared; normal dispatch may then continue. |
+| Recovery evidence is malformed, untrusted, or mismatched | Fail closed through the existing generic internal contract without the ordinary preservation hint. Preserve all evidence; never promote it to the authenticated recovery-required state and never delete it to make an update proceed. |
+| Completed-record or post-commit cleanup refusal | The durably committed replacement remains success. Authenticated evidence is deferred to later cleanup and is not classified as either update failure. |
+
+The absent-canonical, verified-new-canonical, and attacker-canonical dual
+refusal fixtures all require the recovery-required classification and retain
+the authenticated `.old` plus prepared record. The ordinary injection matrix
+covers failures before mutation and after mutation with successful rollback;
+each row independently compares the canonical strong `FileIdInfo`, SHA-256,
+semantic descriptor binding, exact bytes, and mode. Descriptor-focused native
+tests continue to cover ordinary owner/group/DACL inheritance and the
+capability-gated full descriptor including SACL and exact RM control.
 
 `TestTrustFailurePreservesExecutable` records the original executable bytes and
 permission bits, injects a wrong-subject signed bundle, and proves both remain
@@ -147,7 +173,9 @@ rollback byte/descriptor mutation rejection and retry after exact restoration,
 including descriptor verification on the synchronous rollback path before any
 restore or evidence deletion,
 compiled CLI startup refusal while a hostile sharing handle blocks prepared
-recovery, and rollback-failure evidence retention and retry.
+recovery, exact human/JSON/compact-NDJSON recovery-required rendering,
+rollback-failure evidence retention and retry, and exact-canonical proof for
+every ordinary failure injection.
 
 The updater calls the native `GetSecurityInfo` entry point through x/sys'
 Windows loader and wraps each returned allocation in one idempotent owner.
@@ -234,9 +262,12 @@ not finish, recovery holds and verifies that exact original handle, executable
 digest, and descriptor contract while clearing the record. A sharing lock,
 remaining hard link, missing original, identity/digest mismatch, unavailable
 required full tier, or descriptor mismatch keeps the prepared record and any
-`.old` intact and keeps cleanup and later updates blocked. Startup surfaces
-that failure through the existing `update_failed` / `update` machine contract,
-returns nonzero, and does not dispatch the requested command. Synchronous
+`.old` intact and keeps cleanup and later updates blocked. Startup surfaces an
+authenticated restoration refusal through the `update_recovery_required` /
+`update_recovery` machine contract, returns nonzero, and does not dispatch the
+requested command. Evidence that cannot authenticate remains fail-closed
+without receiving either the recovery-required claim or the ordinary
+preservation hint. Synchronous
 rollback verifies that same canonical descriptor binding in addition to strong
 File ID and rollback SHA-256 before restoring the original or deleting the
 prepared record. Successful synchronous rollback therefore follows the same
@@ -355,3 +386,12 @@ For an explicit major migration, retain the prior executable until migration
 validation completes. If the repository announces an identity rotation, first
 install the reviewed overlap/bridge version through a still-valid provenance
 path.
+
+On Windows, `update_recovery_required` means installation did not commit. Do
+not delete or replace `.<exe>.old` or `.<exe>.old.state`. Close the process or
+tool holding the canonical executable without delete sharing, then launch the
+same reviewed executable path again so startup can authenticate and restore
+the exact original. Normal commands and later updates remain blocked until
+that succeeds. If startup instead reports mismatched or untrusted evidence,
+preserve both files for reviewed recovery; do not rename or delete them to
+force an update.

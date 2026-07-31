@@ -112,6 +112,34 @@ func TestCleanupPreviousExecutableSurfacesResolutionFailures(t *testing.T) {
 	})
 }
 
+func TestWindowsRecoveryFailureDispositionIsStableThroughWrapping(t *testing.T) {
+	ordinary := errors.New("ordinary update failure")
+	if IsRecoveryRequired(ordinary) || IsRecoveryBlocked(ordinary) {
+		t.Fatal("ordinary update failure acquired a Windows recovery disposition")
+	}
+
+	recovery := fmt.Errorf("replacement failed: %w", requireRecovery(errors.New("rollback refused")))
+	if !IsRecoveryRequired(recovery) || IsRecoveryBlocked(recovery) {
+		t.Fatal("authenticated rollback refusal lost its recovery-required disposition")
+	}
+	if got := blockOnRecoveryEvidence(recovery); got != recovery {
+		t.Fatal("recovery-required disposition was replaced while propagating cleanup failure")
+	}
+
+	blocked := fmt.Errorf("cleanup failed: %w", blockOnRecoveryEvidence(errors.New("record mismatch")))
+	if IsRecoveryRequired(blocked) || !IsRecoveryBlocked(blocked) {
+		t.Fatal("untrusted recovery evidence acquired the wrong disposition")
+	}
+
+	preserved := fmt.Errorf("cleanup failed: %w", preserveCanonical(errors.New("record removal refused")))
+	if IsRecoveryRequired(preserved) || IsRecoveryBlocked(preserved) {
+		t.Fatal("exact-canonical cleanup failure acquired a pending-recovery disposition")
+	}
+	if got := blockOnRecoveryEvidence(preserved); got != preserved {
+		t.Fatal("exact-canonical cleanup failure lost its ordinary disposition")
+	}
+}
+
 func TestSameMajorSelection(t *testing.T) {
 	releases := []Release{
 		{TagName: "v3.1.0"},

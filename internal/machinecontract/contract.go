@@ -70,6 +70,7 @@ const (
 	PanicFailure                        Kind = "panic_failure"
 	GenericFailure                      Kind = "generic_failure"
 	UpdateFailed                        Kind = "update_failed"
+	UpdateRecoveryRequired              Kind = "update_recovery_required"
 	UpdateMigrationFailed               Kind = "update_migration_failed"
 	MissingCommand                      Kind = "missing_command"
 	InvalidGlobalArguments              Kind = "invalid_global_arguments"
@@ -404,6 +405,9 @@ var failurePolicies = map[Kind]failurePolicy{
 	},
 	UpdateFailed: {
 		Code: "update_failed", Stage: "update", Hint: "the prior executable was preserved; retry after resolving the reported update failure", Exit: 1, Human: humanPlain,
+	},
+	UpdateRecoveryRequired: {
+		Code: "update_recovery_required", Stage: "update_recovery", Hint: "authenticated original evidence was preserved; canonical restoration remains required before retrying", Exit: 1,
 	},
 	UpdateMigrationFailed: {
 		Code: "migration_preflight_failed", Stage: "migration_preflight", Hint: "the prior executable was preserved; resolve the reported checks and rerun the migration review", Exit: 1, Human: humanPlain,

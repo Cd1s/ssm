@@ -94,6 +94,15 @@ record rejection, same-File-ID descriptor mutation rejection, compiled startup
 refusal while hostile sharing blocks prepared recovery, completed and
 unexplained stale rollback states, concurrent updaters, ordinary rollback, and
 rollback-failure evidence and retry.
+The same focused native suite classifies absent, verified-new, and
+attacker-canonical dual refusal as `update_recovery_required`, exercises
+startup human, JSON, and compact NDJSON rendering, proves successful recovery
+restores the exact original and clears state, and compares `FileIdInfo`,
+SHA-256, descriptor binding, bytes, and mode for every ordinary injected
+failure. The inherited `unit` action keeps these machine-policy and compiled
+contract tests in both the `ci` and `release` profiles; no publishing action or
+workflow permission changes are required.
+
 Tests
 that execute a Unix remote shell or compare Bash script behavior are selected
 only on Unix; portable parsing, planning, host-key, environment-isolation, and

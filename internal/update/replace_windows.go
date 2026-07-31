@@ -73,7 +73,7 @@ func replaceExecutable(
 		return fmt.Errorf("pause after Windows executable update lock: %w", err)
 	}
 	if err := cleanupCompletedWindowsRollbackUnderLockWithPolicy(target, updateLock.policy); err != nil {
-		return fmt.Errorf("clean previous Windows executable: %w", err)
+		return fmt.Errorf("clean previous Windows executable: %w", blockOnRecoveryEvidence(err))
 	}
 
 	security, err := prepareWindowsReplacementSecurity(
@@ -172,7 +172,10 @@ func replaceExecutable(
 		)
 		if rollbackErr == nil {
 			if removeErr := record.remove(); removeErr != nil {
-				rollbackErr = fmt.Errorf("remove Windows rollback ownership record: %w", removeErr)
+				operationErr = errors.Join(
+					operationErr,
+					fmt.Errorf("remove Windows rollback ownership record: %w", removeErr),
+				)
 			}
 		}
 		if closeErr := record.close(); closeErr != nil {
@@ -188,7 +191,11 @@ func replaceExecutable(
 			)
 		}
 		if rollbackErr != nil {
-			return fmt.Errorf("%s: %w (rollback failed: %v)", operation, operationErr, rollbackErr)
+			failure := fmt.Errorf("%s: %w (rollback failed: %v)", operation, operationErr, rollbackErr)
+			if IsRecoveryRequired(rollbackErr) {
+				return requireRecovery(failure)
+			}
+			return blockOnRecoveryEvidence(failure)
 		}
 		return fmt.Errorf("%s: %w", operation, operationErr)
 	}
@@ -564,35 +571,38 @@ func rollbackWindowsReplacement(
 		)
 		closeErr := windows.CloseHandle(currentHandle)
 		if inspectErr != nil {
-			return inspectErr
+			return requireRecovery(inspectErr)
 		}
 		if closeErr != nil {
-			return fmt.Errorf("close failed installed Windows executable inspection handle: %w", closeErr)
+			return requireRecovery(fmt.Errorf("close failed installed Windows executable inspection handle: %w", closeErr))
 		}
 		if currentIdentity == security.targetIdentity {
 			return nil
 		}
 	} else if !isWindowsPathNotFound(openErr) {
-		return openErr
+		return requireRecovery(openErr)
 	}
 	if err := security.closeStagedForRollback(); err != nil {
-		return fmt.Errorf("release failed installed Windows executable handles for rollback: %w", err)
+		return requireRecovery(fmt.Errorf("release failed installed Windows executable handles for rollback: %w", err))
 	}
 	if err := renameWindowsReplacementHandle(security.target, target, true); err != nil {
-		return err
+		return requireRecovery(err)
 	}
 	if err := requireWindowsReplacementHandleIdentity(
 		security.target,
 		security.targetIdentity,
 		"restored Windows executable",
 	); err != nil {
-		return err
+		return requireRecovery(err)
 	}
-	return requireWindowsReplacementPathIdentity(
+	if err := requireWindowsReplacementPathIdentity(
 		target,
 		security.targetIdentity,
 		"restored Windows executable",
-	)
+	); err != nil {
+		return requireRecovery(err)
+	}
+	return nil
 }
 
 func verifyWindowsRollbackSecurityBinding(
@@ -996,6 +1006,9 @@ func openWindowsReplacementRecord(
 }
 
 func cleanupPreviousExecutable(target string) (resultErr error) {
+	defer func() {
+		resultErr = blockOnRecoveryEvidence(resultErr)
+	}()
 	recoveryRequired, err := windowsReplacementRecoveryRequired(target)
 	if err != nil {
 		return err
@@ -1242,43 +1255,43 @@ func recoverPreparedWindowsReplacement(
 		return err
 	}
 	if err := validateWindowsRecoveryCanonicalTarget(target); err != nil {
-		return err
+		return requireRecovery(err)
 	}
 	if err := renameWindowsReplacementHandle(backupHandle, target, true); err != nil {
-		return fmt.Errorf("restore Windows rollback image: %w", err)
+		return requireRecovery(fmt.Errorf("restore Windows rollback image: %w", err))
 	}
 	if err := requireWindowsReplacementHandleIdentity(
 		backupHandle,
 		record.data.original,
 		"recovered Windows executable",
 	); err != nil {
-		return err
+		return requireRecovery(err)
 	}
 	if err := requireWindowsReplacementPathIdentity(
 		target,
 		record.data.original,
 		"recovered Windows executable",
 	); err != nil {
-		return err
+		return requireRecovery(err)
 	}
 	if err := verifier.verify(backupHandle, "recovered Windows executable"); err != nil {
-		return err
+		return requireRecovery(err)
 	}
 	if err := requireWindowsReplacementHandleDigest(
 		backupHandle,
 		record.data.rollbackDigest,
 		"recovered Windows executable",
 	); err != nil {
-		return err
+		return requireRecovery(err)
 	}
 	if err := verifier.close(); err != nil {
-		return fmt.Errorf("release Windows rollback security descriptor verification: %w", err)
+		return preserveCanonical(fmt.Errorf("release Windows rollback security descriptor verification: %w", err))
 	}
 	if err := record.remove(); err != nil {
-		return fmt.Errorf("remove recovered Windows rollback ownership record: %w", err)
+		return preserveCanonical(fmt.Errorf("remove recovered Windows rollback ownership record: %w", err))
 	}
 	if err := record.close(); err != nil {
-		return fmt.Errorf("close recovered Windows rollback ownership record: %w", err)
+		return preserveCanonical(fmt.Errorf("close recovered Windows rollback ownership record: %w", err))
 	}
 	return nil
 }
@@ -1329,13 +1342,13 @@ func completePreparedWindowsRecoveryAtCanonical(
 		return err
 	}
 	if err := verifier.close(); err != nil {
-		return fmt.Errorf("release Windows rollback security descriptor verification: %w", err)
+		return preserveCanonical(fmt.Errorf("release Windows rollback security descriptor verification: %w", err))
 	}
 	if err := record.remove(); err != nil {
-		return fmt.Errorf("remove recovered Windows rollback ownership record: %w", err)
+		return preserveCanonical(fmt.Errorf("remove recovered Windows rollback ownership record: %w", err))
 	}
 	if err := record.close(); err != nil {
-		return fmt.Errorf("close recovered Windows rollback ownership record: %w", err)
+		return preserveCanonical(fmt.Errorf("close recovered Windows rollback ownership record: %w", err))
 	}
 	return nil
 }

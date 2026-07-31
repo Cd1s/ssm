@@ -301,6 +301,12 @@ func TestMachineContractMatrix(t *testing.T) {
 			hint: "the prior executable was preserved; retry after resolving the reported update failure", exit: 1,
 		},
 		{
+			name: "Windows update recovery required", kind: UpdateRecoveryRequired,
+			details: Details{Message: "startup executable recovery failed"},
+			code:    "update_recovery_required", stage: "update_recovery",
+			hint: "authenticated original evidence was preserved; canonical restoration remains required before retrying", exit: 1,
+		},
+		{
 			name: "major migration failure", kind: UpdateMigrationFailed,
 			details: Details{Message: "migration failed"},
 			code:    "migration_preflight_failed", stage: "migration_preflight",
@@ -1440,6 +1446,64 @@ func TestMachineContractRendering(t *testing.T) {
 		"}\n"
 	if stdout.String() != wantTransfer || stderr.Len() != 0 {
 		t.Fatalf("transfer stdout=%q stderr=%q, want stdout=%q", stdout.String(), stderr.String(), wantTransfer)
+	}
+}
+
+func TestUpdateRecoveryRequiredRendering(t *testing.T) {
+	t.Parallel()
+
+	failure := Classify(UpdateRecoveryRequired, Details{
+		Message: "startup executable recovery failed",
+	})
+	tests := []struct {
+		name       string
+		format     Format
+		wantStdout string
+		wantStderr string
+	}{
+		{
+			name:   "human",
+			format: Human,
+			wantStderr: "ssm: error=update_recovery_required stage=update_recovery\n" +
+				"Error: startup executable recovery failed\n" +
+				"ssm: hint=authenticated original evidence was preserved; canonical restoration remains required before retrying\n",
+		},
+		{
+			name:   "JSON",
+			format: JSONDocument,
+			wantStdout: "{\n" +
+				"  \"ok\": false,\n" +
+				"  \"error\": \"update_recovery_required\",\n" +
+				"  \"message\": \"startup executable recovery failed\",\n" +
+				"  \"hint\": \"authenticated original evidence was preserved; canonical restoration remains required before retrying\",\n" +
+				"  \"stage\": \"update_recovery\",\n" +
+				"  \"exit\": 1\n" +
+				"}\n",
+		},
+		{
+			name:       "compact NDJSON",
+			format:     NDJSON,
+			wantStdout: "{\"ok\":false,\"error\":\"update_recovery_required\",\"message\":\"startup executable recovery failed\",\"hint\":\"authenticated original evidence was preserved; canonical restoration remains required before retrying\",\"stage\":\"update_recovery\",\"exit\":1}\n",
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var stdout, stderr bytes.Buffer
+			if err := Render(test.format, Streams{Stdout: &stdout, Stderr: &stderr}, failure); err != nil {
+				t.Fatal(err)
+			}
+			if stdout.String() != test.wantStdout || stderr.String() != test.wantStderr {
+				t.Fatalf(
+					"stdout=%q stderr=%q, want stdout=%q stderr=%q",
+					stdout.String(),
+					stderr.String(),
+					test.wantStdout,
+					test.wantStderr,
+				)
+			}
+		})
 	}
 }
 
