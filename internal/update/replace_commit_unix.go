@@ -1,4 +1,4 @@
-//go:build linux || darwin || freebsd || openbsd
+//go:build linux
 
 package update
 
@@ -10,8 +10,6 @@ import (
 
 	"golang.org/x/sys/unix"
 )
-
-const unixCommitEntry = "authenticated-replacement"
 
 // commitAuthenticatedUnixReplacement binds the commit source to install's
 // open object before replacing target. The kernel follows the process-owned

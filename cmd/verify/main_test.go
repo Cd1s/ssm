@@ -756,13 +756,13 @@ func TestCIWorkflowMatchesReviewedGoldenAndHasReadOnlyCredentialFreeJobs(t *test
 	}
 
 	text := string(workflow)
-	if got, want := strings.Count(text, "    permissions:\n      contents: read\n"), 2; got != want {
+	if got, want := strings.Count(text, "    permissions:\n      contents: read\n"), 3; got != want {
 		t.Fatalf("job-level contents: read permissions count = %d, want %d", got, want)
 	}
-	if got, want := strings.Count(text, "      - uses: actions/checkout@v7\n"), 2; got != want {
+	if got, want := strings.Count(text, "      - uses: actions/checkout@v7\n"), 3; got != want {
 		t.Fatalf("checkout step count = %d, want %d", got, want)
 	}
-	if got, want := strings.Count(text, "          persist-credentials: false\n"), 2; got != want {
+	if got, want := strings.Count(text, "          persist-credentials: false\n"), 3; got != want {
 		t.Fatalf("persist-credentials: false count = %d, want %d", got, want)
 	}
 	if got, want := strings.Count(text, "        run: go run ./cmd/verify ci\n"), 1; got != want {
@@ -788,6 +788,16 @@ func TestCIWorkflowMatchesReviewedGoldenAndHasReadOnlyCredentialFreeJobs(t *test
 	) {
 		t.Fatal("native Windows fast profile is not unconditional after the focused security suite")
 	}
+	const nativeDarwinReplacementCommand = "        run: go test ./internal/update -run '^TestDarwinNativeReplacementSecurity$' -count=1\n"
+	if got, want := strings.Count(text, nativeDarwinReplacementCommand), 1; got != want {
+		t.Fatalf("exact native Darwin replacement-security invocation count = %d, want %d", got, want)
+	}
+	if !strings.Contains(text,
+		"      - name: Verify native Darwin replacement security\n"+
+			nativeDarwinReplacementCommand,
+	) {
+		t.Fatal("native Darwin replacement-security gate is not explicit")
+	}
 	if strings.Contains(text, "SSM_REQUIRE_WINDOWS_PRIVILEGED_TEST") {
 		t.Fatal("native Windows gate incorrectly requires optional host privileges")
 	}
@@ -795,12 +805,15 @@ func TestCIWorkflowMatchesReviewedGoldenAndHasReadOnlyCredentialFreeJobs(t *test
 		"actions/checkout@v7",
 		"actions/setup-go@v6",
 	} {
-		if got, want := strings.Count(text, "uses: "+exactUse), 2; got != want {
+		if got, want := strings.Count(text, "uses: "+exactUse), 3; got != want {
 			t.Fatalf("%s use count = %d, want %d", exactUse, got, want)
 		}
 	}
 	if !strings.Contains(text, "runs-on: windows-latest") {
 		t.Fatal("official native Windows job is absent")
+	}
+	if !strings.Contains(text, "runs-on: macos-latest") {
+		t.Fatal("official native Darwin job is absent")
 	}
 }
 

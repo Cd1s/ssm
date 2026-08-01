@@ -102,7 +102,7 @@ newest eligible release fails this check.
 | Downloaded digest matches checksum but differs from provenance | Subject digest comparison | Checksum cannot rescue the mismatch; no replacement. |
 | Unsupported, missing, misnamed, additional, or duplicate release asset | Strict manifest selection | No asset download and no fallback. |
 | Checksums over 16 KiB, provenance or release metadata over 1 MiB, or a binary over 64 MiB | Header-independent bounded stream, rejecting after at most limit plus one byte | No replacement; temporary output is bounded and removed; installed bytes and mode are unchanged. |
-| A Unix callback or concurrent writer substitutes the staged pathname, mutates the staged object, hard-links the authenticated install copy, or replaces its final pathname after authentication | Portable same-filesystem replacement boundary | The post-callback stage is opened once and copied only from that handle; both the handle stream and fresh sibling copy must equal the provenance-authenticated SHA-256. At commit, Linux follows `/proc/self/fd`, while macOS, FreeBSD, and OpenBSD follow `/dev/fd`, to hard-link that exact open object into a fresh owner-only sibling directory. The updater verifies the expected two-link transition, removes the authenticated original name, then rechecks the descriptor-bound digest, mode, single-link state, and private-directory entry. `renameat` resolves the source relative to the already-open private directory and atomically replaces the target on the same filesystem; moving that directory in its parent cannot retarget the source. An unavailable or non-binding descriptor namespace fails before canonical mutation. No unverified bytes replace the installed executable. |
+| A Unix callback or concurrent writer substitutes the staged pathname, mutates the staged object, hard-links the authenticated install copy, or replaces its final pathname after authentication | Portable same-filesystem replacement boundary | The post-callback stage is opened once and copied only from that handle; both the handle stream and fresh sibling copy must equal the provenance-authenticated SHA-256. Linux keeps its same-inode descriptor-bound commit: `/proc/self/fd` links the exact open object into a fresh owner-only sibling directory. Darwin, FreeBSD, and OpenBSD instead copy only from the authenticated descriptor into a newly created entry in that open private directory, avoiding any dependency on fdesc vnode linking, and authenticate the commit object again. Both paths reject source-name substitution, remove the public staging name before canonical mutation, and recheck the private-directory entry. `renameat` resolves the protected source relative to the already-open private directory and atomically replaces the target on the same filesystem; moving that directory in its parent cannot retarget the source. No unverified bytes replace the installed executable. |
 | Windows cannot overwrite its mapped running `.exe` | Platform replacement | Pass the verified SHA-256 into the platform boundary, hold the fixed sibling update lock across inspection, handle-bound moves, rollback, recovery, and cleanup, and hash the exact non-write-sharing stage handle before any canonical mutation. Reject reparse points and multiple hard links, require `GetFileInformationByHandleEx(FileIdInfo)` volume serial plus 128-bit identity, and keep non-delete-sharing handles on the validated original and stage until the completed record is durable. `SetFileInformationByHandle(FileRenameInfoEx)` renames those exact source objects. Replace, POSIX, and ignore-read-only semantics replace an unlocked object inserted at the temporarily vacant canonical name. Windows cannot replace that object while an external handle withholds delete sharing: installation and synchronous rollback then fail closed as `update_recovery_required`, retain the original at `.old` plus the authenticated prepared record, and block cleanup, startup command dispatch, and later updates. After the hostile handle is released, serialized recovery restores the retained original by handle, verifies its strong identity, authenticated executable digest, and security-descriptor contract at the canonical path, and only then clears the record. The ordinary tier captures, applies, and verifies owner, primary group, DACL, and DACL inheritance/protection without optional privileges. When all three backup/restore/security privileges can be enabled on a duplicated thread token and the filesystem supports whole-descriptor application, the full tier instead preserves and verifies the complete descriptor, including SACL-backed fields and RM control. An unavailable full tier is never claimed; failure to preserve the selected tier stops before the first move, restores the still-held original, or retains authenticated recovery evidence when an external sharing lock makes immediate restoration impossible. |
 
 ## Windows replacement terminal-state matrix
@@ -181,8 +181,11 @@ The Unix final-race fixture runs after the authenticated copy's final
 permission sync, digest, mode, pathname, and link-count checks. It renames that
 inode away, substitutes single-link attacker bytes at the former install path,
 and requires the update to fail with the original executable still canonical.
-Linux executes this fixture natively; macOS, FreeBSD, and OpenBSD compile the
-same public updater path for both release architectures.
+Linux executes this fixture natively. The focused native Darwin suite executes
+the public updater's success and final-race cases plus deterministic
+descriptor-copy races at the public staging name and private commit entry.
+FreeBSD and OpenBSD compile the same descriptor-copy path for both release
+architectures.
 
 The updater calls the native `GetSecurityInfo` entry point through x/sys'
 Windows loader and wraps each returned allocation in one idempotent owner.
@@ -295,17 +298,21 @@ true no-op before executable or symlink resolution, so an already-running
 unlinked executable retains the established help, version, and unrelated
 command behavior.
 
-The Go updater's non-Windows replacement uses a portable same-directory copy
-because Linux, macOS, and BSD do not share one handle-only rename API. After
-the pre-replacement callback, it opens and inspects the exact staged regular
-file object, then copies only from that open handle into a newly created sibling
-file. Replacing the staged pathname cannot change the copy source. In-place or
-hard-link writes to that source are accepted only if the copied stream still
-has the provenance-authenticated SHA-256. The updater flushes and rehashes the
-fresh copy from its still-open handle immediately before confirming that its
-pathname still names the same single-link regular file and atomically renaming
-that sibling over the executable. No callback or other updater-controlled pause
-exists between that final binding check and the rename.
+The Go updater's non-Windows replacement first uses a portable same-directory
+copy because Linux, macOS, and BSD do not share one handle-only rename API.
+After the pre-replacement callback, it opens and inspects the exact staged
+regular-file object, then copies only from that open handle into a newly created
+sibling file. Replacing the staged pathname cannot change the copy source.
+In-place or hard-link writes to that source are accepted only if the copied
+stream still has the provenance-authenticated SHA-256. The updater flushes and
+rehashes the fresh copy from its still-open handle. Linux then binds that same
+inode through `/proc/self/fd` into an owner-only commit directory. Darwin,
+FreeBSD, and OpenBSD copy from the authenticated descriptor into a new entry in
+that open private directory and authenticate the commit entry's digest, mode,
+single-link state, and descriptor identity. The public staging pathname is
+removed and its descriptor's zero-link transition is verified before the BSD
+path can mutate the canonical target. Both implementations finally use
+directory-relative `renameat` for same-filesystem atomic replacement.
 
 The installer success fixture places a BSD-compatible `mktemp` shim ahead of
 the host implementation. It rejects every supplied template that does not end

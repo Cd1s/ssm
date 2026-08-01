@@ -133,3 +133,20 @@ jobs:
       - name: Verify native Windows fast profile
         if: ${{ always() }}
         run: go run ./cmd/verify fast
+
+  darwin:
+    permissions:
+      contents: read
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.12"
+
+      - name: Verify native Darwin replacement security
+        run: go test ./internal/update -run '^TestDarwinNativeReplacementSecurity$' -count=1
