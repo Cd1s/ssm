@@ -45,6 +45,7 @@ func commitAuthenticatedUnixReplacement(
 	if err != nil {
 		return fmt.Errorf("open replacement directory: %w", err)
 	}
+	//nolint:gosec // successful unix.Open returns a nonnegative descriptor representable as uintptr
 	parentFile := os.NewFile(uintptr(parentDescriptor), "replacement directory")
 	if parentFile == nil {
 		_ = unix.Close(parentDescriptor)
@@ -79,6 +80,7 @@ func commitAuthenticatedUnixReplacement(
 		_ = unix.Unlinkat(parentDescriptor, commitDirectoryName, unix.AT_REMOVEDIR)
 		return fmt.Errorf("open private replacement commit directory: %w", err)
 	}
+	//nolint:gosec // successful unix.Openat returns a nonnegative descriptor representable as uintptr
 	commitDirectory := os.NewFile(uintptr(commitDirectoryDescriptor), "replacement commit directory")
 	if commitDirectory == nil {
 		_ = unix.Close(commitDirectoryDescriptor)
@@ -153,6 +155,7 @@ func commitAuthenticatedUnixReplacement(
 	if err != nil {
 		return fmt.Errorf("open descriptor-bound replacement entry: %w", err)
 	}
+	//nolint:gosec // successful unix.Openat returns a nonnegative descriptor representable as uintptr
 	commitFile := os.NewFile(uintptr(commitDescriptor), "descriptor-bound replacement")
 	if commitFile == nil {
 		_ = unix.Close(commitDescriptor)
