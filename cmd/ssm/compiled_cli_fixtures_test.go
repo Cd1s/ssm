@@ -26,6 +26,7 @@ import (
 
 	"ssm/internal/cloud"
 	"ssm/internal/config"
+	"ssm/internal/provenancefixture"
 	"ssm/internal/releaseasset"
 )
 
@@ -764,6 +765,7 @@ type compiledUpdateFixture struct {
 	mu          sync.Mutex
 	version     string
 	replacement []byte
+	provenance  []byte
 	paths       []string
 }
 
@@ -786,7 +788,33 @@ func (f *compiledUpdateFixture) ConfigureRelease(version string, replacement []b
 	defer f.mu.Unlock()
 	f.version = version
 	f.replacement = append([]byte(nil), replacement...)
+	f.provenance = nil
 	f.paths = nil
+}
+
+func (f *compiledUpdateFixture) ConfigureAuthenticatedRelease(
+	version string,
+	replacement []byte,
+) ([]byte, error) {
+	claims, err := provenancefixture.DefaultClaims(
+		compiledUpdateAssetName(),
+		version,
+		replacement,
+	)
+	if err != nil {
+		return nil, err
+	}
+	fixture, err := provenancefixture.Generate(claims)
+	if err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.version = version
+	f.replacement = append([]byte(nil), replacement...)
+	f.provenance = append([]byte(nil), fixture.Bundle...)
+	f.paths = nil
+	return append([]byte(nil), fixture.TrustedRootDER...), nil
 }
 
 func (f *compiledUpdateFixture) RequestPaths() []string {
@@ -818,6 +846,9 @@ func (f *compiledUpdateFixture) serveHTTP(w http.ResponseWriter, r *http.Request
 	case strings.HasPrefix(r.URL.Path, releasePrefix) && strings.HasSuffix(r.URL.Path, "/checksums.txt"):
 		digest := sha256.Sum256(f.replacement)
 		_, _ = fmt.Fprintf(w, "%x  %s\n", digest, compiledUpdateAssetName())
+	case r.URL.Path == releasePrefix+releaseasset.ProvenanceName(compiledUpdateAssetName()) && len(f.provenance) != 0:
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(f.provenance)
 	case r.URL.Path == releasePrefix+compiledUpdateAssetName():
 		w.Header().Set("Content-Type", "application/octet-stream")
 		_, _ = w.Write(f.replacement)

@@ -12,6 +12,7 @@ import (
 
 func TestUnixDescriptorCopyCommit(t *testing.T) {
 	t.Run("success", testUnixDescriptorCopyCommitSuccess)
+	t.Run("preserves execute-only mode", testUnixDescriptorCopyCommitExecuteOnly)
 	t.Run("rejects staging pathname substitution", testUnixDescriptorCopyCommitPathSubstitution)
 	t.Run("rejects private entry substitution", testUnixDescriptorCopyCommitEntrySubstitution)
 	t.Run("rejects post-verification pathname substitution", func(t *testing.T) {
@@ -26,6 +27,34 @@ func TestUnixDescriptorCopyCommit(t *testing.T) {
 	t.Run("restores across rollback pathname change", func(t *testing.T) {
 		testUnixCommitRollbackPathChange(t, commitAuthenticatedUnixReplacementByCopy)
 	})
+}
+
+func testUnixDescriptorCopyCommitExecuteOnly(t *testing.T) {
+	target, install, installPath, digest := newUnixDescriptorCopyCommitFixture(t)
+	if err := install.Chmod(0o111); err != nil { //nolint:gosec // restrictive mode is the behavior under test
+		t.Skipf("execute-only commit mode is not supported: %v", err)
+	}
+
+	if err := commitAuthenticatedUnixReplacementByCopy(
+		install,
+		installPath,
+		target,
+		digest,
+		0o111,
+	); err != nil {
+		t.Fatalf("execute-only descriptor-copy commit: %v", err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o111 {
+		t.Fatalf("execute-only descriptor-copy mode = %o, want 111", info.Mode().Perm())
+	}
+	if err := os.Chmod(target, 0o511); err != nil { //nolint:gosec // test-owned fixture is made readable only for byte verification
+		t.Fatalf("make execute-only descriptor-copy result readable: %v", err)
+	}
+	assertExecutableBytes(t, target, "authenticated replacement")
 }
 
 type unixCommitTestFunc func(

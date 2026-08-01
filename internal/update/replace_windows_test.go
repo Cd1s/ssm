@@ -2703,7 +2703,7 @@ func testWindowsLateHardLinksCannotCompromiseTarget(t *testing.T) {
 					target,
 					blockedStage,
 					"hard links",
-					false,
+					test.recoveryRequired,
 				)
 				assertWindowsPreparedRecoveryEvidence(
 					t,
@@ -3687,10 +3687,15 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 		originalBegin := beginWindowsReplacementSecurityPrivileges
 		originalCapture := captureWindowsReplacementDescriptor
 		originalCompleteApply := applyWindowsCompleteSecurity
+		originalFullTier := windowsFullSecurityTier
 		fullSelections := 0
 		fullCaptures := 0
 		fullApplyCalls := 0
 		ordinaryCaptures := 0
+		// The child deliberately selects the optional tier without enabling
+		// privileges. Use ordinary handle access so a non-elevated runner reaches
+		// the mocked complete capture and application capability probe.
+		windowsFullSecurityTier.targetAccess = windowsOrdinarySecurityTier.targetAccess
 		beginWindowsReplacementSecurityPrivileges = func() (*windowsReplacementPrivilegeScope, bool, error) {
 			fullSelections++
 			return nil, true, nil
@@ -3714,6 +3719,7 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 			beginWindowsReplacementSecurityPrivileges = originalBegin
 			captureWindowsReplacementDescriptor = originalCapture
 			applyWindowsCompleteSecurity = originalCompleteApply
+			windowsFullSecurityTier = originalFullTier
 		}()
 
 		err = replaceExecutable(stage, executable, stageDigest, 0)

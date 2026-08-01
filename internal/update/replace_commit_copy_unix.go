@@ -408,31 +408,21 @@ func commitAuthenticatedUnixReplacementByCopy(
 		return fmt.Errorf("reauthenticate descriptor-copy replacement: %w", err)
 	}
 
-	entryDescriptor, err := unix.Openat(
-		commitDirectoryDescriptor,
-		unixCommitEntry,
-		unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW,
-		0,
-	)
-	if err != nil {
-		return fmt.Errorf("open descriptor-copy commit entry: %w", err)
-	}
-	//nolint:gosec // successful unix.Openat returns a nonnegative descriptor representable as uintptr
-	entryFile := os.NewFile(uintptr(entryDescriptor), "descriptor-copy commit entry")
-	if entryFile == nil {
-		_ = unix.Close(entryDescriptor)
-		return fmt.Errorf("open descriptor-copy commit entry: invalid descriptor")
-	}
-	defer func() { _ = entryFile.Close() }()
-	commitInfo, err := commitFile.Stat()
-	if err != nil {
+	var commitInfo unix.Stat_t
+	//nolint:gosec // os.File descriptors originate from successful Unix opens and fit the native int descriptor type
+	if err := unix.Fstat(int(commitFile.Fd()), &commitInfo); err != nil {
 		return fmt.Errorf("inspect descriptor-copy replacement: %w", err)
 	}
-	entryInfo, err := entryFile.Stat()
-	if err != nil {
+	var entryInfo unix.Stat_t
+	if err := unix.Fstatat(
+		commitDirectoryDescriptor,
+		unixCommitEntry,
+		&entryInfo,
+		unix.AT_SYMLINK_NOFOLLOW,
+	); err != nil {
 		return fmt.Errorf("inspect descriptor-copy commit entry: %w", err)
 	}
-	if !entryInfo.Mode().IsRegular() || !os.SameFile(commitInfo, entryInfo) {
+	if entryInfo.Mode&unix.S_IFMT != unix.S_IFREG || !sameUnixObject(commitInfo, entryInfo) {
 		return fmt.Errorf("descriptor-copy commit entry changed before rename")
 	}
 	if unixReplacementTestHook != nil {

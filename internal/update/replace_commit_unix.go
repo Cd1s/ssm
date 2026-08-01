@@ -147,7 +147,7 @@ func commitAuthenticatedUnixReplacement(
 	commitDescriptor, err := unix.Openat(
 		commitDirectoryDescriptor,
 		unixCommitEntry,
-		unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+		unix.O_PATH|unix.O_CLOEXEC|unix.O_NOFOLLOW,
 		0,
 	)
 	if err != nil {

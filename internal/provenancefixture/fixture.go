@@ -50,6 +50,7 @@ type Claims struct {
 type Fixture struct {
 	Bundle          []byte
 	TrustedMaterial root.TrustedMaterial
+	TrustedRootDER  []byte
 }
 
 // DefaultClaims returns the currently accepted release identity for a tag.
@@ -176,7 +177,11 @@ func Generate(claims Claims) (Fixture, error) {
 			ValidityPeriodEnd:   rootCertificate.NotAfter,
 		},
 	}
-	return Fixture{Bundle: bundleJSON, TrustedMaterial: material}, nil
+	return Fixture{
+		Bundle:          bundleJSON,
+		TrustedMaterial: material,
+		TrustedRootDER:  append([]byte(nil), rootCertificate.Raw...),
+	}, nil
 }
 
 type trustedMaterial struct {

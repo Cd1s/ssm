@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -14,7 +15,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const windowsCompiledContractStageLinkEnv = "SSM_TEST_COMPILED_WINDOWS_STAGE_LINK"
+const (
+	windowsCompiledContractStageLinkEnv = "SSM_TEST_COMPILED_WINDOWS_STAGE_LINK"
+	compiledContractProvenanceRootEnv   = "SSM_TEST_COMPILED_PROVENANCE_ROOT"
+)
 
 func assertCompiledFileUnchanged(t *testing.T, path string, before compiledFileIdentity) {
 	t.Helper()
@@ -29,11 +33,15 @@ func TestCompiledWindowsBlockedPreparedRecoveryStopsStartupDispatch(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiledUpdateServer.ConfigureRelease("v1.5.0", replacement)
+	trustedRoot, err := compiledUpdateServer.ConfigureAuthenticatedRelease("v1.5.0", replacement)
+	if err != nil {
+		t.Fatalf("configure authenticated compiled update: %v", err)
+	}
 	stageAlias := filepath.Join(filepath.Dir(cli.paths["ssm"]), "late-stage-alias.exe")
 	result := cli.RunWithEnv(t, "ssm", nil, map[string]string{
 		"SSM_UPDATE_REPO":                   "fixture/repo",
 		windowsCompiledContractStageLinkEnv: stageAlias,
+		compiledContractProvenanceRootEnv:   base64.StdEncoding.EncodeToString(trustedRoot),
 	}, "update")
 	if result.ProcessExit != 1 ||
 		!strings.Contains(result.Stderr, "ssm: error=update_recovery_required stage=update_recovery") ||
@@ -226,6 +234,11 @@ func TestCompiledWindowsOrdinaryStartupNeedsNoExecutableDirectoryWrite(t *testin
 	cli := newCompiledCLIHarness(t)
 	restore := makeCompiledDirectoryReadOnly(t, filepath.Dir(cli.paths["ssm"]))
 	defer restore()
+	writeProbe := filepath.Join(filepath.Dir(cli.paths["ssm"]), ".directory-write-probe")
+	if err := os.WriteFile(writeProbe, []byte("write must be denied"), 0o600); err == nil { //nolint:gosec // test-owned denial probe
+		_ = os.Remove(writeProbe)
+		t.Fatal("compiled executable directory still permits file creation")
+	}
 
 	versionResult := cli.RunWithEnv(t, "ssm", nil, map[string]string{
 		"SSM_UPDATE_REPO": "off",
@@ -321,8 +334,9 @@ func makeCompiledDirectoryReadOnly(t *testing.T, directory string) func() {
 	}
 	readOnlyDACL, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{
 		{
-			AccessPermissions: windows.FILE_GENERIC_READ | windows.FILE_GENERIC_EXECUTE,
-			AccessMode:        windows.SET_ACCESS,
+			// For a directory these rights mean add file and add subdirectory.
+			AccessPermissions: windows.FILE_WRITE_DATA | windows.FILE_APPEND_DATA,
+			AccessMode:        windows.DENY_ACCESS,
 			Inheritance:       windows.NO_INHERITANCE,
 			Trustee: windows.TRUSTEE{
 				TrusteeForm:  windows.TRUSTEE_IS_SID,
@@ -330,15 +344,22 @@ func makeCompiledDirectoryReadOnly(t *testing.T, directory string) func() {
 				TrusteeValue: windows.TrusteeValueFromSID(user.User.Sid),
 			},
 		},
-	}, nil)
+	}, originalDACL)
 	if err != nil {
 		_ = windows.CloseHandle(handle)
 		t.Fatalf("build read-only compiled directory DACL: %v", err)
 	}
+	information := windows.SECURITY_INFORMATION(
+		windows.DACL_SECURITY_INFORMATION | windows.UNPROTECTED_DACL_SECURITY_INFORMATION,
+	)
+	if control&windows.SE_DACL_PROTECTED != 0 {
+		information = windows.DACL_SECURITY_INFORMATION |
+			windows.PROTECTED_DACL_SECURITY_INFORMATION
+	}
 	if err := windows.SetSecurityInfo(
 		handle,
 		windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		information,
 		nil,
 		nil,
 		readOnlyDACL,
