@@ -12,13 +12,164 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const unixCommitEntry = "authenticated-replacement"
+const (
+	unixCommitEntry   = "authenticated-replacement"
+	unixRollbackEntry = "original-target"
+)
+
+func sameUnixObject(left, right unix.Stat_t) bool {
+	return left.Dev == right.Dev && left.Ino == right.Ino
+}
+
+func commitVerifiedUnixEntry(
+	source *os.File,
+	commitDirectoryDescriptor,
+	parentDescriptor int,
+	targetName string,
+	expectedDigest [sha256.Size]byte,
+	expectedMode os.FileMode,
+) error {
+	var original unix.Stat_t
+	if err := unix.Fstatat(
+		parentDescriptor,
+		targetName,
+		&original,
+		unix.AT_SYMLINK_NOFOLLOW,
+	); err != nil {
+		return fmt.Errorf("inspect original replacement target: %w", err)
+	}
+	if original.Mode&unix.S_IFMT != unix.S_IFREG {
+		return fmt.Errorf("original replacement target is not a regular file")
+	}
+	if err := unix.Linkat(
+		parentDescriptor,
+		targetName,
+		commitDirectoryDescriptor,
+		unixRollbackEntry,
+		0,
+	); err != nil {
+		return fmt.Errorf("retain exact original replacement target: %w", err)
+	}
+	rollbackLinked := true
+	defer func() {
+		if rollbackLinked {
+			_ = unix.Unlinkat(commitDirectoryDescriptor, unixRollbackEntry, 0)
+		}
+	}()
+
+	var retained unix.Stat_t
+	if err := unix.Fstatat(
+		commitDirectoryDescriptor,
+		unixRollbackEntry,
+		&retained,
+		unix.AT_SYMLINK_NOFOLLOW,
+	); err != nil {
+		return fmt.Errorf("inspect retained original replacement target: %w", err)
+	}
+	if !sameUnixObject(original, retained) ||
+		retained.Nlink != original.Nlink+1 {
+		return fmt.Errorf("retained original replacement target changed before commit")
+	}
+
+	if err := unix.Renameat(
+		commitDirectoryDescriptor,
+		unixCommitEntry,
+		parentDescriptor,
+		targetName,
+	); err != nil {
+		return fmt.Errorf("commit authenticated replacement: %w", err)
+	}
+
+	authenticationErr := authenticateCanonicalUnixReplacement(
+		source,
+		parentDescriptor,
+		targetName,
+		expectedDigest,
+		expectedMode,
+	)
+	if authenticationErr == nil {
+		return nil
+	}
+
+	if err := unix.Renameat(
+		commitDirectoryDescriptor,
+		unixRollbackEntry,
+		parentDescriptor,
+		targetName,
+	); err != nil {
+		rollbackLinked = false
+		return fmt.Errorf(
+			"authenticate canonical replacement after rename: %w; restore exact original target: %v (original evidence retained)",
+			authenticationErr,
+			err,
+		)
+	}
+	rollbackLinked = false
+	var restored unix.Stat_t
+	if err := unix.Fstatat(
+		parentDescriptor,
+		targetName,
+		&restored,
+		unix.AT_SYMLINK_NOFOLLOW,
+	); err != nil {
+		return fmt.Errorf(
+			"authenticate canonical replacement after rename: %w; verify restored original target: %v",
+			authenticationErr,
+			err,
+		)
+	}
+	if !sameUnixObject(original, restored) ||
+		restored.Nlink != original.Nlink ||
+		restored.Mode != original.Mode {
+		return fmt.Errorf(
+			"authenticate canonical replacement after rename: %w; restored target does not match the exact original object",
+			authenticationErr,
+		)
+	}
+	return fmt.Errorf(
+		"authenticate canonical replacement after rename: %w (exact original target restored)",
+		authenticationErr,
+	)
+}
+
+func authenticateCanonicalUnixReplacement(
+	source *os.File,
+	parentDescriptor int,
+	targetName string,
+	expectedDigest [sha256.Size]byte,
+	expectedMode os.FileMode,
+) error {
+	if err := authenticateUnixReplacement(source, expectedDigest, expectedMode, 1); err != nil {
+		return err
+	}
+
+	var canonical unix.Stat_t
+	if err := unix.Fstatat(
+		parentDescriptor,
+		targetName,
+		&canonical,
+		unix.AT_SYMLINK_NOFOLLOW,
+	); err != nil {
+		return fmt.Errorf("inspect canonical replacement: %w", err)
+	}
+	var sourceStat unix.Stat_t
+	//nolint:gosec // os.File descriptors originate from successful Unix opens and fit the native int descriptor type
+	if err := unix.Fstat(int(source.Fd()), &sourceStat); err != nil {
+		return fmt.Errorf("inspect authenticated replacement source after rename: %w", err)
+	}
+	if canonical.Mode&unix.S_IFMT != unix.S_IFREG ||
+		!sameUnixObject(sourceStat, canonical) {
+		return fmt.Errorf("canonical replacement is not the authenticated source object")
+	}
+	return nil
+}
 
 // commitAuthenticatedUnixReplacementByCopy is the Darwin/BSD commit primitive.
 // It copies only from install's already-authenticated descriptor into a new
 // entry in an open private sibling directory. The copied object is authenticated
-// again and renameat resolves that exact entry relative to the private directory
-// descriptor, so replacing installPath cannot retarget the canonical rename.
+// again, the exact original target is retained as a private hard link, and the
+// renamed object is authenticated at its canonical entry before success. A late
+// private-entry race therefore restores the retained original.
 // This function is built on Linux as a deterministic test seam; Linux production
 // keeps the stronger same-inode descriptor-link implementation.
 func commitAuthenticatedUnixReplacementByCopy(
@@ -207,12 +358,19 @@ func commitAuthenticatedUnixReplacementByCopy(
 	if !entryInfo.Mode().IsRegular() || !os.SameFile(commitInfo, entryInfo) {
 		return fmt.Errorf("descriptor-copy commit entry changed before rename")
 	}
+	if unixReplacementTestHook != nil {
+		if err := unixReplacementTestHook("commit_entry_verified", installPath, commitEntryPath); err != nil {
+			return fmt.Errorf("continue after verifying descriptor-copy commit entry: %w", err)
+		}
+	}
 
-	if err := unix.Renameat(
+	if err := commitVerifiedUnixEntry(
+		commitFile,
 		commitDirectoryDescriptor,
-		unixCommitEntry,
 		parentDescriptor,
 		targetName,
+		expectedDigest,
+		expectedMode,
 	); err != nil {
 		return fmt.Errorf("commit descriptor-copy replacement: %w", err)
 	}

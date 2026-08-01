@@ -14,9 +14,9 @@ import (
 // commitAuthenticatedUnixReplacement binds the commit source to install's
 // open object before replacing target. The kernel follows the process-owned
 // descriptor link when creating unixCommitEntry inside a newly created 0700
-// directory. renameat then resolves that entry relative to the already-open
-// directory, so moving or replacing either installPath or the private
-// directory's parent pathname cannot retarget the object moved over target.
+// directory. A private hard link retains the exact original target before
+// renameat, and the renamed object is authenticated through install before
+// success. A late source race therefore restores the retained original.
 func commitAuthenticatedUnixReplacement(
 	install *os.File,
 	installPath,
@@ -171,12 +171,20 @@ func commitAuthenticatedUnixReplacement(
 	if !commitInfo.Mode().IsRegular() || !os.SameFile(installInfo, commitInfo) {
 		return fmt.Errorf("descriptor-bound replacement entry changed before commit")
 	}
+	commitEntryPath := filepath.Join(commitDirectoryPath, unixCommitEntry)
+	if unixReplacementTestHook != nil {
+		if err := unixReplacementTestHook("commit_entry_verified", installPath, commitEntryPath); err != nil {
+			return fmt.Errorf("continue after verifying descriptor-bound commit entry: %w", err)
+		}
+	}
 
-	if err := unix.Renameat(
+	if err := commitVerifiedUnixEntry(
+		install,
 		commitDirectoryDescriptor,
-		unixCommitEntry,
 		parentDescriptor,
 		targetName,
+		expectedDigest,
+		expectedMode,
 	); err != nil {
 		return fmt.Errorf("commit descriptor-bound replacement: %w", err)
 	}
