@@ -1460,6 +1460,9 @@ func TestUnixVerifiedReplacementRejectsCallbackSubstitution(t *testing.T) {
 	if err := os.WriteFile(exe, []byte("old"), 0o751); err != nil { //nolint:gosec // test-owned executable fixture
 		t.Fatal(err)
 	}
+	if err := os.Chmod(exe, 0o751); err != nil { //nolint:gosec // make the asserted fixture mode independent of the process umask
+		t.Fatal(err)
+	}
 	executablePath = func() (string, error) { return exe, nil }
 	evalSymlinks = func(path string) (string, error) { return path, nil }
 
@@ -1501,6 +1504,9 @@ func TestUnixVerifiedReplacementPreservesOriginalModeAcrossCallbackStagingChmod(
 	directory := t.TempDir()
 	exe := filepath.Join(directory, "ssm")
 	if err := os.WriteFile(exe, []byte("old"), 0o751); err != nil { //nolint:gosec // test-owned executable mode is the authoritative replacement mode
+		t.Fatal(err)
+	}
+	if err := os.Chmod(exe, 0o751); err != nil { //nolint:gosec // make the asserted fixture mode independent of the process umask
 		t.Fatal(err)
 	}
 	executablePath = func() (string, error) { return exe, nil }
@@ -1711,6 +1717,9 @@ func TestUnixVerifiedReplacementRejectsCommitBoundarySubstitution(t *testing.T) 
 	directory := t.TempDir()
 	exe := filepath.Join(directory, "ssm")
 	if err := os.WriteFile(exe, []byte("old"), 0o751); err != nil { //nolint:gosec // test-owned executable fixture
+		t.Fatal(err)
+	}
+	if err := os.Chmod(exe, 0o751); err != nil { //nolint:gosec // make the asserted fixture mode independent of the process umask
 		t.Fatal(err)
 	}
 	executablePath = func() (string, error) { return exe, nil }
