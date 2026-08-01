@@ -102,7 +102,7 @@ newest eligible release fails this check.
 | Downloaded digest matches checksum but differs from provenance | Subject digest comparison | Checksum cannot rescue the mismatch; no replacement. |
 | Unsupported, missing, misnamed, additional, or duplicate release asset | Strict manifest selection | No asset download and no fallback. |
 | Checksums over 16 KiB, provenance or release metadata over 1 MiB, or a binary over 64 MiB | Header-independent bounded stream, rejecting after at most limit plus one byte | No replacement; temporary output is bounded and removed; installed bytes and mode are unchanged. |
-| A Unix callback or concurrent writer substitutes the staged pathname, mutates the staged object, hard-links the authenticated install copy, or replaces or mutates its final private entry after authentication | Portable same-filesystem replacement boundary | The post-callback stage is opened once and copied only from that handle; both the handle stream and fresh sibling copy must equal the provenance-authenticated SHA-256. Linux keeps its same-inode descriptor-bound commit: `/proc/self/fd` links the exact open object into a fresh owner-only sibling directory. Darwin, FreeBSD, and OpenBSD instead copy only from the authenticated descriptor into a newly created entry in that open private directory, avoiding any dependency on fdesc vnode linking, and authenticate the commit object again. Both paths reject source-name substitution, remove the public staging name before canonical mutation, and recheck the private-directory entry. Before the final check, a hard link in that directory retains the exact original target object. `renameat` resolves the checked source relative to the already-open directory and atomically replaces the target on the same filesystem. The updater then authenticates the source descriptor against the canonical directory entry; any late pathname substitution or same-inode mutation fails the update and atomically restores the retained original object. A successful update is reported only after canonical authentication. |
+| A Unix callback or concurrent writer substitutes the staged pathname, mutates the staged object, hard-links the authenticated install copy, or replaces or mutates its final private or canonical entry after authentication | Portable same-filesystem replacement boundary | The post-callback stage is opened once and copied only from that handle; both the handle stream and fresh sibling copy must equal the provenance-authenticated SHA-256. Linux keeps its same-inode descriptor-bound commit: `/proc/self/fd` links the exact open object into a fresh owner-only sibling directory. Darwin, FreeBSD, and OpenBSD instead copy only from the authenticated descriptor into a newly created entry in that open private directory, avoiding any dependency on fdesc vnode linking, and authenticate the commit object again. Both paths reject source-name substitution, remove the public staging name before canonical mutation, and recheck the private-directory entry. Before the final check, a hard link in that directory retains the exact original target object. `renameat` resolves the checked source relative to the already-open directory and atomically replaces the target on the same filesystem. The updater authenticates the source descriptor against the canonical directory entry, exposes the deterministic post-validation race boundary, and authenticates it again before reporting success. A mismatch fails the update. Rollback first isolates and cleans the current canonical entry in the open private directory, then makes the retained exact-original rename the final canonical-path mutation; a file-to-directory pathname change therefore cannot make the direct rollback refuse. |
 | Windows cannot overwrite its mapped running `.exe` | Platform replacement | Pass the verified SHA-256 into the platform boundary, hold the fixed sibling update lock across inspection, handle-bound moves, rollback, recovery, and cleanup, and hash the exact non-write-sharing stage handle before any canonical mutation. Reject reparse points and multiple hard links, require `GetFileInformationByHandleEx(FileIdInfo)` volume serial plus 128-bit identity, and keep non-delete-sharing handles on the validated original and stage until the completed record is durable. `SetFileInformationByHandle(FileRenameInfoEx)` renames those exact source objects. Replace, POSIX, and ignore-read-only semantics replace an unlocked object inserted at the temporarily vacant canonical name. Windows cannot replace that object while an external handle withholds delete sharing: installation and synchronous rollback then fail closed as `update_recovery_required`, retain the original at `.old` plus the authenticated prepared record, and block cleanup, startup command dispatch, and later updates. After the hostile handle is released, serialized recovery restores the retained original by handle, verifies its strong identity, authenticated executable digest, and security-descriptor contract at the canonical path, and only then clears the record. The ordinary tier captures, applies, and verifies owner, primary group, DACL, and DACL inheritance/protection without optional privileges. When all three backup/restore/security privileges can be enabled on a duplicated thread token and the filesystem supports whole-descriptor application, the full tier instead preserves and verifies the complete descriptor, including SACL-backed fields and RM control. An unavailable full tier is never claimed; failure to preserve the selected tier stops before the first move, restores the still-held original, or retains authenticated recovery evidence when an external sharing lock makes immediate restoration impossible. |
 
 ## Windows replacement terminal-state matrix
@@ -187,6 +187,11 @@ descriptor-copy races at the public staging name and private commit entry.
 Its final-entry cases substitute the checked pathname and mutate the checked
 inode immediately before target mutation; both require post-rename
 authentication to fail and restore the exact original object.
+The aggregate also mutates the canonical inode immediately after the first
+post-rename digest and replaces the canonical pathname with an empty directory
+at the rollback boundary. Final reauthentication rejects the content change;
+descriptor-relative isolation removes the changed pathname before the retained
+original becomes canonical, and failure cleanup leaves no updater sibling.
 FreeBSD and OpenBSD compile the same descriptor-copy path for both release
 architectures.
 
@@ -317,8 +322,24 @@ removed and its descriptor's zero-link transition is verified before the BSD
 path can mutate the canonical target. Both implementations retain the exact
 original target as a private same-inode rollback link, use directory-relative
 `renameat` for same-filesystem atomic replacement, and authenticate the renamed
-object against the canonical directory entry. A mismatch atomically restores
-the retained original before the ordinary failure is returned.
+object against the canonical directory entry twice across the deterministic
+post-validation boundary. On a mismatch, rollback moves the current canonical
+entry into that private directory, removes it according to its observed type,
+and renames the retained original last. No post-restore pathname check can
+create a second rollback-refusal window.
+
+Unix does not provide this updater with a mandatory write-denying file handle,
+a mandatory pathname lock, or one syscall that couples SHA-256 validation to a
+userspace return. `renameat` changes directory entries but leaves already-open
+descriptors writable. Therefore an equally authorized writer that continues
+after every boundary can always act after any finite protocol's last digest,
+stat, or rename. The acceptance boundary is correspondingly explicit: tests
+inject a change after the former final canonical validation and before the new
+final validation, and inject a pathname change immediately before rollback.
+After that rollback callback completes, restoration of the retained original
+is the updater's final canonical-path mutation. This is not a claim that the
+updater can stop a separately authorized writer from changing the path again
+after the update or failure has been returned.
 
 The installer success fixture places a BSD-compatible `mktemp` shim ahead of
 the host implementation. It rejects every supplied template that does not end

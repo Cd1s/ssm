@@ -4,6 +4,7 @@ package update
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,8 +14,9 @@ import (
 )
 
 const (
-	unixCommitEntry   = "authenticated-replacement"
-	unixRollbackEntry = "original-target"
+	unixCommitEntry    = "authenticated-replacement"
+	unixRollbackEntry  = "original-target"
+	unixDiscardedEntry = "discarded-replacement"
 )
 
 func sameUnixObject(left, right unix.Stat_t) bool {
@@ -25,10 +27,14 @@ func commitVerifiedUnixEntry(
 	source *os.File,
 	commitDirectoryDescriptor,
 	parentDescriptor int,
-	targetName string,
+	target string,
 	expectedDigest [sha256.Size]byte,
 	expectedMode os.FileMode,
 ) error {
+	targetName := filepath.Base(target)
+	defer func() {
+		_ = removeUnixCommitEntry(commitDirectoryDescriptor, unixDiscardedEntry)
+	}()
 	var original unix.Stat_t
 	if err := unix.Fstatat(
 		parentDescriptor,
@@ -88,7 +94,87 @@ func commitVerifiedUnixEntry(
 		expectedMode,
 	)
 	if authenticationErr == nil {
-		return nil
+		// A portable Unix regular-file descriptor does not deny writes through
+		// other descriptors, and renameat does not lock the destination name.
+		// The hook deterministically models a change after the former final
+		// observation; the second authentication is the strongest testable
+		// boundary before success. No finite userspace protocol can prevent an
+		// equally authorized writer from acting after its last observation.
+		if unixReplacementTestHook != nil {
+			if err := unixReplacementTestHook("canonical_replacement_validated", "", target); err != nil {
+				authenticationErr = fmt.Errorf("continue after validating canonical replacement: %w", err)
+			}
+		}
+		if authenticationErr == nil {
+			authenticationErr = authenticateCanonicalUnixReplacement(
+				source,
+				parentDescriptor,
+				targetName,
+				expectedDigest,
+				expectedMode,
+			)
+		}
+		if authenticationErr == nil {
+			return nil
+		}
+	}
+
+	restored, rollbackErr := restoreOriginalUnixTarget(
+		commitDirectoryDescriptor,
+		parentDescriptor,
+		target,
+	)
+	rollbackLinked = false
+	if !restored {
+		return fmt.Errorf(
+			"authenticate canonical replacement after rename: %w; restore exact original target: %v (original evidence retained)",
+			authenticationErr,
+			rollbackErr,
+		)
+	}
+	return fmt.Errorf(
+		"authenticate canonical replacement after rename: %w (exact original target restored)",
+		errors.Join(authenticationErr, rollbackErr),
+	)
+}
+
+func restoreOriginalUnixTarget(
+	commitDirectoryDescriptor,
+	parentDescriptor int,
+	target string,
+) (bool, error) {
+	targetName := filepath.Base(target)
+	var rollbackBoundaryErr error
+	if unixReplacementTestHook != nil {
+		if err := unixReplacementTestHook("rollback_boundary", "", target); err != nil {
+			rollbackBoundaryErr = fmt.Errorf("continue at rollback boundary: %w", err)
+		}
+	}
+
+	// Moving the current pathname away first makes restoration independent of
+	// its type. In particular, renameat cannot replace a directory with the
+	// retained regular file directly. Cleanup happens before the restoration so
+	// the final canonical-path mutation is the exact-original rename below.
+	displaced := false
+	displaceErr := unix.Renameat(
+		parentDescriptor,
+		targetName,
+		commitDirectoryDescriptor,
+		unixDiscardedEntry,
+	)
+	if displaceErr == nil {
+		displaced = true
+	} else if errors.Is(displaceErr, unix.ENOENT) {
+		displaceErr = nil
+	} else {
+		displaceErr = fmt.Errorf("isolate changed canonical replacement: %w", displaceErr)
+	}
+
+	var cleanupErr error
+	if displaced {
+		if err := removeUnixCommitEntry(commitDirectoryDescriptor, unixDiscardedEntry); err != nil {
+			cleanupErr = fmt.Errorf("remove isolated canonical replacement: %w", err)
+		}
 	}
 
 	if err := unix.Renameat(
@@ -97,39 +183,29 @@ func commitVerifiedUnixEntry(
 		parentDescriptor,
 		targetName,
 	); err != nil {
-		rollbackLinked = false
-		return fmt.Errorf(
-			"authenticate canonical replacement after rename: %w; restore exact original target: %v (original evidence retained)",
-			authenticationErr,
-			err,
-		)
+		return false, errors.Join(rollbackBoundaryErr, displaceErr, cleanupErr, err)
 	}
-	rollbackLinked = false
-	var restored unix.Stat_t
+	return true, errors.Join(rollbackBoundaryErr, displaceErr, cleanupErr)
+}
+
+func removeUnixCommitEntry(directoryDescriptor int, name string) error {
+	var entry unix.Stat_t
 	if err := unix.Fstatat(
-		parentDescriptor,
-		targetName,
-		&restored,
+		directoryDescriptor,
+		name,
+		&entry,
 		unix.AT_SYMLINK_NOFOLLOW,
 	); err != nil {
-		return fmt.Errorf(
-			"authenticate canonical replacement after rename: %w; verify restored original target: %v",
-			authenticationErr,
-			err,
-		)
+		if errors.Is(err, unix.ENOENT) {
+			return nil
+		}
+		return err
 	}
-	if !sameUnixObject(original, restored) ||
-		restored.Nlink != original.Nlink ||
-		restored.Mode != original.Mode {
-		return fmt.Errorf(
-			"authenticate canonical replacement after rename: %w; restored target does not match the exact original object",
-			authenticationErr,
-		)
+	flags := 0
+	if entry.Mode&unix.S_IFMT == unix.S_IFDIR {
+		flags = unix.AT_REMOVEDIR
 	}
-	return fmt.Errorf(
-		"authenticate canonical replacement after rename: %w (exact original target restored)",
-		authenticationErr,
-	)
+	return unix.Unlinkat(directoryDescriptor, name, flags)
 }
 
 func authenticateCanonicalUnixReplacement(
@@ -368,7 +444,7 @@ func commitAuthenticatedUnixReplacementByCopy(
 		commitFile,
 		commitDirectoryDescriptor,
 		parentDescriptor,
-		targetName,
+		target,
 		expectedDigest,
 		expectedMode,
 	); err != nil {

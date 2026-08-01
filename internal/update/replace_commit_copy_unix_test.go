@@ -20,6 +20,12 @@ func TestUnixDescriptorCopyCommit(t *testing.T) {
 	t.Run("rejects post-verification in-place mutation", func(t *testing.T) {
 		testUnixCommitPostVerificationInPlaceMutation(t, commitAuthenticatedUnixReplacementByCopy)
 	})
+	t.Run("rejects post-rename validation mutation", func(t *testing.T) {
+		testUnixCommitPostRenameValidationMutation(t, commitAuthenticatedUnixReplacementByCopy)
+	})
+	t.Run("restores across rollback pathname change", func(t *testing.T) {
+		testUnixCommitRollbackPathChange(t, commitAuthenticatedUnixReplacementByCopy)
+	})
 }
 
 type unixCommitTestFunc func(
@@ -182,6 +188,94 @@ func testUnixCommitPostVerificationInPlaceMutation(t *testing.T, commit unixComm
 	assertUnixOriginalObjectPreserved(t, target, originalInfo)
 }
 
+func testUnixCommitPostRenameValidationMutation(t *testing.T, commit unixCommitTestFunc) {
+	t.Helper()
+	target, install, installPath, digest := newUnixDescriptorCopyCommitFixture(t)
+	originalInfo, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldHook := unixReplacementTestHook
+	t.Cleanup(func() { unixReplacementTestHook = oldHook })
+	hookCalled := false
+	unixReplacementTestHook = func(phase, _, path string) error {
+		if phase != "canonical_replacement_validated" {
+			return nil
+		}
+		hookCalled = true
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0) //nolint:gosec // adversarial test-owned same-inode mutation
+		if err != nil {
+			return err
+		}
+		if _, err := file.Write([]byte("mutation after canonical digest")); err != nil {
+			_ = file.Close()
+			return err
+		}
+		return file.Close()
+	}
+
+	err = commit(install, installPath, target, digest, 0o751)
+	if !hookCalled {
+		t.Fatal("same-file mutation did not reach the post-rename validation seam")
+	}
+	if err == nil || !strings.Contains(err.Error(), "exact original target restored") {
+		t.Fatalf("post-rename same-file mutation error = %v, want authenticated rollback", err)
+	}
+	assertExecutablePreserved(t, target, []byte("old"), 0o751)
+	assertUnixOriginalObjectPreserved(t, target, originalInfo)
+	assertUnixReplacementFailureCleaned(t, target)
+}
+
+func testUnixCommitRollbackPathChange(t *testing.T, commit unixCommitTestFunc) {
+	t.Helper()
+	target, install, installPath, digest := newUnixDescriptorCopyCommitFixture(t)
+	originalInfo, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldHook := unixReplacementTestHook
+	t.Cleanup(func() { unixReplacementTestHook = oldHook })
+	validatedHookCalled := false
+	rollbackHookCalled := false
+	unixReplacementTestHook = func(phase, _, path string) error {
+		switch phase {
+		case "canonical_replacement_validated":
+			validatedHookCalled = true
+			file, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0) //nolint:gosec // force authenticated rollback after the validation boundary
+			if err != nil {
+				return err
+			}
+			if _, err := file.Write([]byte("mutation requiring rollback")); err != nil {
+				_ = file.Close()
+				return err
+			}
+			return file.Close()
+		case "rollback_boundary":
+			rollbackHookCalled = true
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+			return os.Mkdir(path, 0o700) //nolint:gosec // an empty directory deterministically makes a direct file-over-file rollback refuse
+		default:
+			return nil
+		}
+	}
+
+	err = commit(install, installPath, target, digest, 0o751)
+	if !validatedHookCalled {
+		t.Fatal("rollback fixture did not reach the post-rename validation seam")
+	}
+	if !rollbackHookCalled {
+		t.Fatal("pathname change did not reach the rollback seam")
+	}
+	if err == nil || !strings.Contains(err.Error(), "exact original target restored") {
+		t.Fatalf("rollback pathname-change error = %v, want exact original restoration", err)
+	}
+	assertExecutablePreserved(t, target, []byte("old"), 0o751)
+	assertUnixOriginalObjectPreserved(t, target, originalInfo)
+	assertUnixReplacementFailureCleaned(t, target)
+}
+
 func assertUnixOriginalObjectPreserved(t *testing.T, target string, original os.FileInfo) {
 	t.Helper()
 	restored, err := os.Stat(target)
@@ -190,6 +284,17 @@ func assertUnixOriginalObjectPreserved(t *testing.T, target string, original os.
 	}
 	if !os.SameFile(original, restored) {
 		t.Fatal("failed replacement did not restore the exact original target object")
+	}
+}
+
+func assertUnixReplacementFailureCleaned(t *testing.T, target string) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Dir(target))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(target) {
+		t.Fatalf("failed replacement left sibling artifacts: %v", entries)
 	}
 }
 

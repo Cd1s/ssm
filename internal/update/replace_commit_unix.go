@@ -182,7 +182,7 @@ func commitAuthenticatedUnixReplacement(
 		install,
 		commitDirectoryDescriptor,
 		parentDescriptor,
-		targetName,
+		target,
 		expectedDigest,
 		expectedMode,
 	); err != nil {

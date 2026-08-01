@@ -16,6 +16,12 @@ func TestDarwinNativeReplacementSecurity(t *testing.T) {
 	t.Run("final entry in-place mutation", func(t *testing.T) {
 		testUnixCommitPostVerificationInPlaceMutation(t, commitAuthenticatedUnixReplacementByCopy)
 	})
+	t.Run("post-rename validation mutation", func(t *testing.T) {
+		testUnixCommitPostRenameValidationMutation(t, commitAuthenticatedUnixReplacementByCopy)
+	})
+	t.Run("rollback pathname change", func(t *testing.T) {
+		testUnixCommitRollbackPathChange(t, commitAuthenticatedUnixReplacementByCopy)
+	})
 	t.Run("updater success", TestVerifiedReplacementPreservesPermissionsAndTarget)
 	t.Run("updater commit-boundary substitution", TestUnixVerifiedReplacementRejectsCommitBoundarySubstitution)
 }
