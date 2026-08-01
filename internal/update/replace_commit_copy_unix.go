@@ -162,11 +162,12 @@ func restoreOriginalUnixTarget(
 		commitDirectoryDescriptor,
 		unixDiscardedEntry,
 	)
-	if displaceErr == nil {
+	switch {
+	case displaceErr == nil:
 		displaced = true
-	} else if errors.Is(displaceErr, unix.ENOENT) {
+	case errors.Is(displaceErr, unix.ENOENT):
 		displaceErr = nil
-	} else {
+	default:
 		displaceErr = fmt.Errorf("isolate changed canonical replacement: %w", displaceErr)
 	}
 
