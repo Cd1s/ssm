@@ -270,17 +270,27 @@ is recovery evidence and is never deleted or overwritten by cleanup or a new
 update. A prepared record blocks a new update and authorizes only a serialized
 rollback retry: recovery protectively opens the recorded single-link original,
 rejects a reparse point, strong-identity mismatch, executable-digest mismatch,
-or descriptor-contract mismatch before any rename, rejects a non-single-link
-canonical object, and renames the original handle over an unlocked canonical
-name. It then rehashes and recaptures the descriptor and verifies the same
-contracts plus the same original strong identity through both the retained
-handle and canonical path before deleting the exact record by handle. If the
-original is already canonical after a prior rollback but record deletion did
-not finish, recovery holds and verifies that exact original handle, executable
-digest, and descriptor contract while clearing the record. A sharing lock,
-remaining hard link, missing original, identity/digest mismatch, unavailable
-required full tier, or descriptor mismatch keeps the prepared record and any
-`.old` intact and keeps cleanup and later updates blocked. Startup surfaces an
+or descriptor-contract mismatch before canonical mutation, and rejects a
+non-single-link canonical object. An absent canonical name is restored by the
+original handle-bound rename. For a present canonical name, recovery first
+holds a `DELETE` guard, so an external handle that withholds delete sharing
+still blocks restoration, then uses `FileLinkInformationEx` POSIX replacement
+to atomically place a canonical link to the authenticated original even when
+the displaced object is this process's mapped image. Recovery proves that the
+retained handle and canonical path are the same original object with exactly
+the expected two links, removes only the `.old` link, and reopens the resulting
+single-link canonical original. If interrupted after the atomic link
+replacement, only that authenticated two-link state may resume; an unrelated
+second hard link remains rejected. Recovery then rehashes and recaptures the
+descriptor and verifies the same contracts plus the same original strong
+identity at the canonical path before deleting the exact record by handle. If
+the original is already canonical after a prior rollback but record deletion
+did not finish, recovery holds and verifies that exact original handle,
+executable digest, and descriptor contract while clearing the record. A
+sharing lock, unexplained hard link, missing original, identity/digest
+mismatch, unavailable required full tier, or descriptor mismatch keeps the
+prepared record and any `.old` intact and keeps cleanup and later updates
+blocked. Startup surfaces an
 authenticated restoration refusal through the `update_recovery_required` /
 `update_recovery` machine contract, returns nonzero, and does not dispatch the
 requested command. Evidence that cannot authenticate remains fail-closed

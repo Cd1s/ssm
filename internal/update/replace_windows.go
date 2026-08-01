@@ -439,6 +439,25 @@ func requireWindowsReplacementHandleIdentity(
 	return nil
 }
 
+func requireWindowsReplacementHandleObjectIdentity(
+	handle windows.Handle,
+	expected windowsFileIdentity,
+	expectedLinks uint32,
+	description string,
+) error {
+	identity, links, err := inspectWindowsReplacementHandleObject(handle, description)
+	if err != nil {
+		return err
+	}
+	if identity != expected {
+		return fmt.Errorf("%s identity changed after inspection", description)
+	}
+	if links != expectedLinks {
+		return fmt.Errorf("%s has %d hard links", description, links)
+	}
+	return nil
+}
+
 func requireWindowsReplacementPathIdentity(
 	path string,
 	expected windowsFileIdentity,
@@ -450,6 +469,33 @@ func requireWindowsReplacementPathIdentity(
 	}
 	if identity != expected {
 		return fmt.Errorf("%s identity changed after inspection", description)
+	}
+	return nil
+}
+
+func requireWindowsReplacementPathObjectIdentity(
+	path string,
+	expected windowsFileIdentity,
+	expectedLinks uint32,
+	description string,
+) error {
+	handle, err := openWindowsReplacementFile(path, 0)
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", description, err)
+	}
+	identity, links, inspectErr := inspectWindowsReplacementHandleObject(handle, description)
+	closeErr := windows.CloseHandle(handle)
+	if inspectErr != nil {
+		return inspectErr
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close %s inspection handle: %w", description, closeErr)
+	}
+	if identity != expected {
+		return fmt.Errorf("%s identity changed after inspection", description)
+	}
+	if links != expectedLinks {
+		return fmt.Errorf("%s has %d hard links", description, links)
 	}
 	return nil
 }
@@ -725,6 +771,47 @@ func renameWindowsFileHandle(handle windows.Handle, destination string, replace 
 		windows.FileRenameInfoEx,
 		&buffer[0],
 		uint32(len(buffer)),
+	)
+}
+
+type windowsFileLinkInfo struct {
+	flags          uint32
+	rootDirectory  windows.Handle
+	fileNameLength uint32
+	fileName       [1]uint16
+}
+
+func linkWindowsFileHandle(handle windows.Handle, destination string) error {
+	// A nil RootDirectory makes this single-component name relative to the
+	// held source link. Recovery opens .old beside the canonical executable,
+	// so no pathname lookup can substitute the authenticated source object.
+	name, err := windows.UTF16FromString(filepath.Base(destination))
+	if err != nil {
+		return err
+	}
+	name = name[:len(name)-1]
+	var layout windowsFileLinkInfo
+	headerSize := int(unsafe.Offsetof(layout.fileName))
+	bufferSize := headerSize + len(name)*2
+	if minimum := int(unsafe.Sizeof(layout)); bufferSize < minimum {
+		bufferSize = minimum
+	}
+	buffer := make([]byte, bufferSize)
+	info := (*windowsFileLinkInfo)(unsafe.Pointer(&buffer[0]))
+	info.flags = windows.FILE_LINK_REPLACE_IF_EXISTS |
+		windows.FILE_LINK_POSIX_SEMANTICS
+	info.fileNameLength = uint32(len(name) * 2)
+	copy(
+		unsafe.Slice(&info.fileName[0], len(name)),
+		name,
+	)
+	var status windows.IO_STATUS_BLOCK
+	return windows.NtSetInformationFile(
+		handle,
+		&status,
+		&buffer[0],
+		uint32(len(buffer)),
+		windows.FileLinkInformation,
 	)
 }
 
@@ -1298,7 +1385,7 @@ func recoverPreparedWindowsReplacement(
 			}
 		}
 	}()
-	backupIdentity, err := inspectWindowsReplacementHandle(
+	backupIdentity, backupLinks, err := inspectWindowsReplacementHandleObject(
 		backupHandle,
 		"Windows rollback recovery image",
 	)
@@ -1307,6 +1394,9 @@ func recoverPreparedWindowsReplacement(
 	}
 	if backupIdentity != record.data.original {
 		return fmt.Errorf("prepared Windows rollback record does not match the rollback image")
+	}
+	if backupLinks != 1 && backupLinks != 2 {
+		return fmt.Errorf("Windows rollback recovery image has %d hard links", backupLinks)
 	}
 	if err := requireWindowsReplacementHandleDigest(
 		backupHandle,
@@ -1318,11 +1408,77 @@ func recoverPreparedWindowsReplacement(
 	if err := verifier.verify(backupHandle, "Windows rollback recovery image"); err != nil {
 		return err
 	}
-	if err := validateWindowsRecoveryCanonicalTarget(target); err != nil {
-		return requireRecovery(err)
+	completeLinkedRecovery := func() error {
+		if err := deleteWindowsReplacementHandle(backupHandle); err != nil {
+			return preserveCanonical(fmt.Errorf("remove linked Windows rollback image: %w", err))
+		}
+		if err := windows.CloseHandle(backupHandle); err != nil {
+			return preserveCanonical(fmt.Errorf("close linked Windows rollback image: %w", err))
+		}
+		backupHandle = windows.InvalidHandle
+		return completePreparedWindowsRecoveryAtCanonical(target, record, verifier)
 	}
-	if err := renameWindowsReplacementHandle(backupHandle, target, true); err != nil {
-		return requireRecovery(fmt.Errorf("restore Windows rollback image: %w", err))
+	if backupLinks == 2 {
+		if err := requireWindowsReplacementPathObjectIdentity(
+			target,
+			record.data.original,
+			2,
+			"linked recovered Windows executable",
+		); err != nil {
+			return err
+		}
+		return completeLinkedRecovery()
+	}
+	targetHandle, err := openWindowsProtectedReplacementFile(
+		target,
+		windows.DELETE,
+	)
+	if err != nil && isWindowsPathNotFound(err) {
+		if err := renameWindowsReplacementHandle(backupHandle, target, true); err != nil {
+			return requireRecovery(fmt.Errorf("restore Windows rollback image: %w", err))
+		}
+	} else {
+		if err != nil {
+			return requireRecovery(fmt.Errorf("restore Windows rollback image: %w", err))
+		}
+		if _, inspectErr := inspectWindowsReplacementHandle(
+			targetHandle,
+			"canonical Windows executable awaiting recovery",
+		); inspectErr != nil {
+			_ = windows.CloseHandle(targetHandle)
+			return requireRecovery(inspectErr)
+		}
+		linkErr := linkWindowsFileHandle(backupHandle, target)
+		closeErr := windows.CloseHandle(targetHandle)
+		if linkErr != nil {
+			if closeErr != nil {
+				linkErr = errors.Join(
+					linkErr,
+					fmt.Errorf("close canonical Windows executable recovery guard: %w", closeErr),
+				)
+			}
+			return requireRecovery(fmt.Errorf("restore Windows rollback image: %w", linkErr))
+		}
+		if closeErr != nil {
+			return requireRecovery(fmt.Errorf("close replaced canonical Windows executable: %w", closeErr))
+		}
+		if err := requireWindowsReplacementHandleObjectIdentity(
+			backupHandle,
+			record.data.original,
+			2,
+			"linked recovered Windows executable",
+		); err != nil {
+			return requireRecovery(err)
+		}
+		if err := requireWindowsReplacementPathObjectIdentity(
+			target,
+			record.data.original,
+			2,
+			"linked recovered Windows executable",
+		); err != nil {
+			return requireRecovery(err)
+		}
+		return completeLinkedRecovery()
 	}
 	if err := requireWindowsReplacementHandleIdentity(
 		backupHandle,
@@ -1413,27 +1569,6 @@ func completePreparedWindowsRecoveryAtCanonical(
 	}
 	if err := record.close(); err != nil {
 		return preserveCanonical(fmt.Errorf("close recovered Windows rollback ownership record: %w", err))
-	}
-	return nil
-}
-
-func validateWindowsRecoveryCanonicalTarget(target string) error {
-	targetHandle, err := openWindowsProtectedReplacementFile(target, 0)
-	if err != nil {
-		if isWindowsPathNotFound(err) {
-			return nil
-		}
-		return fmt.Errorf("open canonical Windows executable for recovery: %w", err)
-	}
-	if _, inspectErr := inspectWindowsReplacementHandle(
-		targetHandle,
-		"canonical Windows executable awaiting recovery",
-	); inspectErr != nil {
-		_ = windows.CloseHandle(targetHandle)
-		return inspectErr
-	}
-	if err := windows.CloseHandle(targetHandle); err != nil {
-		return fmt.Errorf("close canonical Windows executable awaiting recovery: %w", err)
 	}
 	return nil
 }

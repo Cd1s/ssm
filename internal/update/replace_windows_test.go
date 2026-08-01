@@ -2727,7 +2727,13 @@ func testWindowsLateHardLinksCannotCompromiseTarget(t *testing.T) {
 				t.Fatalf("release late hard-link fixture: %v", err)
 			}
 			t.Run("after hostile hard link removal", func(t *testing.T) {
-				runWindowsRecoveryCleanup(t, testExecutable, target)
+				runner := testExecutable
+				if test.name == "stage" {
+					// Exercise startup recovery while the rejected installed stage is
+					// this child's mapped image, matching the compiled CLI boundary.
+					runner = target
+				}
+				runWindowsRecoveryCleanup(t, runner, target)
 				assertWindowsRecoveredOriginal(
 					t,
 					target,
