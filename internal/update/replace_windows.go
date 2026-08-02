@@ -539,7 +539,7 @@ func openWindowsReplacementDeleteGuard(path string) (windows.Handle, error) {
 }
 
 func windowsReplacementHandleIsCurrentExecutable(handle windows.Handle) (bool, error) {
-	targetIdentity, err := inspectWindowsReplacementHandle(
+	targetIdentity, _, err := inspectWindowsReplacementHandleObject(
 		handle,
 		"canonical Windows executable awaiting recovery",
 	)
@@ -554,7 +554,7 @@ func windowsReplacementHandleIsCurrentExecutable(handle windows.Handle) (bool, e
 	if err != nil {
 		return false, fmt.Errorf("open current Windows executable for recovery: %w", err)
 	}
-	currentIdentity, inspectErr := inspectWindowsReplacementHandle(
+	currentIdentity, _, inspectErr := inspectWindowsReplacementHandleObject(
 		currentHandle,
 		"current mapped Windows executable",
 	)
@@ -822,9 +822,25 @@ type windowsFileLinkInfo struct {
 }
 
 func linkWindowsFileHandle(handle windows.Handle, destination string) error {
+	return linkWindowsFileHandleWithFlags(
+		handle,
+		destination,
+		windows.FILE_LINK_REPLACE_IF_EXISTS|windows.FILE_LINK_POSIX_SEMANTICS,
+	)
+}
+
+func linkWindowsFileHandleExclusive(handle windows.Handle, destination string) error {
+	return linkWindowsFileHandleWithFlags(handle, destination, 0)
+}
+
+func linkWindowsFileHandleWithFlags(
+	handle windows.Handle,
+	destination string,
+	flags uint32,
+) error {
 	// A nil RootDirectory makes this single-component name relative to the
-	// held source link. Recovery opens .old beside the canonical executable,
-	// so no pathname lookup can substitute the authenticated source object.
+	// held source link. Recovery uses only sibling names, so no pathname lookup
+	// can substitute the held source object.
 	name, err := windows.UTF16FromString(filepath.Base(destination))
 	if err != nil {
 		return err
@@ -838,8 +854,7 @@ func linkWindowsFileHandle(handle windows.Handle, destination string) error {
 	}
 	buffer := make([]byte, bufferSize)
 	info := (*windowsFileLinkInfo)(unsafe.Pointer(&buffer[0]))
-	info.flags = windows.FILE_LINK_REPLACE_IF_EXISTS |
-		windows.FILE_LINK_POSIX_SEMANTICS
+	info.flags = flags
 	info.fileNameLength = uint32(len(name) * 2)
 	copy(
 		unsafe.Slice(&info.fileName[0], len(name)),
@@ -855,11 +870,134 @@ func linkWindowsFileHandle(handle windows.Handle, destination string) error {
 	)
 }
 
+func restoreMappedWindowsReplacement(
+	target string,
+	targetHandle,
+	backupHandle windows.Handle,
+	targetIdentity windowsFileIdentity,
+	targetLinks uint32,
+) (resultErr error) {
+	targetOpen := true
+	defer func() {
+		if targetOpen {
+			if closeErr := windows.CloseHandle(targetHandle); closeErr != nil {
+				resultErr = errors.Join(
+					resultErr,
+					fmt.Errorf("close canonical Windows executable recovery guard: %w", closeErr),
+				)
+			}
+		}
+	}()
+
+	mappedLink := windowsReplacementMappedLink(target)
+	switch targetLinks {
+	case 1:
+		if err := requireWindowsReplacementPathAbsent(
+			mappedLink,
+			"mapped Windows executable recovery link",
+		); err != nil {
+			return err
+		}
+		if err := linkWindowsFileHandleExclusive(targetHandle, mappedLink); err != nil {
+			return fmt.Errorf("preserve mapped Windows executable recovery link: %w", err)
+		}
+	case 2:
+		if err := requireWindowsReplacementPathObjectIdentity(
+			mappedLink,
+			targetIdentity,
+			2,
+			"mapped Windows executable recovery link",
+		); err != nil {
+			return fmt.Errorf("resume mapped Windows executable recovery link: %w", err)
+		}
+	default:
+		return fmt.Errorf("canonical Windows executable awaiting recovery has %d hard links", targetLinks)
+	}
+	if err := requireWindowsReplacementHandleObjectIdentity(
+		targetHandle,
+		targetIdentity,
+		2,
+		"guarded mapped Windows executable",
+	); err != nil {
+		return err
+	}
+	if err := requireWindowsReplacementPathObjectIdentity(
+		target,
+		targetIdentity,
+		2,
+		"canonical mapped Windows executable",
+	); err != nil {
+		return err
+	}
+
+	mappedHandle, err := openWindowsReplacementDeleteGuard(mappedLink)
+	if err != nil {
+		return fmt.Errorf("open mapped Windows executable recovery link: %w", err)
+	}
+	mappedOpen := true
+	defer func() {
+		if mappedOpen {
+			if closeErr := windows.CloseHandle(mappedHandle); closeErr != nil {
+				resultErr = errors.Join(
+					resultErr,
+					fmt.Errorf("close mapped Windows executable recovery link: %w", closeErr),
+				)
+			}
+		}
+	}()
+	if err := requireWindowsReplacementHandleObjectIdentity(
+		mappedHandle,
+		targetIdentity,
+		2,
+		"mapped Windows executable recovery link",
+	); err != nil {
+		return err
+	}
+	// Native Windows refuses disposition of the last link to a live image.
+	// Mark both exact links while the mapped object still has two, then close
+	// the canonical handle first so the authenticated rollback can be restored
+	// before the temporary link disappears.
+	if err := unlinkWindowsMappedReplacementHandle(mappedHandle); err != nil {
+		return fmt.Errorf("prepare mapped Windows executable recovery link removal: %w", err)
+	}
+	if err := requireWindowsReplacementHandleObjectIdentity(
+		targetHandle,
+		targetIdentity,
+		2,
+		"guarded mapped Windows executable before canonical removal",
+	); err != nil {
+		return err
+	}
+	if err := unlinkWindowsMappedReplacementHandle(targetHandle); err != nil {
+		return fmt.Errorf("remove mapped canonical Windows executable for recovery: %w", err)
+	}
+	if err := windows.CloseHandle(targetHandle); err != nil {
+		return fmt.Errorf("close removed mapped Windows executable: %w", err)
+	}
+	targetOpen = false
+	if err := requireWindowsReplacementPathAbsent(
+		target,
+		"removed mapped canonical Windows executable",
+	); err != nil {
+		return err
+	}
+	if err := renameWindowsReplacementHandle(backupHandle, target, true); err != nil {
+		return fmt.Errorf("restore Windows rollback image: %w", err)
+	}
+	if err := windows.CloseHandle(mappedHandle); err != nil {
+		return fmt.Errorf("close removed mapped Windows executable recovery link: %w", err)
+	}
+	mappedOpen = false
+	return requireWindowsReplacementPathAbsent(
+		mappedLink,
+		"removed mapped Windows executable recovery link",
+	)
+}
+
 func unlinkWindowsMappedFileHandle(handle windows.Handle) error {
 	// FileLinkInformationEx replacement still performs an image-section check
-	// on the target. FileDispositionInfoEx without FORCE_IMAGE_SECTION_CHECK is
-	// the native transition that removes a mapped executable's held link while
-	// the running image remains valid until process exit.
+	// on the target. FileDispositionInfoEx without FORCE_IMAGE_SECTION_CHECK can
+	// remove one held link while another link preserves the mapped image.
 	flags := uint32(
 		windows.FILE_DISPOSITION_DELETE |
 			windows.FILE_DISPOSITION_POSIX_SEMANTICS,
@@ -1466,7 +1604,7 @@ func recoverPreparedWindowsReplacement(
 		return err
 	}
 	completeLinkedRecovery := func() error {
-		if err := deleteWindowsReplacementHandle(backupHandle); err != nil {
+		if err := unlinkWindowsMappedReplacementHandle(backupHandle); err != nil {
 			return preserveCanonical(fmt.Errorf("remove linked Windows rollback image: %w", err))
 		}
 		if err := windows.CloseHandle(backupHandle); err != nil {
@@ -1498,30 +1636,37 @@ func recoverPreparedWindowsReplacement(
 		if err != nil {
 			return requireRecovery(fmt.Errorf("restore Windows rollback image: %w", err))
 		}
+		targetIdentity, targetLinks, inspectErr := inspectWindowsReplacementHandleObject(
+			targetHandle,
+			"canonical Windows executable awaiting recovery",
+		)
+		if inspectErr != nil {
+			_ = windows.CloseHandle(targetHandle)
+			return requireRecovery(inspectErr)
+		}
 		mappedTarget, inspectErr := windowsReplacementHandleIsCurrentImage(targetHandle)
 		if inspectErr != nil {
 			_ = windows.CloseHandle(targetHandle)
 			return requireRecovery(inspectErr)
 		}
 		if mappedTarget {
-			unlinkErr := unlinkWindowsMappedReplacementHandle(targetHandle)
-			closeErr := windows.CloseHandle(targetHandle)
-			if unlinkErr != nil {
-				if closeErr != nil {
-					unlinkErr = errors.Join(
-						unlinkErr,
-						fmt.Errorf("close canonical Windows executable recovery guard: %w", closeErr),
-					)
-				}
-				return requireRecovery(fmt.Errorf("remove mapped canonical Windows executable for recovery: %w", unlinkErr))
-			}
-			if closeErr != nil {
-				return requireRecovery(fmt.Errorf("close removed mapped Windows executable: %w", closeErr))
-			}
-			if err := renameWindowsReplacementHandle(backupHandle, target, true); err != nil {
-				return requireRecovery(fmt.Errorf("restore Windows rollback image: %w", err))
+			if err := restoreMappedWindowsReplacement(
+				target,
+				targetHandle,
+				backupHandle,
+				targetIdentity,
+				targetLinks,
+			); err != nil {
+				return requireRecovery(err)
 			}
 		} else {
+			if targetLinks != 1 {
+				_ = windows.CloseHandle(targetHandle)
+				return requireRecovery(fmt.Errorf(
+					"canonical Windows executable awaiting recovery has %d hard links",
+					targetLinks,
+				))
+			}
 			linkErr := linkWindowsReplacementHandle(backupHandle, target)
 			closeErr := windows.CloseHandle(targetHandle)
 			if linkErr != nil {
@@ -1664,6 +1809,10 @@ func windowsReplacementBackup(target string) string {
 
 func windowsReplacementRecord(target string) string {
 	return filepath.Join(filepath.Dir(target), "."+filepath.Base(target)+".old.state")
+}
+
+func windowsReplacementMappedLink(target string) string {
+	return filepath.Join(filepath.Dir(target), "."+filepath.Base(target)+".mapped")
 }
 
 func windowsReplacementLock(target string) string {
