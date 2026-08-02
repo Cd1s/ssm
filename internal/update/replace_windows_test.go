@@ -60,6 +60,7 @@ func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("privilege restoration is confirmed before unlock", testWindowsPrivilegeRestorationConfirmation)
 	t.Run("persistent privilege restoration failure fail-stops before unlock", testWindowsPrivilegeRestorationFailStop)
 	t.Run("native descriptor buffers are freed exactly once", testWindowsSecurityDescriptorOwnership)
+	t.Run("delete guard permits POSIX link replacement", testWindowsDeleteGuardAllowsLinkReplacement)
 	t.Run("mapped executable is replaced and completed rollback is cleaned", testWindowsMappedExecutableReplacementSucceedsAndCleansOnNextLaunch)
 	t.Run("install failure rolls back", testWindowsMappedExecutableReplacementFailureRollsBack)
 	t.Run("descriptor failure rolls back", testWindowsSecurityDescriptorApplyFailureRollsBack)
@@ -91,6 +92,75 @@ func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("writable inherited rollback state is rejected before parsing", testWindowsWritableInheritedRollbackStateIsRejected)
 	t.Run("wrong rollback state owner is rejected", testWindowsWrongOwnerRollbackStateIsRejected)
 	t.Run("inherited update lock control state is rejected", testWindowsInheritedUpdateLockIsRejected)
+}
+
+func testWindowsDeleteGuardAllowsLinkReplacement(t *testing.T) {
+	directory := t.TempDir()
+	source := filepath.Join(directory, ".ssm.authenticated-old.exe")
+	target := filepath.Join(directory, "ssm.exe")
+	if err := os.WriteFile(source, []byte("authenticated original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("displaced executable"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sourceIdentity, err := inspectWindowsReplacementPath(source, "authenticated link source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceHandle, err := openWindowsProtectedReplacementFile(
+		source,
+		windows.DELETE|windows.GENERIC_READ,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if sourceHandle != windows.InvalidHandle {
+			_ = windows.CloseHandle(sourceHandle)
+		}
+	}()
+	targetGuard, err := openWindowsReplacementDeleteGuard(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if targetGuard != windows.InvalidHandle {
+			_ = windows.CloseHandle(targetGuard)
+		}
+	}()
+
+	conflictingHandle, err := openWindowsReplacementFileWithShare(
+		target,
+		windows.GENERIC_READ,
+		windows.FILE_SHARE_READ,
+	)
+	if err == nil {
+		_ = windows.CloseHandle(conflictingHandle)
+		t.Fatal("delete guard permitted a later handle that withheld delete sharing")
+	}
+	if !errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
+		t.Fatalf("conflicting target open error = %v, want sharing violation", err)
+	}
+	if err := linkWindowsFileHandle(sourceHandle, target); err != nil {
+		t.Fatalf("POSIX link replacement under delete guard: %v", err)
+	}
+	if err := requireWindowsReplacementHandleObjectIdentity(
+		sourceHandle,
+		sourceIdentity,
+		2,
+		"linked authenticated original",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireWindowsReplacementPathObjectIdentity(
+		target,
+		sourceIdentity,
+		2,
+		"canonical linked authenticated original",
+	); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func testWindowsMappedExecutableReplacementSucceedsAndCleansOnNextLaunch(t *testing.T) {

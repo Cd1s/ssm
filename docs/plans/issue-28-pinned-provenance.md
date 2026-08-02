@@ -273,8 +273,9 @@ rejects a reparse point, strong-identity mismatch, executable-digest mismatch,
 or descriptor-contract mismatch before canonical mutation, and rejects a
 non-single-link canonical object. An absent canonical name is restored by the
 original handle-bound rename. For a present canonical name, recovery first
-holds a `DELETE` guard, so an external handle that withholds delete sharing
-still blocks restoration, then uses `FileLinkInformationEx` POSIX replacement
+holds a `DELETE` guard which itself shares deletion, so an external handle that
+withholds delete sharing still blocks restoration without the guard blocking
+the replacement, then uses `FileLinkInformationEx` POSIX replacement
 to atomically place a canonical link to the authenticated original even when
 the displaced object is this process's mapped image. Recovery proves that the
 retained handle and canonical path are the same original object with exactly

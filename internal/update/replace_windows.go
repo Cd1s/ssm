@@ -528,6 +528,13 @@ func openWindowsProtectedReplacementFile(path string, access uint32) (windows.Ha
 	return openWindowsReplacementFileWithShare(path, access, windows.FILE_SHARE_READ)
 }
 
+func openWindowsReplacementDeleteGuard(path string) (windows.Handle, error) {
+	// DELETE access makes this open fail while an existing handle withholds
+	// delete sharing and prevents a later such handle from opening. Share delete
+	// from this handle so the guard does not block the POSIX replacement itself.
+	return openWindowsReplacementFile(path, windows.DELETE)
+}
+
 func openWindowsReplacementFileWithShare(
 	path string,
 	access,
@@ -1425,14 +1432,14 @@ func recoverPreparedWindowsReplacement(
 			2,
 			"linked recovered Windows executable",
 		); err != nil {
+			if isWindowsPathNotFound(err) {
+				return fmt.Errorf("Windows rollback recovery image has 2 hard links")
+			}
 			return err
 		}
 		return completeLinkedRecovery()
 	}
-	targetHandle, err := openWindowsProtectedReplacementFile(
-		target,
-		windows.DELETE,
-	)
+	targetHandle, err := openWindowsReplacementDeleteGuard(target)
 	if err != nil && isWindowsPathNotFound(err) {
 		if err := renameWindowsReplacementHandle(backupHandle, target, true); err != nil {
 			return requireRecovery(fmt.Errorf("restore Windows rollback image: %w", err))
