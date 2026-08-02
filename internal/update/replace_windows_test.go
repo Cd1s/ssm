@@ -57,7 +57,7 @@ func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("strong file identity is required", testWindowsStrongFileIdentityRequired)
 	t.Run("authenticated rollback record binds strong identities descriptor and bytes", testWindowsReplacementRecordDescriptorBinding)
 	t.Run("optional complete descriptor denial falls back to ordinary preservation", testWindowsOptionalFullTierFallback)
-	t.Run("optional complete descriptor sharing conflict falls back to ordinary preservation", testWindowsOptionalFullTierSharingFallback)
+	t.Run("optional complete descriptor sharing conflict fails closed", testWindowsOptionalFullTierSharingFailsClosed)
 	t.Run("complete descriptor is preserved when supported with ordinary fallback", testWindowsPrivilegedReplacement)
 	t.Run("privileges and thread identity are restored", testWindowsReplacementPrivilegeRestoration)
 	t.Run("SetThreadToken restoration failure is retried before unlock", testWindowsPreviousTokenRestorationFailure)
@@ -1735,7 +1735,7 @@ func testWindowsOptionalFullTierFallback(t *testing.T) {
 	}
 }
 
-func testWindowsOptionalFullTierSharingFallback(t *testing.T) {
+func testWindowsOptionalFullTierSharingFailsClosed(t *testing.T) {
 	testExecutable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -1745,22 +1745,29 @@ func testWindowsOptionalFullTierSharingFallback(t *testing.T) {
 	stage := filepath.Join(directory, ".ssm.optional-full-tier-sharing-stage.exe")
 	copyWindowsTestExecutable(t, testExecutable, target, nil)
 	setRestrictiveWindowsTestDACL(t, target)
-	wantDescriptor := readWindowsTestSecurityDescriptor(t, target)
-	copyWindowsTestExecutable(t, testExecutable, stage, []byte("\nSSM_WINDOWS_OPTIONAL_FULL_TIER_SHARING\n"))
-	want, err := os.ReadFile(stage) //nolint:gosec // test-owned replacement fixture
+	original, err := os.ReadFile(target) //nolint:gosec // test-owned replacement fixture
 	if err != nil {
 		t.Fatal(err)
 	}
+	wantDescriptor := readWindowsTestSecurityDescriptor(t, target)
+	copyWindowsTestExecutable(t, testExecutable, stage, []byte("\nSSM_WINDOWS_OPTIONAL_FULL_TIER_SHARING\n"))
 
 	command := windowsReplacementTestCommand(target, stage)
-	command.Env = append(command.Env, windowsFullTierSharingEnv+"=1")
+	command.Env = append(
+		command.Env,
+		windowsFullTierSharingEnv+"=1",
+		windowsExpectedFailureEnv+"=preserve Windows executable security descriptor",
+	)
 	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("optional full-tier sharing fallback failed: %v; output=%q", err, output)
+		t.Fatalf("optional full-tier sharing fail-closed fixture failed: %v; output=%q", err, output)
 	}
-	assertWindowsFileBytes(t, target, want)
+	assertWindowsFileBytes(t, target, original)
 	gotDescriptor := readWindowsTestSecurityDescriptor(t, target)
 	if gotDescriptor != wantDescriptor {
-		t.Fatalf("sharing-conflict ordinary fallback security descriptor = %#v, want %#v", gotDescriptor, wantDescriptor)
+		t.Fatalf("sharing-conflict fail-closed security descriptor = %#v, want %#v", gotDescriptor, wantDescriptor)
+	}
+	if _, err := os.Stat(stage); err != nil {
+		t.Fatalf("sharing-conflict fail-closed fixture did not retain staging file: %v", err)
 	}
 }
 
@@ -3934,8 +3941,11 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 		}
 
 		err = replaceExecutable(stage, executable, stageDigest, 0)
-		if err != nil {
-			t.Fatalf("replacement did not fall back from optional complete descriptor sharing conflict: %v", err)
+		if !assertExpectedWindowsReplacementFailure(t, err) {
+			if err == nil {
+				t.Fatal("replacement succeeded after optional complete descriptor sharing conflict")
+			}
+			t.Fatalf("replacement failure after optional complete descriptor sharing conflict was not classified: %v", err)
 		}
 		if !errors.Is(fullOpenErr, windows.ERROR_SHARING_VIOLATION) {
 			t.Fatalf("complete descriptor target open error = %v, want ERROR_SHARING_VIOLATION", fullOpenErr)
@@ -3943,8 +3953,8 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 		if fullSelections != 1 {
 			t.Fatalf("complete descriptor tier selections = %d, want 1", fullSelections)
 		}
-		if targetOpenCalls != 2 {
-			t.Fatalf("security target open calls = %d, want full attempt plus ordinary fallback", targetOpenCalls)
+		if targetOpenCalls != 1 {
+			t.Fatalf("security target open calls = %d, want complete-tier attempt only", targetOpenCalls)
 		}
 		return
 	}

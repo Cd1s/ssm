@@ -163,8 +163,10 @@ hard link and use handle-bound rename for the mapped canonical image. A
 capability-gated fixture installs a protected audit SACL and requires exact
 full-descriptor equality when the host can configure and read it. Otherwise,
 the nested full-tier subcase reports a skip after the same fixture proves
-ordinary descriptor preservation. The official focused Windows gate always
-runs the complete suite without demanding elevated hosted-runner privileges.
+ordinary descriptor preservation. A separate sharing-conflict fixture proves
+that external contention fails closed without downgrading a selected complete
+descriptor contract. The official focused Windows gate always runs the complete
+suite without demanding elevated hosted-runner privileges.
 The suite also proves exact
 thread-token restoration, one `LocalFree` per native descriptor allocation,
 concurrent-updater and cleanup exclusion, hard-link/reparse rejection,
@@ -178,7 +180,8 @@ rollback byte/descriptor mutation rejection and retry after exact restoration,
 including descriptor verification on the synchronous rollback path before any
 restore or evidence deletion,
 compiled CLI startup refusal while a hostile sharing handle blocks prepared
-recovery, exact human/JSON/compact-NDJSON recovery-required rendering,
+recovery and while mapped prepared-state cleanup remains pending after canonical
+restoration, exact human/JSON/compact-NDJSON recovery-required rendering,
 rollback-failure evidence retention and retry, and exact-canonical proof for
 every ordinary failure injection.
 
@@ -229,6 +232,8 @@ verifies every selected field, including a present RM byte. Access, privilege,
 unsupported-filesystem, or unpersistable-RM capability failure during that
 preparation restores the thread token, closes the privileged handles, and
 retries the ordinary tier from fresh handles before any canonical rename.
+An external sharing violation is not a capability result and fails closed
+without retrying the ordinary tier.
 Closing the scope restores the exact prior thread token (or no token), closes
 the duplicate, and never changes the process token.
 
@@ -296,11 +301,13 @@ rename. Every unexplained extra hard link remains rejected. Recovery proves
 that the retained original handle and canonical path are the same object with
 the expected link count. Because the recovering process remains mapped from
 the displaced installed image, it retains that exact single-link reserved
-image and the existing prepared record until process exit, matching the normal
-successful updater's deferred `.old` cleanup. The next startup reauthenticates
-the canonical original and the reserved image against the unchanged record,
-removes the reserved image by its protected handle, and then removes the
-record. If interrupted during either rename, the prepared record and
+image and the existing prepared record until process exit. That restoring
+startup returns the recovery-required contract and does not dispatch while the
+prepared record remains; this is not the completed-record/post-commit cleanup
+exception. The next startup reauthenticates the canonical original and the
+reserved image against the unchanged record, removes the reserved image by its
+protected handle, removes the record, and only then may dispatch. If interrupted
+during either rename, the prepared record and
 authenticated `.old` remain and the existing absent-canonical or
 already-canonical recovery paths resume. Recovery then rehashes and
 recaptures the descriptor and verifies the same contracts plus the same

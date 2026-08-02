@@ -212,24 +212,25 @@ func TestCompiledWindowsBlockedPreparedRecoveryStopsStartupDispatch(t *testing.T
 		t.Fatalf("release compiled startup sharing handle: %v", err)
 	}
 	hostileHandleOpen = false
-	recovered := cli.RunWithEnv(t, "ssm", nil, map[string]string{
+	deferred := cli.RunWithEnv(t, "ssm", nil, map[string]string{
 		"SSM_UPDATE_REPO": "off",
 	}, "--version")
-	if recovered.ProcessExit != 0 ||
-		recovered.Stdout != "ssm 1.4.3\n" ||
-		recovered.Stderr != "" {
+	if deferred.ProcessExit != 1 ||
+		deferred.Stdout != "" ||
+		!strings.Contains(deferred.Stderr, "ssm: error=update_recovery_required stage=update_recovery") ||
+		!strings.Contains(deferred.Stderr, "startup executable recovery failed") {
 		t.Fatalf(
-			"compiled startup did not recover after hostile link release; output=%s",
-			compiledOutputIdentity(recovered),
+			"compiled startup dispatched while mapped prepared recovery remained; output=%s",
+			compiledOutputIdentity(deferred),
 		)
 	}
 	mapped := filepath.Join(filepath.Dir(target), "."+filepath.Base(target)+".mapped")
 	if _, err := os.Stat(backup); !os.IsNotExist(err) {
-		t.Fatalf("successful compiled recovery retained rollback image: %v", err)
+		t.Fatalf("deferred compiled recovery retained rollback image: %v", err)
 	}
 	for _, path := range []string{record, mapped} {
 		if _, err := os.Stat(path); err != nil {
-			t.Fatalf("mapped compiled recovery lost deferred evidence %s: %v", filepath.Base(path), err)
+			t.Fatalf("blocked mapped compiled recovery lost deferred evidence %s: %v", filepath.Base(path), err)
 		}
 	}
 

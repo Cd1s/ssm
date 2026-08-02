@@ -1781,8 +1781,11 @@ func recoverPreparedWindowsReplacement(
 		// The authenticated original is canonical again, but this process is
 		// still mapped from the displaced installed image. Retain the existing
 		// prepared record so the next launch can authenticate and remove that
-		// reserved image after this mapping is gone.
-		return nil
+		// reserved image after this mapping is gone. Until then, the prepared
+		// record is still live recovery state and startup must not dispatch.
+		return requireRecovery(fmt.Errorf(
+			"deferred mapped Windows executable cleanup remains pending",
+		))
 	}
 	if err := cleanupDisplacedMappedWindowsReplacement(
 		target,

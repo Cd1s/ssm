@@ -61,8 +61,8 @@ func preserveCanonical(cause error) error {
 
 // IsRecoveryRequired reports whether a Windows replacement moved the original
 // executable from its canonical path but could not complete authenticated
-// restoration. Callers must block command dispatch and later updates until a
-// subsequent authenticated recovery succeeds.
+// restoration and prepared-state clearance. Callers must block command dispatch
+// and later updates until a subsequent authenticated recovery succeeds.
 func IsRecoveryRequired(err error) bool {
 	var recoveryErr *recoveryRequiredError
 	return errors.As(err, &recoveryErr)
