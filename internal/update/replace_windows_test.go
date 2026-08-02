@@ -4515,32 +4515,56 @@ func assertWindowsPreparedRecoveryBlocksCleanupAndUpdate(
 
 func runWindowsRecoveryCleanup(t *testing.T, runner, target string) {
 	t.Helper()
-	runCleanup := func(executable string) {
+	runCleanup := func(executable, expected string, recoveryRequired bool) {
 		cleanup := exec.Command(executable, "-test.run=^TestWindowsCleanupPreviousExecutableChildProcess$", "-test.count=1") //nolint:gosec // fixed test-owned executable and arguments
 		cleanup.Env = append(os.Environ(),
 			windowsCleanupChildEnv+"=1",
 			windowsCleanupTargetEnv+"="+target,
 		)
+		if expected != "" {
+			cleanup.Env = append(cleanup.Env, windowsExpectedFailureEnv+"="+expected)
+		}
+		if recoveryRequired {
+			cleanup.Env = append(cleanup.Env, windowsRecoveryRequiredEnv+"=1")
+		}
 		if output, err := cleanup.CombinedOutput(); err != nil {
 			t.Fatalf("Windows recovery cleanup failed: %v; output=%q", err, output)
 		}
 	}
-	runCleanup(runner)
+	mappedRunner := strings.EqualFold(filepath.Clean(runner), filepath.Clean(target))
+	if mappedRunner {
+		runCleanup(
+			runner,
+			"deferred mapped Windows executable cleanup remains pending",
+			true,
+		)
+	} else {
+		runCleanup(runner, "", false)
+	}
 
 	// A recovery process that is itself mapped from the rejected installed
 	// image must leave that image and the existing prepared record until it
 	// exits. Exercise the authenticated next-launch cleanup rather than hiding
 	// that native lifetime boundary in the fixture.
-	if _, err := os.Stat(windowsReplacementMappedLink(target)); err == nil {
+	mappedLink := windowsReplacementMappedLink(target)
+	if _, err := os.Stat(mappedLink); err == nil {
+		if !mappedRunner {
+			t.Fatal("unmapped recovery retained a displaced mapped executable")
+		}
 		if _, err := os.Stat(windowsReplacementBackup(target)); !os.IsNotExist(err) {
 			t.Fatalf("deferred mapped cleanup retained rollback image: %v", err)
 		}
 		if _, err := os.Stat(windowsReplacementRecord(target)); err != nil {
 			t.Fatalf("deferred mapped cleanup lost ownership record: %v", err)
 		}
-		runCleanup(target)
+		runCleanup(target, "", false)
+		if _, err := os.Stat(mappedLink); !os.IsNotExist(err) {
+			t.Fatalf("successful next-launch cleanup retained displaced mapped executable: %v", err)
+		}
 	} else if !os.IsNotExist(err) {
 		t.Fatalf("inspect deferred mapped executable: %v", err)
+	} else if mappedRunner {
+		t.Fatal("mapped recovery did not retain the displaced executable for next-launch cleanup")
 	}
 }
 
