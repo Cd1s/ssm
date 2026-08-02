@@ -1751,6 +1751,20 @@ func testWindowsOptionalFullTierSharingFailsClosed(t *testing.T) {
 	}
 	wantDescriptor := readWindowsTestSecurityDescriptor(t, target)
 	copyWindowsTestExecutable(t, testExecutable, stage, []byte("\nSSM_WINDOWS_OPTIONAL_FULL_TIER_SHARING\n"))
+	conflict, err := openWindowsReplacementFileWithShare(
+		target,
+		windows.GENERIC_READ,
+		windows.FILE_SHARE_READ,
+	)
+	if err != nil {
+		t.Fatalf("open external no-delete-share fixture: %v", err)
+	}
+	conflictOpen := true
+	defer func() {
+		if conflictOpen {
+			_ = windows.CloseHandle(conflict)
+		}
+	}()
 
 	command := windowsReplacementTestCommand(target, stage)
 	command.Env = append(
@@ -1758,8 +1772,14 @@ func testWindowsOptionalFullTierSharingFailsClosed(t *testing.T) {
 		windowsFullTierSharingEnv+"=1",
 		windowsExpectedFailureEnv+"=preserve Windows executable security descriptor",
 	)
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("optional full-tier sharing fail-closed fixture failed: %v; output=%q", err, output)
+	output, commandErr := command.CombinedOutput()
+	closeErr := windows.CloseHandle(conflict)
+	conflictOpen = false
+	if commandErr != nil {
+		t.Fatalf("optional full-tier sharing fail-closed fixture failed: %v; output=%q", commandErr, output)
+	}
+	if closeErr != nil {
+		t.Fatalf("close external no-delete-share fixture: %v", closeErr)
 	}
 	assertWindowsFileBytes(t, target, original)
 	gotDescriptor := readWindowsTestSecurityDescriptor(t, target)
@@ -3898,14 +3918,7 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 		originalBegin := beginWindowsReplacementSecurityPrivileges
 		originalFullTier := windowsFullSecurityTier
 		originalOpenTarget := openWindowsReplacementSecurityTarget
-		conflict, err := openWindowsReplacementFile(executable, windows.DELETE)
-		if err != nil {
-			t.Fatalf("open mapped executable sharing-conflict fixture: %v", err)
-		}
 		defer func() {
-			if conflict != windows.InvalidHandle {
-				_ = windows.CloseHandle(conflict)
-			}
 			beginWindowsReplacementSecurityPrivileges = originalBegin
 			windowsFullSecurityTier = originalFullTier
 			openWindowsReplacementSecurityTarget = originalOpenTarget
@@ -3915,8 +3928,8 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 		targetOpenCalls := 0
 		var fullOpenErr error
 		// Select the optional tier without depending on hosted-runner
-		// privileges. The conflicting DELETE handle exercises the native
-		// reciprocal share check before descriptor capture.
+		// privileges. The parent-held no-delete-share handle exercises the
+		// native sharing conflict before descriptor capture.
 		windowsFullSecurityTier.targetAccess = windowsOrdinarySecurityTier.targetAccess
 		beginWindowsReplacementSecurityPrivileges = func() (*windowsReplacementPrivilegeScope, bool, error) {
 			fullSelections++
@@ -3929,14 +3942,6 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 				return handle, openErr
 			}
 			fullOpenErr = openErr
-			closeErr := windows.CloseHandle(conflict)
-			conflict = windows.InvalidHandle
-			if closeErr != nil {
-				if handle != windows.InvalidHandle {
-					_ = windows.CloseHandle(handle)
-				}
-				return windows.InvalidHandle, errors.Join(openErr, fmt.Errorf("close mapped executable sharing-conflict fixture: %w", closeErr))
-			}
 			return handle, openErr
 		}
 
