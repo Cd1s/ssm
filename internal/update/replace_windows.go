@@ -29,10 +29,13 @@ const (
 )
 
 var (
-	renameWindowsReplacementHandle        = renameWindowsFileHandle
-	getWindowsFileInformationByHandleEx   = windows.GetFileInformationByHandleEx
-	windowsReplacementTestHook            func(string) error
-	windowsRollbackAuthenticationTestHook func(
+	renameWindowsReplacementHandle         = renameWindowsFileHandle
+	linkWindowsReplacementHandle           = linkWindowsFileHandle
+	unlinkWindowsMappedReplacementHandle   = unlinkWindowsMappedFileHandle
+	windowsReplacementHandleIsCurrentImage = windowsReplacementHandleIsCurrentExecutable
+	getWindowsFileInformationByHandleEx    = windows.GetFileInformationByHandleEx
+	windowsReplacementTestHook             func(string) error
+	windowsRollbackAuthenticationTestHook  func(
 		string,
 		*windowsReplacementSecurityState,
 	) error
@@ -535,6 +538,36 @@ func openWindowsReplacementDeleteGuard(path string) (windows.Handle, error) {
 	return openWindowsReplacementFile(path, windows.DELETE)
 }
 
+func windowsReplacementHandleIsCurrentExecutable(handle windows.Handle) (bool, error) {
+	targetIdentity, err := inspectWindowsReplacementHandle(
+		handle,
+		"canonical Windows executable awaiting recovery",
+	)
+	if err != nil {
+		return false, err
+	}
+	currentPath, err := os.Executable()
+	if err != nil {
+		return false, fmt.Errorf("resolve current Windows executable for recovery: %w", err)
+	}
+	currentHandle, err := openWindowsReplacementFile(currentPath, 0)
+	if err != nil {
+		return false, fmt.Errorf("open current Windows executable for recovery: %w", err)
+	}
+	currentIdentity, inspectErr := inspectWindowsReplacementHandle(
+		currentHandle,
+		"current mapped Windows executable",
+	)
+	closeErr := windows.CloseHandle(currentHandle)
+	if inspectErr != nil {
+		return false, inspectErr
+	}
+	if closeErr != nil {
+		return false, fmt.Errorf("close current Windows executable inspection handle: %w", closeErr)
+	}
+	return currentIdentity == targetIdentity, nil
+}
+
 func openWindowsReplacementFileWithShare(
 	path string,
 	access,
@@ -819,6 +852,23 @@ func linkWindowsFileHandle(handle windows.Handle, destination string) error {
 		&buffer[0],
 		uint32(len(buffer)),
 		windows.FileLinkInformation,
+	)
+}
+
+func unlinkWindowsMappedFileHandle(handle windows.Handle) error {
+	// FileLinkInformationEx replacement still performs an image-section check
+	// on the target. FileDispositionInfoEx without FORCE_IMAGE_SECTION_CHECK is
+	// the native transition that removes a mapped executable's held link while
+	// the running image remains valid until process exit.
+	flags := uint32(
+		windows.FILE_DISPOSITION_DELETE |
+			windows.FILE_DISPOSITION_POSIX_SEMANTICS,
+	)
+	return windows.SetFileInformationByHandle(
+		handle,
+		windows.FileDispositionInfoEx,
+		(*byte)(unsafe.Pointer(&flags)),
+		uint32(unsafe.Sizeof(flags)),
 	)
 }
 
@@ -1448,44 +1498,62 @@ func recoverPreparedWindowsReplacement(
 		if err != nil {
 			return requireRecovery(fmt.Errorf("restore Windows rollback image: %w", err))
 		}
-		if _, inspectErr := inspectWindowsReplacementHandle(
-			targetHandle,
-			"canonical Windows executable awaiting recovery",
-		); inspectErr != nil {
+		mappedTarget, inspectErr := windowsReplacementHandleIsCurrentImage(targetHandle)
+		if inspectErr != nil {
 			_ = windows.CloseHandle(targetHandle)
 			return requireRecovery(inspectErr)
 		}
-		linkErr := linkWindowsFileHandle(backupHandle, target)
-		closeErr := windows.CloseHandle(targetHandle)
-		if linkErr != nil {
-			if closeErr != nil {
-				linkErr = errors.Join(
-					linkErr,
-					fmt.Errorf("close canonical Windows executable recovery guard: %w", closeErr),
-				)
+		if mappedTarget {
+			unlinkErr := unlinkWindowsMappedReplacementHandle(targetHandle)
+			closeErr := windows.CloseHandle(targetHandle)
+			if unlinkErr != nil {
+				if closeErr != nil {
+					unlinkErr = errors.Join(
+						unlinkErr,
+						fmt.Errorf("close canonical Windows executable recovery guard: %w", closeErr),
+					)
+				}
+				return requireRecovery(fmt.Errorf("remove mapped canonical Windows executable for recovery: %w", unlinkErr))
 			}
-			return requireRecovery(fmt.Errorf("restore Windows rollback image: %w", linkErr))
+			if closeErr != nil {
+				return requireRecovery(fmt.Errorf("close removed mapped Windows executable: %w", closeErr))
+			}
+			if err := renameWindowsReplacementHandle(backupHandle, target, true); err != nil {
+				return requireRecovery(fmt.Errorf("restore Windows rollback image: %w", err))
+			}
+		} else {
+			linkErr := linkWindowsReplacementHandle(backupHandle, target)
+			closeErr := windows.CloseHandle(targetHandle)
+			if linkErr != nil {
+				if closeErr != nil {
+					linkErr = errors.Join(
+						linkErr,
+						fmt.Errorf("close canonical Windows executable recovery guard: %w", closeErr),
+					)
+				}
+				return requireRecovery(fmt.Errorf("restore Windows rollback image: %w", linkErr))
+			}
+			if closeErr != nil {
+				return requireRecovery(fmt.Errorf("close replaced canonical Windows executable: %w", closeErr))
+			}
+			if err := requireWindowsReplacementHandleObjectIdentity(
+				backupHandle,
+				record.data.original,
+				2,
+				"linked recovered Windows executable",
+			); err != nil {
+				return requireRecovery(err)
+			}
+			if err := requireWindowsReplacementPathObjectIdentity(
+				target,
+				record.data.original,
+				2,
+				"linked recovered Windows executable",
+			); err != nil {
+				return requireRecovery(err)
+			}
+			return completeLinkedRecovery()
 		}
-		if closeErr != nil {
-			return requireRecovery(fmt.Errorf("close replaced canonical Windows executable: %w", closeErr))
-		}
-		if err := requireWindowsReplacementHandleObjectIdentity(
-			backupHandle,
-			record.data.original,
-			2,
-			"linked recovered Windows executable",
-		); err != nil {
-			return requireRecovery(err)
-		}
-		if err := requireWindowsReplacementPathObjectIdentity(
-			target,
-			record.data.original,
-			2,
-			"linked recovered Windows executable",
-		); err != nil {
-			return requireRecovery(err)
-		}
-		return completeLinkedRecovery()
 	}
 	if err := requireWindowsReplacementHandleIdentity(
 		backupHandle,

@@ -40,6 +40,8 @@ const (
 	windowsMutateStageEnv       = "SSM_TEST_WINDOWS_MUTATE_STAGE"
 	windowsRollbackFailEnv      = "SSM_TEST_WINDOWS_ROLLBACK_FAIL"
 	windowsRecoveryRequiredEnv  = "SSM_TEST_WINDOWS_RECOVERY_REQUIRED"
+	windowsMappedLinkChildEnv   = "SSM_TEST_WINDOWS_MAPPED_LINK_CHILD"
+	windowsMappedLinkSourceEnv  = "SSM_TEST_WINDOWS_MAPPED_LINK_SOURCE"
 )
 
 func TestWindowsNativeReplacementSecurity(t *testing.T) {
@@ -61,6 +63,7 @@ func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("persistent privilege restoration failure fail-stops before unlock", testWindowsPrivilegeRestorationFailStop)
 	t.Run("native descriptor buffers are freed exactly once", testWindowsSecurityDescriptorOwnership)
 	t.Run("delete guard permits POSIX link replacement", testWindowsDeleteGuardAllowsLinkReplacement)
+	t.Run("mapped target requires POSIX unlink before restoration", testWindowsMappedLinkTransition)
 	t.Run("mapped executable is replaced and completed rollback is cleaned", testWindowsMappedExecutableReplacementSucceedsAndCleansOnNextLaunch)
 	t.Run("install failure rolls back", testWindowsMappedExecutableReplacementFailureRollsBack)
 	t.Run("descriptor failure rolls back", testWindowsSecurityDescriptorApplyFailureRollsBack)
@@ -160,6 +163,47 @@ func testWindowsDeleteGuardAllowsLinkReplacement(t *testing.T) {
 		"canonical linked authenticated original",
 	); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func testWindowsMappedLinkTransition(t *testing.T) {
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	target := filepath.Join(directory, "ssm.exe")
+	source := filepath.Join(directory, ".ssm.authenticated-old.exe")
+	copyWindowsTestExecutable(t, testExecutable, target, []byte("\nMAPPED_LINK_TARGET\n"))
+	copyWindowsTestExecutable(t, testExecutable, source, []byte("\nMAPPED_LINK_SOURCE\n"))
+	sourceIdentity, err := inspectWindowsReplacementPath(
+		source,
+		"mapped-link authenticated source",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(
+		target,
+		"-test.run=^TestWindowsMappedLinkTransitionChildProcess$",
+		"-test.count=1",
+	) //nolint:gosec // fixed test-owned executable and arguments
+	command.Env = append(os.Environ(),
+		windowsMappedLinkChildEnv+"=1",
+		windowsMappedLinkSourceEnv+"="+source,
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("mapped-link native transition failed: %v; output=%q", err, output)
+	}
+	if err := requireWindowsReplacementPathIdentity(
+		target,
+		sourceIdentity,
+		"mapped-link restored executable",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(source); !os.IsNotExist(err) {
+		t.Fatalf("mapped-link restoration retained source name: %v", err)
 	}
 }
 
@@ -3944,6 +3988,78 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 		return
 	}
 	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWindowsMappedLinkTransitionChildProcess(t *testing.T) {
+	if os.Getenv(windowsMappedLinkChildEnv) != "1" {
+		return
+	}
+	target, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := os.Getenv(windowsMappedLinkSourceEnv)
+	sourceIdentity, err := inspectWindowsReplacementPath(
+		source,
+		"mapped-link authenticated source",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceHandle, err := openWindowsProtectedReplacementFile(
+		source,
+		windows.DELETE|windows.GENERIC_READ,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if sourceHandle != windows.InvalidHandle {
+			_ = windows.CloseHandle(sourceHandle)
+		}
+	}()
+	targetHandle, err := openWindowsReplacementDeleteGuard(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if targetHandle != windows.InvalidHandle {
+			_ = windows.CloseHandle(targetHandle)
+		}
+	}()
+	mapped, err := windowsReplacementHandleIsCurrentExecutable(targetHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mapped {
+		t.Fatal("current executable handle was not identified as a mapped recovery target")
+	}
+	if err := linkWindowsFileHandle(sourceHandle, target); !errors.Is(err, windows.STATUS_ACCESS_DENIED) {
+		t.Fatalf("mapped FileLinkInformationEx replacement error = %v, want STATUS_ACCESS_DENIED", err)
+	}
+	if err := unlinkWindowsMappedFileHandle(targetHandle); err != nil {
+		t.Fatalf("POSIX unlink mapped executable: %v", err)
+	}
+	if err := windows.CloseHandle(targetHandle); err != nil {
+		t.Fatalf("close POSIX-unlinked mapped executable: %v", err)
+	}
+	targetHandle = windows.InvalidHandle
+	if err := requireWindowsReplacementPathAbsent(
+		target,
+		"POSIX-unlinked mapped executable",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := renameWindowsFileHandle(sourceHandle, target, true); err != nil {
+		t.Fatalf("restore authenticated source after mapped POSIX unlink: %v", err)
+	}
+	if err := requireWindowsReplacementPathIdentity(
+		target,
+		sourceIdentity,
+		"mapped-link restored executable",
+	); err != nil {
 		t.Fatal(err)
 	}
 }

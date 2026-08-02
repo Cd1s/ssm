@@ -155,6 +155,9 @@ preserve the installed bytes and mode.
 Native Windows tests execute a copied Go test binary, so the target is a
 genuinely mapped `.exe` during replacement. A restricted-token fixture proves
 ordinary operation with no backup, restore, or security privilege. A
+focused mapped-link child proves `FileLinkInformationEx` returns access denied
+for that live image-section target while the guarded POSIX disposition without
+the forced image check unlinks it and permits handle-bound restoration. A
 capability-gated fixture installs a protected audit SACL and requires exact
 full-descriptor equality when the host can configure and read it. Otherwise,
 the nested full-tier subcase reports a skip after the same fixture proves
@@ -275,16 +278,26 @@ non-single-link canonical object. An absent canonical name is restored by the
 original handle-bound rename. For a present canonical name, recovery first
 holds a `DELETE` guard which itself shares deletion, so an external handle that
 withholds delete sharing still blocks restoration without the guard blocking
-the replacement, then uses `FileLinkInformationEx` POSIX replacement
-to atomically place a canonical link to the authenticated original even when
-the displaced object is this process's mapped image. Recovery proves that the
-retained handle and canonical path are the same original object with exactly
-the expected two links, removes only the `.old` link, and reopens the resulting
-single-link canonical original. If interrupted after the atomic link
-replacement, only that authenticated two-link state may resume; an unrelated
-second hard link remains rejected. Recovery then rehashes and recaptures the
-descriptor and verifies the same contracts plus the same original strong
-identity at the canonical path before deleting the exact record by handle. If
+the replacement. A strong-File-ID comparison identifies whether that exact
+guarded object is the current process image. An ordinary object uses
+`FileLinkInformationEx` POSIX replacement to atomically place a canonical link
+to the authenticated original. Windows still denies that operation when the
+target has a live image section, independently of reciprocal share flags. For
+that mapped case, recovery uses `FileDispositionInfoEx` with delete and POSIX
+semantics but deliberately without `FORCE_IMAGE_SECTION_CHECK`; closing the
+exact guarded handle removes its canonical link while the current image keeps
+running, then the original handle-bound rename restores the temporarily vacant
+canonical name. Recovery proves that the retained handle and canonical path
+are the same original object with the expected link count, removes only a
+remaining `.old` link, and reopens the resulting single-link canonical
+original. If interrupted after ordinary atomic link replacement, only that
+authenticated two-link state may resume; an unrelated second hard link remains
+rejected. If interrupted during the mapped unlink transition, the prepared
+record and authenticated `.old` remain and the existing absent-canonical
+recovery path resumes the handle-bound rename. Recovery then rehashes and
+recaptures the descriptor and verifies the same contracts plus the same
+original strong identity at the canonical path before deleting the exact
+record by handle. If
 the original is already canonical after a prior rollback but record deletion
 did not finish, recovery holds and verifies that exact original handle,
 executable digest, and descriptor contract while clearing the record. A
