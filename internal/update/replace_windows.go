@@ -876,7 +876,7 @@ func restoreMappedWindowsReplacement(
 	backupHandle windows.Handle,
 	targetIdentity windowsFileIdentity,
 	targetLinks uint32,
-) (resultErr error) {
+) (cleanupDeferred bool, resultErr error) {
 	targetOpen := true
 	defer func() {
 		if targetOpen {
@@ -896,10 +896,7 @@ func restoreMappedWindowsReplacement(
 			mappedLink,
 			"mapped Windows executable recovery link",
 		); err != nil {
-			return err
-		}
-		if err := linkWindowsFileHandleExclusive(targetHandle, mappedLink); err != nil {
-			return fmt.Errorf("preserve mapped Windows executable recovery link: %w", err)
+			return false, err
 		}
 	case 2:
 		if err := requireWindowsReplacementPathObjectIdentity(
@@ -908,31 +905,113 @@ func restoreMappedWindowsReplacement(
 			2,
 			"mapped Windows executable recovery link",
 		); err != nil {
-			return fmt.Errorf("resume mapped Windows executable recovery link: %w", err)
+			return false, fmt.Errorf("resume mapped Windows executable recovery link: %w", err)
+		}
+		mappedHandle, err := openWindowsReplacementDeleteGuard(mappedLink)
+		if err != nil {
+			return false, fmt.Errorf("open mapped Windows executable recovery link: %w", err)
+		}
+		mappedOpen := true
+		defer func() {
+			if mappedOpen {
+				if closeErr := windows.CloseHandle(mappedHandle); closeErr != nil {
+					resultErr = errors.Join(
+						resultErr,
+						fmt.Errorf("close mapped Windows executable recovery link: %w", closeErr),
+					)
+				}
+			}
+		}()
+		if err := requireWindowsReplacementHandleObjectIdentity(
+			mappedHandle,
+			targetIdentity,
+			2,
+			"mapped Windows executable recovery link",
+		); err != nil {
+			return false, err
+		}
+		// c1689fe could leave this exact two-link state. Disposition of
+		// the reserved link succeeds, but immediately makes the canonical
+		// name the sole live link. Close and remove only the reserved link;
+		// the remaining mapped name must be renamed, not deleted.
+		if err := unlinkWindowsMappedReplacementHandle(mappedHandle); err != nil {
+			return false, fmt.Errorf("remove interrupted mapped Windows executable recovery link: %w", err)
+		}
+		if err := windows.CloseHandle(mappedHandle); err != nil {
+			return false, fmt.Errorf("close removed mapped Windows executable recovery link: %w", err)
+		}
+		mappedOpen = false
+		if err := requireWindowsReplacementPathAbsent(
+			mappedLink,
+			"removed mapped Windows executable recovery link",
+		); err != nil {
+			return false, err
 		}
 	default:
-		return fmt.Errorf("canonical Windows executable awaiting recovery has %d hard links", targetLinks)
+		return false, fmt.Errorf("canonical Windows executable awaiting recovery has %d hard links", targetLinks)
 	}
 	if err := requireWindowsReplacementHandleObjectIdentity(
 		targetHandle,
 		targetIdentity,
-		2,
+		1,
 		"guarded mapped Windows executable",
 	); err != nil {
-		return err
+		return false, err
 	}
 	if err := requireWindowsReplacementPathObjectIdentity(
 		target,
 		targetIdentity,
-		2,
+		1,
 		"canonical mapped Windows executable",
 	); err != nil {
-		return err
+		return false, err
 	}
+	if err := renameWindowsReplacementHandle(targetHandle, mappedLink, false); err != nil {
+		return false, fmt.Errorf("preserve displaced mapped Windows executable: %w", err)
+	}
+	if err := requireWindowsReplacementHandleObjectIdentity(
+		targetHandle,
+		targetIdentity,
+		1,
+		"displaced mapped Windows executable",
+	); err != nil {
+		return false, err
+	}
+	if err := requireWindowsReplacementPathObjectIdentity(
+		mappedLink,
+		targetIdentity,
+		1,
+		"displaced mapped Windows executable",
+	); err != nil {
+		return false, err
+	}
+	if err := requireWindowsReplacementPathAbsent(
+		target,
+		"vacated mapped canonical Windows executable",
+	); err != nil {
+		return false, err
+	}
+	if err := renameWindowsReplacementHandle(backupHandle, target, true); err != nil {
+		return false, fmt.Errorf("restore Windows rollback image: %w", err)
+	}
+	if err := windows.CloseHandle(targetHandle); err != nil {
+		return false, fmt.Errorf("close displaced mapped Windows executable: %w", err)
+	}
+	targetOpen = false
+	return true, nil
+}
 
-	mappedHandle, err := openWindowsReplacementDeleteGuard(mappedLink)
+func cleanupDisplacedMappedWindowsReplacement(
+	target string,
+	expectedIdentity windowsFileIdentity,
+) (resultErr error) {
+	mappedLink := windowsReplacementMappedLink(target)
+	mappedHandle, err := openWindowsProtectedReplacementFile(mappedLink, windows.DELETE)
+	if err != nil && isWindowsPathNotFound(err) {
+		return nil
+	}
 	if err != nil {
-		return fmt.Errorf("open mapped Windows executable recovery link: %w", err)
+		return fmt.Errorf("open displaced mapped Windows executable: %w", err)
 	}
 	mappedOpen := true
 	defer func() {
@@ -940,57 +1019,29 @@ func restoreMappedWindowsReplacement(
 			if closeErr := windows.CloseHandle(mappedHandle); closeErr != nil {
 				resultErr = errors.Join(
 					resultErr,
-					fmt.Errorf("close mapped Windows executable recovery link: %w", closeErr),
+					fmt.Errorf("close displaced mapped Windows executable: %w", closeErr),
 				)
 			}
 		}
 	}()
 	if err := requireWindowsReplacementHandleObjectIdentity(
 		mappedHandle,
-		targetIdentity,
-		2,
-		"mapped Windows executable recovery link",
+		expectedIdentity,
+		1,
+		"displaced mapped Windows executable",
 	); err != nil {
 		return err
 	}
-	// Native Windows refuses disposition of the last link to a live image.
-	// Mark both exact links while the mapped object still has two, then close
-	// the canonical handle first so the authenticated rollback can be restored
-	// before the temporary link disappears.
 	if err := unlinkWindowsMappedReplacementHandle(mappedHandle); err != nil {
-		return fmt.Errorf("prepare mapped Windows executable recovery link removal: %w", err)
-	}
-	if err := requireWindowsReplacementHandleObjectIdentity(
-		targetHandle,
-		targetIdentity,
-		2,
-		"guarded mapped Windows executable before canonical removal",
-	); err != nil {
-		return err
-	}
-	if err := unlinkWindowsMappedReplacementHandle(targetHandle); err != nil {
-		return fmt.Errorf("remove mapped canonical Windows executable for recovery: %w", err)
-	}
-	if err := windows.CloseHandle(targetHandle); err != nil {
-		return fmt.Errorf("close removed mapped Windows executable: %w", err)
-	}
-	targetOpen = false
-	if err := requireWindowsReplacementPathAbsent(
-		target,
-		"removed mapped canonical Windows executable",
-	); err != nil {
-		return err
-	}
-	if err := renameWindowsReplacementHandle(backupHandle, target, true); err != nil {
-		return fmt.Errorf("restore Windows rollback image: %w", err)
+		return fmt.Errorf("remove displaced mapped Windows executable: %w", err)
 	}
 	if err := windows.CloseHandle(mappedHandle); err != nil {
-		return fmt.Errorf("close removed mapped Windows executable recovery link: %w", err)
+		return fmt.Errorf("close removed displaced mapped Windows executable: %w", err)
 	}
 	mappedOpen = false
 	return requireWindowsReplacementPathAbsent(
 		mappedLink,
-		"removed mapped Windows executable recovery link",
+		"removed displaced mapped Windows executable",
 	)
 }
 
@@ -1548,6 +1599,7 @@ func recoverPreparedWindowsReplacement(
 	backup string,
 	record *windowsReplacementRecordState,
 ) (resultErr error) {
+	mappedCleanupDeferred := false
 	verifier, err := newWindowsSecurityBindingVerifier(record.data.securityBinding)
 	if err != nil {
 		return fmt.Errorf("prepare Windows rollback security descriptor verification: %w", err)
@@ -1650,13 +1702,14 @@ func recoverPreparedWindowsReplacement(
 			return requireRecovery(inspectErr)
 		}
 		if mappedTarget {
-			if err := restoreMappedWindowsReplacement(
+			mappedCleanupDeferred, err = restoreMappedWindowsReplacement(
 				target,
 				targetHandle,
 				backupHandle,
 				targetIdentity,
 				targetLinks,
-			); err != nil {
+			)
+			if err != nil {
 				return requireRecovery(err)
 			}
 		} else {
@@ -1724,6 +1777,19 @@ func recoverPreparedWindowsReplacement(
 	); err != nil {
 		return requireRecovery(err)
 	}
+	if mappedCleanupDeferred {
+		// The authenticated original is canonical again, but this process is
+		// still mapped from the displaced installed image. Retain the existing
+		// prepared record so the next launch can authenticate and remove that
+		// reserved image after this mapping is gone.
+		return nil
+	}
+	if err := cleanupDisplacedMappedWindowsReplacement(
+		target,
+		record.data.installed,
+	); err != nil {
+		return preserveCanonical(err)
+	}
 	if err := verifier.close(); err != nil {
 		return preserveCanonical(fmt.Errorf("release Windows rollback security descriptor verification: %w", err))
 	}
@@ -1780,6 +1846,12 @@ func completePreparedWindowsRecoveryAtCanonical(
 	}
 	if err := verifier.verify(targetHandle, "recovered Windows executable"); err != nil {
 		return err
+	}
+	if err := cleanupDisplacedMappedWindowsReplacement(
+		target,
+		record.data.installed,
+	); err != nil {
+		return preserveCanonical(err)
 	}
 	if err := verifier.close(); err != nil {
 		return preserveCanonical(fmt.Errorf("release Windows rollback security descriptor verification: %w", err))

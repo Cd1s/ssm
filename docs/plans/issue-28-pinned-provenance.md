@@ -156,9 +156,10 @@ Native Windows tests execute a copied Go test binary, so the target is a
 genuinely mapped `.exe` during replacement. A restricted-token fixture proves
 ordinary operation with no backup, restore, or security privilege. A
 focused mapped-link child proves `FileLinkInformationEx` and last-link POSIX
-disposition both return access denied for that live image-section target while
-the guarded two-link transition permits POSIX disposition without the forced
-image check and then handle-bound restoration. A
+disposition both return access denied for that live image-section target. It
+also proves that marking one of two links for POSIX deletion immediately makes
+the other the last live link, so recovery must remove only a prior reserved
+hard link and use handle-bound rename for the mapped canonical image. A
 capability-gated fixture installs a protected audit SACL and requires exact
 full-descriptor equality when the host can configure and read it. Otherwise,
 the nested full-tier subcase reports a skip after the same fixture proves
@@ -285,24 +286,23 @@ guarded object is the current process image. An ordinary object uses
 to the authenticated original. Windows still denies that operation when the
 target has a live image section, independently of reciprocal share flags, and
 also refuses POSIX disposition of that mapped object's last link. For that
-mapped case, recovery creates a non-replacing sibling hard link to the exact
-guarded object and verifies the strong identity and exact two-link count. It
-then uses `FileDispositionInfoEx` with delete and POSIX semantics but
-deliberately without `FORCE_IMAGE_SECTION_CHECK` to mark both links while the
-image still has two names. Closing the canonical handle first removes that
-link, the original handle-bound rename restores the temporarily vacant
-canonical name, and closing the already-marked sibling removes the mapped
-object's remaining link without another last-link disposition request.
-Recovery proves that the retained handle and canonical path are the same
-original object with the expected link count, removes only a remaining `.old`
-link, and reopens the resulting single-link canonical original. If interrupted
-after ordinary atomic link replacement, only that authenticated two-link state
-may resume. If interrupted after creating the reserved mapped-image sibling,
-only an exact strong-identity match at that path with an exact two-link object
-may resume; every unexplained extra hard link remains rejected. If interrupted
-during the mapped unlink transition, the prepared record and authenticated
-`.old` remain and the existing absent-canonical recovery path resumes the
-handle-bound rename. Recovery then rehashes and
+mapped case, recovery renames the exact guarded canonical handle to a reserved
+sibling and uses the authenticated original handle to restore the temporarily
+vacant canonical name. A two-link reserved state created by an earlier build is
+accepted only when both names have the recorded strong identity and the object
+has exactly two links; recovery POSIX-deletes only that reserved link, confirms
+the canonical object is again single-link, and then performs the same mapped
+rename. Every unexplained extra hard link remains rejected. Recovery proves
+that the retained original handle and canonical path are the same object with
+the expected link count. Because the recovering process remains mapped from
+the displaced installed image, it retains that exact single-link reserved
+image and the existing prepared record until process exit, matching the normal
+successful updater's deferred `.old` cleanup. The next startup reauthenticates
+the canonical original and the reserved image against the unchanged record,
+removes the reserved image by its protected handle, and then removes the
+record. If interrupted during either rename, the prepared record and
+authenticated `.old` remain and the existing absent-canonical or
+already-canonical recovery paths resume. Recovery then rehashes and
 recaptures the descriptor and verifies the same contracts plus the same
 original strong identity at the canonical path before deleting the exact
 record by handle. If

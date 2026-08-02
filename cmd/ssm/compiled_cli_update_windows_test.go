@@ -223,7 +223,28 @@ func TestCompiledWindowsBlockedPreparedRecoveryStopsStartupDispatch(t *testing.T
 			compiledOutputIdentity(recovered),
 		)
 	}
-	for _, path := range []string{backup, record} {
+	mapped := filepath.Join(filepath.Dir(target), "."+filepath.Base(target)+".mapped")
+	if _, err := os.Stat(backup); !os.IsNotExist(err) {
+		t.Fatalf("successful compiled recovery retained rollback image: %v", err)
+	}
+	for _, path := range []string{record, mapped} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("mapped compiled recovery lost deferred evidence %s: %v", filepath.Base(path), err)
+		}
+	}
+
+	cleaned := cli.RunWithEnv(t, "ssm", nil, map[string]string{
+		"SSM_UPDATE_REPO": "off",
+	}, "--version")
+	if cleaned.ProcessExit != 0 ||
+		cleaned.Stdout != "ssm 1.4.3\n" ||
+		cleaned.Stderr != "" {
+		t.Fatalf(
+			"compiled next startup did not clean displaced mapped image; output=%s",
+			compiledOutputIdentity(cleaned),
+		)
+	}
+	for _, path := range []string{backup, record, mapped} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("successful compiled startup retained %s: %v", filepath.Base(path), err)
 		}
@@ -278,6 +299,7 @@ func TestCompiledWindowsOrdinaryStartupNeedsNoExecutableDirectoryWrite(t *testin
 			filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".update.lock"),
 			filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".old.state"),
 			filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".old"),
+			filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".mapped"),
 		} {
 			if _, err := os.Stat(sibling); !os.IsNotExist(err) {
 				t.Fatalf(
