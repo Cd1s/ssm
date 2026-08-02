@@ -33,6 +33,7 @@ const (
 	windowsExpectedFailureEnv   = "SSM_TEST_WINDOWS_EXPECTED_FAILURE"
 	windowsOrdinaryUserEnv      = "SSM_TEST_WINDOWS_ORDINARY_USER"
 	windowsFullTierDeniedEnv    = "SSM_TEST_WINDOWS_FULL_TIER_DENIED"
+	windowsFullTierSharingEnv   = "SSM_TEST_WINDOWS_FULL_TIER_SHARING"
 	windowsReplacementPauseEnv  = "SSM_TEST_WINDOWS_REPLACEMENT_PAUSE"
 	windowsReplacementReadyEnv  = "SSM_TEST_WINDOWS_REPLACEMENT_READY"
 	windowsReplacementGoEnv     = "SSM_TEST_WINDOWS_REPLACEMENT_GO"
@@ -56,6 +57,7 @@ func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("strong file identity is required", testWindowsStrongFileIdentityRequired)
 	t.Run("authenticated rollback record binds strong identities descriptor and bytes", testWindowsReplacementRecordDescriptorBinding)
 	t.Run("optional complete descriptor denial falls back to ordinary preservation", testWindowsOptionalFullTierFallback)
+	t.Run("optional complete descriptor sharing conflict falls back to ordinary preservation", testWindowsOptionalFullTierSharingFallback)
 	t.Run("complete descriptor is preserved when supported with ordinary fallback", testWindowsPrivilegedReplacement)
 	t.Run("privileges and thread identity are restored", testWindowsReplacementPrivilegeRestoration)
 	t.Run("SetThreadToken restoration failure is retried before unlock", testWindowsPreviousTokenRestorationFailure)
@@ -1730,6 +1732,35 @@ func testWindowsOptionalFullTierFallback(t *testing.T) {
 	gotDescriptor := readWindowsTestSecurityDescriptor(t, target)
 	if gotDescriptor != wantDescriptor {
 		t.Fatalf("ordinary fallback security descriptor = %#v, want %#v", gotDescriptor, wantDescriptor)
+	}
+}
+
+func testWindowsOptionalFullTierSharingFallback(t *testing.T) {
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	target := filepath.Join(directory, "ssm.exe")
+	stage := filepath.Join(directory, ".ssm.optional-full-tier-sharing-stage.exe")
+	copyWindowsTestExecutable(t, testExecutable, target, nil)
+	setRestrictiveWindowsTestDACL(t, target)
+	wantDescriptor := readWindowsTestSecurityDescriptor(t, target)
+	copyWindowsTestExecutable(t, testExecutable, stage, []byte("\nSSM_WINDOWS_OPTIONAL_FULL_TIER_SHARING\n"))
+	want, err := os.ReadFile(stage) //nolint:gosec // test-owned replacement fixture
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	command := windowsReplacementTestCommand(target, stage)
+	command.Env = append(command.Env, windowsFullTierSharingEnv+"=1")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("optional full-tier sharing fallback failed: %v; output=%q", err, output)
+	}
+	assertWindowsFileBytes(t, target, want)
+	gotDescriptor := readWindowsTestSecurityDescriptor(t, target)
+	if gotDescriptor != wantDescriptor {
+		t.Fatalf("sharing-conflict ordinary fallback security descriptor = %#v, want %#v", gotDescriptor, wantDescriptor)
 	}
 }
 
@@ -3855,6 +3886,67 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 				t.Fatalf("restore ordinary non-privileged token: %v", err)
 			}
 		}()
+	}
+	if os.Getenv(windowsFullTierSharingEnv) == "1" {
+		originalBegin := beginWindowsReplacementSecurityPrivileges
+		originalFullTier := windowsFullSecurityTier
+		originalOpenTarget := openWindowsReplacementSecurityTarget
+		conflict, err := openWindowsReplacementFile(executable, windows.DELETE)
+		if err != nil {
+			t.Fatalf("open mapped executable sharing-conflict fixture: %v", err)
+		}
+		defer func() {
+			if conflict != windows.InvalidHandle {
+				_ = windows.CloseHandle(conflict)
+			}
+			beginWindowsReplacementSecurityPrivileges = originalBegin
+			windowsFullSecurityTier = originalFullTier
+			openWindowsReplacementSecurityTarget = originalOpenTarget
+		}()
+
+		fullSelections := 0
+		targetOpenCalls := 0
+		var fullOpenErr error
+		// Select the optional tier without depending on hosted-runner
+		// privileges. The conflicting DELETE handle exercises the native
+		// reciprocal share check before descriptor capture.
+		windowsFullSecurityTier.targetAccess = windowsOrdinarySecurityTier.targetAccess
+		beginWindowsReplacementSecurityPrivileges = func() (*windowsReplacementPrivilegeScope, bool, error) {
+			fullSelections++
+			return nil, true, nil
+		}
+		openWindowsReplacementSecurityTarget = func(path string, access uint32) (windows.Handle, error) {
+			targetOpenCalls++
+			handle, openErr := originalOpenTarget(path, access)
+			if targetOpenCalls != 1 {
+				return handle, openErr
+			}
+			fullOpenErr = openErr
+			closeErr := windows.CloseHandle(conflict)
+			conflict = windows.InvalidHandle
+			if closeErr != nil {
+				if handle != windows.InvalidHandle {
+					_ = windows.CloseHandle(handle)
+				}
+				return windows.InvalidHandle, errors.Join(openErr, fmt.Errorf("close mapped executable sharing-conflict fixture: %w", closeErr))
+			}
+			return handle, openErr
+		}
+
+		err = replaceExecutable(stage, executable, stageDigest, 0)
+		if err != nil {
+			t.Fatalf("replacement did not fall back from optional complete descriptor sharing conflict: %v", err)
+		}
+		if !errors.Is(fullOpenErr, windows.ERROR_SHARING_VIOLATION) {
+			t.Fatalf("complete descriptor target open error = %v, want ERROR_SHARING_VIOLATION", fullOpenErr)
+		}
+		if fullSelections != 1 {
+			t.Fatalf("complete descriptor tier selections = %d, want 1", fullSelections)
+		}
+		if targetOpenCalls != 2 {
+			t.Fatalf("security target open calls = %d, want full attempt plus ordinary fallback", targetOpenCalls)
+		}
+		return
 	}
 	if os.Getenv(windowsFullTierDeniedEnv) == "1" {
 		originalBegin := beginWindowsReplacementSecurityPrivileges

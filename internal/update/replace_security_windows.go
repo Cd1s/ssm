@@ -31,6 +31,7 @@ var (
 	applyWindowsCompleteSecurity              = applyWindowsCompleteSecurityDescriptor
 	beginWindowsReplacementSecurityPrivileges = beginWindowsReplacementPrivileges
 	captureWindowsReplacementDescriptor       = captureWindowsSecurityDescriptor
+	openWindowsReplacementSecurityTarget      = openWindowsProtectedReplacementFile
 )
 
 var errWindowsRMControlUnavailable = errors.New("filesystem cannot preserve Windows resource manager control")
@@ -426,7 +427,7 @@ func prepareWindowsReplacementSecurityTier(
 	}
 
 	var err error
-	state.target, err = openWindowsProtectedReplacementFile(
+	state.target, err = openWindowsReplacementSecurityTarget(
 		target,
 		tier.targetAccess|windows.DELETE|windows.GENERIC_READ,
 	)
@@ -529,6 +530,7 @@ func prepareWindowsReplacementSecurityTier(
 func isWindowsCompleteSecurityUnavailable(err error) bool {
 	return errors.Is(err, windows.ERROR_ACCESS_DENIED) ||
 		errors.Is(err, windows.ERROR_PRIVILEGE_NOT_HELD) ||
+		errors.Is(err, windows.ERROR_SHARING_VIOLATION) ||
 		errors.Is(err, windows.ERROR_NOT_SUPPORTED) ||
 		errors.Is(err, windows.ERROR_INVALID_FUNCTION) ||
 		errors.Is(err, windows.ERROR_INVALID_PARAMETER) ||
