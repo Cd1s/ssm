@@ -106,17 +106,10 @@ func verificationManifest() Manifest {
 			},
 			{
 				Name:          "release",
-				Purpose:       "Non-publishing release preflight with required pinned-provenance verification.",
-				Equivalence:   "release_preflight_with_bc9",
+				Purpose:       "Non-publishing final SSM v2 release readiness with direct public-contract, migration, coverage, and pinned-provenance verification.",
+				Equivalence:   "initial_v2_release_readiness",
 				Prerequisites: profilePrerequisites(),
 				Checks:        release,
-				Extensions: []Extension{
-					{
-						Name:           "migration-extension",
-						Description:    "v2 migration contract and failure-path verification",
-						RequiredBefore: "initial_v2_release",
-					},
-				},
 			},
 		},
 	}
@@ -177,10 +170,12 @@ func releaseChecks() []Check {
 	checks = append(checks,
 		Check{
 			ID:          "updater-selection",
-			Description: "Prove updater selection matches all six release asset names.",
+			Description: "Prove updater selection matches all six release asset names and rejects incomplete or unsupported release manifests without fallback.",
 			Requirement: requirementRequired,
 			Action: commandAction("go", []string{
-				"test", "./internal/update", "-run", "^TestAssetNameForSupportedPlatforms$", "-count=1",
+				"test", "./internal/update", "-run",
+				"^(TestAssetNameForSupportedPlatforms|TestReleaseAssetSelectionIsStrict|TestInvalidSelectedReleaseDoesNotFallBackOrDownload)$",
+				"-count=1",
 			}, nil, ""),
 			Prerequisites: goPrerequisites(),
 		},
@@ -242,6 +237,91 @@ func releaseChecks() []Check {
 				"-count=1",
 			}, nil, ""),
 			Prerequisites: goPrerequisites(),
+		},
+		Check{
+			ID:          "v2-public-contracts",
+			Description: "Run the compiled SSM v2 public, sync, publication, stream, push, and transfer contract fixtures directly.",
+			Requirement: requirementRequired,
+			Action: commandAction("go", []string{
+				"test", "./cmd/ssm", "-run",
+				"^(TestCompiledCLIContractMatrix|TestApprovedV2BreakingChangeBaselines|TestCompiledSyncStateMatrix|TestCompiledStreamContract|TestCompiledStreamStartupNetworkPolicy|TestStreamRefreshClosesPool|TestStreamOfflineUsesFixedSnapshot|TestInventoryTransactionPolicy|TestScopedPublicationSavedKeyDependencies|TestLegacyMutationsCreatePendingTransactions|TestImportCreatesOneAtomicBulkTransaction|TestMutationEntryPointsNeverAutoPublish|TestPushScopeArgumentsFailBeforePublicationSideEffects|TestPushOnlyEqualsPreservesExactScope|TestEmptyLedgerPushNeverPuts|TestPushAllUsesInvocationStartSnapshot|TestEveryPushPathUsesInventoryTransactions|TestPublicationIntentCrashMatrix|TestPublicationReconcilesLostResponse|TestPublicationReconcilesFinalizeFailure|TestCompiledTransferOutcomeMatrix|TestTransferDirectAndRequestParity|TestTransferGuaranteesAreTruthful)$",
+				"-count=1",
+			}, nil, ""),
+			Prerequisites: goPrerequisites(),
+		},
+		Check{
+			ID:          "v2-policy-contracts",
+			Description: "Run the deep sync and inventory transaction policy fixtures directly.",
+			Requirement: requirementRequired,
+			Action: commandAction("go", []string{
+				"test", "./internal/synctransaction", "./internal/inventorytransaction", "-run",
+				"^(TestSyncTransactionPolicy|TestStreamTransactionPolicy|TestInventoryTransactionPolicy)$",
+				"-count=1",
+			}, nil, ""),
+			Prerequisites: goPrerequisites(),
+		},
+		Check{
+			ID:          "v2-update-contracts",
+			Description: "Run explicit migration authorization, same-major selection, preflight, rollback, and executable-preservation fixtures directly.",
+			Requirement: requirementRequired,
+			Action: commandAction("go", []string{
+				"test", "./internal/update", "-run",
+				"^(TestMigrationPreflightInspectsLocalSyncStateWithoutNetwork|TestMigrationPreflightFailsForPreservedSyncConflictWithoutNetwork|TestSameMajorSelection|TestCrossMajorRequiresExplicitAuthorization|TestFailedMigrationPreservesExecutable)$",
+				"-count=1",
+			}, nil, ""),
+			Prerequisites: goPrerequisites(),
+		},
+		Check{
+			ID:          "v2-structure-docs",
+			Description: "Run three-module contraction, adversarial ownership, bilingual migration documentation, and public help fixtures directly.",
+			Requirement: requirementRequired,
+			Action: commandAction("go", []string{
+				"test", "./cmd/ssm", "-run",
+				"^(TestDeepPolicyOwnershipContraction|TestDeepPolicyOwnershipAnalyzerAdversarialFixtures|TestV2MigrationDocumentationContract|TestSSHCTLCommandHelpNeedsNoUnlockOrTTY|TestRunHelpDocumentsFastStream)$",
+				"-count=1",
+			}, nil, ""),
+			Prerequisites: goPrerequisites(),
+		},
+		Check{
+			ID:          "v2-release-contracts",
+			Description: "Run release superset, non-mutation, no-publication-authority, source grammar, workflow identity, and provenance workflow fixtures directly.",
+			Requirement: requirementRequired,
+			Action: commandAction("go", []string{
+				"test", "./cmd/verify", "-run",
+				"^(TestReleaseStrictlyContainsCI|TestProfilesAreNonMutating|TestVerificationChildrenHaveNoInheritedPublicationAuthority|TestSourceVersionMatchesReleaseWorkflowGrammar|TestReleaseProvenanceForEveryTarget|TestReleaseWorkflowUsesCredentialFreeVerifierPreflightAndManifestParity|TestReleaseWorkflowProducesPinnedProvenance|TestReleaseWorkflowPublishesOnlySelectedTagIdentity|TestReleaseV2ReadinessIsExecutable)$",
+				"-count=1",
+			}, nil, ""),
+			Prerequisites: goPrerequisites(),
+		},
+		Check{
+			ID:          "markdown-contracts",
+			Description: "Run the pinned Markdown style, table, and link-fragment contract across every public and maintainer document.",
+			Requirement: requirementRequired,
+			Action: commandAction("npx", []string{
+				"--yes", "markdownlint-cli2@0.18.1", "README.md", "README.en.md", "RELEASE_NOTES.md",
+				"docs/**/*.md", "skills/**/*.md",
+			}, nil, ""),
+			Prerequisites: []Prerequisite{
+				{Kind: "tool", Name: "npx", Version: "any"},
+			},
+		},
+		Check{
+			ID:          "coverage-observation",
+			Description: "Emit observed package coverage without enforcing any percentage threshold.",
+			Requirement: requirementRequired,
+			Action: commandAction("go", []string{
+				"test", "-cover", "-count=1", "./...",
+			}, nil, ""),
+			Prerequisites: goPrerequisites(),
+		},
+		Check{
+			ID:          "v2-readiness-report",
+			Description: "Require the checked-in secret-free final readiness report to match the executable manifest and reviewed evidence map.",
+			Requirement: requirementRequired,
+			Action:      Action{Kind: actionBuiltin, Name: "v2-readiness-report"},
+			Prerequisites: []Prerequisite{
+				{Kind: "file", Name: "docs/plans/issue-31-release-readiness.md", Version: "tracked"},
+			},
 		},
 	)
 	return checks

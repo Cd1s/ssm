@@ -197,6 +197,19 @@ func executeBuiltin(name string, actionCtx actionContext) checkResult {
 				len(releaseasset.SupportedTargets()),
 			),
 		}
+	case "v2-readiness-report":
+		if err := validateV2ReadinessReport(actionCtx.RepoRoot); err != nil {
+			return checkResult{Status: statusFailed, Detail: err.Error()}
+		}
+		release, _ := findProfile(verificationManifest(), "release")
+		return checkResult{
+			Status: statusPassed,
+			Detail: fmt.Sprintf(
+				"manifest-derived report matches %d release checks and %d targets",
+				len(release.Checks),
+				len(releaseasset.SupportedTargets()),
+			),
+		}
 	default:
 		return checkResult{Status: statusFailed, Detail: "unknown builtin action: " + name}
 	}

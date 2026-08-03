@@ -136,7 +136,8 @@ func reviewedActionPolicy() map[string]Action {
 			"go",
 			[]string{
 				"test", "./internal/update", "-run",
-				"^TestAssetNameForSupportedPlatforms$", "-count=1",
+				"^(TestAssetNameForSupportedPlatforms|TestReleaseAssetSelectionIsStrict|TestInvalidSelectedReleaseDoesNotFallBackOrDownload)$",
+				"-count=1",
 			},
 			nil,
 			"",
@@ -179,6 +180,75 @@ func reviewedActionPolicy() map[string]Action {
 			nil,
 			"",
 		),
+		"v2-public-contracts": reviewedCommand(
+			"go",
+			[]string{
+				"test", "./cmd/ssm", "-run",
+				"^(TestCompiledCLIContractMatrix|TestApprovedV2BreakingChangeBaselines|TestCompiledSyncStateMatrix|TestCompiledStreamContract|TestCompiledStreamStartupNetworkPolicy|TestStreamRefreshClosesPool|TestStreamOfflineUsesFixedSnapshot|TestInventoryTransactionPolicy|TestScopedPublicationSavedKeyDependencies|TestLegacyMutationsCreatePendingTransactions|TestImportCreatesOneAtomicBulkTransaction|TestMutationEntryPointsNeverAutoPublish|TestPushScopeArgumentsFailBeforePublicationSideEffects|TestPushOnlyEqualsPreservesExactScope|TestEmptyLedgerPushNeverPuts|TestPushAllUsesInvocationStartSnapshot|TestEveryPushPathUsesInventoryTransactions|TestPublicationIntentCrashMatrix|TestPublicationReconcilesLostResponse|TestPublicationReconcilesFinalizeFailure|TestCompiledTransferOutcomeMatrix|TestTransferDirectAndRequestParity|TestTransferGuaranteesAreTruthful)$",
+				"-count=1",
+			},
+			nil,
+			"",
+		),
+		"v2-policy-contracts": reviewedCommand(
+			"go",
+			[]string{
+				"test", "./internal/synctransaction", "./internal/inventorytransaction", "-run",
+				"^(TestSyncTransactionPolicy|TestStreamTransactionPolicy|TestInventoryTransactionPolicy)$",
+				"-count=1",
+			},
+			nil,
+			"",
+		),
+		"v2-update-contracts": reviewedCommand(
+			"go",
+			[]string{
+				"test", "./internal/update", "-run",
+				"^(TestMigrationPreflightInspectsLocalSyncStateWithoutNetwork|TestMigrationPreflightFailsForPreservedSyncConflictWithoutNetwork|TestSameMajorSelection|TestCrossMajorRequiresExplicitAuthorization|TestFailedMigrationPreservesExecutable)$",
+				"-count=1",
+			},
+			nil,
+			"",
+		),
+		"v2-structure-docs": reviewedCommand(
+			"go",
+			[]string{
+				"test", "./cmd/ssm", "-run",
+				"^(TestDeepPolicyOwnershipContraction|TestDeepPolicyOwnershipAnalyzerAdversarialFixtures|TestV2MigrationDocumentationContract|TestSSHCTLCommandHelpNeedsNoUnlockOrTTY|TestRunHelpDocumentsFastStream)$",
+				"-count=1",
+			},
+			nil,
+			"",
+		),
+		"v2-release-contracts": reviewedCommand(
+			"go",
+			[]string{
+				"test", "./cmd/verify", "-run",
+				"^(TestReleaseStrictlyContainsCI|TestProfilesAreNonMutating|TestVerificationChildrenHaveNoInheritedPublicationAuthority|TestSourceVersionMatchesReleaseWorkflowGrammar|TestReleaseProvenanceForEveryTarget|TestReleaseWorkflowUsesCredentialFreeVerifierPreflightAndManifestParity|TestReleaseWorkflowProducesPinnedProvenance|TestReleaseWorkflowPublishesOnlySelectedTagIdentity|TestReleaseV2ReadinessIsExecutable)$",
+				"-count=1",
+			},
+			nil,
+			"",
+		),
+		"markdown-contracts": reviewedCommand(
+			"npx",
+			[]string{
+				"--yes", "markdownlint-cli2@0.18.1", "README.md", "README.en.md", "RELEASE_NOTES.md",
+				"docs/**/*.md", "skills/**/*.md",
+			},
+			nil,
+			"",
+		),
+		"coverage-observation": reviewedCommand(
+			"go",
+			[]string{"test", "-cover", "-count=1", "./..."},
+			nil,
+			"",
+		),
+		"v2-readiness-report": {
+			Kind: actionBuiltin,
+			Name: "v2-readiness-report",
+		},
 	}
 }
 

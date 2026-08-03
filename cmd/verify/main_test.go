@@ -2869,58 +2869,149 @@ func TestReleaseProvenanceIsRequiredGate(t *testing.T) {
 	}
 }
 
-func TestReleaseExtensionsAreMetadataNotChecks(t *testing.T) {
+func TestReleaseV2ReadinessIsExecutable(t *testing.T) {
 	release, ok := findProfile(verificationManifest(), "release")
 	if !ok {
 		t.Fatal("release profile not found")
 	}
+	if len(release.Extensions) != 0 {
+		t.Errorf("release retains non-executable extensions: %#v", release.Extensions)
+	}
+	if got, want := release.Equivalence, "initial_v2_release_readiness"; got != want {
+		t.Errorf("release equivalence = %q, want %q", got, want)
+	}
+
+	publicContracts := "^(TestCompiledCLIContractMatrix|TestApprovedV2BreakingChangeBaselines|TestCompiledSyncStateMatrix|TestCompiledStreamContract|TestCompiledStreamStartupNetworkPolicy|TestStreamRefreshClosesPool|TestStreamOfflineUsesFixedSnapshot|TestInventoryTransactionPolicy|TestScopedPublicationSavedKeyDependencies|TestLegacyMutationsCreatePendingTransactions|TestImportCreatesOneAtomicBulkTransaction|TestMutationEntryPointsNeverAutoPublish|TestPushScopeArgumentsFailBeforePublicationSideEffects|TestPushOnlyEqualsPreservesExactScope|TestEmptyLedgerPushNeverPuts|TestPushAllUsesInvocationStartSnapshot|TestEveryPushPathUsesInventoryTransactions|TestPublicationIntentCrashMatrix|TestPublicationReconcilesLostResponse|TestPublicationReconcilesFinalizeFailure|TestCompiledTransferOutcomeMatrix|TestTransferDirectAndRequestParity|TestTransferGuaranteesAreTruthful)$"
+	wantActions := map[string]Action{
+		"v2-public-contracts": commandAction(
+			"go",
+			[]string{"test", "./cmd/ssm", "-run", publicContracts, "-count=1"},
+			nil,
+			"",
+		),
+		"v2-policy-contracts": commandAction(
+			"go",
+			[]string{
+				"test", "./internal/synctransaction", "./internal/inventorytransaction", "-run",
+				"^(TestSyncTransactionPolicy|TestStreamTransactionPolicy|TestInventoryTransactionPolicy)$",
+				"-count=1",
+			},
+			nil,
+			"",
+		),
+		"v2-update-contracts": commandAction(
+			"go",
+			[]string{
+				"test", "./internal/update", "-run",
+				"^(TestMigrationPreflightInspectsLocalSyncStateWithoutNetwork|TestMigrationPreflightFailsForPreservedSyncConflictWithoutNetwork|TestSameMajorSelection|TestCrossMajorRequiresExplicitAuthorization|TestFailedMigrationPreservesExecutable)$",
+				"-count=1",
+			},
+			nil,
+			"",
+		),
+		"v2-structure-docs": commandAction(
+			"go",
+			[]string{
+				"test", "./cmd/ssm", "-run",
+				"^(TestDeepPolicyOwnershipContraction|TestDeepPolicyOwnershipAnalyzerAdversarialFixtures|TestV2MigrationDocumentationContract|TestSSHCTLCommandHelpNeedsNoUnlockOrTTY|TestRunHelpDocumentsFastStream)$",
+				"-count=1",
+			},
+			nil,
+			"",
+		),
+		"v2-release-contracts": commandAction(
+			"go",
+			[]string{
+				"test", "./cmd/verify", "-run",
+				"^(TestReleaseStrictlyContainsCI|TestProfilesAreNonMutating|TestVerificationChildrenHaveNoInheritedPublicationAuthority|TestSourceVersionMatchesReleaseWorkflowGrammar|TestReleaseProvenanceForEveryTarget|TestReleaseWorkflowUsesCredentialFreeVerifierPreflightAndManifestParity|TestReleaseWorkflowProducesPinnedProvenance|TestReleaseWorkflowPublishesOnlySelectedTagIdentity|TestReleaseV2ReadinessIsExecutable)$",
+				"-count=1",
+			},
+			nil,
+			"",
+		),
+		"markdown-contracts": commandAction(
+			"npx",
+			[]string{
+				"--yes", "markdownlint-cli2@0.18.1", "README.md", "README.en.md", "RELEASE_NOTES.md",
+				"docs/**/*.md", "skills/**/*.md",
+			},
+			nil,
+			"",
+		),
+		"coverage-observation": commandAction(
+			"go",
+			[]string{"test", "-cover", "-count=1", "./..."},
+			nil,
+			"",
+		),
+		"v2-readiness-report": {Kind: actionBuiltin, Name: "v2-readiness-report"},
+	}
+	gotActions := make(map[string]Action)
 	for _, check := range release.Checks {
-		if check.Action.Kind == "extension" {
-			t.Fatalf("release extension %q is modeled as an executable check", check.ID)
+		if _, tracked := wantActions[check.ID]; !tracked {
+			continue
+		}
+		if check.Requirement != requirementRequired {
+			t.Errorf("release readiness check %q requirement = %q, want required", check.ID, check.Requirement)
+		}
+		gotActions[check.ID] = check.Action
+	}
+	for id, want := range wantActions {
+		got, found := gotActions[id]
+		if !found {
+			t.Errorf("required release readiness check %q is missing", id)
+			continue
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("release readiness action %q = %#v, want %#v", id, got, want)
 		}
 	}
 
-	want := []Extension{
-		{
-			Name:           "migration-extension",
-			Description:    "v2 migration contract and failure-path verification",
-			RequiredBefore: "initial_v2_release",
+	wantUpdaterSelection := commandAction(
+		"go",
+		[]string{
+			"test", "./internal/update", "-run",
+			"^(TestAssetNameForSupportedPlatforms|TestReleaseAssetSelectionIsStrict|TestInvalidSelectedReleaseDoesNotFallBackOrDownload)$",
+			"-count=1",
 		},
-	}
-	if !reflect.DeepEqual(release.Extensions, want) {
-		t.Fatalf("release extensions = %#v, want %#v", release.Extensions, want)
-	}
-
-	runtimeManifest := verificationManifest()
-	setProfileChecks(t, &runtimeManifest, "release", release.Checks[:1])
-	runtimeRelease, ok := findProfile(runtimeManifest, "release")
-	if !ok {
-		t.Fatal("runtime release profile not found")
-	}
-	if !reflect.DeepEqual(runtimeRelease.Extensions, want) {
-		t.Fatalf("runtime release extensions = %#v, want %#v", runtimeRelease.Extensions, want)
-	}
-
-	deps := passingTestDependencies(t, newCleanTestRepository(t))
-	deps.actions = func(_ context.Context, action Action, _ actionContext) checkResult {
-		if action.Kind == actionBuiltin && action.Name == "source-version" {
-			return checkResult{Status: statusPassed, Detail: "1.2.3"}
+		nil,
+		"",
+	)
+	var updaterSelection Action
+	for _, check := range release.Checks {
+		if check.ID == "updater-selection" {
+			updaterSelection = check.Action
+			break
 		}
-		return checkResult{Status: statusPassed}
 	}
-	result, err := executeProfile(context.Background(), runtimeManifest, "release", deps)
+	if !reflect.DeepEqual(updaterSelection, wantUpdaterSelection) {
+		t.Errorf("updater-selection action = %#v, want %#v", updaterSelection, wantUpdaterSelection)
+	}
+
+	result := executeBuiltin("v2-readiness-report", actionContext{RepoRoot: filepath.Join("..", "..")})
+	if result.Status != statusPassed {
+		t.Errorf("v2 readiness report status = %q (%s), want passed", result.Status, result.Detail)
+	}
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "plans", "issue-31-release-readiness.md"))
 	if err != nil {
-		t.Fatalf("execute release preflight: %v", err)
+		t.Errorf("read checked-in readiness report: %v", err)
+		return
 	}
-	if result.Status != statusPreflightPassed {
-		t.Fatalf("release preflight status = %q, want %q", result.Status, statusPreflightPassed)
-	}
-	if len(result.Checks) != len(runtimeRelease.Checks) {
-		t.Fatalf("release emitted %d check results for %d executable checks", len(result.Checks), len(runtimeRelease.Checks))
-	}
-	for _, check := range result.Checks {
-		if check.Status == statusUnavailable {
-			t.Fatalf("release metadata leaked into runtime results: %+v", check)
+	for _, marker := range []string{
+		"manifest-derived",
+		"BC-1 through BC-10",
+		"coverage is observed without a percentage threshold",
+		"six supported release targets",
+		"no merge, tag, release, upload, publication, or real installation",
+		`test -z "$(gofmt -l .)"`,
+		"go test ./... -run 'TestApprovedV2BreakingChangeBaselines|TestDeepPolicyOwnershipContraction|TestReleaseProvenanceForEveryTarget|TestV2MigrationDocumentationContract' -count=1",
+		"go test -race ./...",
+		"CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go test -exec=true ./...",
+		"CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go vet ./...",
+		"git diff --check",
+	} {
+		if !strings.Contains(string(data), marker) {
+			t.Errorf("readiness report is missing %q", marker)
 		}
 	}
 }

@@ -1,6 +1,6 @@
 # Verification manifest and BC-10 migration
 
-Status: implemented by GitHub Issues #18 and #28
+Status: implemented by GitHub Issues #18, #28, and #31
 
 The checked-in Go manifest at `cmd/verify` is the sole owner of verification
 profile membership, ordering, exact actions and preparation actions,
@@ -161,6 +161,19 @@ then adds, in order:
    digest binding, and byte-preserving provenance failure tests through the
    updater's production verifier core;
 9. updater checksum selection, mismatch, and no-replacement failure tests.
+10. direct compiled public, sync, publication, stream, push, and transfer
+    contract fixtures;
+11. direct sync and inventory transaction policy fixtures;
+12. direct same-major, major-migration preflight, rollback, and executable
+    preservation fixtures;
+13. direct three-module contraction, adversarial ownership, bilingual
+    documentation, and public-help fixtures;
+14. direct release-superset, non-mutation, credential isolation, workflow
+    identity, and provenance workflow fixtures;
+15. pinned Markdown style, table, and link-fragment validation;
+16. ordinary Go package coverage observation without a percentage threshold;
+17. a manifest-derived, secret-free `v2-readiness-report` validation of the
+    checked-in final evidence map.
 
 No separate check called “release source policy” is added. The live Issue #18
 acceptance text names the current source/version check, and the accepted
@@ -172,13 +185,13 @@ trust rule here would conflict with the audit's explicit non-goal of changing
 updater trust or release signing. The exact ASCII `X.Y.Z` source-version gate
 therefore remains the authoritative bounded source check for Issue #18.
 
-The release profile still exposes `migration-extension` metadata. BC-9
-promotes the former `provenance-extension` metadata to two required executable
-checks: `release-provenance` and `provenance-failure-paths`. Their generated
-roots, certificates, signed statements, and executable subjects are
-test-owned and remain inside verifier-controlled temporary storage. The
-initial v2 release (`initial_v2_release`) remains blocked on the separate
-migration extension.
+The former `migration-extension` metadata is promoted to eight required
+executable checks. The profile now has the exact 11-check `ci` prefix followed
+by 22 release-only checks and declares
+`initial_v2_release_readiness` equivalence. BC-9's required executable
+`release-provenance` and `provenance-failure-paths` checks retain generated
+roots, certificates, signed statements, and executable subjects entirely in
+verifier-controlled temporary storage.
 
 Accordingly, the exact command
 
@@ -186,12 +199,11 @@ Accordingly, the exact command
 go run ./cmd/verify release
 ```
 
-returns zero only when all executable release-preflight checks, including the
-BC-9 provenance gates, pass.
-Its terminal summary is `preflight_passed`, and its profile purpose and
-equivalence explicitly name required pinned-provenance verification. This is
-still not a claim of initial-v2 readiness until the remaining migration
-extension is promoted.
+returns zero only when all 33 executable release-readiness checks, including
+the BC-9 provenance gates and the manifest-derived evidence report, pass. Its
+terminal summary is `preflight_passed`, and its profile purpose and equivalence
+explicitly name final initial-v2 readiness. This is readiness evidence for the
+reviewed source, not a merge, tag, upload, installation, or publication claim.
 
 No approved top-level action merges, tags, installs, replaces an executable,
 creates or uploads a release, or writes release artifacts into the repository.
@@ -387,8 +399,9 @@ Expected runtime depends on caches and host speed:
 - `fast` runs one ordinary test suite and is normally the shortest loop;
 - `ci` adds lint, vulnerability, race, and the live OpenSSH matrix and should
   be expected to take several minutes on a cold machine;
-- `release` repeats no `ci` membership, but adds six cross-builds and focused
-  updater/release checks, so it is longer than `ci`.
+- `release` starts with the exact ordered `ci` membership, then adds six
+  cross-builds and focused updater/release/readiness checks, so it is longer
+  than `ci`.
 
 Coverage may be observed with normal Go tooling during development, but no
 profile enforces a percentage threshold. Required public scenarios remain the
