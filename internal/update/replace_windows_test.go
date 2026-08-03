@@ -3,14 +3,12 @@
 package update
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"hash/crc32"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,30 +23,27 @@ import (
 )
 
 const (
-	windowsReplacementChildEnv   = "SSM_TEST_WINDOWS_REPLACEMENT_CHILD"
-	windowsReplacementStageEnv   = "SSM_TEST_WINDOWS_REPLACEMENT_STAGE"
-	windowsReplacementTargetEnv  = "SSM_TEST_WINDOWS_REPLACEMENT_TARGET"
-	windowsReplacementFailEnv    = "SSM_TEST_WINDOWS_REPLACEMENT_FAIL"
-	windowsDescriptorFailEnv     = "SSM_TEST_WINDOWS_DESCRIPTOR_FAIL"
-	windowsCleanupChildEnv       = "SSM_TEST_WINDOWS_CLEANUP_CHILD"
-	windowsCleanupTargetEnv      = "SSM_TEST_WINDOWS_CLEANUP_TARGET"
-	windowsExpectedFailureEnv    = "SSM_TEST_WINDOWS_EXPECTED_FAILURE"
-	windowsOrdinaryUserEnv       = "SSM_TEST_WINDOWS_ORDINARY_USER"
-	windowsFullTierDeniedEnv     = "SSM_TEST_WINDOWS_FULL_TIER_DENIED"
-	windowsFullTierSharingEnv    = "SSM_TEST_WINDOWS_FULL_TIER_SHARING"
-	windowsReplacementPauseEnv   = "SSM_TEST_WINDOWS_REPLACEMENT_PAUSE"
-	windowsReplacementReadyEnv   = "SSM_TEST_WINDOWS_REPLACEMENT_READY"
-	windowsReplacementGoEnv      = "SSM_TEST_WINDOWS_REPLACEMENT_GO"
-	windowsSubstituteStageEnv    = "SSM_TEST_WINDOWS_SUBSTITUTE_STAGE"
-	windowsMutateStageEnv        = "SSM_TEST_WINDOWS_MUTATE_STAGE"
-	windowsRollbackFailEnv       = "SSM_TEST_WINDOWS_ROLLBACK_FAIL"
-	windowsRecoveryRequiredEnv   = "SSM_TEST_WINDOWS_RECOVERY_REQUIRED"
-	windowsMappedLinkChildEnv    = "SSM_TEST_WINDOWS_MAPPED_LINK_CHILD"
-	windowsMappedLinkSourceEnv   = "SSM_TEST_WINDOWS_MAPPED_LINK_SOURCE"
-	windowsMappedLinkResumeEnv   = "SSM_TEST_WINDOWS_MAPPED_LINK_RESUME"
-	windowsReplacementPipeReady  = "process-pipe-ready"
-	windowsReplacementPipeGo     = "process-pipe-go"
-	windowsReplacementPipeMarker = "ssm-windows-replacement-ready"
+	windowsReplacementChildEnv  = "SSM_TEST_WINDOWS_REPLACEMENT_CHILD"
+	windowsReplacementStageEnv  = "SSM_TEST_WINDOWS_REPLACEMENT_STAGE"
+	windowsReplacementTargetEnv = "SSM_TEST_WINDOWS_REPLACEMENT_TARGET"
+	windowsReplacementFailEnv   = "SSM_TEST_WINDOWS_REPLACEMENT_FAIL"
+	windowsDescriptorFailEnv    = "SSM_TEST_WINDOWS_DESCRIPTOR_FAIL"
+	windowsCleanupChildEnv      = "SSM_TEST_WINDOWS_CLEANUP_CHILD"
+	windowsCleanupTargetEnv     = "SSM_TEST_WINDOWS_CLEANUP_TARGET"
+	windowsExpectedFailureEnv   = "SSM_TEST_WINDOWS_EXPECTED_FAILURE"
+	windowsOrdinaryUserEnv      = "SSM_TEST_WINDOWS_ORDINARY_USER"
+	windowsFullTierDeniedEnv    = "SSM_TEST_WINDOWS_FULL_TIER_DENIED"
+	windowsFullTierSharingEnv   = "SSM_TEST_WINDOWS_FULL_TIER_SHARING"
+	windowsReplacementPauseEnv  = "SSM_TEST_WINDOWS_REPLACEMENT_PAUSE"
+	windowsReplacementReadyEnv  = "SSM_TEST_WINDOWS_REPLACEMENT_READY"
+	windowsReplacementGoEnv     = "SSM_TEST_WINDOWS_REPLACEMENT_GO"
+	windowsSubstituteStageEnv   = "SSM_TEST_WINDOWS_SUBSTITUTE_STAGE"
+	windowsMutateStageEnv       = "SSM_TEST_WINDOWS_MUTATE_STAGE"
+	windowsRollbackFailEnv      = "SSM_TEST_WINDOWS_ROLLBACK_FAIL"
+	windowsRecoveryRequiredEnv  = "SSM_TEST_WINDOWS_RECOVERY_REQUIRED"
+	windowsMappedLinkChildEnv   = "SSM_TEST_WINDOWS_MAPPED_LINK_CHILD"
+	windowsMappedLinkSourceEnv  = "SSM_TEST_WINDOWS_MAPPED_LINK_SOURCE"
+	windowsMappedLinkResumeEnv  = "SSM_TEST_WINDOWS_MAPPED_LINK_RESUME"
 )
 
 func TestWindowsNativeReplacementSecurity(t *testing.T) {
@@ -2827,50 +2822,36 @@ func testWindowsSourceSubstitutionAtRenameGap(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			updater := windowsReplacementTestCommand(target, stage)
-			updater.Env = append(updater.Env,
-				windowsReplacementPauseEnv+"="+test.phase,
-				windowsReplacementReadyEnv+"="+windowsReplacementPipeReady,
-				windowsReplacementGoEnv+"="+windowsReplacementPipeGo,
-			)
-			var updaterOutput bytes.Buffer
-			updaterInput, err := updater.StdinPipe()
-			if err != nil {
-				t.Fatal(err)
-			}
-			updaterStdout, err := updater.StdoutPipe()
-			if err != nil {
-				t.Fatal(err)
-			}
-			var updaterErrors bytes.Buffer
-			updater.Stderr = &updaterErrors
-			if err := updater.Start(); err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				_ = updaterInput.Close()
-				if updater.Process != nil {
-					_ = updater.Process.Kill()
+			ready := make(chan struct{})
+			proceed := make(chan struct{})
+			result := make(chan error, 1)
+			originalHook := windowsReplacementTestHook
+			windowsReplacementTestHook = func(phase string) error {
+				if phase == test.phase {
+					close(ready)
+					<-proceed
 				}
-			})
-			stdout := bufio.NewReader(updaterStdout)
-			for {
-				line, readErr := stdout.ReadString('\n')
-				updaterOutput.WriteString(line)
-				if strings.TrimSpace(line) == windowsReplacementPipeMarker {
-					break
+				return nil
+			}
+			continued := false
+			completed := false
+			defer func() {
+				if !continued {
+					close(proceed)
 				}
-				if readErr != nil {
-					waitErr := updater.Wait()
-					updaterOutput.WriteString(updaterErrors.String())
-					t.Fatalf(
-						"updater exited before %s rename-gap signal: read=%v wait=%v output=%q",
-						test.name,
-						readErr,
-						waitErr,
-						updaterOutput.String(),
-					)
+				if !completed {
+					<-result
 				}
+				windowsReplacementTestHook = originalHook
+			}()
+			go func() {
+				result <- replaceExecutable(stage, target, sha256.Sum256(want), 0)
+			}()
+			select {
+			case <-ready:
+			case earlyErr := <-result:
+				completed = true
+				t.Fatalf("updater exited before %s rename-gap signal: %v", test.name, earlyErr)
 			}
 
 			source := test.source(target, stage)
@@ -2879,29 +2860,19 @@ func testWindowsSourceSubstitutionAtRenameGap(t *testing.T) {
 			if substitutionErr == nil {
 				copyWindowsTestExecutable(t, testExecutable, source, []byte("\nATTACKER_SUBSTITUTE\n"))
 			}
-			if _, err := io.WriteString(updaterInput, "continue\n"); err != nil {
-				t.Fatal(err)
-			}
-			if err := updaterInput.Close(); err != nil {
-				t.Fatal(err)
-			}
-			remainder, readErr := io.ReadAll(stdout)
-			updaterOutput.Write(remainder)
-			waitErr := updater.Wait()
-			updaterOutput.WriteString(updaterErrors.String())
-			if readErr != nil {
-				t.Fatalf("read updater output: %v; output=%q", readErr, updaterOutput.String())
-			}
+			close(proceed)
+			continued = true
+			waitErr := <-result
+			completed = true
 			if substitutionErr == nil {
 				t.Fatalf(
-					"%s substitution succeeded at the validation/rename gap; updater_error=%v output=%q",
+					"%s substitution succeeded at the validation/rename gap; updater_error=%v",
 					test.name,
 					waitErr,
-					updaterOutput.String(),
 				)
 			}
 			if waitErr != nil {
-				t.Fatalf("updater failed after blocked %s substitution: %v; output=%q", test.name, waitErr, updaterOutput.String())
+				t.Fatalf("updater failed after blocked %s substitution: %v", test.name, waitErr)
 			}
 			assertWindowsFileBytes(t, target, want)
 		})
@@ -4443,28 +4414,11 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 			}
 			if phase == pause {
 				ready := os.Getenv(windowsReplacementReadyEnv)
-				proceed := os.Getenv(windowsReplacementGoEnv)
-				if ready == windowsReplacementPipeReady || proceed == windowsReplacementPipeGo {
-					if ready != windowsReplacementPipeReady || proceed != windowsReplacementPipeGo {
-						return fmt.Errorf("incomplete process-pipe synchronization configuration")
-					}
-					if _, err := fmt.Fprintln(os.Stdout, windowsReplacementPipeMarker); err != nil {
-						return fmt.Errorf("signal process-pipe readiness: %w", err)
-					}
-					var signal string
-					if _, err := fmt.Fscanln(os.Stdin, &signal); err != nil {
-						return fmt.Errorf("wait for process-pipe continuation: %w", err)
-					}
-					if signal != "continue" {
-						return fmt.Errorf("unexpected process-pipe continuation %q", signal)
-					}
-				} else {
-					if err := os.WriteFile(ready, []byte("ready"), 0o600); err != nil { //nolint:gosec // test-owned synchronization fixture
-						return err
-					}
-					if err := waitForWindowsChildPath(proceed); err != nil {
-						return err
-					}
+				if err := os.WriteFile(ready, []byte("ready"), 0o600); err != nil { //nolint:gosec // test-owned synchronization fixture
+					return err
+				}
+				if err := waitForWindowsChildPath(os.Getenv(windowsReplacementGoEnv)); err != nil {
+					return err
 				}
 			}
 			return nil
