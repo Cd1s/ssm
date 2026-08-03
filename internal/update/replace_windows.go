@@ -727,13 +727,13 @@ func retainWindowsRollbackAuthenticationEvidence(
 		backup,
 		"retained Windows rollback image",
 	); err != nil {
-		return requireRecovery(errors.Join(
+		return blockOnRecoveryEvidence(errors.Join(
 			authenticationErr,
 			fmt.Errorf("retain unauthenticated Windows rollback evidence: %w", err),
 		))
 	}
 	if err := renameWindowsReplacementHandle(security.target, backup, false); err != nil {
-		return requireRecovery(errors.Join(
+		return blockOnRecoveryEvidence(errors.Join(
 			authenticationErr,
 			fmt.Errorf("retain unauthenticated Windows rollback evidence: %w", err),
 		))
@@ -743,16 +743,16 @@ func retainWindowsRollbackAuthenticationEvidence(
 		security.targetIdentity,
 		"retained Windows rollback image",
 	); err != nil {
-		return requireRecovery(errors.Join(authenticationErr, err))
+		return blockOnRecoveryEvidence(errors.Join(authenticationErr, err))
 	}
 	if err := requireWindowsReplacementPathIdentity(
 		backup,
 		security.targetIdentity,
 		"retained Windows rollback image",
 	); err != nil {
-		return requireRecovery(errors.Join(authenticationErr, err))
+		return blockOnRecoveryEvidence(errors.Join(authenticationErr, err))
 	}
-	return requireRecovery(authenticationErr)
+	return blockOnRecoveryEvidence(authenticationErr)
 }
 
 func verifyWindowsRollbackSecurityBinding(

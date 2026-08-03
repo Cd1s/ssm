@@ -71,9 +71,9 @@ func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("install failure rolls back", testWindowsMappedExecutableReplacementFailureRollsBack)
 	t.Run("descriptor failure rolls back", testWindowsSecurityDescriptorApplyFailureRollsBack)
 	t.Run("synchronous rollback authenticates the full descriptor binding", testWindowsSynchronousRollbackRejectsDescriptorMutation)
-	t.Run("synchronous rollback reauthenticates bytes after canonical restoration", testWindowsSynchronousRollbackRejectsPostRenameContentMutation)
-	t.Run("synchronous rollback reauthenticates ordinary descriptor after canonical restoration", testWindowsSynchronousRollbackRejectsPostRenameOrdinaryDescriptorMutation)
-	t.Run("synchronous rollback reauthenticates full descriptor after canonical restoration", testWindowsSynchronousRollbackRejectsPostRenameFullDescriptorMutation)
+	t.Run("synchronous rollback blocks byte-mismatched evidence after canonical restoration", testWindowsSynchronousRollbackRejectsPostRenameContentMutation)
+	t.Run("synchronous rollback blocks ordinary descriptor-mismatched evidence after canonical restoration", testWindowsSynchronousRollbackRejectsPostRenameOrdinaryDescriptorMutation)
+	t.Run("synchronous rollback blocks full descriptor-mismatched evidence after canonical restoration", testWindowsSynchronousRollbackRejectsPostRenameFullDescriptorMutation)
 	t.Run("returned replacement failure preserves the canonical executable", testWindowsReturnedReplacementFailurePreservesCanonical)
 	t.Run("post-commit cleanup failures are deferred success", testWindowsPostCommitCleanupFailuresAreDeferred)
 	t.Run("concurrent updaters are excluded", testWindowsConcurrentUpdaters)
@@ -605,8 +605,8 @@ func testWindowsSynchronousRollbackRejectsPostRenameContentMutation(t *testing.T
 	if err == nil || !strings.Contains(err.Error(), "restored Windows executable digest does not match authenticated bytes") {
 		t.Fatalf("post-rename content mutation error = %v, want digest-bound rollback rejection", err)
 	}
-	if !IsRecoveryRequired(err) || IsRecoveryBlocked(err) {
-		t.Fatalf("post-rename content mutation classification = %v, want recovery required", err)
+	if IsRecoveryRequired(err) || !IsRecoveryBlocked(err) {
+		t.Fatalf("post-rename content mutation classification = %v, want recovery blocked without an authenticated recovery claim", err)
 	}
 	backup := windowsReplacementBackup(target)
 	assertWindowsFileBytes(t, backup, mutated)
@@ -683,8 +683,8 @@ func testWindowsSynchronousRollbackRejectsPostRenameOrdinaryDescriptorMutation(t
 	if err == nil || !strings.Contains(err.Error(), "restored Windows executable security descriptor contract changed") {
 		t.Fatalf("post-rename ordinary descriptor mutation error = %v, want descriptor-bound rollback rejection", err)
 	}
-	if !IsRecoveryRequired(err) || IsRecoveryBlocked(err) {
-		t.Fatalf("post-rename ordinary descriptor classification = %v, want recovery required", err)
+	if IsRecoveryRequired(err) || !IsRecoveryBlocked(err) {
+		t.Fatalf("post-rename ordinary descriptor classification = %v, want recovery blocked without an authenticated recovery claim", err)
 	}
 	backup := windowsReplacementBackup(target)
 	assertWindowsFileBytes(t, backup, original.bytes)
@@ -833,8 +833,8 @@ func testWindowsSynchronousRollbackRejectsPostRenameFullDescriptorMutation(t *te
 			if err == nil || !strings.Contains(err.Error(), "restored Windows executable security descriptor contract changed") {
 				t.Fatalf("post-rename full descriptor mutation error = %v, want descriptor-bound rollback rejection", err)
 			}
-			if !IsRecoveryRequired(err) || IsRecoveryBlocked(err) {
-				t.Fatalf("post-rename full descriptor classification = %v, want recovery required", err)
+			if IsRecoveryRequired(err) || !IsRecoveryBlocked(err) {
+				t.Fatalf("post-rename full descriptor classification = %v, want recovery blocked without an authenticated recovery claim", err)
 			}
 			backup := windowsReplacementBackup(target)
 			assertWindowsFileBytes(t, backup, original.bytes)
