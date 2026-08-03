@@ -4,6 +4,11 @@
 
 [中文](README.md) | [English](README.en.md)
 
+## 计划中的 v2 迁移（尚未发布）
+
+当前源码和发布版本仍是 v1.4.3。下述 v2.0.0 内容是计划中的迁移合同，不表示 v2 二进制已发布。更改自动化或授权大版本升级前，请先阅读双语的
+[v1→v2 迁移指南](docs/migration-v1-to-v2.zh-CN.md)和[更新来源凭证运行手册](docs/update-provenance-runbook.zh-CN.md)。
+
 ## 安装
 
 ```bash
@@ -73,9 +78,11 @@ sshctl push --all  # 审查后显式发布调用开始时的 pending 集合
 
 regular-file `put` 始终写入同目录的私有临时文件，核对远端 byte count 后才原子 rename；加 `--sha256` 可做本地/远端 SHA-256 核验，`--timeout <duration>` 设置显式 deadline。JSON 成功与失败均报告 `stage`、`bytes_sent`、`integrity`、`atomic`、`resume`；错误区分 `local_read_failed`、SSH dial/auth、`remote_write_failed`、`transfer_timeout` 与 `integrity_failed`。目录上传保留旧 tar 行为，不声称 atomicity 或 integrity。
 
+直接命令和 request-v1 使用同一套 transfer 结果：`direction` 是 `put`/`get`，`kind` 是 `file`/`directory`，协议尚未选定的失败可为 `unknown`。文件 put/get 只报告实际提供的保证；目录 put/get 明确报告 `atomic:false`、`integrity:not_available`、`resume:unsupported`，目录 get 省略 `bytes_received`（tar 没有稳定 payload 计量）。文件 get 报告 `bytes_received`、`atomic:true`、`integrity:not_checked`、`resume:unsupported`。请根据 `direction` 和 `kind` 分支，不要从 `action` 或 byte 字段推断。
+
 resume 仅支持 regular file，且必须用 `--resume=v1` 显式启用；未提供时旧 put 行为不变。v1 要求远端有 `sha256sum`，以协议版本、目标路径 hash、完整 local size 与 SHA-256 digest 绑定权限为 `0600` 的 sibling partial/metadata；append 前还会把远端 prefix digest 与本地同长度 prefix digest 核对。source 改变时使用独立 state，不复用旧 partial；corrupt、缺失或歧义 state 返回 `partial_state_mismatch|partial_state_incompatible`，绝不替换目标。完整 size/digest 通过后才 atomic publish。中断后的 v1 state 保留供 retry；后续 probe 会顺带清理同一目标超过 7 天的 `.ssm-resume-v1-*` state，operator 也可在审查后提前删除。结果包含 `bytes_reused` 与 `bytes_sent`。目录 resume 不支持。
 
-`status` 默认检查配置的同步端点并在远端 ETag 变化时刷新；同步失败会返回 `error:sync_pull_failed`、`stage:sync_pull`，不会静默使用缓存。若 `cloud.json` 存在但格式错误或不可读，所有在线 inventory 操作都会以 `error:sync_config_error`、`stage:sync_config` 停止；请修复文件及其权限，或仅在明确接受陈旧缓存时显式使用 `--offline`。缺少 `cloud.json` 仍表示同步未配置。只有调用方明确接受陈旧数据时才使用 `sshctl --json status --offline`（或全局 `--offline`）。离线结果包含 `offline:true`、`remote_state:not_checked`、`freshness`、`cache_age_seconds`、最近 pull/push 时间、`pending_changes` 与不含 secret 的 `pending_mutations`（`id`、`alias`、`operation`、`created_at`）。mutation 结果返回稳定的 `transaction_id`。
+`status` 默认检查配置的同步端点并在远端 ETag 变化时刷新；同步失败会返回 `error:sync_pull_failed`、`stage:sync_pull`，不会静默使用缓存。若 `cloud.json` 存在但格式错误或不可读，所有在线 inventory 操作都会以 `error:sync_config_error`、`stage:sync_config` 停止；请修复文件及其权限，或仅在明确接受陈旧缓存时显式使用 `--offline`。缺少 `cloud.json` 仍表示同步未配置。只有调用方明确接受陈旧数据时才使用 `sshctl --json status --offline`（或全局 `--offline`）。离线结果包含 `offline:true`、`remote_state:not_checked`、`freshness`、`cache_age_seconds`、最近 pull/push 时间、`pending_changes` 与不含 secret 的 `pending_mutations`（`id`、`alias`、`operation`、`created_at`）。改变状态的 mutation 结果返回稳定的 `transaction_id`。幂等 host update/upsert 也可能返回 `changed:false`、`action:"unchanged"` 且省略 `transaction_id`；do not publish 这个 no-op。
 
 ### 已审查的发布范围
 
@@ -86,7 +93,7 @@ sshctl --json push --only <transaction-id>
 sshctl --json push --all
 ```
 
-`push --only` 只发布一个已审查 transaction；preflight 会列出准确的 alias/operation，无关变更继续 pending。`push --all` 在调用开始时固定有序的 pending ID 集合，并且只发布该集合；调用开始后新建的 transaction 仍保持 pending。
+`push --only` 只发布一个已审查 transaction；preflight 会列出准确的 alias/operation，无关变更继续 pending。`push --all` 只发布调用开始时固定的非空、有序 pending ID 集合；调用开始后新建的 transaction 仍保持 pending。
 
 若调用开始时的集合为空，`push --all` 会用一次 HEAD 请求比较本地加密 blob 的精确标识、最后确认的远端标识和当前远端标识。三者均存在且完全相同时返回 `action:"noop"`，不执行 GET 或 PUT；任一标识缺失或不同时返回 `error:"sync_conflict"`、`stage:"sync_compare"`，保留两端 blob 和私有标识证据，也不执行 GET 或 PUT。空范围绝不会发布完整本地 blob。
 
@@ -101,7 +108,7 @@ review sshctl --offline --json doctor and preserve the local vault and sync-conf
 ```
 
 1. 运行 `sshctl --offline --json doctor`，审查安全的 `sync_conflict` 标识。
-2. 私下保存本地加密 vault、`remote.etag` 和 `sync-conflict.json` 的副本，并保持其私有权限。
+2. 私下保存本地加密 vault、`remote.etag`、`sync-conflict.json` 和任何 `publishing-intent.json` 的副本，并保持其私有权限。
 3. 将必须保留的本地 inventory 准备成已审查的 import 文件。secret 只保存在该私有文件中，绝不放入命令参数或日志。
 4. 运行 `sshctl --json pull`，采用已审查的远端加密 blob。只有 cached prerequisite 允许安全替换时 pull 才会成功；若再次报告冲突，立即停止并保留全部证据以便手工修复。
 5. 若完全采用远端版本，恢复到此结束。否则只运行以下一个受保护命令来重新应用保留的本地 inventory：
@@ -125,6 +132,8 @@ review sshctl --offline --json doctor and preserve the local vault and sync-conf
 不存在 force flag、自动修复、证据删除或空 ledger 覆盖路径。
 
 简单、固定、已审查的字面参数直接使用 `sshctl --json run <alias> --argv ...`，无需创建 request 文件。连续的简单命令可使用 `sshctl run <alias> --stream`：stdin 每行是一个 JSON 字符串数组，stdout 每行是一个紧凑 JSON 结果；进程启动时同步并解密一次，默认每 30 秒重新检查 inventory，刷新失败立即停止而不会使用陈旧数据。需要动态/不可信参数、脚本、secret 或 host 变更时，仍使用 `sshctl request --file`。项目不提供交互式 shell。
+
+在线 stream 的 `--refresh` 必须为正数（默认 30s）；`--refresh=0` 只在显式全局 `--offline` 时允许，并在整个进程中使用一份固定的缓存快照。
 
 非 capture 的 human `run` 与目录传输诊断采用 outcome-buffered 行为：stdout/stderr 在结果确定前不会渐进显示，成功时逐字节原样回放，失败或取消时先脱敏再回放。每个诊断流使用权限受限的私有临时文件，硬上限为 8 MiB；超过上限会清理缓冲文件并使操作失败，不会静默截断为成功，也不会回放已缓冲的潜在 secret。该上限同时约束未终止行或未闭合结构化值在失败脱敏期间的内存增长。
 
@@ -199,7 +208,7 @@ Host request 使用 `op: host.upsert|host.update|...` 与嵌套 `host` 字段，
 ### Agent 主机管理
 
 | 命令 | 行为 |
-|------|------|
+| ------ | ------ |
 | `sshctl host list/show ... --json` | 返回不含密码/私钥的结构化 inventory |
 | `sshctl host search <query> --json` | 按 alias/address/user/group 过滤；`ambiguous:true` 时必须由调用方选择 |
 | `sshctl host add ...` | 仅新增；别名已存在时失败 |
@@ -209,14 +218,14 @@ Host request 使用 `op: host.upsert|host.update|...` 与嵌套 `host` 字段，
 
 新增主机必须提供 `--host`、`--user` 和一种认证方式：`--key <已保存名称>`、`--key-file <路径>` 或 `--password-file <路径>`。密码和私钥不接受 inline 参数，JSON 结果只显示 `auth`/`key_name`。`upsert` 修改已有主机时，未提供认证参数会保留原认证。
 
-结构化 host 变更会先确认远端 vault 已刷新；`--verify` 使用内存中的候选 vault 建连并运行 `hostname; uname -sr`，失败返回 `verification_failed`、`applied:false`，加密 vault 不发生变化。成功后才原子保存并返回 `sync_pending:true`。`--push` 必须和 `--verify` 一起使用；同步失败时本地变更保留并返回 `sync_push_failed`。只有明确接受本地数据可能过期时才使用 `--offline`。
+结构化 host 变更会先确认远端 vault 已刷新；`--verify` 使用内存中的候选 vault 建连并运行 `hostname; uname -sr`，失败返回 `verification_failed`、`applied:false`，加密 vault 不发生变化。改变状态的成功结果会原子保存，返回 `sync_pending:true` 和 `transaction_id`，并保持 pending。幂等 update/upsert 返回 `changed:false`、`action:"unchanged"` 且省略 `transaction_id`，没有可发布的新内容。`--push` 必须和 `--verify` 一起使用；同步失败时本地变更保留并返回 `sync_push_failed`。只有明确接受本地数据可能过期时才使用 `--offline`。
 
 `doctor <alias> --json` 在 exact miss 时返回 `resolved_alias` 和安全的 `candidates`，但绝不选择候选或发起连接；同时报告 local/remote vault 状态、最近 pull/push、pending 状态，以及最近一次 reviewed merge 的非敏感 alias/key-name conflict 元数据。若本地与远端从同一 cached ETag 后同时变化，自动刷新返回 `sync_conflict` 并保留两端，`sshctl --offline --json doctor` 会显示 `sync_conflict` 的非敏感 blob 标识。检查 `merge_report.conflicts`/`sync_conflict` 后，显式选择 pull，或创建 reviewed transaction 并用 `sshctl --json push --only <transaction-id>` 发布。空 ledger 冲突必须遵循上面的恢复流程。
 
 ### Agent 舰队：map 并行
 
 | 命令 | 含义 |
-|------|------|
+| ------ | ------ |
 | `sshctl map a,b,c -j 8 cmd` | 最多 8 路并行在 a/b/c 上跑同一命令 |
 | `sshctl map 'web-*' hostname` | shell 风格 glob 选 alias |
 | `sshctl map h --scripts s1.sh,s2.sh` | 单机多脚本并行 |
@@ -229,7 +238,7 @@ Host request 使用 `op: host.upsert|host.update|...` 与嵌套 `host` 字段，
 ### 远程命令与引号
 
 | 写法 | 行为 | 适用 |
-|------|------|------|
+| ------ | ------ | ------ |
 | `sshctl --json run host --argv cmd arg1` | 单次进程直跑；始终逐参数 shell 转义 | 简单、固定、已审查的字面 argv |
 | `sshctl run host --stream` | 每行一个 JSON argv 数组；复用同步、解密和 SSH 连接 | 连续、迭代式简单命令 |
 | `sshctl run host cmd arg1 arg2` | 多参数自动逐项转义；单字符串保留旧 shell parsing | 仅兼容旧调用 |
@@ -258,6 +267,8 @@ sshctl sync
 ```
 
 中心服务器只保存加密 vault blob，不解密 SSH 密码或私钥。`sshctl list/run/status` 和 `ssm list/exec` 会在读取 vault 前检测远端 ETag；远端有新版本时会自动拉取。Agent host mutation 以 transaction 留在本地：单个 reviewed change 用 `sshctl --json push --only <transaction-id>`；只有审查调用开始时 pending 集合中的每个 mutation 后才用 `sshctl --json push --all`。裸 `push` 无效，并且不会解锁 vault 或发出 HTTP 请求。
+
+`publishing-intent.json` 是发布期间的私有恢复记录，绑定精确的范围、pending transaction ID 和目标加密 blob 身份。如果响应丢失，请保留它并按准确 ID 做 reconcile，不删除、不自动扩大发布范围。
 
 ## 中心服务器
 
@@ -300,13 +311,16 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 然后执行 sshctl sync，用 sshctl status 和 sshctl list 验证。
 简单固定命令直接使用 sshctl --json run <alias> --argv ...；连续简单命令使用 sshctl run <alias> --stream。
 动态或不可信参数使用 sshctl request --file <json>：字面参数放 argv 数组，脚本使用 script_file/script_args，secret_files 只放路径。
-新增/修改服务器用 host.upsert/host.update request，保持 verify:true；成功后只用 sshctl --json push --only <transaction-id> 发布返回的 transaction_id，审查全部 pending mutation 后才可用 sshctl --json push --all。
+新增/修改服务器用 host.upsert/host.update request，保持 verify:true；改变状态的成功结果只用 sshctl --json push --only <transaction-id> 发布返回的 transaction_id。若结果为 changed:false、action:"unchanged" 且省略 transaction_id，则 do not publish。审查全部 pending mutation 后才可用 sshctl --json push --all。
 兼容 CLI 中字面参数用 --argv，复杂脚本用 --preflight -f；不要把生成脚本塞进 bash -c。
 ```
 
 项目内 agent skill 在 `skills/agent-ssm/SKILL.md`。
 
 ## 自动更新
+
+源码和当前可用版本仍是 v1.4.3；计划中的 v2 更新在审查并明确授权之前不会替换当前可执行文件。同 major 的自动/普通手动更新保持不变；跨 major 候选只能进入审查。详细步骤见 [v1→v2 迁移指南](docs/migration-v1-to-v2.zh-CN.md) 与 [更新来源凭证运行手册](docs/update-provenance-runbook.zh-CN.md)。
+每次替换仍需要选中 asset 的 SHA-256 和绑定仓库/workflow/issuer/tag 的 keyless provenance；`ssm update --major --yes` 只是审查后的明确授权，没有任何跳过验证的方式。失败时保留旧可执行文件、pending ledger 和 `publishing-intent.json`；先核对身份再做 v1 回滚。
 
 `1.0.0` 起默认从 `Cd1s/ssm` 检查 GitHub release。自动更新和普通手动更新只会替换为当前 major 内的更高版本；发现更高 major 时只报告迁移可用，不会替换当前程序。普通手动更新：
 

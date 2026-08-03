@@ -97,7 +97,7 @@ sshctl --json status
 sshctl --json push --only <transaction-id>
 ```
 
-Use the mutation result's exact `transaction_id`; do not push when verification fails. Bare push is invalid and is rejected before vault unlock or any sync HTTP request. Choose `sshctl --json push --only <transaction-id>`, or use `sshctl --json push --all` only after deliberately reviewing every mutation in the invocation-start pending-ID set. Later transactions remain pending.
+Use a changed mutation result's exact `transaction_id`; do not push when verification fails. An idempotent host update/upsert may return `changed:false`, `action:"unchanged"`, with `transaction_id` omitted; do not publish it. Bare push is invalid and is rejected before vault unlock or any sync HTTP request. Choose `sshctl --json push --only <transaction-id>`, or use `sshctl --json push --all` only after deliberately reviewing every mutation in the invocation-start pending-ID set. Later transactions remain pending.
 
 An empty invocation-start set never publishes the full local blob. `push --all` compares the exact local encrypted-blob identity, last confirmed remote identity, and current remote identity with one HEAD request. Identical identities return `action:"noop"` with no GET or PUT; a missing or different identity returns `error:"sync_conflict"`, `stage:"sync_compare"`, preserves both sides and private identity evidence, and also performs no GET or PUT.
 
@@ -134,6 +134,12 @@ review sshctl --offline --json doctor and preserve the local vault and sync-conf
    ```
 
 There is no force flag, automatic repair, evidence deletion, or empty-ledger overwrite path.
+
+During publication, a private `publishing-intent.json` may bind the selected
+pending transaction IDs, prerequisite identities, and target encrypted blob.
+If it remains after an interrupted request, preserve it and reconcile the exact
+identities before retrying; do not delete it, broaden the scope, or treat a
+pending transaction as published without remote identity confirmation.
 
 ## Remove
 

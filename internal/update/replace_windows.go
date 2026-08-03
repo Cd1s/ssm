@@ -959,11 +959,10 @@ func renameWindowsFileHandle(handle windows.Handle, destination string, replace 
 	}
 	name = name[:len(name)-1]
 	var layout windowsFileRenameInfo
-	headerSize := int(unsafe.Offsetof(layout.fileName))
-	bufferSize := headerSize + len(name)*2
-	if minimum := int(unsafe.Sizeof(layout)); bufferSize < minimum {
-		bufferSize = minimum
-	}
+	bufferSize := windowsVariableLengthFileInformationSize(
+		int(unsafe.Sizeof(layout)),
+		len(name)*2,
+	)
 	buffer := make([]byte, bufferSize)
 	info := (*windowsFileRenameInfo)(unsafe.Pointer(&buffer[0]))
 	if replace {

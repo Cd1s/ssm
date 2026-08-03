@@ -42,10 +42,10 @@ identity. It never re-encrypts a candidate and never GETs or PUTs.
 
 | Local `L` | cached `C` | remote `R` | Result |
 | --- | --- | --- | --- |
-| `L = C = R`, all present | identical | explicit no-op; clear of publishing intent; one HEAD |
-| Any identity absent or unequal | divergent or untracked | persist `sync-conflict.json` containing only `L`, `C`, `R`, and detection time; return `sync_conflict`; one HEAD and no overwrite |
-| Cached or remote identity is unsupported | unsafe to compare | stable sync failure before PUT; preserve existing evidence |
-| Remote HEAD fails | unknown | stable sync failure; no GET/PUT and no local change |
+| Present and equal to `C` and `R` | Present and equal to `L` and `R` | Present and equal to `L` and `C` | Explicit no-op; clear of publishing intent; one HEAD |
+| Absent or unequal | Absent or unequal | Absent or unequal | Divergent or untracked; persist `sync-conflict.json` containing only `L`, `C`, `R`, and detection time; return `sync_conflict`; one HEAD and no overwrite |
+| Present | Unsupported | Unsupported | Stable sync failure before PUT; preserve existing evidence |
+| Present | Present | HEAD fails | Stable sync failure; no GET/PUT and no local change |
 
 The no-op requires all three identities to agree. A missing cache or remote
 blob is not permission to publish an untracked local blob.
@@ -85,9 +85,9 @@ publication adapter with compiled binaries.
 | `sshctl --json push --only <transaction-id>` | compatibility command name into the same `runPush` | one exact ID through the same owner |
 | `ssm --json push --all` | `runPush` | invocation-start ordered snapshot through the same owner |
 | `sshctl --json push --all` | compatibility command name into the same `runPush` | invocation-start ordered snapshot through the same owner |
-| `ssm host|hosts add|update|upsert --verify --push` | `runHostCommand` → `pushTransactions` | only the newly verified transaction ID through the same owner |
-| `sshctl host|hosts add|update|upsert --verify --push` | same host adapter | only the newly verified transaction ID through the same owner |
-| request v1 `host.add|host.update|host.upsert` with `verify:true,push:true` | strict request adapter → `runHostCommand` | only the newly verified transaction ID through the same owner |
+| `ssm host/hosts add/update/upsert --verify --push` | `runHostCommand` → `pushTransactions` | only the newly verified transaction ID through the same owner |
+| `sshctl host/hosts add/update/upsert --verify --push` | same host adapter | only the newly verified transaction ID through the same owner |
+| request v1 host add/update/upsert with `verify:true,push:true` | strict request adapter → `runHostCommand` | only the newly verified transaction ID through the same owner |
 
 Each compiled host compatibility route begins with unrelated pending work. Its
 captured blob contains only the newly reviewed host transaction's projection,
