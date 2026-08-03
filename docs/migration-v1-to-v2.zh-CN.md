@@ -354,8 +354,9 @@ kind 尚不可知之前的失败。Staged 文件/目录恢复在恢复成功时�
 - 双语迁移文档和 release notes 包含 BC-1 至 BC-10 的完整 field-level/behavioral matrix；以及
 - no secrets 进入 fixture 或诊断，所有安全契约保持完好，权威 CI/审查通过且全部精确资产就绪。
 
-验证清单的 `migration-extension` 也必须为 `initial_v2_release` 提升；仅有 `preflight_passed` 不代表
-已准备就绪。
+已提升的 `v2-readiness-report` 清单检查会依据可执行的
+`initial_v2_release_readiness` profile，校验已签入的 BC-1 至 BC-10 与发布证据映射。完整的
+`preflight_passed` 结果是最终就绪证据，但不代表已经发布。
 
 验证 does not merge、tag、upload、publish artifacts 或创建 release。只有在所有阻断项通过后，官方的
 精确 tag workflow 才可以执行这些操作。
@@ -409,7 +410,7 @@ kind 尚不可知之前的失败。Staged 文件/目录恢复在恢复成功时�
 | BC-7 | Direct/request-v1 传输字段不同，且可以推断 directory 保证。 | Direct 和 request-v1 共用 `direction`、`kind`、`stage`；request-v1 支持 get。 | 文件/目录 put/get JSON 消费者。 | 按 direction/kind 分支：文件 put 有 `bytes_sent`；文件 get 有 `bytes_received`；directory get 保持 `bytes_received` omitted。 | `process exit=0 on success`，已分类失败的 exit 不变；`cardinality=one JSON value`；文件 put 按条件增加 `local_sha256`、`remote_sha256`、`bytes_reused`；文件 get 为 `not_checked`、atomic true、resume unsupported；directory put/get 为 `not_available`、`atomic=false`、`resume=unsupported` 并省略 digest/reuse；directory put 的 bytes_sent 为零；direct/request-v1 parity。 | 文件 staging 保留先前 final；directory restore 失败保留一条 backup 路径，且不声称 unchanged-final。 |
 | BC-8 | 自动最新版本替换可能跨越 major 边界。 | 自动/手动普通更新为 same-major；`update --major --yes` 是明确迁移。 | Installer、无人值守更新作业和发布系统。 | 先运行 review，要求自动/手动检查，然后授权精确目标。 | `process exit=0 on successful review/install`，已分类失败的 exit 不变；`cardinality=one JSON value`；review 报告 `installed=false`、breaks/checks/rollback；普通状态只报告跨 major 可用性。 | Trust/preflight 失败保留旧可执行文件；仅在兼容状态假设下恢复经审查的 v1。 |
 | BC-9 | 仅相邻 `checksums.txt` digest 就能授权替换。 | digest 加精确 pinned provenance 以及 14-name release manifest 是强制要求。 | Updater、installer、release workflow 和全部六个平台。 | 验证 `Cd1s/ssm`、精确 tag 的 `release.yml` identity、issuer、subject、digest 和 rotation 状态。 | `process exit=1 on trust failure`；`cardinality=one JSON value for updater machine mode`，installer 保持非 JSON；任一 selection/trust/digest/provenance 失败都无 fallback，并保留已安装字节/模式。 | 使用保留的可执行文件；通过审查的 overlap 进行轮换，绝不使用 checksum-only 或 skip 路径。 |
-| BC-10 | `make check` 运行了 `gofmt -w`、PATH lint 和仓库根目录构建。 | `make check` 是 non-mutating `verify ci`；`verify release` 是 non-publishing 严格超集。 | 贡献者、CI、release 维护者和外部门禁包装器。 | 安装精确前置条件，并要求在安全的干净 worktree 上完成配置。 | `process exit=0 only on completed profile`，否则非零；`cardinality=not a JSON/NDJSON contract`：确定性的检查行加一条终止状态；release 成功是 `preflight_passed`，不是发布或 initial-v2 readiness。 | 恢复未改动的源代码；修复前置条件或操作失败，不削弱 manifest。 |
+| BC-10 | `make check` 运行了 `gofmt -w`、PATH lint 和仓库根目录构建。 | `make check` 是 non-mutating `verify ci`；`verify release` 是 non-publishing 严格超集。 | 贡献者、CI、release 维护者和外部门禁包装器。 | 安装精确前置条件，并要求在安全的干净 worktree 上完成配置。 | `process exit=0 only on completed profile`，否则非零；`cardinality=not a JSON/NDJSON contract`：确定性的检查行加一条终止状态；release 成功是 `preflight_passed` 就绪证据，而不是发布。 | 恢复未改动的源代码；修复前置条件或操作失败，不削弱 manifest。 |
 <!-- markdownlint-enable MD013 -->
 
 <!-- ssm-v2-migration: guide-end -->

@@ -637,6 +637,16 @@ func testWindowsMappedExecutableReplacementSucceedsAndCleansOnNextLaunch(t *test
 	if _, err := os.Stat(backup); err != nil {
 		t.Fatalf("running executable rollback file was not retained until process exit: %v", err)
 	}
+	backupObserver, err := openWindowsReplacementFile(backup, 0)
+	if err != nil {
+		t.Fatalf("open running executable rollback observer: %v", err)
+	}
+	backupObserverOpen := true
+	defer func() {
+		if backupObserverOpen {
+			_ = windows.CloseHandle(backupObserver)
+		}
+	}()
 	assertWindowsControlFileSecurity(t, windowsReplacementLock(target))
 	assertWindowsControlFileSecurity(t, windowsReplacementRecord(target))
 
@@ -645,9 +655,29 @@ func testWindowsMappedExecutableReplacementSucceedsAndCleansOnNextLaunch(t *test
 	if output, err := cleanup.CombinedOutput(); err != nil {
 		t.Fatalf("next-launch cleanup failed: %v; output=%q", err, output)
 	}
-	if _, err := os.Stat(backup); !os.IsNotExist(err) {
-		t.Fatalf("next launch retained old executable rollback file: %v", err)
+	var backupState struct {
+		allocationSize int64
+		endOfFile      int64
+		numberOfLinks  uint32
+		deletePending  byte
+		directory      byte
+		padding        [2]byte
 	}
+	if err := windows.GetFileInformationByHandleEx(
+		backupObserver,
+		windows.FileStandardInfo,
+		(*byte)(unsafe.Pointer(&backupState)),
+		uint32(unsafe.Sizeof(backupState)),
+	); err != nil {
+		t.Fatalf("inspect scheduled rollback deletion: %v", err)
+	}
+	if backupState.deletePending == 0 {
+		t.Fatal("next-launch cleanup did not schedule rollback deletion")
+	}
+	if err := windows.CloseHandle(backupObserver); err != nil {
+		t.Fatalf("close running executable rollback observer: %v", err)
+	}
+	backupObserverOpen = false
 	if _, err := os.Stat(windowsReplacementRecord(target)); !os.IsNotExist(err) {
 		t.Fatalf("next launch retained completed rollback ownership record: %v", err)
 	}
@@ -2815,8 +2845,6 @@ func testWindowsSourceSubstitutionAtRenameGap(t *testing.T) {
 			directory := t.TempDir()
 			target := filepath.Join(directory, "ssm.exe")
 			stage := filepath.Join(directory, ".ssm.rename-gap-stage.exe")
-			ready := filepath.Join(directory, test.name+".ready")
-			proceed := filepath.Join(directory, test.name+".proceed")
 			copyWindowsTestExecutable(t, testExecutable, target, nil)
 			copyWindowsTestExecutable(t, testExecutable, stage, []byte("\nVERIFIED_RENAME_GAP_STAGE\n"))
 			want, err := os.ReadFile(stage) //nolint:gosec // test-owned verified stage
@@ -2824,19 +2852,37 @@ func testWindowsSourceSubstitutionAtRenameGap(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			updater := windowsReplacementTestCommand(target, stage)
-			updater.Env = append(updater.Env,
-				windowsReplacementPauseEnv+"="+test.phase,
-				windowsReplacementReadyEnv+"="+ready,
-				windowsReplacementGoEnv+"="+proceed,
-			)
-			var updaterOutput bytes.Buffer
-			updater.Stdout = &updaterOutput
-			updater.Stderr = &updaterOutput
-			if err := updater.Start(); err != nil {
-				t.Fatal(err)
+			ready := make(chan struct{})
+			proceed := make(chan struct{})
+			result := make(chan error, 1)
+			originalHook := windowsReplacementTestHook
+			windowsReplacementTestHook = func(phase string) error {
+				if phase == test.phase {
+					close(ready)
+					<-proceed
+				}
+				return nil
 			}
-			waitForWindowsTestPath(t, ready)
+			continued := false
+			completed := false
+			defer func() {
+				if !continued {
+					close(proceed)
+				}
+				if !completed {
+					<-result
+				}
+				windowsReplacementTestHook = originalHook
+			}()
+			go func() {
+				result <- replaceExecutable(stage, target, sha256.Sum256(want), 0)
+			}()
+			select {
+			case <-ready:
+			case earlyErr := <-result:
+				completed = true
+				t.Fatalf("updater exited before %s rename-gap signal: %v", test.name, earlyErr)
+			}
 
 			source := test.source(target, stage)
 			inspected := source + ".inspected"
@@ -2844,20 +2890,19 @@ func testWindowsSourceSubstitutionAtRenameGap(t *testing.T) {
 			if substitutionErr == nil {
 				copyWindowsTestExecutable(t, testExecutable, source, []byte("\nATTACKER_SUBSTITUTE\n"))
 			}
-			if err := os.WriteFile(proceed, []byte("continue"), 0o600); err != nil { //nolint:gosec // test-owned synchronization fixture
-				t.Fatal(err)
-			}
-			waitErr := updater.Wait()
+			close(proceed)
+			continued = true
+			waitErr := <-result
+			completed = true
 			if substitutionErr == nil {
 				t.Fatalf(
-					"%s substitution succeeded at the validation/rename gap; updater_error=%v output=%q",
+					"%s substitution succeeded at the validation/rename gap; updater_error=%v",
 					test.name,
 					waitErr,
-					updaterOutput.String(),
 				)
 			}
 			if waitErr != nil {
-				t.Fatalf("updater failed after blocked %s substitution: %v; output=%q", test.name, waitErr, updaterOutput.String())
+				t.Fatalf("updater failed after blocked %s substitution: %v", test.name, waitErr)
 			}
 			assertWindowsFileBytes(t, target, want)
 		})

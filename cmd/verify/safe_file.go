@@ -324,6 +324,9 @@ func validatedRelativePath(slashPath string) (string, error) {
 	if slashPath == "" || strings.ContainsRune(slashPath, 0) {
 		return "", fmt.Errorf("invalid empty or NUL-containing path")
 	}
+	if strings.ContainsRune(slashPath, '\\') {
+		return "", fmt.Errorf("backslash path separator is not allowed")
+	}
 	if filepath.IsAbs(filepath.FromSlash(slashPath)) {
 		return "", fmt.Errorf("absolute path is not allowed")
 	}

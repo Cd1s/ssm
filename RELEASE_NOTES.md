@@ -8,14 +8,17 @@ runbook](docs/update-provenance-runbook.md) for operator and maintainer gates.
 
 ## v2.0.0
 
-The initial v2 release remains blocked on the `migration-extension`, closure
-of all child tickets through #31, and #31 final readiness without publishing.
+The initial v2 release remains blocked on closure of all child tickets through
+Issue #31 and a passing #31 final readiness proof. That proof is now an executable,
+non-publishing `verify release` profile whose final `v2-readiness-report`
+check validates the checked-in evidence map against the live manifest.
 BC-1 through BC-10 are the approved compatibility migration rows; their
 [complete field-level old/new/action/machine/rollback matrix](docs/migration-v1-to-v2.md#bc-contract-matrix)
 is part of this release contract. Verification is non-mutating and does not
 publish a tag or release. A v2 binary is not available until every source
 release blocker, migration review, pinned provenance check, and rollback
-evidence passes.
+evidence passes. A passing readiness profile proves that the reviewed source
+is ready for the official release mechanism; it does not publish anything.
 
 ### Pinned release provenance
 
