@@ -35,6 +35,7 @@ var (
 	windowsReplacementHandleIsCurrentImage = windowsReplacementHandleIsCurrentExecutable
 	getWindowsFileInformationByHandleEx    = windows.GetFileInformationByHandleEx
 	getWindowsFinalPathNameByHandle        = windows.GetFinalPathNameByHandle
+	getWindowsLongPathName                 = windows.GetLongPathName
 	openWindowsReplacementInspectionFile   = openWindowsReplacementFile
 	windowsReplacementTestHook             func(string) error
 	windowsRollbackAuthenticationTestHook  func(
@@ -623,6 +624,38 @@ func inspectWindowsReplacementHandleFinalPath(
 	}
 }
 
+func inspectWindowsReplacementLongPath(
+	path,
+	description string,
+) (string, error) {
+	pathPointer, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return "", fmt.Errorf("encode %s parent path: %w", description, err)
+	}
+	bufferSize := uint32(windows.MAX_PATH)
+	for {
+		buffer := make([]uint16, bufferSize)
+		length, err := getWindowsLongPathName(
+			pathPointer,
+			&buffer[0],
+			bufferSize,
+		)
+		if err != nil {
+			return "", fmt.Errorf("canonicalize %s parent path: %w", description, err)
+		}
+		if length == 0 {
+			return "", fmt.Errorf("canonicalize %s parent path: empty name", description)
+		}
+		if length < bufferSize {
+			return windows.UTF16ToString(buffer[:length]), nil
+		}
+		if length > windowsFinalPathNameMaxLength {
+			return "", fmt.Errorf("canonicalize %s parent path: name is too long", description)
+		}
+		bufferSize = length + 1
+	}
+}
+
 func normalizeWindowsReplacementPath(path string) (string, error) {
 	path = stripWindowsExtendedPathPrefix(path)
 	cleaned := filepath.Clean(path)
@@ -647,6 +680,53 @@ func stripWindowsExtendedPathPrefix(path string) string {
 		return `\\` + path[len(uncPrefix):]
 	}
 	return path
+}
+
+func windowsReplacementLongPathQueryPath(parent, destination string) string {
+	const extendedPrefix = `\\?\`
+	const extendedUNCPathPrefix = `\\?\UNC\`
+	if len(destination) >= len(extendedUNCPathPrefix) &&
+		strings.EqualFold(destination[:len(extendedUNCPathPrefix)], extendedUNCPathPrefix) {
+		return extendedUNCPathPrefix + strings.TrimPrefix(parent, `\\`)
+	}
+	if len(destination) >= len(extendedPrefix) &&
+		strings.EqualFold(destination[:len(extendedPrefix)], extendedPrefix) {
+		return extendedPrefix + parent
+	}
+	if len(parent) >= windows.MAX_PATH {
+		if strings.HasPrefix(parent, `\\`) {
+			return extendedUNCPathPrefix + strings.TrimPrefix(parent, `\\`)
+		}
+		return extendedPrefix + parent
+	}
+	return parent
+}
+
+func canonicalizeWindowsReplacementDestination(
+	destination,
+	description string,
+) (string, error) {
+	intended, err := normalizeWindowsReplacementPath(destination)
+	if err != nil {
+		return "", fmt.Errorf("normalize %s destination: %w", description, err)
+	}
+	parent := filepath.Dir(intended)
+	base := filepath.Base(intended)
+	queryParent := windowsReplacementLongPathQueryPath(parent, destination)
+	canonicalParent, err := inspectWindowsReplacementLongPath(queryParent, description)
+	if err != nil {
+		return "", err
+	}
+	canonicalParent = stripWindowsExtendedPathPrefix(filepath.Clean(canonicalParent))
+	if !filepath.IsAbs(canonicalParent) {
+		return "", fmt.Errorf("canonicalize %s parent path: result is not absolute", description)
+	}
+	canonicalParent, err = normalizeWindowsReplacementPath(canonicalParent)
+	if err != nil {
+		return "", fmt.Errorf("normalize canonical %s parent path: %w", description, err)
+	}
+	canonicalDestination := filepath.Join(canonicalParent, base)
+	return normalizeWindowsReplacementPath(canonicalDestination)
 }
 
 func requireWindowsReplacementHandleFinalPath(
@@ -689,6 +769,13 @@ func renameExpectedWindowsReplacementHandle(
 	if err := requireWindowsReplacementHandleIdentity(source, sourceIdentity, sourceDescription); err != nil {
 		return err
 	}
+	canonicalDestination, err := canonicalizeWindowsReplacementDestination(
+		destination,
+		destinationDescription,
+	)
+	if err != nil {
+		return err
+	}
 	if !replace {
 		if err := requireWindowsReplacementPathAbsent(destination, destinationDescription); err != nil {
 			return err
@@ -703,7 +790,7 @@ func renameExpectedWindowsReplacementHandle(
 	if err := requireWindowsReplacementHandleIdentity(source, sourceIdentity, destinationDescription); err != nil {
 		return err
 	}
-	return requireWindowsReplacementHandleFinalPath(source, destination, destinationDescription)
+	return requireWindowsReplacementHandleFinalPath(source, canonicalDestination, destinationDescription)
 }
 
 func rollbackWindowsReplacement(
