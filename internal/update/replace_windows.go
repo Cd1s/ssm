@@ -34,6 +34,8 @@ var (
 	unlinkWindowsMappedReplacementHandle   = unlinkWindowsMappedFileHandle
 	windowsReplacementHandleIsCurrentImage = windowsReplacementHandleIsCurrentExecutable
 	getWindowsFileInformationByHandleEx    = windows.GetFileInformationByHandleEx
+	getWindowsFinalPathNameByHandle        = windows.GetFinalPathNameByHandle
+	openWindowsReplacementInspectionFile   = openWindowsReplacementFile
 	windowsReplacementTestHook             func(string) error
 	windowsRollbackAuthenticationTestHook  func(
 		string,
@@ -296,7 +298,7 @@ type windowsFileIDInfo struct {
 }
 
 func inspectWindowsReplacementPath(path, description string) (windowsFileIdentity, error) {
-	handle, err := openWindowsReplacementFile(path, 0)
+	handle, err := openWindowsReplacementInspectionFile(path, 0)
 	if err != nil {
 		return windowsFileIdentity{}, fmt.Errorf("inspect %s: %w", description, err)
 	}
@@ -590,6 +592,91 @@ func openWindowsReplacementFileWithShare(
 	)
 }
 
+const windowsFinalPathNameMaxLength = 32768
+
+func inspectWindowsReplacementHandleFinalPath(
+	handle windows.Handle,
+	description string,
+) (string, error) {
+	bufferSize := uint32(256)
+	for {
+		buffer := make([]uint16, bufferSize)
+		length, err := getWindowsFinalPathNameByHandle(
+			handle,
+			&buffer[0],
+			bufferSize,
+			0,
+		)
+		if err != nil {
+			return "", fmt.Errorf("inspect %s final path: %w", description, err)
+		}
+		if length == 0 {
+			return "", fmt.Errorf("inspect %s final path: empty name", description)
+		}
+		if length < bufferSize {
+			return windows.UTF16ToString(buffer[:length]), nil
+		}
+		if length > windowsFinalPathNameMaxLength {
+			return "", fmt.Errorf("inspect %s final path: name is too long", description)
+		}
+		bufferSize = length + 1
+	}
+}
+
+func normalizeWindowsReplacementPath(path string) (string, error) {
+	path = stripWindowsExtendedPathPrefix(path)
+	cleaned := filepath.Clean(path)
+	absolute, err := filepath.Abs(cleaned)
+	if err != nil {
+		return "", fmt.Errorf("resolve Windows path %q: %w", path, err)
+	}
+	absolute = stripWindowsExtendedPathPrefix(filepath.Clean(absolute))
+	return strings.ToLower(absolute), nil
+}
+
+func stripWindowsExtendedPathPrefix(path string) string {
+	const extendedPrefix = `\\?\`
+	if len(path) < len(extendedPrefix) ||
+		!strings.EqualFold(path[:len(extendedPrefix)], extendedPrefix) {
+		return path
+	}
+	path = path[len(extendedPrefix):]
+	const uncPrefix = `UNC\`
+	if len(path) >= len(uncPrefix) &&
+		strings.EqualFold(path[:len(uncPrefix)], uncPrefix) {
+		return `\\` + path[len(uncPrefix):]
+	}
+	return path
+}
+
+func requireWindowsReplacementHandleFinalPath(
+	handle windows.Handle,
+	destination,
+	description string,
+) error {
+	finalPath, err := inspectWindowsReplacementHandleFinalPath(handle, description)
+	if err != nil {
+		return err
+	}
+	actual, err := normalizeWindowsReplacementPath(finalPath)
+	if err != nil {
+		return fmt.Errorf("normalize %s final path: %w", description, err)
+	}
+	want, err := normalizeWindowsReplacementPath(destination)
+	if err != nil {
+		return fmt.Errorf("normalize %s destination: %w", description, err)
+	}
+	if !strings.EqualFold(actual, want) {
+		return fmt.Errorf(
+			"%s final path %q does not match intended destination %q",
+			description,
+			finalPath,
+			destination,
+		)
+	}
+	return nil
+}
+
 func renameExpectedWindowsReplacementHandle(
 	source windows.Handle,
 	destination string,
@@ -616,11 +703,7 @@ func renameExpectedWindowsReplacementHandle(
 	if err := requireWindowsReplacementHandleIdentity(source, sourceIdentity, destinationDescription); err != nil {
 		return err
 	}
-	return requireWindowsReplacementPathIdentity(
-		destination,
-		sourceIdentity,
-		destinationDescription,
-	)
+	return requireWindowsReplacementHandleFinalPath(source, destination, destinationDescription)
 }
 
 func rollbackWindowsReplacement(
