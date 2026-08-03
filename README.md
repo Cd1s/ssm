@@ -82,7 +82,7 @@ regular-file `put` 始终写入同目录的私有临时文件，核对远端 byt
 
 resume 仅支持 regular file，且必须用 `--resume=v1` 显式启用；未提供时旧 put 行为不变。v1 要求远端有 `sha256sum`，以协议版本、目标路径 hash、完整 local size 与 SHA-256 digest 绑定权限为 `0600` 的 sibling partial/metadata；append 前还会把远端 prefix digest 与本地同长度 prefix digest 核对。source 改变时使用独立 state，不复用旧 partial；corrupt、缺失或歧义 state 返回 `partial_state_mismatch|partial_state_incompatible`，绝不替换目标。完整 size/digest 通过后才 atomic publish。中断后的 v1 state 保留供 retry；后续 probe 会顺带清理同一目标超过 7 天的 `.ssm-resume-v1-*` state，operator 也可在审查后提前删除。结果包含 `bytes_reused` 与 `bytes_sent`。目录 resume 不支持。
 
-`status` 默认检查配置的同步端点并在远端 ETag 变化时刷新；同步失败会返回 `error:sync_pull_failed`、`stage:sync_pull`，不会静默使用缓存。若 `cloud.json` 存在但格式错误或不可读，所有在线 inventory 操作都会以 `error:sync_config_error`、`stage:sync_config` 停止；请修复文件及其权限，或仅在明确接受陈旧缓存时显式使用 `--offline`。缺少 `cloud.json` 仍表示同步未配置。只有调用方明确接受陈旧数据时才使用 `sshctl --json status --offline`（或全局 `--offline`）。离线结果包含 `offline:true`、`remote_state:not_checked`、`freshness`、`cache_age_seconds`、最近 pull/push 时间、`pending_changes` 与不含 secret 的 `pending_mutations`（`id`、`alias`、`operation`、`created_at`）。mutation 结果返回稳定的 `transaction_id`。
+`status` 默认检查配置的同步端点并在远端 ETag 变化时刷新；同步失败会返回 `error:sync_pull_failed`、`stage:sync_pull`，不会静默使用缓存。若 `cloud.json` 存在但格式错误或不可读，所有在线 inventory 操作都会以 `error:sync_config_error`、`stage:sync_config` 停止；请修复文件及其权限，或仅在明确接受陈旧缓存时显式使用 `--offline`。缺少 `cloud.json` 仍表示同步未配置。只有调用方明确接受陈旧数据时才使用 `sshctl --json status --offline`（或全局 `--offline`）。离线结果包含 `offline:true`、`remote_state:not_checked`、`freshness`、`cache_age_seconds`、最近 pull/push 时间、`pending_changes` 与不含 secret 的 `pending_mutations`（`id`、`alias`、`operation`、`created_at`）。改变状态的 mutation 结果返回稳定的 `transaction_id`。幂等 host update/upsert 也可能返回 `changed:false`、`action:"unchanged"` 且省略 `transaction_id`；do not publish 这个 no-op。
 
 ### 已审查的发布范围
 
@@ -218,7 +218,7 @@ Host request 使用 `op: host.upsert|host.update|...` 与嵌套 `host` 字段，
 
 新增主机必须提供 `--host`、`--user` 和一种认证方式：`--key <已保存名称>`、`--key-file <路径>` 或 `--password-file <路径>`。密码和私钥不接受 inline 参数，JSON 结果只显示 `auth`/`key_name`。`upsert` 修改已有主机时，未提供认证参数会保留原认证。
 
-结构化 host 变更会先确认远端 vault 已刷新；`--verify` 使用内存中的候选 vault 建连并运行 `hostname; uname -sr`，失败返回 `verification_failed`、`applied:false`，加密 vault 不发生变化。成功后才原子保存并返回 `sync_pending:true`。`--push` 必须和 `--verify` 一起使用；同步失败时本地变更保留并返回 `sync_push_failed`。只有明确接受本地数据可能过期时才使用 `--offline`。
+结构化 host 变更会先确认远端 vault 已刷新；`--verify` 使用内存中的候选 vault 建连并运行 `hostname; uname -sr`，失败返回 `verification_failed`、`applied:false`，加密 vault 不发生变化。改变状态的成功结果会原子保存，返回 `sync_pending:true` 和 `transaction_id`，并保持 pending。幂等 update/upsert 返回 `changed:false`、`action:"unchanged"` 且省略 `transaction_id`，没有可发布的新内容。`--push` 必须和 `--verify` 一起使用；同步失败时本地变更保留并返回 `sync_push_failed`。只有明确接受本地数据可能过期时才使用 `--offline`。
 
 `doctor <alias> --json` 在 exact miss 时返回 `resolved_alias` 和安全的 `candidates`，但绝不选择候选或发起连接；同时报告 local/remote vault 状态、最近 pull/push、pending 状态，以及最近一次 reviewed merge 的非敏感 alias/key-name conflict 元数据。若本地与远端从同一 cached ETag 后同时变化，自动刷新返回 `sync_conflict` 并保留两端，`sshctl --offline --json doctor` 会显示 `sync_conflict` 的非敏感 blob 标识。检查 `merge_report.conflicts`/`sync_conflict` 后，显式选择 pull，或创建 reviewed transaction 并用 `sshctl --json push --only <transaction-id>` 发布。空 ledger 冲突必须遵循上面的恢复流程。
 
@@ -311,7 +311,7 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 然后执行 sshctl sync，用 sshctl status 和 sshctl list 验证。
 简单固定命令直接使用 sshctl --json run <alias> --argv ...；连续简单命令使用 sshctl run <alias> --stream。
 动态或不可信参数使用 sshctl request --file <json>：字面参数放 argv 数组，脚本使用 script_file/script_args，secret_files 只放路径。
-新增/修改服务器用 host.upsert/host.update request，保持 verify:true；成功后只用 sshctl --json push --only <transaction-id> 发布返回的 transaction_id，审查全部 pending mutation 后才可用 sshctl --json push --all。
+新增/修改服务器用 host.upsert/host.update request，保持 verify:true；改变状态的成功结果只用 sshctl --json push --only <transaction-id> 发布返回的 transaction_id。若结果为 changed:false、action:"unchanged" 且省略 transaction_id，则 do not publish。审查全部 pending mutation 后才可用 sshctl --json push --all。
 兼容 CLI 中字面参数用 --argv，复杂脚本用 --preflight -f；不要把生成脚本塞进 bash -c。
 ```
 

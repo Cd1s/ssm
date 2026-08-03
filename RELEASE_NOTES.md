@@ -8,11 +8,14 @@ runbook](docs/update-provenance-runbook.md) for operator and maintainer gates.
 
 ## v2.0.0
 
-The initial v2 release remains blocked on the `migration-extension`. BC-1
-through BC-10 are the approved compatibility migration rows; verification is
-non-mutating and does not publish a tag or release. A v2 binary is not
-available until the migration review, pinned provenance checks, and rollback
-evidence pass.
+The initial v2 release remains blocked on the `migration-extension`, closure
+of all child tickets through #31, and #31 final readiness without publishing.
+BC-1 through BC-10 are the approved compatibility migration rows; their
+[complete field-level old/new/action/machine/rollback matrix](docs/migration-v1-to-v2.md#bc-contract-matrix)
+is part of this release contract. Verification is non-mutating and does not
+publish a tag or release. A v2 binary is not available until every source
+release blocker, migration review, pinned provenance check, and rollback
+evidence passes.
 
 ### Pinned release provenance
 
@@ -53,6 +56,10 @@ evidence pass.
   vault/ledger schema, transaction ID format, and typed success fields. Legacy
   remove, saved-key removal, and guarded import now append pending transactions
   without automatic publication.
+- A state-changing host mutation returns a stable `transaction_id`. An
+  idempotent update/upsert can instead return `changed:false`,
+  `action:"unchanged"`, with `transaction_id` omitted; it creates no new
+  transaction, so do not publish it.
 
 ### Exact push scopes and empty-ledger safety
 
@@ -83,9 +90,10 @@ evidence pass.
 - **BC-3:** stream startup and terminal failures use compact NDJSON from the
   first byte. After initialization, each consumed non-empty input line has one
   ordered result; no ready, summary, or footer record is emitted.
-- **BC-4:** all inventory entry points, including legacy remove, saved-key
-  removal, and guarded import, create stable pending transactions and never
-  auto-publish.
+- **BC-4:** state-changing inventory entry points, including legacy remove,
+  saved-key removal, and guarded import, create stable pending transactions and
+  never auto-publish. A preserved idempotent host no-op has `changed:false`,
+  `action:"unchanged"`, omits `transaction_id`, and creates no transaction.
 - **BC-5:** bare push is invalid, non-empty `--all` fixes its ordered scope at
   invocation start, and empty `--all` never performs a PUT.
 - **BC-6:** online streams require a positive refresh interval. Zero refresh

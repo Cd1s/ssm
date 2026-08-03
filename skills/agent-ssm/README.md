@@ -25,7 +25,7 @@ Use this skill when an agent needs to:
 - SSH credentials stay in the local encrypted vault.
 - Sync servers only store opaque encrypted vault blobs.
 - Agents must use exact aliases instead of guessing hostnames.
-- Single-host changes use typed `sshctl request` operations, verify candidates, and return scoped transaction IDs.
+- State-changing single-host operations use typed `sshctl request`, verify candidates, and return scoped transaction IDs; an idempotent no-op returns `changed:false`, `action:"unchanged"`, and omits `transaction_id`.
 - Fixed literal argv can use the direct one-shot path; repeated literal argv can keep a headless stream and SSH connection open.
 - Dynamic argv is carried as a typed JSON array; scripts use file paths, stdin transport, and syntax preflight.
 - Bulk import has no destructive default and full replacement requires `--replace --yes`.
@@ -77,7 +77,7 @@ sshctl run <exact-alias> --stream
 sshctl request --file ./ssm-request.json
 ```
 
-Use direct `run --argv` for a simple fixed one-shot, `run --stream` for repeated simple commands, and request schema version 1 for dynamic argv, scripts, put, and host operations. Online streams require a positive --refresh interval; `--refresh=0` requires explicit global `--offline`. Add/update requests default to candidate verification; publish the returned transaction with `sshctl --json push --only <transaction-id>`. Bare push is invalid. Use `sshctl --json push --all` only after reviewing every mutation in its non-empty invocation-start pending set; an empty set is an identity-checked no-op or a safe divergence failure, never full-blob publication. Direct and request-v1 transfer results use `direction` and `kind`; directory guarantees are explicit (`atomic:false`, `integrity:not_available`, `resume:unsupported`) and directory get omits `bytes_received`. Detailed request, empty-ledger recovery, `publishing-intent.json` reconciliation, and legacy bulk-import guidance is in `SKILL.md` and `references/import-json.md`.
+Use direct `run --argv` for a simple fixed one-shot, `run --stream` for repeated simple commands, and request schema version 1 for dynamic argv, scripts, put, and host operations. Online streams require a positive --refresh interval; `--refresh=0` requires explicit global `--offline`. Add/update requests default to candidate verification; publish a changed result's returned transaction with `sshctl --json push --only <transaction-id>`. If it returns `changed:false`, `action:"unchanged"`, and omits `transaction_id`, do not publish. Bare push is invalid. Use `sshctl --json push --all` only after reviewing every mutation in its non-empty invocation-start pending set; an empty set is an identity-checked no-op or a safe divergence failure, never full-blob publication. Direct and request-v1 transfer results use `direction` and `kind`; directory guarantees are explicit (`atomic:false`, `integrity:not_available`, `resume:unsupported`) and directory get omits `bytes_received`. Detailed request, empty-ledger recovery, `publishing-intent.json` reconciliation, and legacy bulk-import guidance is in `SKILL.md` and `references/import-json.md`.
 
 Same-major updates remain automatic/manual defaults. Review a cross-major
 candidate with `ssm update --major`, then authorize only with

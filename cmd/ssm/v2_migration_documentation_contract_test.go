@@ -53,24 +53,28 @@ var v2BCSpecs = []v2BCSpec{
 type v2BCReviewSpec struct {
 	id       string
 	evidence string
+	fixture  string
 }
 
 var v2BCReviewSpecs = []v2BCReviewSpec{
-	{"BC-1", "plans/issue-20-sync-transaction-ownership.md"},
-	{"BC-2", "plans/issue-22-inventory-transaction-ownership.md"},
-	{"BC-3", "plans/issue-21-stream-contract-migration.md"},
-	{"BC-4", "plans/issue-24-legacy-mutation-ownership.md"},
-	{"BC-5", "plans/issue-25-exact-push-scopes.md"},
-	{"BC-6", "plans/issue-21-stream-contract-migration.md"},
-	{"BC-7", "plans/bc-7-transfer-outcome-migration.md"},
-	{"BC-8", "plans/issue-27-major-update-migration.md"},
-	{"BC-9", "plans/issue-28-pinned-provenance.md"},
-	{"BC-10", "plans/verification-manifest.md"},
+	{"BC-1", "plans/issue-20-sync-transaction-ownership.md", "../cmd/ssm/compiled_cli_contract_test.go"},
+	{"BC-2", "plans/issue-22-inventory-transaction-ownership.md", "../cmd/ssm/inventory_transaction_compiled_test.go"},
+	{"BC-3", "plans/issue-21-stream-contract-migration.md", "../cmd/ssm/compiled_stream_contract_test.go"},
+	{"BC-4", "plans/issue-24-legacy-mutation-ownership.md", "../cmd/ssm/legacy_mutation_compiled_test.go"},
+	{"BC-5", "plans/issue-25-exact-push-scopes.md", "../cmd/ssm/push_scope_compiled_test.go"},
+	{"BC-6", "plans/issue-21-stream-contract-migration.md", "../cmd/ssm/compiled_stream_contract_test.go"},
+	{"BC-7", "plans/bc-7-transfer-outcome-migration.md", "../cmd/ssm/transfer_outcome_test.go"},
+	{"BC-8", "plans/issue-27-major-update-migration.md", "../internal/update/update_test.go"},
+	{"BC-9", "plans/issue-28-pinned-provenance.md", "../internal/update/update_test.go"},
+	{"BC-10", "plans/verification-manifest.md", "../cmd/verify/main_test.go"},
 }
 
-var v2AdditionalChildEvidence = []string{
-	"plans/issue-23-publication-intent.md",
-	"plans/issue-29-three-module-contraction.md",
+var v2AdditionalChildEvidence = []struct {
+	evidence string
+	fixture  string
+}{
+	{"plans/issue-23-publication-intent.md", "../cmd/ssm/publication_intent_compiled_test.go"},
+	{"plans/issue-29-three-module-contraction.md", "../cmd/ssm/deep_policy_ownership_test.go"},
 }
 
 func TestV2MigrationDocumentationContract(t *testing.T) {
@@ -102,6 +106,9 @@ func TestV2MigrationDocumentationContract(t *testing.T) {
 		assertV2BCSemantics(t, name, rows)
 		assertV2SectionAnchors(t, name, body)
 		assertV2ReviewerMapping(t, name, body)
+		for _, stale := range staleV2Claims(v2GuideCurrentClaims(body, rows)) {
+			t.Errorf("%s: stale current migration claim: %s", name, stale)
+		}
 		guideMarkers = append(guideMarkers, collectV2Markers(body, "<!-- ssm-v2-migration:"))
 	}
 	if got, want := strings.Join(guideMarkers[1], "\n"), strings.Join(guideMarkers[0], "\n"); got != want {
@@ -248,10 +255,16 @@ func v2ReviewerMappingViolations(segment string) []string {
 		if !strings.Contains(line, "]("+spec.evidence+")") {
 			violations = append(violations, "missing linked evidence "+spec.evidence)
 		}
+		if !strings.Contains(line, "]("+spec.fixture+")") {
+			violations = append(violations, "missing linked fixture source "+spec.fixture)
+		}
 	}
-	for _, evidence := range v2AdditionalChildEvidence {
-		if !strings.Contains(segment, "]("+evidence+")") {
-			violations = append(violations, "missing linked evidence "+evidence)
+	for _, child := range v2AdditionalChildEvidence {
+		if !strings.Contains(segment, "]("+child.evidence+")") {
+			violations = append(violations, "missing linked evidence "+child.evidence)
+		}
+		if !strings.Contains(segment, "]("+child.fixture+")") {
+			violations = append(violations, "missing linked fixture source "+child.fixture)
 		}
 	}
 	for n := 1; n <= 14; n++ {
@@ -308,11 +321,11 @@ func assertV2SectionAnchors(t *testing.T, name, body string) {
 		"rollback":                            {"v1", "pending", "reconcile"},
 		"troubleshooting":                     {"sync_config_error", "sync_conflict", "update_recovery_required"},
 		"stream-cardinality-refresh":          {"NDJSON", "non-empty", "--refresh", "--offline"},
-		"mutation-publication-reconciliation": {"push --only", "push --all", "invocation-start", "reconcile"},
+		"mutation-publication-reconciliation": {"push --only", "push --all", "invocation-start", "reconcile", "changed=false", "action=unchanged", "transaction_id omitted", "do not publish"},
 		"update-authorization-trust":          {"same-major", "update --major --yes", "provenance"},
 		"verification-profiles":               {"make check", "verify ci", "verify release", "non-publishing"},
 		"all-decisions":                       {"D01", "D14"},
-		"release-blockers":                    {"migration-extension", "does not", "publish"},
+		"release-blockers":                    {"migration-extension", "all child tickets", "#31", "final readiness", "compiled public contract matrix", "six supported target combinations", "every mutation and push entry point", "no secrets", "does not", "publish"},
 		"reviewer-mapping":                    {"BC-1", "BC-10", "D01", "D14"},
 	}
 	for section, required := range anchors {
@@ -332,13 +345,13 @@ func assertV2SectionAnchors(t *testing.T, name, body string) {
 func assertV2PublicSurfaces(t *testing.T, root string) {
 	t.Helper()
 	surfaces := map[string][]string{
-		"README.en.md":               {"docs/migration-v1-to-v2.md", "docs/update-provenance-runbook.md", "--refresh", "update --major --yes"},
-		"README.md":                  {"docs/migration-v1-to-v2.zh-CN.md", "docs/update-provenance-runbook.zh-CN.md", "--refresh", "update --major --yes"},
-		"RELEASE_NOTES.md":           {"## v2.0.0", "BC-1", "BC-10", "migration-extension", "does not publish"},
+		"README.en.md":               {"docs/migration-v1-to-v2.md", "docs/update-provenance-runbook.md", "--refresh", "update --major --yes", "changed:false", "action:\"unchanged\"", "transaction_id", "do not publish"},
+		"README.md":                  {"docs/migration-v1-to-v2.zh-CN.md", "docs/update-provenance-runbook.zh-CN.md", "--refresh", "update --major --yes", "changed:false", "action:\"unchanged\"", "transaction_id", "do not publish"},
+		"RELEASE_NOTES.md":           {"## v2.0.0", "BC-1", "BC-10", "migration-extension", "all child tickets", "#31", "final readiness", "complete field-level", "changed:false", "action:\"unchanged\"", "does not publish"},
 		"SECURITY.md":                {"docs/update-provenance-runbook.md", "identity rotation", "no verification bypass"},
-		"skills/agent-ssm/SKILL.md":  {"docs/migration-v1-to-v2.md", "positive --refresh", "update --major --yes"},
-		"skills/agent-ssm/README.md": {"docs/migration-v1-to-v2.md", "positive --refresh", "update --major --yes"},
-		"skills/agent-ssm/references/import-json.md": {"publishing-intent.json", "reconcile", "pending"},
+		"skills/agent-ssm/SKILL.md":  {"docs/migration-v1-to-v2.md", "positive --refresh", "update --major --yes", "changed:false", "action:\"unchanged\"", "transaction_id", "do not publish"},
+		"skills/agent-ssm/README.md": {"docs/migration-v1-to-v2.md", "positive --refresh", "update --major --yes", "changed:false", "action:\"unchanged\"", "transaction_id", "do not publish"},
+		"skills/agent-ssm/references/import-json.md": {"publishing-intent.json", "reconcile", "pending", "changed:false", "action:\"unchanged\"", "transaction_id", "do not publish"},
 		"cmd/ssm/help.go":                     {"positive", "--offline", "pending", "push --only", "direction", "kind"},
 		"cmd/ssm/main.go":                     {"update within", "update --major", "--yes", "digest", "provenance", "never bypassed"},
 		"docs/plans/verification-manifest.md": {"migration-extension", "non-publishing", "initial_v2_release"},
@@ -371,14 +384,44 @@ func staleV2Claims(body string) []string {
 	}
 	var found []string
 	for _, pattern := range patterns {
-		for _, match := range pattern.FindAllString(body, -1) {
-			if strings.Contains(strings.ToLower(match), "does not") || strings.Contains(strings.ToLower(match), "never") {
+		for _, location := range pattern.FindAllStringIndex(body, -1) {
+			end := min(len(body), location[1]+100)
+			window := body[location[0]:end]
+			if v2ClaimIsExplicitlySafe(window) {
 				continue
 			}
-			found = append(found, compactExcerpt(match))
+			found = append(found, compactExcerpt(body[location[0]:location[1]]))
 		}
 	}
 	return found
+}
+
+func v2ClaimIsExplicitlySafe(window string) bool {
+	safe := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)--refresh=0.{0,80}(?:only|仅).{0,40}--offline`),
+		regexp.MustCompile(`(?i)(?:checksum|SHA-256).{0,60}(?:alone|only).{0,30}(?:never|does not|cannot)\s+authoriz`),
+		regexp.MustCompile(`(?i)verify (?:ci|release).{0,40}(?:does not|never)\s+(?:create|upload|publish|merge)`),
+	}
+	for _, pattern := range safe {
+		if pattern.MatchString(window) {
+			return true
+		}
+	}
+	return false
+}
+
+func v2GuideCurrentClaims(body string, rows map[string][]string) string {
+	prefix := body
+	if marker := strings.Index(prefix, v2BCTable); marker >= 0 {
+		prefix = prefix[:marker]
+	}
+	var current strings.Builder
+	current.WriteString(prefix)
+	for _, spec := range v2BCSpecs {
+		current.WriteString("\n")
+		current.WriteString(strings.Join(rows[spec.id][2:], " "))
+	}
+	return current.String()
 }
 
 func testV2DocumentationParserAdversarial(t *testing.T) {
@@ -408,6 +451,7 @@ func testV2StaleClaimScannerAdversarial(t *testing.T) {
 		"Online --refresh=0 is supported.",
 		"A checksum alone is sufficient to authorize replacement.",
 		"verify release publishes artifacts.",
+		"A checksum alone never fails to authorize replacement.",
 	}
 	for _, body := range bad {
 		if got := staleV2Claims(body); len(got) == 0 {
@@ -428,10 +472,10 @@ func testV2StaleClaimScannerAdversarial(t *testing.T) {
 func testV2ReviewerMappingAdversarial(t *testing.T) {
 	var valid strings.Builder
 	for _, spec := range v2BCReviewSpecs {
-		fmt.Fprintf(&valid, "- [ ] %s — [matrix](#bc-contract-matrix), [evidence](%s)\n", spec.id, spec.evidence)
+		fmt.Fprintf(&valid, "- [ ] %s — [matrix](#bc-contract-matrix), [evidence](%s), [fixture](%s)\n", spec.id, spec.evidence, spec.fixture)
 	}
-	for _, evidence := range v2AdditionalChildEvidence {
-		fmt.Fprintf(&valid, "[additional evidence](%s)\n", evidence)
+	for _, child := range v2AdditionalChildEvidence {
+		fmt.Fprintf(&valid, "[additional evidence](%s), [additional fixture](%s)\n", child.evidence, child.fixture)
 	}
 	for n := 1; n <= 14; n++ {
 		fmt.Fprintf(&valid, "- [ ] D%02d — [decision](#d%02d-contract)\n", n, n)
@@ -443,6 +487,7 @@ func testV2ReviewerMappingAdversarial(t *testing.T) {
 	}
 	fixtures := map[string]string{
 		"unlinked child evidence":  strings.Replace(valid.String(), "](plans/issue-23-publication-intent.md)", "](`plans/issue-23-publication-intent.md`)", 1),
+		"unlinked fixture source":  strings.Replace(valid.String(), "](../cmd/ssm/legacy_mutation_compiled_test.go)", "](`../cmd/ssm/legacy_mutation_compiled_test.go`)", 1),
 		"missing BC checklist":     strings.Replace(valid.String(), "- [ ] BC-7 ", "BC-7 ", 1),
 		"detached BC evidence":     strings.Replace(valid.String(), "[evidence](plans/issue-25-exact-push-scopes.md)", "evidence\n[detached](plans/issue-25-exact-push-scopes.md)", 1),
 		"missing D checklist":      strings.Replace(valid.String(), "- [ ] D14 ", "D14 ", 1),

@@ -93,7 +93,9 @@ ssm --json update --major --yes
 - 所选资产的有效 pinned provenance；
 - `go run ./cmd/verify release` 在精确 main 上返回了 `preflight_passed`；
 - 在线状态是 fresh，或明确批准的 offline 结果如此说明；
-- 每次 mutation 都返回稳定的 transaction ID，且只发布经过审查的范围；
+- 每次改变状态的 mutation 都返回稳定的 transaction ID，且只发布经过审查的范围；幂等的
+  unchanged 结果改为 `changed:false`（`changed=false`）、`action:"unchanged"` 且
+  `transaction_id` omitted，因此 do not publish；
 - stream 消费者对每个已消费的 non-empty 输入行都观察到一条紧凑 NDJSON 结果；以及
 - file/directory 传输消费者按下面的精确 v2 字段进行解释。
 
@@ -157,9 +159,11 @@ alias 和 trust 撤销。检测到任何 inventory 更改时，会在使用新�
 
 ## Mutation、发布和协调
 
-Host add/update/upsert/remove、旧式 `ssm remove`、`ssm keys remove` 以及
-`import-json --merge|--replace` 都会创建可审查的 pending transaction。ID 稳定（`tx_` 加上
-32 个小写十六进制字符）。导入是一个原子 bulk transaction。没有 mutation 会自动发布。
+改变状态的 host add/update/upsert/remove、旧式 `ssm remove`、`ssm keys remove` 以及
+`import-json --merge|--replace` 会创建可审查的 pending transaction。ID 稳定（`tx_` 加上 32
+个小写十六进制字符）。导入是一个原子 bulk transaction。幂等 host update/upsert 也可能返回
+`changed:false`（`changed=false`）、`action:"unchanged"`（`action=unchanged`）且
+transaction_id omitted；它不创建新 transaction，因此 do not publish。没有 mutation 会自动发布。
 
 使用 `sshctl --json status` 审查不含 secret 的 ledger。跨 alias 和 saved-key 的
 create/replace/rename/delete/prune/reference 依赖会在网络 I/O 之前报告。按 ledger 顺序明确
@@ -256,8 +260,10 @@ offline 模式才接受过期的缓存状态，并阻止配置解析和网络访
 
 ### D06 — 每次 inventory mutation 都可审查
 
-每次 mutation 都创建一个 pending transaction，包括旧式删除、saved-key 删除和受保护的批量导入。
-没有 mutation 路径会自动发布；发布是之后的明确操作。
+每次改变状态的 mutation 都创建一个 pending transaction，包括旧式删除、saved-key 删除和受保护
+的批量导入。若幂等 host update/upsert 报告 `changed:false`、`action:"unchanged"` 并省略
+`transaction_id`，它不创建 transaction，也不得发布。没有 mutation 路径会自动发布；发布是之后
+的明确操作。
 
 <!-- ssm-v2-migration: decision=D07 -->
 
@@ -335,9 +341,21 @@ kind 尚不可知之前的失败。Staged 文件/目录恢复在恢复成功时�
 
 ## 发布阻断项
 
-初始 v2 需要所有 BC fixture/matrix、事务崩溃/重试和收缩门禁、双语迁移/安全/agent 文档、固定
-provenance、所有精确发布资产、干净且权威的 CI 以及成功审查。验证清单的 `migration-extension`
-必须为 `initial_v2_release` 提升；仅有 `preflight_passed` 不代表已准备就绪。
+初始 v2 在下列全部源程序发布条件通过前保持阻断：
+
+- all child tickets 直至 #31 都带验收和验证证据关闭，包括 #31 的非发布 final readiness；
+- compiled public contract matrix 覆盖每个稳定失败类别和每个批准的旧/新行为；
+- `verify ci` 是唯一 non-mutating 的 `make check`/CI 命令集合，而 `verify release` 是经过测试的
+  严格超集，覆盖 six supported target combinations、source/tag/assets、migration、updater、digest、
+  provenance、identity-rotation 和 recovery 失败；
+- publication crash/retry 覆盖 intent、send、remote-commit、response 和 local-finalization 的每个窗口；
+- every mutation and push entry point 都由 inventory transaction 模块拥有，且三模块
+  contraction/deletion 门禁通过；
+- 双语迁移文档和 release notes 包含 BC-1 至 BC-10 的完整 field-level/behavioral matrix；以及
+- no secrets 进入 fixture 或诊断，所有安全契约保持完好，权威 CI/审查通过且全部精确资产就绪。
+
+验证清单的 `migration-extension` 也必须为 `initial_v2_release` 提升；仅有 `preflight_passed` 不代表
+已准备就绪。
 
 验证 does not merge、tag、upload、publish artifacts 或创建 release。只有在所有阻断项通过后，官方的
 精确 tag workflow 才可以执行这些操作。
@@ -349,16 +367,16 @@ provenance、所有精确发布资产、干净且权威的 CI 以及成功审查
 以下每一项都是必审项。每条 BC 把摘要矩阵映射到已检查的旧/新 fixture 和最终行为；决策与发布项
 映射到稳定的章节锚点。
 
-- [ ] BC-1 — [BC 矩阵](#bc-contract-matrix)；[Issue #20 已检查 fixture 和最终行为](plans/issue-20-sync-transaction-ownership.md)
-- [ ] BC-2 — [BC 矩阵](#bc-contract-matrix)；[Issue #22 已检查 fixture 和最终行为](plans/issue-22-inventory-transaction-ownership.md)
-- [ ] BC-3 — [BC 矩阵](#bc-contract-matrix)；[Issue #21 已检查 fixture 和最终行为](plans/issue-21-stream-contract-migration.md)
-- [ ] BC-4 — [BC 矩阵](#bc-contract-matrix)；[Issue #24 已检查 fixture 和最终行为](plans/issue-24-legacy-mutation-ownership.md)；[Issue #23 发布与协调证据](plans/issue-23-publication-intent.md)
-- [ ] BC-5 — [BC 矩阵](#bc-contract-matrix)；[Issue #25 已检查 fixture 和最终行为](plans/issue-25-exact-push-scopes.md)
-- [ ] BC-6 — [BC 矩阵](#bc-contract-matrix)；[Issue #21 已检查 fixture 和最终行为](plans/issue-21-stream-contract-migration.md)
-- [ ] BC-7 — [BC 矩阵](#bc-contract-matrix)；[Issue #26 已检查 fixture 和最终行为](plans/bc-7-transfer-outcome-migration.md)
-- [ ] BC-8 — [BC 矩阵](#bc-contract-matrix)；[Issue #27 已检查 fixture 和最终行为](plans/issue-27-major-update-migration.md)
-- [ ] BC-9 — [BC 矩阵](#bc-contract-matrix)；[Issue #28 已检查 fixture 和最终行为](plans/issue-28-pinned-provenance.md)
-- [ ] BC-10 — [BC 矩阵](#bc-contract-matrix)；[已检查的验证 fixture 和最终行为](plans/verification-manifest.md)
+- [ ] BC-1 — [BC 矩阵](#bc-contract-matrix)；[Issue #20 最终行为](plans/issue-20-sync-transaction-ownership.md)；[已检查旧/新 fixture 源码](../cmd/ssm/compiled_cli_contract_test.go)
+- [ ] BC-2 — [BC 矩阵](#bc-contract-matrix)；[Issue #22 最终行为](plans/issue-22-inventory-transaction-ownership.md)；[已检查旧/新 fixture 源码](../cmd/ssm/inventory_transaction_compiled_test.go)
+- [ ] BC-3 — [BC 矩阵](#bc-contract-matrix)；[Issue #21 最终行为](plans/issue-21-stream-contract-migration.md)；[已检查旧/新 fixture 源码](../cmd/ssm/compiled_stream_contract_test.go)
+- [ ] BC-4 — [BC 矩阵](#bc-contract-matrix)；[Issue #24 最终行为](plans/issue-24-legacy-mutation-ownership.md)；[已检查 legacy fixture 源码](../cmd/ssm/legacy_mutation_compiled_test.go)；[Issue #23 最终协调行为](plans/issue-23-publication-intent.md)；[已检查 crash fixture 源码](../cmd/ssm/publication_intent_compiled_test.go)
+- [ ] BC-5 — [BC 矩阵](#bc-contract-matrix)；[Issue #25 最终行为](plans/issue-25-exact-push-scopes.md)；[已检查旧/新 fixture 源码](../cmd/ssm/push_scope_compiled_test.go)
+- [ ] BC-6 — [BC 矩阵](#bc-contract-matrix)；[Issue #21 最终行为](plans/issue-21-stream-contract-migration.md)；[已检查旧/新 fixture 源码](../cmd/ssm/compiled_stream_contract_test.go)
+- [ ] BC-7 — [BC 矩阵](#bc-contract-matrix)；[Issue #26 最终行为](plans/bc-7-transfer-outcome-migration.md)；[已检查旧/新 fixture 源码](../cmd/ssm/transfer_outcome_test.go)
+- [ ] BC-8 — [BC 矩阵](#bc-contract-matrix)；[Issue #27 最终行为](plans/issue-27-major-update-migration.md)；[已检查旧/新 fixture 源码](../internal/update/update_test.go)
+- [ ] BC-9 — [BC 矩阵](#bc-contract-matrix)；[Issue #28 最终行为](plans/issue-28-pinned-provenance.md)；[已检查旧/新 fixture 源码](../internal/update/update_test.go)
+- [ ] BC-10 — [BC 矩阵](#bc-contract-matrix)；[最终验证行为](plans/verification-manifest.md)；[已检查 profile/release fixture 源码](../cmd/verify/main_test.go)
 - [ ] D01 — [决策契约](#d01--默认保留兼容性)
 - [ ] D02 — [决策契约](#d02--缺失配置不同于无效配置)
 - [ ] D03 — [决策契约](#d03--有范围的发布具有传递依赖)
@@ -368,7 +386,7 @@ provenance、所有精确发布资产、干净且权威的 CI 以及成功审查
 - [ ] D07 — [决策契约](#d07--无范围和空-ledger-的-push-不能发布)
 - [ ] D08 — [决策契约](#d08--online-stream-保持可刷新)
 - [ ] D09 — [决策契约](#d09--inventory-更改关闭整个-ssh-pool)
-- [ ] D10 — [决策契约](#d10--三个模块专门负责策略)；[Issue #29 最终三模块 ownership 证据](plans/issue-29-three-module-contraction.md)
+- [ ] D10 — [决策契约](#d10--三个模块专门负责策略)；[Issue #29 最终三模块 ownership 行为](plans/issue-29-three-module-contraction.md)；[已检查 contraction fixture 源码](../cmd/ssm/deep_policy_ownership_test.go)
 - [ ] D11 — [决策契约](#d11--自动更新从不授权-major-迁移)
 - [ ] D12 — [决策契约](#d12--固定-provenance-阻止不合规发布)
 - [ ] D13 — [决策契约](#d13--一个-manifest-定义验证)

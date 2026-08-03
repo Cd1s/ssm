@@ -33,7 +33,7 @@ Use exact aliases. Never select a suggestion automatically. Normal `--json` comm
 - Dynamic, untrusted, or data-dependent argv: request v1 `op:"run"` with `argv`.
 - Shell syntax or a generated script: `script_file` plus optional `script_args` and `shell`.
 - Secrets: `secret_files` or credential file options; values are file paths, never secret contents.
-- Host change: typed `host.add|host.update|host.upsert|host.remove`; verify first, then publish only its `transaction_id`.
+- Host change: typed `host.add|host.update|host.upsert|host.remove`; verify first, then publish only a changed result's `transaction_id`. For `changed:false`, `action:"unchanged"`, and omitted `transaction_id`, do not publish.
 - Regular-file upload: typed `put`; add `resume:"v1"` only when requested, and `sha256:true` when integrity verification is required.
 - Fleet operation: `sshctl map` with explicit argv or scripts; inspect every result.
 - Unsure about fields or flags: run the relevant command help or read the request schema. Do not guess.
@@ -48,7 +48,10 @@ sshctl request --file ./ssm-request.json
 
 ## Inventory and sync
 
-Successful mutations return a stable `transaction_id`. Review the secret-free pending list, then use:
+State-changing successful mutations return a stable `transaction_id`. An
+idempotent update/upsert can return `changed:false`, `action:"unchanged"`, and
+omit `transaction_id`; it creates no transaction, so do not publish. For a
+changed result, review the secret-free pending list, then use:
 
 ```bash
 sshctl --json push --only <transaction-id>

@@ -109,8 +109,10 @@ Retain non-secret evidence showing:
 - the selected asset's valid pinned provenance;
 - `go run ./cmd/verify release` returned `preflight_passed` on exact main;
 - online status is fresh, or an explicitly approved offline result says so;
-- each mutation returned a stable transaction ID and only its reviewed scope
-  was published;
+- each state-changing mutation returned a stable transaction ID and only its
+  reviewed scope was published; an idempotent unchanged result instead has
+  `changed:false` (`changed=false`), `action:"unchanged"`, and
+  `transaction_id` omitted, so do not publish it;
 - stream consumers observed one compact NDJSON result for each consumed
   non-empty input line; and
 - file/directory transfer consumers interpreted the exact v2 fields below.
@@ -186,10 +188,14 @@ skips cloud parsing/network access and holds one fixed cached snapshot.
 
 ## Mutation, publication, and reconciliation
 
-Host add/update/upsert/remove, legacy `ssm remove`, `ssm keys remove`, and
-`import-json --merge|--replace` all create reviewable pending transactions.
-IDs are stable (`tx_` plus 32 lowercase hexadecimal characters). Imports are
-one atomic bulk transaction. No mutation automatically publishes.
+State-changing host add/update/upsert/remove, legacy `ssm remove`, `ssm keys
+remove`, and `import-json --merge|--replace` create reviewable pending
+transactions. IDs are stable (`tx_` plus 32 lowercase hexadecimal characters).
+Imports are one atomic bulk transaction. An idempotent host update/upsert can
+instead return `changed:false` (`changed=false`), `action:"unchanged"`
+(`action=unchanged`), with transaction_id omitted; it creates no new
+transaction, so do not publish it.
+No mutation automatically publishes.
 
 Use `sshctl --json status` to review the secret-free ledger. Cross-alias and
 saved-key create/replace/rename/delete/prune/reference dependencies are
@@ -306,9 +312,11 @@ footer records; terminal refresh failure consumes only its triggering line.
 
 ### D06 — Every inventory mutation is reviewable
 
-Every mutation creates one pending transaction, including legacy removal,
-saved-key removal, and guarded bulk import. No mutation path publishes
-automatically; publication is a later explicit operation.
+Every state-changing mutation creates one pending transaction, including
+legacy removal, saved-key removal, and guarded bulk import. An idempotent host
+update/upsert that reports `changed:false`, `action:"unchanged"`, and omits
+`transaction_id` creates no transaction and must not be published. No mutation
+path publishes automatically; publication is a later explicit operation.
 
 <!-- ssm-v2-migration: decision=D07 -->
 
@@ -396,10 +404,26 @@ fails, one backup is retained and no unchanged-final claim is made.
 
 ## Release blockers
 
-Initial v2 requires all BC fixtures/matrices, transaction crash/retry and
-contraction gates, bilingual migration/security/agent docs, pinned provenance,
-all exact release assets, clean authoritative CI, and successful review. The
-verification manifest's `migration-extension` must be promoted for
+Initial v2 remains blocked until every source-program release condition passes:
+
+- all child tickets through #31 are closed with acceptance and verification
+  evidence, including #31 final readiness without publishing;
+- the compiled public contract matrix covers every stable failure class and
+  every approved old/new behavior;
+- `verify ci` is the sole non-mutating `make check`/CI command set, and
+  `verify release` is its tested strict superset across six supported target combinations,
+  source/tag/assets, migration, updater, digest, provenance,
+  identity-rotation, and recovery failures;
+- publication crash/retry covers every intent, send, remote-commit, response,
+  and local-finalization window;
+- every mutation and push entry point is owned by the inventory transaction
+  module, and the three-module contraction/deletion gate passes;
+- bilingual migration docs and release notes carry the complete BC-1 through
+  BC-10 field-level and behavioral matrix; and
+- no secrets enter fixtures or diagnostics, every safety contract remains
+  intact, authoritative CI and review pass, and all exact assets are ready.
+
+The verification manifest's `migration-extension` must also be promoted for
 `initial_v2_release`; `preflight_passed` alone is not readiness.
 
 Verification does not merge, tag, upload, publish artifacts, or create a
@@ -414,16 +438,16 @@ Every item below is required. Each BC entry maps the summary matrix to checked
 old/new fixtures and final behavior; the decision and release entries map to
 stable section anchors.
 
-- [ ] BC-1 — [BC matrix](#bc-contract-matrix); [Issue #20 checked fixtures and final behavior](plans/issue-20-sync-transaction-ownership.md)
-- [ ] BC-2 — [BC matrix](#bc-contract-matrix); [Issue #22 checked fixtures and final behavior](plans/issue-22-inventory-transaction-ownership.md)
-- [ ] BC-3 — [BC matrix](#bc-contract-matrix); [Issue #21 checked fixtures and final behavior](plans/issue-21-stream-contract-migration.md)
-- [ ] BC-4 — [BC matrix](#bc-contract-matrix); [Issue #24 checked fixtures and final behavior](plans/issue-24-legacy-mutation-ownership.md); [Issue #23 publication and reconciliation evidence](plans/issue-23-publication-intent.md)
-- [ ] BC-5 — [BC matrix](#bc-contract-matrix); [Issue #25 checked fixtures and final behavior](plans/issue-25-exact-push-scopes.md)
-- [ ] BC-6 — [BC matrix](#bc-contract-matrix); [Issue #21 checked fixtures and final behavior](plans/issue-21-stream-contract-migration.md)
-- [ ] BC-7 — [BC matrix](#bc-contract-matrix); [Issue #26 checked fixtures and final behavior](plans/bc-7-transfer-outcome-migration.md)
-- [ ] BC-8 — [BC matrix](#bc-contract-matrix); [Issue #27 checked fixtures and final behavior](plans/issue-27-major-update-migration.md)
-- [ ] BC-9 — [BC matrix](#bc-contract-matrix); [Issue #28 checked fixtures and final behavior](plans/issue-28-pinned-provenance.md)
-- [ ] BC-10 — [BC matrix](#bc-contract-matrix); [checked verification fixtures and final behavior](plans/verification-manifest.md)
+- [ ] BC-1 — [BC matrix](#bc-contract-matrix); [Issue #20 final behavior](plans/issue-20-sync-transaction-ownership.md); [checked old/new fixture source](../cmd/ssm/compiled_cli_contract_test.go)
+- [ ] BC-2 — [BC matrix](#bc-contract-matrix); [Issue #22 final behavior](plans/issue-22-inventory-transaction-ownership.md); [checked old/new fixture source](../cmd/ssm/inventory_transaction_compiled_test.go)
+- [ ] BC-3 — [BC matrix](#bc-contract-matrix); [Issue #21 final behavior](plans/issue-21-stream-contract-migration.md); [checked old/new fixture source](../cmd/ssm/compiled_stream_contract_test.go)
+- [ ] BC-4 — [BC matrix](#bc-contract-matrix); [Issue #24 final behavior](plans/issue-24-legacy-mutation-ownership.md); [checked legacy fixture source](../cmd/ssm/legacy_mutation_compiled_test.go); [Issue #23 final reconciliation behavior](plans/issue-23-publication-intent.md); [checked crash fixture source](../cmd/ssm/publication_intent_compiled_test.go)
+- [ ] BC-5 — [BC matrix](#bc-contract-matrix); [Issue #25 final behavior](plans/issue-25-exact-push-scopes.md); [checked old/new fixture source](../cmd/ssm/push_scope_compiled_test.go)
+- [ ] BC-6 — [BC matrix](#bc-contract-matrix); [Issue #21 final behavior](plans/issue-21-stream-contract-migration.md); [checked old/new fixture source](../cmd/ssm/compiled_stream_contract_test.go)
+- [ ] BC-7 — [BC matrix](#bc-contract-matrix); [Issue #26 final behavior](plans/bc-7-transfer-outcome-migration.md); [checked old/new fixture source](../cmd/ssm/transfer_outcome_test.go)
+- [ ] BC-8 — [BC matrix](#bc-contract-matrix); [Issue #27 final behavior](plans/issue-27-major-update-migration.md); [checked old/new fixture source](../internal/update/update_test.go)
+- [ ] BC-9 — [BC matrix](#bc-contract-matrix); [Issue #28 final behavior](plans/issue-28-pinned-provenance.md); [checked old/new fixture source](../internal/update/update_test.go)
+- [ ] BC-10 — [BC matrix](#bc-contract-matrix); [final verification behavior](plans/verification-manifest.md); [checked profile/release fixture source](../cmd/verify/main_test.go)
 - [ ] D01 — [decision contract](#d01--compatibility-is-preserved-by-default)
 - [ ] D02 — [decision contract](#d02--missing-configuration-differs-from-invalid-configuration)
 - [ ] D03 — [decision contract](#d03--scoped-publication-has-transitive-dependencies)
@@ -433,7 +457,7 @@ stable section anchors.
 - [ ] D07 — [decision contract](#d07--unscoped-and-empty-ledger-push-cannot-publish)
 - [ ] D08 — [decision contract](#d08--online-streams-remain-refreshable)
 - [ ] D09 — [decision contract](#d09--inventory-changes-close-the-whole-ssh-pool)
-- [ ] D10 — [decision contract](#d10--three-modules-own-policy-exclusively); [Issue #29 final three-module ownership evidence](plans/issue-29-three-module-contraction.md)
+- [ ] D10 — [decision contract](#d10--three-modules-own-policy-exclusively); [Issue #29 final three-module ownership behavior](plans/issue-29-three-module-contraction.md); [checked contraction fixture source](../cmd/ssm/deep_policy_ownership_test.go)
 - [ ] D11 — [decision contract](#d11--automatic-update-never-authorizes-a-major-migration)
 - [ ] D12 — [decision contract](#d12--pinned-provenance-blocks-release)
 - [ ] D13 — [decision contract](#d13--one-manifest-defines-verification)
