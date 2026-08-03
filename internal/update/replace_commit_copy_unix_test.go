@@ -1,0 +1,360 @@
+//go:build linux || darwin || freebsd || openbsd
+
+package update
+
+import (
+	"crypto/sha256"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestUnixDescriptorCopyCommit(t *testing.T) {
+	t.Run("success", testUnixDescriptorCopyCommitSuccess)
+	t.Run("preserves execute-only mode", testUnixDescriptorCopyCommitExecuteOnly)
+	t.Run("rejects staging pathname substitution", testUnixDescriptorCopyCommitPathSubstitution)
+	t.Run("rejects private entry substitution", testUnixDescriptorCopyCommitEntrySubstitution)
+	t.Run("rejects post-verification pathname substitution", func(t *testing.T) {
+		testUnixCommitPostVerificationPathSubstitution(t, commitAuthenticatedUnixReplacementByCopy)
+	})
+	t.Run("rejects post-verification in-place mutation", func(t *testing.T) {
+		testUnixCommitPostVerificationInPlaceMutation(t, commitAuthenticatedUnixReplacementByCopy)
+	})
+	t.Run("rejects post-rename validation mutation", func(t *testing.T) {
+		testUnixCommitPostRenameValidationMutation(t, commitAuthenticatedUnixReplacementByCopy)
+	})
+	t.Run("restores across rollback pathname change", func(t *testing.T) {
+		testUnixCommitRollbackPathChange(t, commitAuthenticatedUnixReplacementByCopy)
+	})
+}
+
+func testUnixDescriptorCopyCommitExecuteOnly(t *testing.T) {
+	target, install, installPath, digest := newUnixDescriptorCopyCommitFixture(t)
+	if err := install.Chmod(0o111); err != nil { //nolint:gosec // restrictive mode is the behavior under test
+		t.Skipf("execute-only commit mode is not supported: %v", err)
+	}
+
+	if err := commitAuthenticatedUnixReplacementByCopy(
+		install,
+		installPath,
+		target,
+		digest,
+		0o111,
+	); err != nil {
+		t.Fatalf("execute-only descriptor-copy commit: %v", err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o111 {
+		t.Fatalf("execute-only descriptor-copy mode = %o, want 111", info.Mode().Perm())
+	}
+	if err := os.Chmod(target, 0o511); err != nil { //nolint:gosec // test-owned fixture is made readable only for byte verification
+		t.Fatalf("make execute-only descriptor-copy result readable: %v", err)
+	}
+	assertExecutableBytes(t, target, "authenticated replacement")
+}
+
+type unixCommitTestFunc func(
+	*os.File,
+	string,
+	string,
+	[sha256.Size]byte,
+	os.FileMode,
+) error
+
+func testUnixDescriptorCopyCommitSuccess(t *testing.T) {
+	target, install, installPath, digest := newUnixDescriptorCopyCommitFixture(t)
+
+	if err := commitAuthenticatedUnixReplacementByCopy(
+		install,
+		installPath,
+		target,
+		digest,
+		0o751,
+	); err != nil {
+		t.Fatalf("descriptor-copy commit: %v", err)
+	}
+
+	assertExecutablePreserved(t, target, []byte("authenticated replacement"), 0o751)
+	if _, err := os.Lstat(installPath); !os.IsNotExist(err) {
+		t.Fatalf("authenticated staging pathname remains after commit: %v", err)
+	}
+}
+
+func testUnixDescriptorCopyCommitPathSubstitution(t *testing.T) {
+	target, install, installPath, digest := newUnixDescriptorCopyCommitFixture(t)
+	oldHook := unixReplacementTestHook
+	t.Cleanup(func() { unixReplacementTestHook = oldHook })
+	hookCalled := false
+	unixReplacementTestHook = func(phase, _, path string) error {
+		if phase != "commit_copy_path_checked" {
+			return nil
+		}
+		hookCalled = true
+		if err := os.Rename(path, path+".verified"); err != nil {
+			return err
+		}
+		return os.WriteFile(path, []byte("attacker bytes"), 0o751) //nolint:gosec // adversarial test-owned pathname substitution
+	}
+
+	err := commitAuthenticatedUnixReplacementByCopy(
+		install,
+		installPath,
+		target,
+		digest,
+		0o751,
+	)
+	if !hookCalled {
+		t.Fatal("staging substitution did not reach the descriptor-copy commit seam")
+	}
+	if err == nil || !strings.Contains(err.Error(), "staging object changed during commit") {
+		t.Fatalf("staging substitution error = %v, want exact-object rejection", err)
+	}
+	assertExecutablePreserved(t, target, []byte("old"), 0o751)
+}
+
+func testUnixDescriptorCopyCommitEntrySubstitution(t *testing.T) {
+	target, install, installPath, digest := newUnixDescriptorCopyCommitFixture(t)
+	oldHook := unixReplacementTestHook
+	t.Cleanup(func() { unixReplacementTestHook = oldHook })
+	hookCalled := false
+	unixReplacementTestHook = func(phase, _, path string) error {
+		if phase != "commit_copy_ready" {
+			return nil
+		}
+		hookCalled = true
+		if err := os.Rename(path, path+".verified"); err != nil {
+			return err
+		}
+		return os.WriteFile(path, []byte("attacker bytes"), 0o751) //nolint:gosec // adversarial test-owned commit-entry substitution
+	}
+
+	err := commitAuthenticatedUnixReplacementByCopy(
+		install,
+		installPath,
+		target,
+		digest,
+		0o751,
+	)
+	if !hookCalled {
+		t.Fatal("entry substitution did not reach the descriptor-copy commit seam")
+	}
+	if err == nil || !strings.Contains(err.Error(), "commit entry changed before rename") {
+		t.Fatalf("entry substitution error = %v, want exact-object rejection", err)
+	}
+	assertExecutablePreserved(t, target, []byte("old"), 0o751)
+}
+
+func testUnixCommitPostVerificationPathSubstitution(t *testing.T, commit unixCommitTestFunc) {
+	t.Helper()
+	target, install, installPath, digest := newUnixDescriptorCopyCommitFixture(t)
+	originalInfo, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldHook := unixReplacementTestHook
+	t.Cleanup(func() { unixReplacementTestHook = oldHook })
+	hookCalled := false
+	unixReplacementTestHook = func(phase, _, path string) error {
+		if phase != "commit_entry_verified" {
+			return nil
+		}
+		hookCalled = true
+		if err := os.Rename(path, path+".verified"); err != nil {
+			return err
+		}
+		return os.WriteFile(path, []byte("late attacker pathname"), 0o751) //nolint:gosec // adversarial test-owned pathname substitution
+	}
+
+	err = commit(install, installPath, target, digest, 0o751)
+	if !hookCalled {
+		t.Fatal("pathname substitution did not reach the post-verification commit seam")
+	}
+	if err == nil || !strings.Contains(err.Error(), "exact original target restored") {
+		t.Fatalf("post-verification pathname substitution error = %v, want authenticated rollback", err)
+	}
+	assertExecutablePreserved(t, target, []byte("old"), 0o751)
+	assertUnixOriginalObjectPreserved(t, target, originalInfo)
+}
+
+func testUnixCommitPostVerificationInPlaceMutation(t *testing.T, commit unixCommitTestFunc) {
+	t.Helper()
+	target, install, installPath, digest := newUnixDescriptorCopyCommitFixture(t)
+	originalInfo, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldHook := unixReplacementTestHook
+	t.Cleanup(func() { unixReplacementTestHook = oldHook })
+	hookCalled := false
+	unixReplacementTestHook = func(phase, _, path string) error {
+		if phase != "commit_entry_verified" {
+			return nil
+		}
+		hookCalled = true
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0) //nolint:gosec // adversarial test-owned same-inode mutation
+		if err != nil {
+			return err
+		}
+		if _, err := file.Write([]byte("late attacker same inode")); err != nil {
+			_ = file.Close()
+			return err
+		}
+		return file.Close()
+	}
+
+	err = commit(install, installPath, target, digest, 0o751)
+	if !hookCalled {
+		t.Fatal("in-place mutation did not reach the post-verification commit seam")
+	}
+	if err == nil || !strings.Contains(err.Error(), "exact original target restored") {
+		t.Fatalf("post-verification in-place mutation error = %v, want authenticated rollback", err)
+	}
+	assertExecutablePreserved(t, target, []byte("old"), 0o751)
+	assertUnixOriginalObjectPreserved(t, target, originalInfo)
+}
+
+func testUnixCommitPostRenameValidationMutation(t *testing.T, commit unixCommitTestFunc) {
+	t.Helper()
+	target, install, installPath, digest := newUnixDescriptorCopyCommitFixture(t)
+	originalInfo, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldHook := unixReplacementTestHook
+	t.Cleanup(func() { unixReplacementTestHook = oldHook })
+	hookCalled := false
+	unixReplacementTestHook = func(phase, _, path string) error {
+		if phase != "canonical_replacement_validated" {
+			return nil
+		}
+		hookCalled = true
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0) //nolint:gosec // adversarial test-owned same-inode mutation
+		if err != nil {
+			return err
+		}
+		if _, err := file.Write([]byte("mutation after canonical digest")); err != nil {
+			_ = file.Close()
+			return err
+		}
+		return file.Close()
+	}
+
+	err = commit(install, installPath, target, digest, 0o751)
+	if !hookCalled {
+		t.Fatal("same-file mutation did not reach the post-rename validation seam")
+	}
+	if err == nil || !strings.Contains(err.Error(), "exact original target restored") {
+		t.Fatalf("post-rename same-file mutation error = %v, want authenticated rollback", err)
+	}
+	assertExecutablePreserved(t, target, []byte("old"), 0o751)
+	assertUnixOriginalObjectPreserved(t, target, originalInfo)
+	assertUnixReplacementFailureCleaned(t, target)
+}
+
+func testUnixCommitRollbackPathChange(t *testing.T, commit unixCommitTestFunc) {
+	t.Helper()
+	target, install, installPath, digest := newUnixDescriptorCopyCommitFixture(t)
+	originalInfo, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldHook := unixReplacementTestHook
+	t.Cleanup(func() { unixReplacementTestHook = oldHook })
+	validatedHookCalled := false
+	rollbackHookCalled := false
+	unixReplacementTestHook = func(phase, _, path string) error {
+		switch phase {
+		case "canonical_replacement_validated":
+			validatedHookCalled = true
+			file, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0) //nolint:gosec // force authenticated rollback after the validation boundary
+			if err != nil {
+				return err
+			}
+			if _, err := file.Write([]byte("mutation requiring rollback")); err != nil {
+				_ = file.Close()
+				return err
+			}
+			return file.Close()
+		case "rollback_boundary":
+			rollbackHookCalled = true
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+			return os.Mkdir(path, 0o700) //nolint:gosec // an empty directory deterministically makes a direct file-over-file rollback refuse
+		default:
+			return nil
+		}
+	}
+
+	err = commit(install, installPath, target, digest, 0o751)
+	if !validatedHookCalled {
+		t.Fatal("rollback fixture did not reach the post-rename validation seam")
+	}
+	if !rollbackHookCalled {
+		t.Fatal("pathname change did not reach the rollback seam")
+	}
+	if err == nil || !strings.Contains(err.Error(), "exact original target restored") {
+		t.Fatalf("rollback pathname-change error = %v, want exact original restoration", err)
+	}
+	assertExecutablePreserved(t, target, []byte("old"), 0o751)
+	assertUnixOriginalObjectPreserved(t, target, originalInfo)
+	assertUnixReplacementFailureCleaned(t, target)
+}
+
+func assertUnixOriginalObjectPreserved(t *testing.T, target string, original os.FileInfo) {
+	t.Helper()
+	restored, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(original, restored) {
+		t.Fatal("failed replacement did not restore the exact original target object")
+	}
+}
+
+func assertUnixReplacementFailureCleaned(t *testing.T, target string) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Dir(target))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(target) {
+		t.Fatalf("failed replacement left sibling artifacts: %v", entries)
+	}
+}
+
+func newUnixDescriptorCopyCommitFixture(
+	t *testing.T,
+) (target string, install *os.File, installPath string, digest [sha256.Size]byte) {
+	t.Helper()
+	directory := t.TempDir()
+	target = filepath.Join(directory, "ssm")
+	if err := os.WriteFile(target, []byte("old"), 0o751); err != nil { //nolint:gosec // test-owned executable fixture
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0o751); err != nil { //nolint:gosec // make asserted fixture mode independent of process umask
+		t.Fatal(err)
+	}
+	var err error
+	install, err = os.CreateTemp(directory, ".ssm.*.install")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = install.Close() })
+	installPath = install.Name()
+	payload := []byte("authenticated replacement")
+	if _, err := install.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := install.Chmod(0o751); err != nil {
+		t.Fatal(err)
+	}
+	if err := install.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	return target, install, installPath, sha256.Sum256(payload)
+}

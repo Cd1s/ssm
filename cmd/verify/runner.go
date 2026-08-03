@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"ssm/internal/provenance"
+	"ssm/internal/provenancefixture"
 	"ssm/internal/releaseasset"
 )
 
@@ -184,9 +186,61 @@ func executeBuiltin(name string, actionCtx actionContext) checkResult {
 		}
 		count := len(releaseasset.SupportedTargets()) + 1
 		return checkResult{Status: statusPassed, Detail: fmt.Sprintf("computed SHA-256 for %d release files", count)}
+	case "release-provenance":
+		if err := verifySyntheticReleaseProvenance(actionCtx); err != nil {
+			return checkResult{Status: statusFailed, Detail: err.Error()}
+		}
+		return checkResult{
+			Status: statusPassed,
+			Detail: fmt.Sprintf(
+				"generated and verified keyless provenance for %d release assets",
+				len(releaseasset.SupportedTargets()),
+			),
+		}
 	default:
 		return checkResult{Status: statusFailed, Detail: "unknown builtin action: " + name}
 	}
+}
+
+func verifySyntheticReleaseProvenance(actionCtx actionContext) error {
+	version := actionCtx.Version
+	if version == "" {
+		var err error
+		version, err = readSourceVersion(actionCtx.RepoRoot)
+		if err != nil {
+			return err
+		}
+	}
+	for _, target := range releaseasset.SupportedTargets() {
+		name := releaseasset.Name(target.GOOS, target.GOARCH)
+		artifact, err := readRegularFileNoFollow(actionCtx.TempDir, name)
+		if err != nil {
+			return fmt.Errorf("read synthetic release artifact %s: %w", name, err)
+		}
+		if len(artifact) == 0 {
+			return fmt.Errorf("synthetic release artifact %s is empty", name)
+		}
+		claims, err := provenancefixture.DefaultClaims(name, "v"+version, artifact)
+		if err != nil {
+			return fmt.Errorf("prepare synthetic provenance for %s: %w", name, err)
+		}
+		fixture, err := provenancefixture.Generate(claims)
+		if err != nil {
+			return fmt.Errorf("generate synthetic provenance for %s: %w", name, err)
+		}
+		if err := provenance.VerifyBundle(
+			fixture.Bundle,
+			provenance.Request{
+				AssetName: name,
+				Version:   "v" + version,
+				Digest:    sha256.Sum256(artifact),
+			},
+			provenance.Options{TrustedMaterial: fixture.TrustedMaterial},
+		); err != nil {
+			return fmt.Errorf("verify synthetic provenance for %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func verifyReleaseChecksums(actionCtx actionContext) error {
@@ -301,19 +355,16 @@ func validateReleaseNotes(repoRoot, version string) error {
 	found := false
 	var body []string
 	for _, line := range lines {
-		if strings.HasPrefix(line, "## v") {
-			if !found {
-				if line != header {
-					return fmt.Errorf("first release-note version is %q, want %q", line, header)
-				}
+		if !found {
+			if line == header {
 				found = true
-				continue
 			}
+			continue
+		}
+		if strings.HasPrefix(line, "## v") {
 			break
 		}
-		if found {
-			body = append(body, line)
-		}
+		body = append(body, line)
 	}
 	if !found {
 		return fmt.Errorf("release notes have no %q section", header)

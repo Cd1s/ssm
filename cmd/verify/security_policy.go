@@ -46,7 +46,7 @@ func reviewedActionPolicy() map[string]Action {
 		),
 		"race": reviewedCommand(
 			"go",
-			[]string{"test", "-race", "./..."},
+			[]string{"test", "-race", "-timeout=15m", "./..."},
 			nil,
 			"",
 		),
@@ -155,6 +155,20 @@ func reviewedActionPolicy() map[string]Action {
 			Kind: actionBuiltin,
 			Name: "release-checksums",
 		},
+		"release-provenance": {
+			Kind: actionBuiltin,
+			Name: "release-provenance",
+		},
+		"provenance-failure-paths": reviewedCommand(
+			"go",
+			[]string{
+				"test", "./internal/update", "-run",
+				"^(TestProvenanceIdentityMatrix|TestProvenanceDigestBinding|TestTrustFailurePreservesExecutable)$",
+				"-count=1",
+			},
+			nil,
+			"",
+		),
 		"checksum-failure-paths": reviewedCommand(
 			"go",
 			[]string{

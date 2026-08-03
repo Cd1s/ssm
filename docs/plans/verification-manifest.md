@@ -1,6 +1,6 @@
 # Verification manifest and BC-10 migration
 
-Status: implemented by GitHub Issue #18
+Status: implemented by GitHub Issues #18 and #28
 
 The checked-in Go manifest at `cmd/verify` is the sole owner of verification
 profile membership, ordering, exact actions and preparation actions,
@@ -65,7 +65,7 @@ The old GitHub CI membership and its new manifest entries are:
 | 4 | `go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...` | `vulnerability` |
 | 5 | `go build ./cmd/ssm` | `build`, with a temporary output |
 | 6 | `go test ./...` | `unit` |
-| 7 | `go test -race ./...` | `race` |
+| 7 | `go test -race -timeout=15m ./...` | `race` |
 | 8 | `jq empty skills/agent-ssm/test-prompts.json` | `agent-prompts-json` |
 | 9 | `jq empty skills/agent-ssm/references/request-v1.schema.json` | `request-schema-json` |
 | 10 | `bash -n scripts/ssh_matrix_test.sh` | `ssh-matrix-shell-syntax` |
@@ -75,12 +75,38 @@ GitHub CI installs and asserts its OS, OpenSSH, shell, JSON, hashing, and
 official prebuilt lint prerequisites visibly in workflow YAML, declares
 read-only repository permissions, disables checkout credential persistence,
 and invokes only `go run ./cmd/verify ci` in the Linux merge job. A separate
-native Windows job invokes `go run ./cmd/verify fast`, including the
-complete native Go test suite and its Windows-only no-follow/reparse and DACL
-tests, without duplicating command membership. Tests that execute a Unix
-remote shell or compare Bash script behavior are selected only on Unix;
-portable parsing, planning, host-key, environment-isolation, and security
-tests remain active on Windows.
+native Windows job first invokes the explicit security-critical
+`TestWindowsNativeReplacementSecurity` suite without assuming elevated hosted
+runner privileges, then unconditionally invokes `go run ./cmd/verify fast`
+with `always()` for the complete native Go test suite even when the focused
+suite fails. The focused suite always covers restricted-token
+owner/group/DACL preservation and optional full-tier fallback; it covers
+full-descriptor/SACL preservation when the host proves that capture, apply,
+and verification are available. It also covers privilege restoration and
+descriptor freeing, exclusive update/cleanup locking, file-ID revalidation,
+hard-link/reparse rejection, non-delete-sharing source handles and exact-object
+handle renames, fail-closed canonical-name substitution while a hostile handle
+withholds delete sharing, exact-object recovery after handle release, late
+target/stage hard-link recovery after link removal, explicit owner-only
+protected lock/state DACLs, rejection of valid-CRC forged, inherited/writable,
+and wrong-owner control state, descriptor-bound versioned state and legacy
+record rejection, same-File-ID descriptor mutation rejection, compiled startup
+refusal while hostile sharing blocks prepared recovery, completed and
+unexplained stale rollback states, concurrent updaters, ordinary rollback, and
+rollback-failure evidence and retry.
+The same focused native suite classifies absent, verified-new, and
+attacker-canonical dual refusal as `update_recovery_required`, exercises
+startup human, JSON, and compact NDJSON rendering, proves successful recovery
+restores the exact original and clears state, and compares `FileIdInfo`,
+SHA-256, descriptor binding, bytes, and mode for every ordinary injected
+failure. The inherited `unit` action keeps these machine-policy and compiled
+contract tests in both the `ci` and `release` profiles; no publishing action or
+workflow permission changes are required.
+
+Tests
+that execute a Unix remote shell or compare Bash script behavior are selected
+only on Unix; portable parsing, planning, host-key, environment-isolation, and
+security tests remain active on Windows.
 The complete reviewed workflow is checked in as a test golden, with semantic
 assertions for both jobs, exact setup action versions, exact adapter
 invocations, job permissions, and checkout credential handling. The driver
@@ -99,6 +125,8 @@ It is deliberately not merge-equivalent and not release-equivalent.
 `ci` is the ordered 11-check profile in the table above. `race` is conditional
 on a natively supported OS/architecture, `CGO_ENABLED=1`, and an available C
 compiler, and is explicitly required in the `github_actions_linux` context.
+Its reviewed command sets Go's suite timeout to 15 minutes so the complete
+race suite is not cut off by Go's 10-minute default.
 It is truthfully unavailable on unsupported native tuples such as
 Windows/arm64; cross-compilation is not treated as runtime race evidence.
 `ssh-matrix` is
@@ -127,7 +155,12 @@ then adds, in order:
 4. a non-empty `RELEASE_NOTES.md` section matching the source version;
 5. `sh -n install.sh`, because the release workflow publishes that installer;
 6. in-memory SHA-256 computation for the six assets and `install.sh`;
-7. updater checksum selection, mismatch, and no-replacement failure tests.
+7. synthetic, test-owned keyless provenance generation and verification for
+   every temporary release asset;
+8. pinned certificate and statement identity, exact one-subject/one-SHA-256
+   digest binding, and byte-preserving provenance failure tests through the
+   updater's production verifier core;
+9. updater checksum selection, mismatch, and no-replacement failure tests.
 
 No separate check called “release source policy” is added. The live Issue #18
 acceptance text names the current source/version check, and the accepted
@@ -139,13 +172,12 @@ trust rule here would conflict with the audit's explicit non-goal of changing
 updater trust or release signing. The exact ASCII `X.Y.Z` source-version gate
 therefore remains the authoritative bounded source check for Issue #18.
 
-The release profile separately exposes metadata named `migration-extension`
-and `provenance-extension`. These are not executable Ticket #18 checks and do not
-appear in check results as passed, failed, or unavailable. Their manifest
-metadata says `required_before: initial_v2_release`, preserving the future
-migration/provenance seams required by Issue #18 while honoring ADR 0003 and
-Decisions 12–13: the initial v2 release remains blocked until later tickets add
-and pass those real gates.
+The release profile still exposes `migration-extension` metadata. BC-9
+promotes the former `provenance-extension` metadata to two required executable
+checks: `release-provenance` and `provenance-failure-paths`. Their generated
+roots, certificates, signed statements, and executable subjects are
+test-owned and remain inside verifier-controlled temporary storage. The
+initial v2 release remains blocked on the separate migration extension.
 
 Accordingly, the exact command
 
@@ -153,11 +185,12 @@ Accordingly, the exact command
 go run ./cmd/verify release
 ```
 
-returns zero only when all executable Ticket #18 release-preflight checks pass.
+returns zero only when all executable release-preflight checks, including the
+BC-9 provenance gates, pass.
 Its terminal summary is `preflight_passed`, and its profile purpose and
-equivalence explicitly say that this is not a claim of initial-v2 release
-readiness. When later tickets implement either extension, they must promote it
-from metadata into a required executable check before the initial v2 release.
+equivalence explicitly name required pinned-provenance verification. This is
+still not a claim of initial-v2 readiness until the remaining migration
+extension is promoted.
 
 No approved top-level action merges, tags, installs, replaces an executable,
 creates or uploads a release, or writes release artifacts into the repository.
@@ -166,12 +199,15 @@ configuration that could supply publication authority. GitHub release
 publication remains explicit in `release.yml` and outside this verification
 driver. That workflow defaults to `contents: read`; its credential-free
 preflight checkout runs the actual `go run ./cmd/verify release` profile.
-Manual release tags cross into Bash through the validation step environment,
-remain quoted data, and must match the exact `vMAJOR.MINOR.PATCH` grammar
-before the step writes any release outputs.
+Tag-triggered publication reads `GITHUB_REF_NAME` as quoted data, requires the
+workflow identity to contain that exact tag, and requires the tag to match the
+exact `vMAJOR.MINOR.PATCH` grammar before the step writes any release outputs.
 Builds depend on that preflight and use the same six exact names and
-`-buildvcs=false` flags. Only the final `publish` job has `contents: write`,
-and it depends on both preflight and build. Exact checksum inputs, release-note
+`-buildvcs=false` flags. The build job alone has explicit identity-token,
+attestation, and artifact-metadata write permission. It attests each exact
+build output before uploading the binary and adjacent bundle together. Only
+the final `publish` job has `contents: write`, and it depends on both preflight
+and build. Exact checksum inputs, provenance subjects and names, release-note
 extraction, published files, permissions, and job dependencies are covered by
 semantic tests and a complete workflow golden.
 

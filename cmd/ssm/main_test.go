@@ -125,6 +125,79 @@ func TestSSHCTLInvocationNameIsPortable(t *testing.T) {
 	}
 }
 
+func TestStartupOutputModeRecognizesOnlySSHCTLStreamForms(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		executable string
+		args       []string
+		wantJSON   bool
+		wantStream bool
+	}{
+		{
+			name:       "documented stream form",
+			executable: `C:\Program Files\ssm\sshctl.exe`,
+			args:       []string{"run", "prod", "--stream"},
+			wantJSON:   true,
+			wantStream: true,
+		},
+		{
+			name:       "ordered global and command JSON options",
+			executable: "sshctl",
+			args: []string{
+				"--offline",
+				"--master-pass-file",
+				`C:\state\master.pass`,
+				"--json",
+				"run",
+				"--json",
+				"prod",
+				"--stream",
+				"--refresh=0",
+			},
+			wantJSON:   true,
+			wantStream: true,
+		},
+		{
+			name:       "missing alias stream initialization",
+			executable: "sshctl",
+			args:       []string{"run", "--stream"},
+			wantJSON:   true,
+			wantStream: true,
+		},
+		{
+			name:       "normal JSON document",
+			executable: "sshctl",
+			args:       []string{"--json", "--version"},
+			wantJSON:   true,
+		},
+		{
+			name:       "remote stream argument",
+			executable: "sshctl",
+			args:       []string{"run", "prod", "--argv", "--stream"},
+		},
+		{
+			name:       "legacy ssm run",
+			executable: "ssm.exe",
+			args:       []string{"run", "prod", "--stream"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			gotJSON, gotStream := startupOutputMode(test.executable, test.args)
+			if gotJSON != test.wantJSON || gotStream != test.wantStream {
+				t.Fatalf(
+					"startupOutputMode(%q, %q) = json:%t stream:%t, want json:%t stream:%t",
+					test.executable,
+					test.args,
+					gotJSON,
+					gotStream,
+					test.wantJSON,
+					test.wantStream,
+				)
+			}
+		})
+	}
+}
+
 func TestMachineErrorContractHasStableFields(t *testing.T) {
 	value := machinecontract.Failure{OK: false, Error: "alias_not_found", Message: "missing", Hint: "list aliases", Exit: 255, Stage: "lookup"}
 	encoded, err := json.Marshal(value)

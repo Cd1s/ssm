@@ -91,3 +91,16 @@ argument parsing and typed command-specific results.
 Deleting `internal/machinecontract` now removes the only definitions of public
 failure metadata, SSH/transfer/host-key classification, redaction, JSON and
 NDJSON framing, human failure rendering, placement, and process-exit policy.
+
+## Update failure policy
+
+| Failure class | Stable contract | Required filesystem claim |
+| --- | --- | --- |
+| Ordinary update failure | `error=update_failed`, `stage=update`, `exit=1`, preserved-executable hint | The exact original strong File ID, SHA-256, descriptor binding, bytes, and mode remain canonical. |
+| Windows authenticated restoration pending | `error=update_recovery_required`, `stage=update_recovery`, `exit=1`, `authenticated original evidence was preserved; canonical restoration remains required before retrying` | The prepared owner-only record and original `.old` evidence remain; command dispatch and later updates are blocked. |
+| Untrusted or mismatched recovery evidence | Existing generic `error=internal`, exit 1, without the ordinary preservation hint | Evidence remains untouched; this is not promoted to the authenticated recovery-required state. |
+| Completed replacement cleanup refusal | No failure; committed success remains success | Authenticated completed evidence is retained for later cleanup. |
+
+Human rendering for the recovery-required state includes its error, stage,
+message, and hint on stderr. Normal JSON renders one indented object; startup
+`run --stream` renders the same fields as one compact NDJSON terminal record.

@@ -70,6 +70,7 @@ const (
 	PanicFailure                        Kind = "panic_failure"
 	GenericFailure                      Kind = "generic_failure"
 	UpdateFailed                        Kind = "update_failed"
+	UpdateRecoveryRequired              Kind = "update_recovery_required"
 	UpdateMigrationFailed               Kind = "update_migration_failed"
 	MissingCommand                      Kind = "missing_command"
 	InvalidGlobalArguments              Kind = "invalid_global_arguments"
@@ -404,6 +405,9 @@ var failurePolicies = map[Kind]failurePolicy{
 	},
 	UpdateFailed: {
 		Code: "update_failed", Stage: "update", Hint: "the prior executable was preserved; retry after resolving the reported update failure", Exit: 1, Human: humanPlain,
+	},
+	UpdateRecoveryRequired: {
+		Code: "update_recovery_required", Stage: "update_recovery", Hint: "authenticated original evidence was preserved; canonical restoration remains required before retrying", Exit: 1,
 	},
 	UpdateMigrationFailed: {
 		Code: "migration_preflight_failed", Stage: "migration_preflight", Hint: "the prior executable was preserved; resolve the reported checks and rerun the migration review", Exit: 1, Human: humanPlain,
@@ -1120,7 +1124,7 @@ func ClassifySSH(err error, context SSHContext) Failure {
 		case errors.As(err, &networkError) && networkError.Timeout():
 			kind = DialTimeout
 			details.Message = fmt.Sprintf("dial tcp %s: i/o timeout", address)
-		case strings.Contains(lower, "i/o timeout") || strings.Contains(lower, "timeout"):
+		case isTimeoutErrorMessage(lower):
 			kind = DialTimeout
 			details.Message = fmt.Sprintf("connection timed out to %s", address)
 		case strings.Contains(lower, "connection refused"):
@@ -1148,6 +1152,11 @@ func ClassifySSH(err error, context SSHContext) Failure {
 		failure.processExit = ExitConnectionFailed
 	}
 	return failure
+}
+
+func isTimeoutErrorMessage(message string) bool {
+	message = strings.ToLower(message)
+	return strings.Contains(message, "timeout")
 }
 
 func isDialFailure(err error, context SSHContext) bool {

@@ -338,6 +338,15 @@ func TestRaceActivationIsTruthfulByNativeHost(t *testing.T) {
 	if got, want := race.Activation, "native_supported_host_with_cgo_and_c_compiler"; got != want {
 		t.Fatalf("race activation = %q, want %q", got, want)
 	}
+	wantAction := commandAction(
+		"go",
+		[]string{"test", "-race", "-timeout=15m", "./..."},
+		nil,
+		"",
+	)
+	if !reflect.DeepEqual(race.Action, wantAction) {
+		t.Fatalf("race action = %#v, want %#v", race.Action, wantAction)
+	}
 	wantPrerequisite := Prerequisite{
 		Kind:    "capability",
 		Name:    "native-race",
@@ -429,7 +438,7 @@ func TestReleaseMetadataActions(t *testing.T) {
 	}
 	if err := os.WriteFile(
 		filepath.Join(repo, "RELEASE_NOTES.md"),
-		[]byte("# Release Notes\n\n## v2.3.4\n\n- Verified release.\n\n## v2.3.3\n\n- Older.\n"),
+		[]byte("# Release Notes\n\n## v3.0.0\n\n- Future release.\n\n## v2.3.4\n\n- Verified release.\n\n## v2.3.3\n\n- Older.\n"),
 		0o600,
 	); err != nil {
 		t.Fatal(err)
@@ -457,6 +466,19 @@ func TestReleaseMetadataActions(t *testing.T) {
 	)
 	if result.Status != statusFailed {
 		t.Fatalf("stale release notes status = %q, want failed", result.Status)
+	}
+}
+
+func TestTrackedReleaseNotesRetainExactV2Heading(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "RELEASE_NOTES.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(data), "\n## v2.0.0\n"); got != 1 {
+		t.Fatalf("exact v2 release heading count = %d, want 1", got)
+	}
+	if strings.Contains(string(data), "Upcoming v2.0.0") {
+		t.Fatal("v2 release heading drifted to a non-publishable draft form")
 	}
 }
 
@@ -527,6 +549,42 @@ func TestReleaseChecksumAction(t *testing.T) {
 	}
 	if result := executeAction(context.Background(), action, actionCtx); result.Status != statusFailed {
 		t.Fatalf("missing-asset checksum status = %q, want failed", result.Status)
+	}
+}
+
+func TestReleaseProvenanceForEveryTarget(t *testing.T) {
+	tempDir := t.TempDir()
+	for _, target := range releaseasset.SupportedTargets() {
+		name := releaseasset.Name(target.GOOS, target.GOARCH)
+		if err := os.WriteFile(filepath.Join(tempDir, name), []byte("synthetic artifact:"+name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result := executeBuiltin("release-provenance", actionContext{
+		TempDir: tempDir,
+		Version: "1.2.3",
+	})
+	if result.Status != statusPassed {
+		t.Fatalf("release provenance status = %q (%s), want passed", result.Status, result.Detail)
+	}
+	wantDetail := fmt.Sprintf(
+		"generated and verified keyless provenance for %d release assets",
+		len(releaseasset.SupportedTargets()),
+	)
+	if result.Detail != wantDetail {
+		t.Fatalf("release provenance detail = %q, want %q", result.Detail, wantDetail)
+	}
+
+	first := releaseasset.SupportedTargets()[0]
+	if err := os.Remove(filepath.Join(tempDir, releaseasset.Name(first.GOOS, first.GOARCH))); err != nil {
+		t.Fatal(err)
+	}
+	result = executeBuiltin("release-provenance", actionContext{
+		TempDir: tempDir,
+		Version: "1.2.3",
+	})
+	if result.Status != statusFailed {
+		t.Fatalf("missing release asset provenance status = %q, want failed", result.Status)
 	}
 }
 
@@ -698,13 +756,13 @@ func TestCIWorkflowMatchesReviewedGoldenAndHasReadOnlyCredentialFreeJobs(t *test
 	}
 
 	text := string(workflow)
-	if got, want := strings.Count(text, "    permissions:\n      contents: read\n"), 2; got != want {
+	if got, want := strings.Count(text, "    permissions:\n      contents: read\n"), 3; got != want {
 		t.Fatalf("job-level contents: read permissions count = %d, want %d", got, want)
 	}
-	if got, want := strings.Count(text, "      - uses: actions/checkout@v7\n"), 2; got != want {
+	if got, want := strings.Count(text, "      - uses: actions/checkout@v7\n"), 3; got != want {
 		t.Fatalf("checkout step count = %d, want %d", got, want)
 	}
-	if got, want := strings.Count(text, "          persist-credentials: false\n"), 2; got != want {
+	if got, want := strings.Count(text, "          persist-credentials: false\n"), 3; got != want {
 		t.Fatalf("persist-credentials: false count = %d, want %d", got, want)
 	}
 	if got, want := strings.Count(text, "        run: go run ./cmd/verify ci\n"), 1; got != want {
@@ -713,16 +771,49 @@ func TestCIWorkflowMatchesReviewedGoldenAndHasReadOnlyCredentialFreeJobs(t *test
 	if got, want := strings.Count(text, "        run: go run ./cmd/verify fast\n"), 1; got != want {
 		t.Fatalf("exact Windows fast invocation count = %d, want %d", got, want)
 	}
+	const nativeReplacementCommand = "        run: go test ./internal/update -run '^TestWindowsNativeReplacementSecurity$' -count=1\n"
+	if got, want := strings.Count(text, nativeReplacementCommand), 1; got != want {
+		t.Fatalf("exact native Windows replacement-security invocation count = %d, want %d", got, want)
+	}
+	if !strings.Contains(text,
+		"      - name: Verify native Windows replacement security\n"+
+			nativeReplacementCommand,
+	) {
+		t.Fatal("native Windows replacement-security gate is not explicit")
+	}
+	if !strings.Contains(text,
+		"      - name: Verify native Windows fast profile\n"+
+			"        if: ${{ always() }}\n"+
+			"        run: go run ./cmd/verify fast\n",
+	) {
+		t.Fatal("native Windows fast profile is not unconditional after the focused security suite")
+	}
+	const nativeDarwinReplacementCommand = "        run: go test ./internal/update -run '^TestDarwinNativeReplacementSecurity$' -count=1\n"
+	if got, want := strings.Count(text, nativeDarwinReplacementCommand), 1; got != want {
+		t.Fatalf("exact native Darwin replacement-security invocation count = %d, want %d", got, want)
+	}
+	if !strings.Contains(text,
+		"      - name: Verify native Darwin replacement security\n"+
+			nativeDarwinReplacementCommand,
+	) {
+		t.Fatal("native Darwin replacement-security gate is not explicit")
+	}
+	if strings.Contains(text, "SSM_REQUIRE_WINDOWS_PRIVILEGED_TEST") {
+		t.Fatal("native Windows gate incorrectly requires optional host privileges")
+	}
 	for _, exactUse := range []string{
 		"actions/checkout@v7",
 		"actions/setup-go@v6",
 	} {
-		if got, want := strings.Count(text, "uses: "+exactUse), 2; got != want {
+		if got, want := strings.Count(text, "uses: "+exactUse), 3; got != want {
 			t.Fatalf("%s use count = %d, want %d", exactUse, got, want)
 		}
 	}
 	if !strings.Contains(text, "runs-on: windows-latest") {
 		t.Fatal("official native Windows job is absent")
+	}
+	if !strings.Contains(text, "runs-on: macos-latest") {
+		t.Fatal("official native Darwin job is absent")
 	}
 }
 
@@ -785,60 +876,67 @@ func TestReleaseWorkflowUsesCredentialFreeVerifierPreflightAndManifestParity(t *
 	}
 }
 
-func TestReleaseWorkflowTreatsDispatchTagAsQuotedData(t *testing.T) {
+func TestReleaseWorkflowProducesPinnedProvenance(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	workflow := string(data)
-	const inputExpression = "${{ inputs.tag }}"
-	if got := strings.Count(workflow, inputExpression); got != 1 {
-		t.Errorf("workflow dispatch tag expression count = %d, want one env bridge", got)
+	for description, required := range map[string]string{
+		"build identity permission":   "  build:\n    needs: preflight\n    permissions:\n      contents: read\n      id-token: write\n      attestations: write\n      artifact-metadata: write\n",
+		"official attestation action": "      - id: provenance\n        name: Attest exact release asset\n        uses: actions/attest@v4\n",
+		"exact build subject":         "          subject-path: ${{ github.workspace }}/${{ matrix.asset }}\n",
+		"adjacent bundle output":      `cp "${{ steps.provenance.outputs.bundle-path }}" "${{ matrix.asset }}.sigstore.json"`,
+		"binary artifact upload":      "            ${{ matrix.asset }}\n",
+		"bundle artifact upload":      "            ${{ matrix.asset }}.sigstore.json\n",
+		"workflow identity input":     "          RELEASE_WORKFLOW_REF: ${{ github.workflow_ref }}\n",
+		"tag workflow identity":       `expected_workflow_ref="Cd1s/ssm/.github/workflows/release.yml@refs/tags/$tag"`,
+	} {
+		if !strings.Contains(workflow, required) {
+			t.Errorf("release workflow lacks %s surface %q", description, required)
+		}
 	}
-	if !strings.Contains(workflow, "          RELEASE_TAG_INPUT: "+inputExpression+"\n") {
-		t.Error("workflow dispatch tag is not passed through the release step environment")
+	if got := strings.Count(workflow, "id-token: write"); got != 1 {
+		t.Errorf("release identity-token permission count = %d, want build job only", got)
 	}
+	if got := strings.Count(workflow, "attestations: write"); got != 1 {
+		t.Errorf("release attestation-write permission count = %d, want build job only", got)
+	}
+	if strings.Contains(workflow, "subject-path: checksums.txt") ||
+		strings.Contains(workflow, "subject-checksums:") {
+		t.Fatal("release provenance is tied to replaceable checksum data instead of exact build outputs")
+	}
+	for _, target := range releaseasset.SupportedTargets() {
+		bundle := releaseasset.ProvenanceName(releaseasset.Name(target.GOOS, target.GOARCH))
+		if got := strings.Count(workflow, "\n            "+bundle+"\n"); got != 1 {
+			t.Errorf("published provenance entry count for %s = %d, want 1", bundle, got)
+		}
+	}
+}
 
-	script := releaseWorkflowIdentityScript(t, workflow)
-	if strings.Contains(script, inputExpression) {
-		t.Error("workflow dispatch tag expression appears directly in the release run block")
-	}
-	if !strings.Contains(script, `tag="$RELEASE_TAG_INPUT"`) {
-		t.Error("release run block does not read the workflow dispatch tag as quoted data")
-	}
-
-	outputPath := filepath.Join(t.TempDir(), "github-output")
-	fakeBin := t.TempDir()
-	fakeGit := filepath.Join(fakeBin, "git")
-	writeTestFile(t, fakeGit, "#!/bin/sh\nexit 2\n")
-	if err := os.Chmod(fakeGit, 0o700); err != nil { //nolint:gosec // executable test shim requires an execute bit and is private to t.TempDir
+func TestReleaseWorkflowPublishesOnlySelectedTagIdentity(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	payload := `$(printf 'tag=v9.9.9\nversion=9.9.9\n' >> "$GITHUB_OUTPUT"; printf 'v1.4.3')`
-	renderedScript := strings.ReplaceAll(script, "${{ github.event_name }}", "workflow_dispatch")
-	renderedScript = strings.ReplaceAll(renderedScript, inputExpression, payload)
-	command := exec.Command("bash", "-c", renderedScript) //nolint:gosec // script is extracted from the tracked workflow; the adversarial value enters only through environment data
-	command.Dir = filepath.Join("..", "..")
-	command.Env = replaceEnvironmentValue(
-		os.Environ(),
-		"PATH",
-		fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
-	)
-	command.Env = append(
-		command.Env,
-		"GITHUB_REF_NAME=v1.4.3",
-		"GITHUB_OUTPUT="+outputPath,
-		"RELEASE_EVENT_NAME=workflow_dispatch",
-		"RELEASE_TAG_INPUT="+payload,
-	)
-	output, err := command.CombinedOutput()
-	if err == nil {
-		t.Errorf("release identity script accepted an injected dispatch tag; output:\n%s", output)
+	workflow := string(data)
+	for _, forbidden := range []string{
+		"workflow_dispatch:",
+		"${{ inputs.tag }}",
+		"refs/heads/main",
+	} {
+		if strings.Contains(workflow, forbidden) {
+			t.Errorf("release workflow retains unversioned publication path %q", forbidden)
+		}
 	}
-	if forged, readErr := os.ReadFile(outputPath); readErr == nil { //nolint:gosec // outputPath is fixed beneath this test's private t.TempDir
-		t.Errorf("invalid dispatch tag forged release outputs before validation: %q", forged)
-	} else if !os.IsNotExist(readErr) {
-		t.Fatal(readErr)
+	script := releaseWorkflowIdentityScript(t, workflow)
+	for _, required := range []string{
+		`tag="${GITHUB_REF_NAME}"`,
+		`expected_workflow_ref="Cd1s/ssm/.github/workflows/release.yml@refs/tags/$tag"`,
+	} {
+		if !strings.Contains(script, required) {
+			t.Errorf("release identity script lacks selected-tag binding %q", required)
+		}
 	}
 }
 
@@ -2370,6 +2468,7 @@ func TestRepresentativeRealReleaseActionsAreNonMutating(t *testing.T) {
 		"asset-windows-arm64": true,
 		"release-notes":       true,
 		"release-checksums":   true,
+		"release-provenance":  true,
 	}
 	var representative []Check
 	for _, check := range releaseChecks() {
@@ -2740,6 +2839,36 @@ func TestReleaseStrictlyContainsCI(t *testing.T) {
 	}
 }
 
+func TestReleaseProvenanceIsRequiredGate(t *testing.T) {
+	release, ok := findProfile(verificationManifest(), "release")
+	if !ok {
+		t.Fatal("release profile not found")
+	}
+	required := map[string]bool{
+		"release-provenance":       false,
+		"provenance-failure-paths": false,
+	}
+	for _, check := range release.Checks {
+		if _, tracked := required[check.ID]; !tracked {
+			continue
+		}
+		if check.Requirement != requirementRequired {
+			t.Fatalf("release provenance gate %q requirement = %q, want required", check.ID, check.Requirement)
+		}
+		required[check.ID] = true
+	}
+	for id, found := range required {
+		if !found {
+			t.Errorf("required release provenance gate %q is missing", id)
+		}
+	}
+	for _, extension := range release.Extensions {
+		if extension.Name == "provenance-extension" {
+			t.Fatal("provenance remains future metadata instead of an executable release gate")
+		}
+	}
+}
+
 func TestReleaseExtensionsAreMetadataNotChecks(t *testing.T) {
 	release, ok := findProfile(verificationManifest(), "release")
 	if !ok {
@@ -2755,11 +2884,6 @@ func TestReleaseExtensionsAreMetadataNotChecks(t *testing.T) {
 		{
 			Name:           "migration-extension",
 			Description:    "v2 migration contract and failure-path verification",
-			RequiredBefore: "initial_v2_release",
-		},
-		{
-			Name:           "provenance-extension",
-			Description:    "keyless provenance identity and trust verification",
 			RequiredBefore: "initial_v2_release",
 		},
 	}
@@ -2786,7 +2910,7 @@ func TestReleaseExtensionsAreMetadataNotChecks(t *testing.T) {
 	}
 	result, err := executeProfile(context.Background(), runtimeManifest, "release", deps)
 	if err != nil {
-		t.Fatalf("execute Ticket #18 release preflight: %v", err)
+		t.Fatalf("execute release preflight: %v", err)
 	}
 	if result.Status != statusPreflightPassed {
 		t.Fatalf("release preflight status = %q, want %q", result.Status, statusPreflightPassed)

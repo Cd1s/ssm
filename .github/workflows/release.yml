@@ -1,12 +1,6 @@
 name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Release tag to publish, for example v1.0.3"
-        required: true
-        type: string
   push:
     tags:
       - "v*"
@@ -86,14 +80,14 @@ jobs:
         name: Validate release identity
         shell: bash
         env:
-          RELEASE_EVENT_NAME: ${{ github.event_name }}
-          RELEASE_TAG_INPUT: ${{ inputs.tag }}
+          RELEASE_WORKFLOW_REF: ${{ github.workflow_ref }}
         run: |
           set -euo pipefail
-          if [ "$RELEASE_EVENT_NAME" = "workflow_dispatch" ]; then
-            tag="$RELEASE_TAG_INPUT"
-          else
-            tag="${GITHUB_REF_NAME}"
+          tag="${GITHUB_REF_NAME}"
+          expected_workflow_ref="Cd1s/ssm/.github/workflows/release.yml@refs/tags/$tag"
+          if [ "$RELEASE_WORKFLOW_REF" != "$expected_workflow_ref" ]; then
+            echo "release workflow identity is not accepted: $RELEASE_WORKFLOW_REF" >&2
+            exit 1
           fi
           if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "release tag must look like v1.2.3: $tag" >&2
@@ -124,6 +118,9 @@ jobs:
     needs: preflight
     permissions:
       contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -160,10 +157,21 @@ jobs:
           VERSION="${{ needs.preflight.outputs.version }}"
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -buildvcs=false -ldflags="-s -w -X main.version=$VERSION" -o "${{ matrix.asset }}" ./cmd/ssm
 
+      - id: provenance
+        name: Attest exact release asset
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ github.workspace }}/${{ matrix.asset }}
+
+      - name: Stage adjacent provenance bundle
+        run: cp "${{ steps.provenance.outputs.bundle-path }}" "${{ matrix.asset }}.sigstore.json"
+
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}
-          path: ${{ matrix.asset }}
+          path: |
+            ${{ matrix.asset }}
+            ${{ matrix.asset }}.sigstore.json
 
   publish:
     permissions:
@@ -210,5 +218,11 @@ jobs:
             ssm-darwin-arm64
             ssm-windows-amd64.exe
             ssm-windows-arm64.exe
+            ssm-linux-amd64.sigstore.json
+            ssm-linux-arm64.sigstore.json
+            ssm-darwin-amd64.sigstore.json
+            ssm-darwin-arm64.sigstore.json
+            ssm-windows-amd64.exe.sigstore.json
+            ssm-windows-arm64.exe.sigstore.json
             install.sh
             checksums.txt

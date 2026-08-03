@@ -30,3 +30,12 @@ failure handling, and release-pipeline tests block the initial v2 release.
 Failed authorization or trust checks leave the existing executable intact.
 The rollout and verification details are recorded in the
 [v2 decision log](../plans/ssm-v2-decision-log.md).
+
+A currently mapped Windows executable has one narrower replacement-state
+exception. If its original has already moved from the canonical pathname and
+both the handle-bound forward commit and authenticated rollback are refused,
+the operation fails as `update_recovery_required`; it retains the exact
+original evidence, blocks dispatch and later updates, and permits only
+authenticated startup restoration. This does not relax authorization or
+release trust, does not turn a failed install into success, and does not apply
+to preflight, rollback-success, Unix, or post-commit cleanup outcomes.

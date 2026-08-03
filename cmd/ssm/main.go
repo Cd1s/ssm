@@ -29,7 +29,86 @@ func isSSHCTLInvocation(path string) bool {
 	return strings.EqualFold(base, "sshctl")
 }
 
+// startupOutputMode selects only the renderer needed before command dispatch.
+// It deliberately avoids the stateful global parser so executable recovery
+// cannot cause config, vault, or network work before a startup failure is
+// rendered.
+func startupOutputMode(executable string, rawArgs []string) (jsonMode, streamMode bool) {
+	jsonMode = hasJSONFlagBeforeDash(rawArgs)
+	if !isSSHCTLInvocation(executable) {
+		return jsonMode, false
+	}
+
+	args := make([]string, 0, len(rawArgs))
+	seenCommand := false
+	for i := 0; i < len(rawArgs); i++ {
+		arg := rawArgs[i]
+		switch {
+		case !seenCommand && (arg == "--json" || arg == "--offline"):
+			continue
+		case !seenCommand && arg == "--master-pass-file":
+			if i+1 < len(rawArgs) {
+				i++
+			}
+			continue
+		case !seenCommand && strings.HasPrefix(arg, "--master-pass-file="):
+			continue
+		default:
+			args = append(args, arg)
+			if !seenCommand && (arg == "--version" || arg == "-v" ||
+				arg == "--help" || arg == "-h" || arg == "help" ||
+				!strings.HasPrefix(arg, "-")) {
+				seenCommand = true
+			}
+		}
+	}
+	if len(args) == 0 {
+		return jsonMode, false
+	}
+	if _, _, help := sshctlHelpRequest(args); help {
+		return jsonMode, false
+	}
+
+	var runArgs []string
+	switch args[0] {
+	case "run", "exec":
+		if runStreamRequested(args[1:]) {
+			return true, true
+		}
+		_, parsedRunArgs, err := splitRunAlias(args[1:])
+		if err != nil {
+			return jsonMode, false
+		}
+		runArgs = parsedRunArgs
+	default:
+		if len(args) == 1 {
+			return jsonMode, false
+		}
+		runArgs = args[1:]
+	}
+	_, streamMode, _ = parseRunStreamArgs(runArgs)
+	if streamMode {
+		jsonMode = true
+	}
+	return jsonMode, streamMode
+}
+
 func main() {
+	rawArgs := os.Args[1:]
+	machineJSON, streamMachine = startupOutputMode(os.Args[0], rawArgs)
+	if err := update.CleanupPreviousExecutable(); err != nil {
+		failure := machinecontract.Classify(
+			updateFailureKind(err, machinecontract.UpdateFailed),
+			machinecontract.Details{
+				Message: fmt.Sprintf("startup executable recovery failed: %v", err),
+				Cause:   err,
+			},
+		)
+		if streamMachine {
+			os.Exit(writeStreamFailure(os.Stdout, failure))
+		}
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			if streamMachine {
@@ -55,7 +134,6 @@ func main() {
 	if version == "dev" {
 		config.EnableDebug()
 	}
-	rawArgs := os.Args[1:]
 	sshctlInvocation := isSSHCTLInvocation(os.Args[0])
 	args, err := parseGlobalArgs(rawArgs)
 	if err != nil {
@@ -66,7 +144,16 @@ func main() {
 		os.Exit(machinecontract.WriteClassified(machineJSON, kind, machinecontract.Details{Cause: err}))
 	}
 	if !offlineMode && !isInformationalInvocation(rawArgs) {
-		checkUpdate()
+		if err := checkUpdate(); err != nil {
+			failure := machinecontract.Classify(
+				updateFailureKind(err, machinecontract.UpdateFailed),
+				machinecontract.Details{Cause: err},
+			)
+			if streamMachine {
+				os.Exit(writeStreamFailure(os.Stdout, failure))
+			}
+			os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+		}
 	}
 
 	if sshctlInvocation {
@@ -334,7 +421,7 @@ func runUpdate(args []string) {
 			if !reviewRendered {
 				renderFailure(err)
 			}
-			failure := machinecontract.Classify(machinecontract.UpdateMigrationFailed, machinecontract.Details{Cause: err})
+			failure := machinecontract.Classify(updateFailureKind(err, machinecontract.UpdateMigrationFailed), machinecontract.Details{Cause: err})
 			if machineJSON {
 				if finishMachineReview != nil {
 					_ = finishMachineReview(false, failure)
@@ -360,7 +447,7 @@ func runUpdate(args []string) {
 	}
 	result, err := update.Download(version)
 	if err != nil {
-		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.UpdateFailed, machinecontract.Details{Cause: err}))
+		os.Exit(machinecontract.WriteClassified(machineJSON, updateFailureKind(err, machinecontract.UpdateFailed), machinecontract.Details{Cause: err}))
 	}
 	if result.Installed != "" && !machineJSON {
 		fmt.Printf("Updated to %s\n", result.Installed)
@@ -506,11 +593,26 @@ func parseGlobalArgs(args []string) ([]string, error) {
 	return out, nil
 }
 
-func checkUpdate() {
+func updateFailureKind(err error, fallback machinecontract.Kind) machinecontract.Kind {
+	if update.IsRecoveryRequired(err) {
+		return machinecontract.UpdateRecoveryRequired
+	}
+	if update.IsRecoveryBlocked(err) {
+		return machinecontract.InternalFailure
+	}
+	return fallback
+}
+
+func checkUpdate() error {
 	settings := config.LoadSettings()
 	if settings.AutoUpdate && version != "dev" {
-		_ = update.Auto(version)
+		if err := update.Auto(version); err != nil {
+			if update.IsRecoveryRequired(err) || update.IsRecoveryBlocked(err) {
+				return err
+			}
+		}
 	}
+	return nil
 }
 
 func unlock() {

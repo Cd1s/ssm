@@ -175,13 +175,14 @@ func checkDivergence(facts synctransaction.Facts) MigrationCheck {
 }
 
 func checkReleaseAsset(release Release) MigrationCheck {
-	want := assetName()
-	for _, asset := range release.Assets {
-		if asset.Name == want {
-			return passedCheck("platform_asset", "The target release contains the supported platform asset "+want+".")
-		}
+	if err := validateReleaseAssets(release); err != nil {
+		return failedCheck(
+			"platform_asset",
+			"The target release does not declare the exact supported release asset and provenance manifest.",
+			"Install only after the release publishes the exact six supported assets, adjacent provenance bundles, installer, and digest data.",
+		)
 	}
-	return failedCheck("platform_asset", "The target release does not declare the required platform asset "+want+".", "Install only after the release publishes the exact supported asset and digest.")
+	return passedCheck("platform_asset", "The target release declares the exact supported release asset and provenance manifest.")
 }
 
 func checkRollbackReadiness() MigrationCheck {

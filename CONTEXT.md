@@ -48,6 +48,10 @@ plans and speculative APIs live elsewhere.
 - **Major update authorization**: Explicit approval to cross a major-version
   boundary after reviewing release notes, breaking changes, and migration
   checks. Ordinary automatic replacement never grants this approval.
+- **Update recovery-required state**: The Windows-only terminal state after a
+  mapped original has moved from its canonical pathname and both the
+  handle-bound forward commit and authenticated rollback are refused. Exact
+  original evidence remains retained for authenticated startup recovery.
 
 ## Hard contracts
 
@@ -126,3 +130,11 @@ plans and speculative APIs live elsewhere.
 - Release replacement requires the artifact digest plus keyless build
   provenance pinned to the expected repository, release workflow identity,
   and OIDC issuer.
+- Trust and preflight failures, failures before canonical mutation, and
+  ordinary `update_failed` outcomes leave the exact original executable
+  canonical. On Windows only, simultaneous forward-commit and authenticated
+  rollback refusal after the original moves uses
+  `error=update_recovery_required`, `stage=update_recovery`, and `exit=1`;
+  command dispatch and later updates remain blocked until recovery revalidates
+  the original File ID, SHA-256, and security-descriptor binding, restores the
+  canonical pathname, and clears the authenticated record.

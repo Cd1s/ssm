@@ -750,16 +750,7 @@ func loadCompiledFileIdentity(t *testing.T, path string) compiledFileIdentity {
 	return compiledFileIdentity{ByteLength: len(data), Digest: sha256.Sum256(data)}
 }
 
-func assertCompiledFileMatches(t *testing.T, path string, want []byte) {
-	t.Helper()
-	got := loadCompiledFileIdentity(t, path)
-	wantIdentity := compiledFileIdentity{ByteLength: len(want), Digest: sha256.Sum256(want)}
-	if got != wantIdentity {
-		t.Fatal("compiled CLI executable does not match the downloaded replacement fixture")
-	}
-}
-
-func assertCompiledUpdateRequests(t *testing.T, got []string, version string) {
+func assertCompiledChecksumOnlyFailureRequests(t *testing.T, got []string, version string) {
 	t.Helper()
 	asset := fmt.Sprintf("ssm-%s-%s", runtime.GOOS, runtime.GOARCH)
 	if runtime.GOOS == "windows" {
@@ -768,7 +759,7 @@ func assertCompiledUpdateRequests(t *testing.T, got []string, version string) {
 	want := []string{
 		"/repos/fixture/repo/releases",
 		"/fixture/repo/releases/download/" + version + "/checksums.txt",
-		"/fixture/repo/releases/download/" + version + "/" + asset,
+		"/fixture/repo/releases/download/" + version + "/" + asset + ".sigstore.json",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("update request count = %d, want %d", len(got), len(want))
@@ -1712,20 +1703,24 @@ func TestCompiledTransferAdaptersPreserveFailureProjections(t *testing.T) {
 		}
 	}
 
-	missingLocal := filepath.Join(cli.temp, "missing-transfer-source")
+	// These literals freeze the origin/agent-headless-sync projection. Its
+	// historical broad timeout classifier applies even when the matching text
+	// comes from a local path error.
+	missingLocal := filepath.Join(cli.temp, "missing-timeout-transfer-source")
 	_, statErr := os.Stat(missingLocal)
 	if statErr == nil {
 		t.Fatalf("missing transfer source unexpectedly exists: %s", missingLocal)
 	}
 	carriedHuman := cli.Run(t, "sshctl", nil, "--offline", "put", alias, missingLocal, "/remote/carried")
-	assertHuman(t, carriedHuman, 1,
-		"ssm: error=internal alias="+alias+" address="+server.Address()+"\n"+
-			"Error: "+statErr.Error()+"\n",
+	assertHuman(t, carriedHuman, machinecontract.ExitConnectionFailed,
+		"ssm: error=dial_timeout alias="+alias+" address="+server.Address()+"\n"+
+			"Error: connection timed out to "+server.Address()+"\n"+
+			"ssm: hint=network/host unreachable or filtered; verify host online/firewall/IPv6. Not an ssm quote bug.\n",
 	)
 	carriedMachine := cli.Run(t, "sshctl", nil, "--offline", "--json", "put", alias, missingLocal, "/remote/carried")
 	assertCompiledTransferSnapshot(t, carriedMachine, map[string]any{
 		"ok": false, "error": "local_read_failed", "message": statErr.Error(),
-		"hint": "verify the local path and read permissions", "exit": 1, "stage": "local_read",
+		"hint": "verify the local path and read permissions", "exit": machinecontract.ExitConnectionFailed, "stage": "local_read",
 		"direction": "put", "kind": "unknown",
 		"alias": alias, "bytes_sent": 0, "integrity": "not_checked", "atomic": false, "resume": "unsupported",
 	})
@@ -3280,7 +3275,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		}
 	})
 
-	t.Run("BC-9 an adjacent checksum alone authorizes replacement", func(t *testing.T) {
+	t.Run("BC-9 an adjacent checksum alone cannot authorize replacement", func(t *testing.T) {
 		cli := newCompiledCLIHarness(t)
 		cli.SaveVault(t, &config.Vault{})
 		replacement := []byte("ISSUE17_CHECKSUM_ONLY_REPLACEMENT_FIXTURE\n")
@@ -3289,9 +3284,13 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 		before := loadCompiledFileIdentity(t, cli.paths["ssm"])
 		result := cli.RunWithEnv(t, "ssm", nil, map[string]string{"SSM_UPDATE_REPO": "fixture/repo"}, "update")
 		assertNoCompiledCanaryLeak(t, result, map[string]string{"replacement": string(replacement)})
-		assertCompiledExplicitUpdateOutcome(t, result, cli.paths["ssm"], before, replacement, "v1.5.0")
+		if result.ProcessExit != 1 || result.Stdout != "Checking for updates...\n" ||
+			!strings.Contains(result.Stderr, "Error: download failed:") {
+			t.Fatalf("checksum-only trust failure contract failed; output=%s", compiledOutputIdentity(result))
+		}
+		assertCompiledFileUnchanged(t, cli.paths["ssm"], before)
 		paths := compiledUpdateServer.RequestPaths()
-		assertCompiledUpdateRequests(t, paths, "v1.5.0")
+		assertCompiledChecksumOnlyFailureRequests(t, paths, "v1.5.0")
 	})
 
 	t.Run("BC-10 make check is a single non-mutating verification-manifest adapter", func(t *testing.T) {
