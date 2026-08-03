@@ -126,10 +126,10 @@ func TestRefreshHostVaultRejectsBrokenCloudUnlessOffline(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "cloud.json"), []byte("not-json"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := refreshHostVault(false); err == nil {
+	if _, err := syncTransaction(false).Refresh(); err == nil {
 		t.Fatal("expected malformed cloud config to stop refresh")
 	}
-	if err := refreshHostVault(true); err != nil {
+	if _, err := syncTransaction(true).Refresh(); err != nil {
 		t.Fatalf("offline refresh = %v", err)
 	}
 }

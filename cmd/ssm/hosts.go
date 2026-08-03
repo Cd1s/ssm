@@ -289,16 +289,16 @@ func runHostCommand(args []string) {
 		os.Exit(machinecontract.WriteMetadataError(opts.asJSON || hasJSONFlag(args), err, machinecontract.HostInternalFailure))
 	}
 
-	if err := refreshHostVault(opts.offline); err != nil {
+	if _, err := syncTransaction(opts.offline).Refresh(); err != nil {
 		if errors.Is(err, synctransaction.ErrConfiguration) {
 			failure := machinecontract.ClassifySyncFailure(err, machinecontract.HostSyncPullFailed)
 			os.Exit(machinecontract.WriteFailure(opts.asJSON, failure, failure))
 		}
-		os.Exit(machinecontract.WriteMetadataError(opts.asJSON, newHostError(machinecontract.HostSyncPullFailed, "%s; retry only with --offline if stale local state is acceptable", redactError(err)), machinecontract.HostInternalFailure))
+		os.Exit(machinecontract.WriteMetadataError(opts.asJSON, newHostError(machinecontract.HostSyncPullFailed, "%s; retry only with --offline if stale local state is acceptable", machinecontract.RedactError(err)), machinecontract.HostInternalFailure))
 	}
 	v, err := loadVault()
 	if err != nil {
-		os.Exit(machinecontract.WriteMetadataError(opts.asJSON, newHostError(machinecontract.HostVaultFailed, "%s", redactError(err)), machinecontract.HostInternalFailure))
+		os.Exit(machinecontract.WriteMetadataError(opts.asJSON, newHostError(machinecontract.HostVaultFailed, "%s", machinecontract.RedactError(err)), machinecontract.HostInternalFailure))
 	}
 
 	switch opts.action {
@@ -379,11 +379,6 @@ func optionalIntPointer(value optionalInt) *int {
 		return nil
 	}
 	return &value.value
-}
-
-func refreshHostVault(offline bool) error {
-	_, err := syncTransaction(offline).Refresh()
-	return err
 }
 
 func exactConnectionIndex(v *config.Vault, alias string) int {

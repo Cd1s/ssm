@@ -29,7 +29,10 @@ func runHostKeyCommand(args []string) {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.HostKeyArgumentsInvalid, machinecontract.Details{Cause: err}))
 	}
 	machineJSON = machineJSON || opts.asJSON
-	pullIfChanged()
+	if _, err := syncTransaction(false).Refresh(); err != nil {
+		failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullFailed)
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+	}
 	v, err := loadVault()
 	if err != nil {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.HostKeyVaultFailed, machinecontract.Details{Cause: err}))

@@ -93,6 +93,9 @@ func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("prepared recovery rejects descriptor mutation with the same file ID", testWindowsPreparedRecoveryRejectsDescriptorMutation)
 	t.Run("prepared full recovery rejects same-ID RM control mutation", testWindowsPreparedFullRecoveryRejectsRMControlMutation)
 	t.Run("hard-linked targets and stages fail closed", testWindowsHardLinksFailClosed)
+	t.Run("rename authenticates held handle final path", testWindowsRenameHeldHandleFinalPath)
+	t.Run("rename final path normalization and failures", testWindowsRenameFinalPathNormalizationAndFailures)
+	t.Run("rename canonicalizes short parent aliases", testWindowsRenameShortParentAlias)
 	t.Run("rollback failure preserves recovery evidence", testWindowsRollbackFailurePreservesEvidence)
 	t.Run("forged rollback control state is rejected", testWindowsForgedRollbackControlStateIsRejected)
 	t.Run("writable inherited rollback state is rejected before parsing", testWindowsWritableInheritedRollbackStateIsRejected)
@@ -167,6 +170,348 @@ func testWindowsDeleteGuardAllowsLinkReplacement(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func testWindowsRenameHeldHandleFinalPath(t *testing.T) {
+	directory := t.TempDir()
+	source := filepath.Join(directory, "authenticated-source.exe")
+	destination := filepath.Join(directory, "canonical-destination.exe")
+	if err := os.WriteFile(source, []byte("authenticated source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := openWindowsReplacementFile(
+		source,
+		windows.GENERIC_READ|windows.DELETE,
+	)
+	if err != nil {
+		t.Fatalf("open authenticated source: %v", err)
+	}
+	defer windows.CloseHandle(handle)
+	sourceIdentity, err := inspectWindowsReplacementHandle(handle, "authenticated source")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	originalOpen := openWindowsReplacementInspectionFile
+	originalRename := renameWindowsReplacementHandle
+	renamed := false
+	postRenamePathOpenCalls := 0
+	openWindowsReplacementInspectionFile = func(path string, access uint32) (windows.Handle, error) {
+		if renamed && strings.EqualFold(filepath.Clean(path), filepath.Clean(destination)) {
+			postRenamePathOpenCalls++
+			return windows.InvalidHandle, windows.ERROR_FILE_NOT_FOUND
+		}
+		return originalOpen(path, access)
+	}
+	renameWindowsReplacementHandle = func(
+		handle windows.Handle,
+		destination string,
+		replace bool,
+	) error {
+		err := originalRename(handle, destination, replace)
+		if err == nil {
+			renamed = true
+		}
+		return err
+	}
+	defer func() {
+		openWindowsReplacementInspectionFile = originalOpen
+		renameWindowsReplacementHandle = originalRename
+	}()
+
+	if err := renameExpectedWindowsReplacementHandle(
+		handle,
+		destination,
+		sourceIdentity,
+		false,
+		"",
+		"authenticated source",
+		"canonical destination",
+	); err != nil {
+		t.Fatalf("held-handle rename rejected transient destination reopen: %v", err)
+	}
+	if !renamed {
+		t.Fatal("rename fixture did not reach the native rename")
+	}
+	if postRenamePathOpenCalls != 0 {
+		t.Fatalf("fixed rename reopened destination pathname %d times", postRenamePathOpenCalls)
+	}
+
+	// This is the deterministic RED condition from the old flow: the rename
+	// already authenticated the held source handle, but an immediate pathname
+	// reopen can report ERROR_FILE_NOT_FOUND. Binding success to that reopen
+	// falsely rejects the otherwise-correct rename.
+	if err := requireWindowsReplacementPathIdentity(
+		destination,
+		sourceIdentity,
+		"old destination pathname reopen",
+	); err == nil || !errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
+		t.Fatalf("old destination pathname reopen error = %v, want ERROR_FILE_NOT_FOUND", err)
+	}
+	if postRenamePathOpenCalls != 1 {
+		t.Fatalf("RED fixture destination pathname opens = %d, want 1", postRenamePathOpenCalls)
+	}
+}
+
+func testWindowsRenameFinalPathNormalizationAndFailures(t *testing.T) {
+	directory := t.TempDir()
+	source := filepath.Join(directory, "authenticated-source.exe")
+	destination := filepath.Join(directory, "canonical-destination.exe")
+	if err := os.WriteFile(source, []byte("authenticated source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := openWindowsReplacementFile(source, windows.GENERIC_READ)
+	if err != nil {
+		t.Fatalf("open authenticated source: %v", err)
+	}
+	defer windows.CloseHandle(handle)
+
+	extendedDestination := windowsTestExtendedFinalPath(destination)
+	cases := []struct {
+		name      string
+		finalPath string
+		queryErr  error
+		wantErr   string
+	}{
+		{name: "extended drive or UNC prefix and case", finalPath: strings.ToUpper(extendedDestination)},
+		{name: "cleaned absolute destination", finalPath: filepath.Join(filepath.Dir(destination), ".", filepath.Base(destination))},
+		{name: "mismatch fails closed", finalPath: filepath.Join(directory, "different-destination.exe"), wantErr: "does not match intended destination"},
+		{name: "query error fails closed", queryErr: windows.ERROR_ACCESS_DENIED, wantErr: "inspect final destination final path"},
+	}
+	originalQuery := getWindowsFinalPathNameByHandle
+	defer func() { getWindowsFinalPathNameByHandle = originalQuery }()
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			getWindowsFinalPathNameByHandle = func(
+				_ windows.Handle,
+				buffer *uint16,
+				bufferSize uint32,
+				_ uint32,
+			) (uint32, error) {
+				if test.queryErr != nil {
+					return 0, test.queryErr
+				}
+				encoded, err := windows.UTF16FromString(test.finalPath)
+				if err != nil {
+					return 0, err
+				}
+				if uint32(len(encoded)) > bufferSize {
+					return uint32(len(encoded)), nil
+				}
+				copy(unsafe.Slice(buffer, int(bufferSize)), encoded)
+				return uint32(len(encoded) - 1), nil
+			}
+			err := requireWindowsReplacementHandleFinalPath(
+				handle,
+				destination,
+				"final destination",
+			)
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("final path verification failed: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("final path verification error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func windowsTestExtendedFinalPath(path string) string {
+	path = filepath.Clean(path)
+	if strings.HasPrefix(path, `\\`) {
+		return `\\?\UNC\` + strings.TrimPrefix(path, `\\`)
+	}
+	return `\\?\` + path
+}
+
+func testWindowsRenameShortParentAlias(t *testing.T) {
+	directory := t.TempDir()
+	source := filepath.Join(directory, "authenticated-source.exe")
+	if err := os.WriteFile(source, []byte("authenticated source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := openWindowsReplacementFile(source, windows.GENERIC_READ)
+	if err != nil {
+		t.Fatalf("open authenticated source: %v", err)
+	}
+	defer windows.CloseHandle(handle)
+	sourceIdentity, err := inspectWindowsReplacementHandle(handle, "authenticated source")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Model the native runner's inherited 8.3 parent alias and the long parent
+	// returned by GetLongPathNameW. The destination parent need not exist for
+	// this seam-driven fixture because the rename itself is isolated below.
+	intendedDestination := `C:\Users\RUNNER~1\AppData\Local\Temp\ssm\canonical.exe`
+	canonicalParent := `C:\Users\runneradmin\AppData\Local\Temp\ssm`
+	canonicalDestination := filepath.Join(canonicalParent, "canonical.exe")
+	originalLongPath := getWindowsLongPathName
+	originalFinalPath := getWindowsFinalPathNameByHandle
+	originalRename := renameWindowsReplacementHandle
+	defer func() {
+		getWindowsLongPathName = originalLongPath
+		getWindowsFinalPathNameByHandle = originalFinalPath
+		renameWindowsReplacementHandle = originalRename
+	}()
+	setLongPathResult := func(result string, queryErr error) {
+		getWindowsLongPathName = func(
+			_ *uint16,
+			buffer *uint16,
+			bufferSize uint32,
+		) (uint32, error) {
+			if queryErr != nil {
+				return 0, queryErr
+			}
+			encoded, err := windows.UTF16FromString(result)
+			if err != nil {
+				return 0, err
+			}
+			if uint32(len(encoded)) > bufferSize {
+				return uint32(len(encoded)), nil
+			}
+			copy(unsafe.Slice(buffer, int(bufferSize)), encoded)
+			return uint32(len(encoded) - 1), nil
+		}
+	}
+	setFinalPathResult := func(result string, queryErr error) {
+		getWindowsFinalPathNameByHandle = func(
+			_ windows.Handle,
+			buffer *uint16,
+			bufferSize uint32,
+			_ uint32,
+		) (uint32, error) {
+			if queryErr != nil {
+				return 0, queryErr
+			}
+			encoded, err := windows.UTF16FromString(result)
+			if err != nil {
+				return 0, err
+			}
+			if uint32(len(encoded)) > bufferSize {
+				return uint32(len(encoded)), nil
+			}
+			copy(unsafe.Slice(buffer, int(bufferSize)), encoded)
+			return uint32(len(encoded) - 1), nil
+		}
+	}
+
+	t.Run("8.3 parent resolves to long final path", func(t *testing.T) {
+		renamed := false
+		setLongPathResult(canonicalParent, nil)
+		setFinalPathResult(canonicalDestination, nil)
+		renameWindowsReplacementHandle = func(
+			windows.Handle,
+			string,
+			bool,
+		) error {
+			renamed = true
+			return nil
+		}
+		if err := renameExpectedWindowsReplacementHandle(
+			handle,
+			intendedDestination,
+			sourceIdentity,
+			false,
+			"",
+			"authenticated source",
+			"canonical destination",
+		); err != nil {
+			t.Fatalf("8.3 parent alias was rejected: %v", err)
+		}
+		if !renamed {
+			t.Fatal("8.3 parent alias fixture did not reach rename")
+		}
+	})
+
+	t.Run("parent canonicalization error fails closed", func(t *testing.T) {
+		renamed := false
+		setLongPathResult("", windows.ERROR_ACCESS_DENIED)
+		renameWindowsReplacementHandle = func(
+			windows.Handle,
+			string,
+			bool,
+		) error {
+			renamed = true
+			return nil
+		}
+		err := renameExpectedWindowsReplacementHandle(
+			handle,
+			intendedDestination,
+			sourceIdentity,
+			false,
+			"",
+			"authenticated source",
+			"canonical destination",
+		)
+		if err == nil || !strings.Contains(err.Error(), "canonicalize canonical destination parent path") {
+			t.Fatalf("parent canonicalization error = %v, want fail-closed query error", err)
+		}
+		if renamed {
+			t.Fatal("rename ran after parent canonicalization failure")
+		}
+	})
+
+	t.Run("final query error fails closed", func(t *testing.T) {
+		renamed := false
+		setLongPathResult(canonicalParent, nil)
+		setFinalPathResult("", windows.ERROR_ACCESS_DENIED)
+		renameWindowsReplacementHandle = func(
+			windows.Handle,
+			string,
+			bool,
+		) error {
+			renamed = true
+			return nil
+		}
+		err := renameExpectedWindowsReplacementHandle(
+			handle,
+			intendedDestination,
+			sourceIdentity,
+			false,
+			"",
+			"authenticated source",
+			"canonical destination",
+		)
+		if err == nil || !strings.Contains(err.Error(), "inspect canonical destination final path") {
+			t.Fatalf("final query error = %v, want fail-closed query error", err)
+		}
+		if !renamed {
+			t.Fatal("final query fixture did not reach rename")
+		}
+	})
+
+	t.Run("final mismatch fails closed", func(t *testing.T) {
+		renamed := false
+		setLongPathResult(canonicalParent, nil)
+		setFinalPathResult(filepath.Join(canonicalParent, "different.exe"), nil)
+		renameWindowsReplacementHandle = func(
+			windows.Handle,
+			string,
+			bool,
+		) error {
+			renamed = true
+			return nil
+		}
+		err := renameExpectedWindowsReplacementHandle(
+			handle,
+			intendedDestination,
+			sourceIdentity,
+			false,
+			"",
+			"authenticated source",
+			"canonical destination",
+		)
+		if err == nil || !strings.Contains(err.Error(), "does not match intended destination") {
+			t.Fatalf("final mismatch error = %v, want fail-closed mismatch", err)
+		}
+		if !renamed {
+			t.Fatal("final mismatch fixture did not reach rename")
+		}
+	})
 }
 
 func testWindowsMappedLinkTransition(t *testing.T) {
