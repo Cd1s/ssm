@@ -30,9 +30,16 @@ func TestSSHCTLHelpFormsAndSubcommand(t *testing.T) {
 }
 
 func TestRunHelpDocumentsFastStream(t *testing.T) {
-	out := captureHelpOutput(t, func() { runSSHCTL([]string{"run", "--help"}) })
-	if !strings.Contains(out, "--stream") || !strings.Contains(out, "JSON string array") {
-		t.Fatalf("run help does not document stream mode: %q", out)
+	for _, command := range []string{"run", "exec", "plan"} {
+		t.Run(command, func(t *testing.T) {
+			out := captureHelpOutput(t, func() { runSSHCTL([]string{command, "--help"}) })
+			if !strings.Contains(out, "--stream") || !strings.Contains(out, "JSON string array") || !strings.Contains(out, "compact NDJSON") {
+				t.Fatalf("%s help does not document stream mode: %q", command, out)
+			}
+			if count := strings.Count(out, "Usage: sshctl "+command+" "); count != 1 {
+				t.Fatalf("%s help has %d Usage blocks, want exactly 1: %q", command, count, out)
+			}
+		})
 	}
 }
 
