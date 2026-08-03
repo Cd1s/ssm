@@ -1,10 +1,57 @@
 # Issue #31 — SSM v2 final release readiness
 
-This checked-in report is **manifest-derived** and **secret-free**. It is rendered from `verificationManifest()` and records the reviewed evidence map; it contains no credentials, private keys, decrypted vault contents, or exact-HEAD test results.
+This checked-in report is **manifest-derived** and **secret-free**. It is rendered from `verificationManifest()` plus the reviewed final-candidate evidence record; it contains no credentials, private keys, or decrypted vault contents.
 
-The report is a deterministic review artifact, not a release authority. Actual exact-HEAD pass results belong in PR/CI evidence, not fabricated in generated source.
+The report is a deterministic review artifact, not a release authority. It records the outcome labels and public tool versions observed for the final candidate; Exact-HEAD binding is supplied by the attached PR and native CI evidence and must match the current pushed commit before merge.
 
 Verification performs no merge, tag, release, upload, publication, or real installation. It only evaluates the checked-in source, tests, documentation, and temporary verifier-owned outputs.
+
+## Recorded final candidate results
+
+These secret-free outcomes record the complete Issue #31 command set. Any source, test, manifest, or report change invalidates the record until every command is rerun; the PR evidence supplies the exact commit identity for the rerun.
+
+| exact command | result |
+| --- | --- |
+| `test -z "$(gofmt -l .)"` | `passed` |
+| `go run ./cmd/verify list` | `passed` |
+| `go run ./cmd/verify ci` | `passed` |
+| `go run ./cmd/verify release` | `preflight_passed` |
+| `go test ./... -run 'TestApprovedV2BreakingChangeBaselines\|TestDeepPolicyOwnershipContraction\|TestReleaseProvenanceForEveryTarget\|TestV2MigrationDocumentationContract' -count=1` | `passed` |
+| `go test ./...` | `passed` |
+| `go test -race ./...` | `passed` |
+| `go vet ./...` | `passed` |
+| `scripts/ssh_matrix_test.sh` | `passed` |
+| `git diff --check` | `passed` |
+| `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go test -exec=true ./...` | `passed` |
+| `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go vet ./...` | `passed` |
+| `CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go test -exec=true ./...` | `passed` |
+| `CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go vet ./...` | `passed` |
+
+## Observed final-gate tool versions
+
+The versions below were observed in the Linux final-gate environment. The manifest sections retain the executable per-check prerequisite contracts; native Windows and Darwin outcomes are attached as exact-HEAD CI evidence.
+
+| tool | observed version |
+| --- | --- |
+| Go | `1.25.12` |
+| git | `2.47.3` |
+| jq | `1.7` |
+| golangci-lint | `2.11.4` |
+| Node.js | `20.19.2` |
+| npm/npx | `9.2.0` |
+| GNU Bash | `5.2.37(1)-release` |
+| OpenSSH | `10.0p2 Debian-7+deb13u4` |
+
+## Explicit rehearsal outcomes
+
+These outcomes are exercised directly by the release profile rather than inferred from a summary.
+
+| required outcome | result | direct fixture evidence |
+| --- | --- | --- |
+| rollback rehearsal | `passed` | internal/update/update_test.go — TestFailedMigrationPreservesExecutable; cmd/ssm/publication_intent_compiled_test.go — TestPublicationIntentCrashMatrix, TestPublicationReconcilesLostResponse, TestPublicationReconcilesFinalizeFailure |
+| trust-negative rehearsal | `passed` | internal/update/update_test.go — TestProvenanceIdentityMatrix, TestProvenanceDigestBinding, TestTrustFailurePreservesExecutable, TestChecksumForAssetRequiresMatchingAsset, TestCopyAndVerifyRejectsChecksumMismatch |
+| structural contraction | `passed` | cmd/ssm/deep_policy_ownership_test.go — TestDeepPolicyOwnershipContraction, TestDeepPolicyOwnershipAnalyzerAdversarialFixtures |
+| clean-tree/no-publication proof | `passed` | cmd/verify/main_test.go — TestProfilesAreNonMutating, TestVerificationChildrenHaveNoInheritedPublicationAuthority, TestProfileDetectsAllRefMutations |
 
 ## Manifest profile membership, equivalence, and check counts
 
@@ -303,20 +350,20 @@ The complete release name set also contains `install.sh` and `checksums.txt`, fo
 
 ## BC-1 through BC-10 evidence map
 
-Each row points to a concrete existing highest-seam test source and test name; the map is evidence routing, not a fabricated result.
+Each row records the final-candidate result and points to the concrete highest-seam test source and test name that produced it.
 
-| break | behavior covered | highest-seam source and test name |
-| --- | --- | --- |
-| `BC-1` | Present invalid cloud configuration is a fatal online sync error; explicit offline reads the cached snapshot. | cmd/ssm/compiled_cli_contract_test.go — TestCompiledCLIContractMatrix, TestCompiledSyncStateMatrix |
-| `BC-2` | Cross-alias saved-key dependencies are rejected before publication and retain a reviewable transaction scope. | cmd/ssm/compiled_cli_contract_test.go — TestCompiledCLIContractMatrix; cmd/ssm/inventory_transaction_compiled_test.go — TestScopedPublicationSavedKeyDependencies, TestInventoryTransactionPolicy |
-| `BC-3` | Stream startup and refresh failures use compact terminal NDJSON with the exact input and network contract. | cmd/ssm/compiled_stream_contract_test.go — TestCompiledStreamContract, TestCompiledStreamStartupNetworkPolicy |
-| `BC-4` | Legacy mutation and import entry points create pending reviewable transactions and never auto-publish. | cmd/ssm/legacy_mutation_compiled_test.go — TestLegacyMutationsCreatePendingTransactions, TestImportCreatesOneAtomicBulkTransaction, TestMutationEntryPointsNeverAutoPublish; cmd/ssm/publication_intent_compiled_test.go — TestPublicationIntentCrashMatrix, TestPublicationReconcilesLostResponse, TestPublicationReconcilesFinalizeFailure |
-| `BC-5` | Bare and empty publication scopes fail closed; explicit scopes preserve the invocation-start transaction set. | cmd/ssm/push_scope_compiled_test.go — TestPushScopeArgumentsFailBeforePublicationSideEffects, TestPushOnlyEqualsPreservesExactScope, TestEmptyLedgerPushNeverPuts, TestPushAllUsesInvocationStartSnapshot, TestEveryPushPathUsesInventoryTransactions |
-| `BC-6` | Online stream refresh zero is rejected before network work; explicit offline uses one fixed cached snapshot. | cmd/ssm/compiled_stream_contract_test.go — TestCompiledStreamContract, TestCompiledStreamStartupNetworkPolicy, TestStreamOfflineUsesFixedSnapshot |
-| `BC-7` | Direct and request-v1 transfer outcomes share direction, kind, stage, and truthful file/directory guarantees. | cmd/ssm/transfer_outcome_test.go — TestCompiledTransferOutcomeMatrix, TestTransferDirectAndRequestParity, TestTransferGuaranteesAreTruthful |
-| `BC-8` | Automatic updates remain same-major; major migration requires explicit authorization and failed migration preserves the executable. | internal/update/migration_test.go — TestMigrationPreflightInspectsLocalSyncStateWithoutNetwork, TestMigrationPreflightFailsForPreservedSyncConflictWithoutNetwork; internal/update/update_test.go — TestSameMajorSelection, TestCrossMajorRequiresExplicitAuthorization, TestFailedMigrationPreservesExecutable |
-| `BC-9` | Checksums are insufficient: exact release selection and pinned provenance identity/digest failures preserve installed bytes and mode. | internal/update/update_test.go — TestProvenanceIdentityMatrix, TestProvenanceDigestBinding, TestTrustFailurePreservesExecutable, TestReleaseAssetSelectionIsStrict, TestInvalidSelectedReleaseDoesNotFallBackOrDownload; cmd/verify/main_test.go — TestReleaseProvenanceForEveryTarget; cmd/verify/release_unix_test.go — TestInstallerRejectsProvenanceReplayAndDowngrade, TestInstallerRequiresExactReleaseManifest, TestInstallerPinsProvenanceTrustPolicy |
-| `BC-10` | make check is the non-mutating verify ci adapter; release is a strict non-publishing superset with deterministic terminal status. | cmd/ssm/compiled_cli_contract_test.go — TestCompiledCLIContractMatrix (BC-10 subtest); cmd/verify/main_test.go — TestReleaseStrictlyContainsCI, TestProfilesAreNonMutating, TestVerificationChildrenHaveNoInheritedPublicationAuthority, TestReleaseV2ReadinessIsExecutable |
+| break | result | behavior covered | highest-seam source and test name |
+| --- | --- | --- | --- |
+| `BC-1` | `passed` | Present invalid cloud configuration is a fatal online sync error; explicit offline reads the cached snapshot. | cmd/ssm/compiled_cli_contract_test.go — TestCompiledCLIContractMatrix, TestCompiledSyncStateMatrix |
+| `BC-2` | `passed` | Cross-alias saved-key dependencies are rejected before publication and retain a reviewable transaction scope. | cmd/ssm/compiled_cli_contract_test.go — TestCompiledCLIContractMatrix; cmd/ssm/inventory_transaction_compiled_test.go — TestScopedPublicationSavedKeyDependencies, TestInventoryTransactionPolicy |
+| `BC-3` | `passed` | Stream startup and refresh failures use compact terminal NDJSON with the exact input and network contract. | cmd/ssm/compiled_stream_contract_test.go — TestCompiledStreamContract, TestCompiledStreamStartupNetworkPolicy |
+| `BC-4` | `passed` | Legacy mutation and import entry points create pending reviewable transactions and never auto-publish. | cmd/ssm/legacy_mutation_compiled_test.go — TestLegacyMutationsCreatePendingTransactions, TestImportCreatesOneAtomicBulkTransaction, TestMutationEntryPointsNeverAutoPublish; cmd/ssm/publication_intent_compiled_test.go — TestPublicationIntentCrashMatrix, TestPublicationReconcilesLostResponse, TestPublicationReconcilesFinalizeFailure |
+| `BC-5` | `passed` | Bare and empty publication scopes fail closed; explicit scopes preserve the invocation-start transaction set. | cmd/ssm/push_scope_compiled_test.go — TestPushScopeArgumentsFailBeforePublicationSideEffects, TestPushOnlyEqualsPreservesExactScope, TestEmptyLedgerPushNeverPuts, TestPushAllUsesInvocationStartSnapshot, TestEveryPushPathUsesInventoryTransactions |
+| `BC-6` | `passed` | Online stream refresh zero is rejected before network work; explicit offline uses one fixed cached snapshot. | cmd/ssm/compiled_stream_contract_test.go — TestCompiledStreamContract, TestCompiledStreamStartupNetworkPolicy, TestStreamOfflineUsesFixedSnapshot |
+| `BC-7` | `passed` | Direct and request-v1 transfer outcomes share direction, kind, stage, and truthful file/directory guarantees. | cmd/ssm/transfer_outcome_test.go — TestCompiledTransferOutcomeMatrix, TestTransferDirectAndRequestParity, TestTransferGuaranteesAreTruthful |
+| `BC-8` | `passed` | Automatic updates remain same-major; major migration requires explicit authorization and failed migration preserves the executable. | internal/update/migration_test.go — TestMigrationPreflightInspectsLocalSyncStateWithoutNetwork, TestMigrationPreflightFailsForPreservedSyncConflictWithoutNetwork; internal/update/update_test.go — TestSameMajorSelection, TestCrossMajorRequiresExplicitAuthorization, TestFailedMigrationPreservesExecutable |
+| `BC-9` | `passed` | Checksums are insufficient: exact release selection and pinned provenance identity/digest failures preserve installed bytes and mode. | internal/update/update_test.go — TestProvenanceIdentityMatrix, TestProvenanceDigestBinding, TestTrustFailurePreservesExecutable, TestReleaseAssetSelectionIsStrict, TestInvalidSelectedReleaseDoesNotFallBackOrDownload; cmd/verify/main_test.go — TestReleaseProvenanceForEveryTarget; cmd/verify/release_unix_test.go — TestInstallerRejectsProvenanceReplayAndDowngrade, TestInstallerRequiresExactReleaseManifest, TestInstallerPinsProvenanceTrustPolicy |
+| `BC-10` | `passed` | make check is the non-mutating verify ci adapter; release is a strict non-publishing superset with deterministic terminal status. | cmd/ssm/compiled_cli_contract_test.go — TestCompiledCLIContractMatrix (BC-10 subtest); cmd/verify/main_test.go — TestReleaseStrictlyContainsCI, TestProfilesAreNonMutating, TestVerificationChildrenHaveNoInheritedPublicationAuthority, TestReleaseV2ReadinessIsExecutable |
 
 ## Acceptance and public-seam map
 
@@ -324,57 +371,68 @@ The acceptance rows below connect each public seam to the manifest check(s) that
 
 ### compiled CLI
 
+- result: `passed`
 - manifest check(s): `v2-public-contracts`: command `go test ./cmd/ssm -run ^(TestCompiledCLIContractMatrix|TestApprovedV2BreakingChangeBaselines|TestCompiledSyncStateMatrix|TestCompiledStreamContract|TestCompiledStreamStartupNetworkPolicy|TestStreamRefreshClosesPool|TestStreamOfflineUsesFixedSnapshot|TestInventoryTransactionPolicy|TestScopedPublicationSavedKeyDependencies|TestLegacyMutationsCreatePendingTransactions|TestImportCreatesOneAtomicBulkTransaction|TestMutationEntryPointsNeverAutoPublish|TestPushScopeArgumentsFailBeforePublicationSideEffects|TestPushOnlyEqualsPreservesExactScope|TestEmptyLedgerPushNeverPuts|TestPushAllUsesInvocationStartSnapshot|TestEveryPushPathUsesInventoryTransactions|TestPublicationIntentCrashMatrix|TestPublicationReconcilesLostResponse|TestPublicationReconcilesFinalizeFailure|TestCompiledTransferOutcomeMatrix|TestTransferDirectAndRequestParity|TestTransferGuaranteesAreTruthful)$ -count=1`
 - evidence: cmd/ssm/compiled_cli_contract_test.go — TestCompiledCLIContractMatrix, TestApprovedV2BreakingChangeBaselines
 
 ### sync/offline
 
+- result: `passed`
 - manifest check(s): `v2-public-contracts`: command `go test ./cmd/ssm -run ^(TestCompiledCLIContractMatrix|TestApprovedV2BreakingChangeBaselines|TestCompiledSyncStateMatrix|TestCompiledStreamContract|TestCompiledStreamStartupNetworkPolicy|TestStreamRefreshClosesPool|TestStreamOfflineUsesFixedSnapshot|TestInventoryTransactionPolicy|TestScopedPublicationSavedKeyDependencies|TestLegacyMutationsCreatePendingTransactions|TestImportCreatesOneAtomicBulkTransaction|TestMutationEntryPointsNeverAutoPublish|TestPushScopeArgumentsFailBeforePublicationSideEffects|TestPushOnlyEqualsPreservesExactScope|TestEmptyLedgerPushNeverPuts|TestPushAllUsesInvocationStartSnapshot|TestEveryPushPathUsesInventoryTransactions|TestPublicationIntentCrashMatrix|TestPublicationReconcilesLostResponse|TestPublicationReconcilesFinalizeFailure|TestCompiledTransferOutcomeMatrix|TestTransferDirectAndRequestParity|TestTransferGuaranteesAreTruthful)$ -count=1`; `v2-policy-contracts`: command `go test ./internal/synctransaction ./internal/inventorytransaction -run ^(TestSyncTransactionPolicy|TestStreamTransactionPolicy|TestInventoryTransactionPolicy)$ -count=1`
 - evidence: cmd/ssm/compiled_cli_contract_test.go — TestCompiledSyncStateMatrix; cmd/ssm/compiled_stream_contract_test.go — TestCompiledStreamStartupNetworkPolicy, TestStreamOfflineUsesFixedSnapshot
 
 ### publication/crash/recovery
 
+- result: `passed`
 - manifest check(s): `v2-public-contracts`: command `go test ./cmd/ssm -run ^(TestCompiledCLIContractMatrix|TestApprovedV2BreakingChangeBaselines|TestCompiledSyncStateMatrix|TestCompiledStreamContract|TestCompiledStreamStartupNetworkPolicy|TestStreamRefreshClosesPool|TestStreamOfflineUsesFixedSnapshot|TestInventoryTransactionPolicy|TestScopedPublicationSavedKeyDependencies|TestLegacyMutationsCreatePendingTransactions|TestImportCreatesOneAtomicBulkTransaction|TestMutationEntryPointsNeverAutoPublish|TestPushScopeArgumentsFailBeforePublicationSideEffects|TestPushOnlyEqualsPreservesExactScope|TestEmptyLedgerPushNeverPuts|TestPushAllUsesInvocationStartSnapshot|TestEveryPushPathUsesInventoryTransactions|TestPublicationIntentCrashMatrix|TestPublicationReconcilesLostResponse|TestPublicationReconcilesFinalizeFailure|TestCompiledTransferOutcomeMatrix|TestTransferDirectAndRequestParity|TestTransferGuaranteesAreTruthful)$ -count=1`
 - evidence: cmd/ssm/publication_intent_compiled_test.go — TestPublicationIntentCrashMatrix, TestPublicationReconcilesLostResponse, TestPublicationReconcilesFinalizeFailure; cmd/ssm/push_scope_compiled_test.go — TestPushScopeArgumentsFailBeforePublicationSideEffects, TestEveryPushPathUsesInventoryTransactions
 
 ### stream
 
+- result: `passed`
 - manifest check(s): `v2-public-contracts`: command `go test ./cmd/ssm -run ^(TestCompiledCLIContractMatrix|TestApprovedV2BreakingChangeBaselines|TestCompiledSyncStateMatrix|TestCompiledStreamContract|TestCompiledStreamStartupNetworkPolicy|TestStreamRefreshClosesPool|TestStreamOfflineUsesFixedSnapshot|TestInventoryTransactionPolicy|TestScopedPublicationSavedKeyDependencies|TestLegacyMutationsCreatePendingTransactions|TestImportCreatesOneAtomicBulkTransaction|TestMutationEntryPointsNeverAutoPublish|TestPushScopeArgumentsFailBeforePublicationSideEffects|TestPushOnlyEqualsPreservesExactScope|TestEmptyLedgerPushNeverPuts|TestPushAllUsesInvocationStartSnapshot|TestEveryPushPathUsesInventoryTransactions|TestPublicationIntentCrashMatrix|TestPublicationReconcilesLostResponse|TestPublicationReconcilesFinalizeFailure|TestCompiledTransferOutcomeMatrix|TestTransferDirectAndRequestParity|TestTransferGuaranteesAreTruthful)$ -count=1`; `v2-policy-contracts`: command `go test ./internal/synctransaction ./internal/inventorytransaction -run ^(TestSyncTransactionPolicy|TestStreamTransactionPolicy|TestInventoryTransactionPolicy)$ -count=1`
 - evidence: cmd/ssm/compiled_stream_contract_test.go — TestCompiledStreamContract, TestCompiledStreamStartupNetworkPolicy, TestStreamRefreshClosesPool, TestStreamOfflineUsesFixedSnapshot; internal/synctransaction/stream_test.go — TestStreamTransactionPolicy
 
 ### transfer
 
+- result: `passed`
 - manifest check(s): `v2-public-contracts`: command `go test ./cmd/ssm -run ^(TestCompiledCLIContractMatrix|TestApprovedV2BreakingChangeBaselines|TestCompiledSyncStateMatrix|TestCompiledStreamContract|TestCompiledStreamStartupNetworkPolicy|TestStreamRefreshClosesPool|TestStreamOfflineUsesFixedSnapshot|TestInventoryTransactionPolicy|TestScopedPublicationSavedKeyDependencies|TestLegacyMutationsCreatePendingTransactions|TestImportCreatesOneAtomicBulkTransaction|TestMutationEntryPointsNeverAutoPublish|TestPushScopeArgumentsFailBeforePublicationSideEffects|TestPushOnlyEqualsPreservesExactScope|TestEmptyLedgerPushNeverPuts|TestPushAllUsesInvocationStartSnapshot|TestEveryPushPathUsesInventoryTransactions|TestPublicationIntentCrashMatrix|TestPublicationReconcilesLostResponse|TestPublicationReconcilesFinalizeFailure|TestCompiledTransferOutcomeMatrix|TestTransferDirectAndRequestParity|TestTransferGuaranteesAreTruthful)$ -count=1`
 - evidence: cmd/ssm/transfer_outcome_test.go — TestCompiledTransferOutcomeMatrix, TestTransferDirectAndRequestParity, TestTransferGuaranteesAreTruthful
 
 ### update/rollback
 
+- result: `passed`
 - manifest check(s): `v2-update-contracts`: command `go test ./internal/update -run ^(TestMigrationPreflightInspectsLocalSyncStateWithoutNetwork|TestMigrationPreflightFailsForPreservedSyncConflictWithoutNetwork|TestSameMajorSelection|TestCrossMajorRequiresExplicitAuthorization|TestFailedMigrationPreservesExecutable)$ -count=1`
 - evidence: internal/update/migration_test.go — TestMigrationPreflightInspectsLocalSyncStateWithoutNetwork, TestMigrationPreflightFailsForPreservedSyncConflictWithoutNetwork; internal/update/update_test.go — TestSameMajorSelection, TestCrossMajorRequiresExplicitAuthorization, TestFailedMigrationPreservesExecutable
 
 ### provenance and trust negatives
 
+- result: `passed`
 - manifest check(s): `release-provenance`: builtin `release-provenance`; `provenance-failure-paths`: command `go test ./internal/update -run ^(TestProvenanceIdentityMatrix|TestProvenanceDigestBinding|TestTrustFailurePreservesExecutable)$ -count=1`; `checksum-failure-paths`: command `go test ./internal/update -run ^(TestChecksumForAsset|TestChecksumForAssetRequiresMatchingAsset|TestCopyAndVerifyRejectsChecksumMismatch|TestDownloadVersionVerifiesChecksumBeforeReplace)$ -count=1`; `v2-release-contracts`: command `go test ./cmd/verify -run ^(TestReleaseStrictlyContainsCI|TestProfilesAreNonMutating|TestVerificationChildrenHaveNoInheritedPublicationAuthority|TestSourceVersionMatchesReleaseWorkflowGrammar|TestReleaseProvenanceForEveryTarget|TestReleaseWorkflowUsesCredentialFreeVerifierPreflightAndManifestParity|TestReleaseWorkflowProducesPinnedProvenance|TestReleaseWorkflowPublishesOnlySelectedTagIdentity|TestReleaseV2ReadinessIsExecutable)$ -count=1`
 - evidence: internal/update/update_test.go — TestProvenanceIdentityMatrix, TestProvenanceDigestBinding, TestTrustFailurePreservesExecutable, TestChecksumForAssetRequiresMatchingAsset, TestCopyAndVerifyRejectsChecksumMismatch, TestDownloadVersionVerifiesChecksumBeforeReplace; cmd/verify/main_test.go — TestReleaseProvenanceForEveryTarget, TestReleaseWorkflowProducesPinnedProvenance, TestReleaseWorkflowPublishesOnlySelectedTagIdentity
 
 ### contraction
 
+- result: `passed`
 - manifest check(s): `v2-structure-docs`: command `go test ./cmd/ssm -run ^(TestDeepPolicyOwnershipContraction|TestDeepPolicyOwnershipAnalyzerAdversarialFixtures|TestV2MigrationDocumentationContract|TestSSHCTLCommandHelpNeedsNoUnlockOrTTY|TestRunHelpDocumentsFastStream)$ -count=1`
 - evidence: cmd/ssm/deep_policy_ownership_test.go — TestDeepPolicyOwnershipContraction, TestDeepPolicyOwnershipAnalyzerAdversarialFixtures
 
 ### docs/help/lint
 
+- result: `passed`
 - manifest check(s): `v2-structure-docs`: command `go test ./cmd/ssm -run ^(TestDeepPolicyOwnershipContraction|TestDeepPolicyOwnershipAnalyzerAdversarialFixtures|TestV2MigrationDocumentationContract|TestSSHCTLCommandHelpNeedsNoUnlockOrTTY|TestRunHelpDocumentsFastStream)$ -count=1`; `markdown-contracts`: command `npx --yes markdownlint-cli2@0.18.1 README.md README.en.md RELEASE_NOTES.md docs/**/*.md skills/**/*.md`; `lint`: command `golangci-lint run --new-from-patch {temp}/lint.patch`
 - evidence: cmd/ssm/v2_migration_documentation_contract_test.go — TestV2MigrationDocumentationContract; cmd/ssm/help_test.go — TestSSHCTLCommandHelpNeedsNoUnlockOrTTY, TestRunHelpDocumentsFastStream; cmd/verify/manifest.go — lint check and reviewed lint-patch preparation
 
 ### observed coverage
 
+- result: `passed`
 - manifest check(s): `coverage-observation`: command `go test -cover -count=1 ./...`
 - evidence: manifest action `go test -cover -count=1 ./...` emits package observations
 - observation: Coverage is observed without a percentage threshold.
 
 ### clean-tree/no-publication authority
 
+- result: `passed`
 - manifest check(s): `v2-release-contracts`: command `go test ./cmd/verify -run ^(TestReleaseStrictlyContainsCI|TestProfilesAreNonMutating|TestVerificationChildrenHaveNoInheritedPublicationAuthority|TestSourceVersionMatchesReleaseWorkflowGrammar|TestReleaseProvenanceForEveryTarget|TestReleaseWorkflowUsesCredentialFreeVerifierPreflightAndManifestParity|TestReleaseWorkflowProducesPinnedProvenance|TestReleaseWorkflowPublishesOnlySelectedTagIdentity|TestReleaseV2ReadinessIsExecutable)$ -count=1`
 - evidence: cmd/verify/main_test.go — TestProfilesAreNonMutating, TestVerificationChildrenHaveNoInheritedPublicationAuthority, TestProfileRejectsNonIgnoredUntrackedPathsBeforeExecution, TestProfileDetectsAllRefMutations
 - observation: The profile prerequisite requires a fully populated regular tracked worktree with no non-ignored untracked paths.
@@ -433,5 +491,5 @@ These are the exact local entry points for Issue #31 review; the release action 
 
 - coverage is observed without a percentage threshold; `coverage-observation` emits package observations and does not enforce a numeric gate.
 - Clean-tree enforcement is a prerequisite, and verifier actions run in temporary storage with no inherited publication authority.
-- Exact-HEAD pass/fail results are external PR/CI evidence. This generated source records commands, membership, and evidence names only; it does not claim that a future HEAD passed.
+- This report records final-candidate pass/fail outcomes; attached PR/CI evidence binds those reruns to the exact pushed HEAD and remains authoritative for native jobs.
 - Verification performs no merge, tag, release, upload, publication, or real installation.

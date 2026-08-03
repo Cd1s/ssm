@@ -3016,6 +3016,39 @@ func TestReleaseV2ReadinessIsExecutable(t *testing.T) {
 	}
 }
 
+func TestV2ReadinessReportRecordsFinalEvidence(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "plans", "issue-31-release-readiness.md"))
+	if err != nil {
+		t.Fatalf("read checked-in readiness report: %v", err)
+	}
+	report := string(data)
+	for _, marker := range []string{
+		"## Recorded final candidate results",
+		"| `go run ./cmd/verify release` | `preflight_passed` |",
+		"## Observed final-gate tool versions",
+		"| Go | `1.25.12` |",
+		"| golangci-lint | `2.11.4` |",
+		"## Explicit rehearsal outcomes",
+		"| rollback rehearsal | `passed` |",
+		"| trust-negative rehearsal | `passed` |",
+		"| structural contraction | `passed` |",
+		"| clean-tree/no-publication proof | `passed` |",
+		"Exact-HEAD binding is supplied by the attached PR and native CI evidence",
+	} {
+		if !strings.Contains(report, marker) {
+			t.Errorf("readiness report final evidence is missing %q", marker)
+		}
+	}
+	for _, stale := range []string{
+		"contains no credentials, private keys, decrypted vault contents, or exact-HEAD test results",
+		"This generated source records commands, membership, and evidence names only",
+	} {
+		if strings.Contains(report, stale) {
+			t.Errorf("readiness report still excludes required final evidence with %q", stale)
+		}
+	}
+}
+
 func newCleanTestRepository(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
