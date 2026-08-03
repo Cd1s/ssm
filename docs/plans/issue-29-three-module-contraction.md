@@ -87,3 +87,20 @@ go test ./... -run 'TestDeepPolicyOwnershipContraction|TestCompiledCLIContractMa
 The contraction test was first run on the pre-deletion tree and failed on the
 six named command helpers above (RED). After deletion, the same suite passed
 (GREEN); the compiled CLI and push-path fixtures remained green.
+
+The ownership analyzer also has a checked adversarial RED/GREEN loop in
+`TestDeepPolicyOwnershipAnalyzerAdversarialFixtures`. Before hardening, its
+fixtures were accepted when they used aliased or multiple dot imports,
+function-value selector references, renamed/chained refresh wrappers, policy
+closures, or dead owner paths. A second RED caught receiver identifiers such
+as `tx := syncTransaction(false); tx.Refresh()` and typed transaction/stream
+parameters, while a separate shallow fixture caught an unrelated branch being
+counted as an owner's policy decision. The GREEN analyzer resolves ownership
+by import path, tracks reviewed command invocation boundaries through a local
+call graph (including closures), carries lightweight transaction/stream
+receiver provenance (including dot-imported types and `BeginStream` results),
+treats `synctransaction.New` as an owner construction seam while retaining
+only the reviewed `syncTransaction` factory, and only counts reachable,
+meaningful decision branches.
+The focused ownership and compiled/push suites plus the full `cmd/ssm` test
+run passed after these checks were added.
