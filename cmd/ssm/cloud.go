@@ -345,23 +345,6 @@ func runPullIfChanged() {
 	}
 }
 
-func pullIfChanged() {
-	if err := refreshVaultIfChanged(); err != nil {
-		failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullFailed)
-		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
-	}
-}
-
-func refreshVaultIfChanged() error {
-	_, err := refreshVaultIfChangedResult()
-	return err
-}
-
-func refreshVaultIfChangedResult() (bool, error) {
-	facts, err := syncTransaction(false).Refresh()
-	return facts.Changed, err
-}
-
 func runPull() {
 	_, err := syncTransaction(false).Pull()
 	if errors.Is(err, synctransaction.ErrUnconfigured) {

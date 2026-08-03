@@ -25,7 +25,7 @@ func TestRefreshVaultFailureNeverSilentlyEnablesOffline(t *testing.T) {
 	oldOffline := offlineMode
 	offlineMode = false
 	t.Cleanup(func() { offlineMode = oldOffline })
-	if err := refreshVaultIfChanged(); err == nil {
+	if _, err := syncTransaction(false).Refresh(); err == nil {
 		t.Fatal("unreachable sync endpoint was silently ignored")
 	}
 	if offlineMode {
@@ -41,7 +41,7 @@ func TestRefreshVaultExplicitOfflineSkipsNetwork(t *testing.T) {
 	oldOffline := offlineMode
 	offlineMode = true
 	t.Cleanup(func() { offlineMode = oldOffline })
-	if err := refreshVaultIfChanged(); err != nil {
+	if _, err := syncTransaction(false).Refresh(); err != nil {
 		t.Fatalf("explicit offline refresh: %v", err)
 	}
 }

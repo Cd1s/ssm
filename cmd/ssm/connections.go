@@ -23,7 +23,10 @@ type connectionJSON struct {
 }
 
 func runList(jsonOutput bool) {
-	pullIfChanged()
+	if _, err := syncTransaction(false).Refresh(); err != nil {
+		failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullFailed)
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+	}
 	v, err := loadVault()
 	if err != nil {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
@@ -58,7 +61,10 @@ func runList(jsonOutput bool) {
 }
 
 func runRemove(name string) {
-	pullIfChanged()
+	if _, err := syncTransaction(false).Refresh(); err != nil {
+		failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullFailed)
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+	}
 	v, err := loadVault()
 	if err != nil {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
@@ -94,7 +100,10 @@ func runExecSpec(name string, spec remoteRunSpec) {
 		runMap([]string{name}, spec)
 		return
 	}
-	pullIfChanged()
+	if _, err := syncTransaction(false).Refresh(); err != nil {
+		failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullFailed)
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+	}
 	v, err := loadVault()
 	if err != nil {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
@@ -175,7 +184,10 @@ func executeRunSpec(v *config.Vault, name string, spec remoteRunSpec) ssh.RunRes
 }
 
 func runMap(targetPatterns []string, spec remoteRunSpec) {
-	pullIfChanged()
+	if _, err := syncTransaction(false).Refresh(); err != nil {
+		failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullFailed)
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+	}
 	v, err := loadVault()
 	if err != nil {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
@@ -309,7 +321,10 @@ func runPutArgs(args []string) {
 }
 
 func runPutWithOptions(opts putOptions) {
-	pullIfChanged()
+	if _, err := syncTransaction(false).Refresh(); err != nil {
+		failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullFailed)
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+	}
 	v, err := loadVault()
 	if err != nil {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
@@ -354,7 +369,10 @@ func runPutWithOptions(opts putOptions) {
 }
 
 func runGet(name, remotePath, localPath string) {
-	pullIfChanged()
+	if _, err := syncTransaction(false).Refresh(); err != nil {
+		failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullFailed)
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+	}
 	v, err := loadVault()
 	if err != nil {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
@@ -404,7 +422,10 @@ func runGet(name, remotePath, localPath string) {
 }
 
 func runCheck(name string, asJSON bool) {
-	pullIfChanged()
+	if _, err := syncTransaction(false).Refresh(); err != nil {
+		failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullFailed)
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+	}
 	v, err := loadVault()
 	if err != nil {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
@@ -423,7 +444,10 @@ func runCheck(name string, asJSON bool) {
 }
 
 func runDoctor(alias string, deep, asJSON bool) {
-	pullIfChanged()
+	if _, err := syncTransaction(false).Refresh(); err != nil {
+		failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullFailed)
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+	}
 	syncFacts := syncTransaction(false).Facts()
 	v, err := loadVault()
 	if err != nil {
@@ -551,7 +575,10 @@ func runImportJSON(args []string) {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.ImportArgumentsInvalid, machinecontract.Details{Cause: err}))
 	}
 	machineJSON = machineJSON || opts.asJSON
-	pullIfChanged()
+	if _, err := syncTransaction(false).Refresh(); err != nil {
+		failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullFailed)
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+	}
 
 	imported, err := loadServerImport(opts.path, opts.manifestPath)
 	if err != nil {

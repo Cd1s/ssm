@@ -381,7 +381,7 @@ func TestParseGlobalArgsRejectsEmptyMasterPassFile(t *testing.T) {
 
 func TestRedactStringRemovesSensitiveFields(t *testing.T) {
 	in := "password=hunter2 token:abc123 authorization: bearer deadbeef private_key=inline"
-	got := redactString(in)
+	got := machinecontract.RedactString(in)
 	for _, secret := range []string{"hunter2", "abc123", "deadbeef", "inline"} {
 		if strings.Contains(got, secret) {
 			t.Fatalf("redacted string %q still contains %q", got, secret)
@@ -391,7 +391,7 @@ func TestRedactStringRemovesSensitiveFields(t *testing.T) {
 
 func TestRedactStringRemovesJSONStyleSensitiveFields(t *testing.T) {
 	in := `{"password":"value-to-hide","token":"token-to-hide","private_key":"key-to-hide","authorization":"Bearer bearer-to-hide","nested":{"secret":"secret-to-hide"}}`
-	got := redactString(in)
+	got := machinecontract.RedactString(in)
 	for _, secret := range []string{"value-to-hide", "token-to-hide", "key-to-hide", "bearer-to-hide", "secret-to-hide"} {
 		if strings.Contains(got, secret) {
 			t.Fatalf("redacted string %q still contains %q", got, secret)
@@ -401,21 +401,21 @@ func TestRedactStringRemovesJSONStyleSensitiveFields(t *testing.T) {
 
 func TestRedactStringRemovesPrivateKeyBlocks(t *testing.T) {
 	in := "bad key -----BEGIN OPENSSH PRIVATE KEY-----\nsecret-key\n-----END OPENSSH PRIVATE KEY-----"
-	got := redactString(in)
+	got := machinecontract.RedactString(in)
 	if strings.Contains(got, "secret-key") || strings.Contains(got, "BEGIN OPENSSH PRIVATE KEY") {
 		t.Fatalf("private key block was not redacted: %q", got)
 	}
 }
 
 func TestRedactStringKeepsPlainWrongPasswordDiagnostic(t *testing.T) {
-	got := redactString("wrong password or corrupted file")
+	got := machinecontract.RedactString("wrong password or corrupted file")
 	if got != "wrong password or corrupted file" {
 		t.Fatalf("diagnostic = %q", got)
 	}
 }
 
 func TestRedactErrorCoversSecretBearingPaths(t *testing.T) {
-	got := redactError(&os.PathError{Op: "open", Path: "/tmp/password=hunter2", Err: os.ErrNotExist})
+	got := machinecontract.RedactError(&os.PathError{Op: "open", Path: "/tmp/password=hunter2", Err: os.ErrNotExist})
 	if strings.Contains(got, "hunter2") {
 		t.Fatalf("redacted path still contains secret: %q", got)
 	}

@@ -311,7 +311,10 @@ func runSSHCTLDoctor(args []string) {
 }
 
 func runSSHCTLList() {
-	pullIfChanged()
+	if _, err := syncTransaction(false).Refresh(); err != nil {
+		failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullFailed)
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+	}
 	v, err := loadVault()
 	if err != nil {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
@@ -357,7 +360,10 @@ func runSSHCTLStatus() {
 		// snapshot loaded before that wait so status cannot report its stale
 		// pending ledger after the other process finalizes.
 		invalidateVaultCache()
-		pullIfChanged()
+		if _, err := syncTransaction(false).Refresh(); err != nil {
+			failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullFailed)
+			os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+		}
 	}
 	count := 0
 	v, err := loadVault()
@@ -472,14 +478,6 @@ func sshctlUsageExit() {
 	}
 	sshctlUsage()
 	os.Exit(machinecontract.ProcessExit(machinecontract.Classify(machinecontract.InvalidSSHCTLArguments, machinecontract.Details{Message: "invalid sshctl arguments"})))
-}
-
-func redactError(err error) string {
-	return machinecontract.RedactError(err)
-}
-
-func redactString(value string) string {
-	return machinecontract.RedactString(value)
 }
 
 // splitRunAlias accepts the canonical global form (`sshctl --json run host`)
