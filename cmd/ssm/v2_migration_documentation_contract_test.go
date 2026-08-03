@@ -32,26 +32,51 @@ var v2ProvenanceSections = []string{
 }
 
 type v2BCSpec struct {
-	id      string
-	anchors []string
+	id             string
+	anchors        []string
+	machineAnchors []string
 }
 
 var v2BCSpecs = []v2BCSpec{
-	{"BC-1", []string{"cloud.json", "sync_config_error", "--offline", "stage=sync_config", "exit=1"}},
-	{"BC-2", []string{"saved_key_create", "push --only", "transaction", "network"}},
-	{"BC-3", []string{"NDJSON", "compact", "startup", "terminal"}},
-	{"BC-4", []string{"remove", "keys remove", "import-json", "transaction_id", "publish"}},
-	{"BC-5", []string{"bare", "invalid_arguments", "invocation-start", "no PUT", "sync_conflict"}},
-	{"BC-6", []string{"--refresh=0", "positive", "--offline", "exit=2"}},
-	{"BC-7", []string{"direct", "request-v1", "direction", "kind", "stage", "bytes_sent", "bytes_received", "bytes_reused", "local_sha256", "remote_sha256", "omitted", "not_checked", "not_available", "atomic=false", "resume=unsupported"}},
-	{"BC-8", []string{"same-major", "update --major --yes", "review", "installed=false"}},
-	{"BC-9", []string{"checksums.txt", "provenance", "Cd1s/ssm", "release.yml", "14"}},
-	{"BC-10", []string{"gofmt -w", "verify ci", "verify release", "non-mutating", "preflight_passed"}},
+	{"BC-1", []string{"cloud.json", "sync_config_error", "--offline", "stage=sync_config", "exit=1"}, []string{"process exit=1", "cardinality=one JSON value or one terminal NDJSON record"}},
+	{"BC-2", []string{"saved_key_create", "push --only", "transaction", "network"}, []string{"process exit=1", "cardinality=one JSON value"}},
+	{"BC-3", []string{"NDJSON", "compact", "startup", "terminal"}, []string{"process exit=1", "cardinality=one terminal NDJSON record"}},
+	{"BC-4", []string{"remove", "keys remove", "import-json", "transaction_id", "publish"}, []string{"process exit=0 on success", "cardinality=one JSON value"}},
+	{"BC-5", []string{"bare", "invalid_arguments", "invocation-start", "no PUT", "sync_conflict"}, []string{"process exit=2 for bare", "process exit=1 for divergence", "cardinality=one JSON value"}},
+	{"BC-6", []string{"--refresh=0", "positive", "--offline", "exit=2"}, []string{"process exit=2", "cardinality=one terminal NDJSON record"}},
+	{"BC-7", []string{"direct", "request-v1", "direction", "kind", "stage", "bytes_sent", "bytes_received", "bytes_reused", "local_sha256", "remote_sha256", "omitted", "not_checked", "not_available", "atomic=false", "resume=unsupported"}, []string{"process exit=0 on success", "cardinality=one JSON value"}},
+	{"BC-8", []string{"same-major", "update --major --yes", "review", "installed=false"}, []string{"process exit=0 on successful review/install", "cardinality=one JSON value"}},
+	{"BC-9", []string{"checksums.txt", "provenance", "Cd1s/ssm", "release.yml", "14"}, []string{"process exit=1 on trust failure", "cardinality=one JSON value for updater machine mode"}},
+	{"BC-10", []string{"gofmt -w", "verify ci", "verify release", "non-mutating", "preflight_passed"}, []string{"process exit=0 only on completed profile", "cardinality=not a JSON/NDJSON contract"}},
+}
+
+type v2BCReviewSpec struct {
+	id       string
+	evidence string
+}
+
+var v2BCReviewSpecs = []v2BCReviewSpec{
+	{"BC-1", "plans/issue-20-sync-transaction-ownership.md"},
+	{"BC-2", "plans/issue-22-inventory-transaction-ownership.md"},
+	{"BC-3", "plans/issue-21-stream-contract-migration.md"},
+	{"BC-4", "plans/issue-24-legacy-mutation-ownership.md"},
+	{"BC-5", "plans/issue-25-exact-push-scopes.md"},
+	{"BC-6", "plans/issue-21-stream-contract-migration.md"},
+	{"BC-7", "plans/bc-7-transfer-outcome-migration.md"},
+	{"BC-8", "plans/issue-27-major-update-migration.md"},
+	{"BC-9", "plans/issue-28-pinned-provenance.md"},
+	{"BC-10", "plans/verification-manifest.md"},
+}
+
+var v2AdditionalChildEvidence = []string{
+	"plans/issue-23-publication-intent.md",
+	"plans/issue-29-three-module-contraction.md",
 }
 
 func TestV2MigrationDocumentationContract(t *testing.T) {
 	t.Run("parser rejects structural ambiguity", testV2DocumentationParserAdversarial)
 	t.Run("stale claim scanner distinguishes historical text", testV2StaleClaimScannerAdversarial)
+	t.Run("reviewer mapping rejects missing acceptance evidence", testV2ReviewerMappingAdversarial)
 
 	root := repositoryRoot(t)
 	guides := []string{"docs/migration-v1-to-v2.md", "docs/migration-v1-to-v2.zh-CN.md"}
@@ -76,6 +101,7 @@ func TestV2MigrationDocumentationContract(t *testing.T) {
 		}
 		assertV2BCSemantics(t, name, rows)
 		assertV2SectionAnchors(t, name, body)
+		assertV2ReviewerMapping(t, name, body)
 		guideMarkers = append(guideMarkers, collectV2Markers(body, "<!-- ssm-v2-migration:"))
 	}
 	if got, want := strings.Join(guideMarkers[1], "\n"), strings.Join(guideMarkers[0], "\n"); got != want {
@@ -186,7 +212,87 @@ func assertV2BCSemantics(t *testing.T, name string, rows map[string][]string) {
 				t.Errorf("%s: %s row missing semantic anchor %q", name, spec.id, anchor)
 			}
 		}
+		machine := rows[spec.id][5]
+		for _, anchor := range spec.machineAnchors {
+			if !strings.Contains(strings.ToLower(machine), strings.ToLower(anchor)) {
+				t.Errorf("%s: %s machine cell missing explicit contract %q", name, spec.id, anchor)
+			}
+		}
 	}
+}
+
+func assertV2ReviewerMapping(t *testing.T, name, body string) {
+	t.Helper()
+	segment, err := v2MarkerBody(body, v2GuideSection("reviewer-mapping"))
+	if err != nil {
+		t.Errorf("%s: %v", name, err)
+		return
+	}
+	for _, violation := range v2ReviewerMappingViolations(segment) {
+		t.Errorf("%s: reviewer mapping %s", name, violation)
+	}
+}
+
+func v2ReviewerMappingViolations(segment string) []string {
+	var violations []string
+	for _, spec := range v2BCReviewSpecs {
+		linePrefix := "- [ ] " + spec.id + " "
+		line := v2ChecklistLine(segment, linePrefix)
+		if line == "" {
+			violations = append(violations, "missing checklist item "+spec.id)
+			continue
+		}
+		if !strings.Contains(line, "(#bc-contract-matrix)") {
+			violations = append(violations, "missing BC matrix mapping "+spec.id)
+		}
+		if !strings.Contains(line, "]("+spec.evidence+")") {
+			violations = append(violations, "missing linked evidence "+spec.evidence)
+		}
+	}
+	for _, evidence := range v2AdditionalChildEvidence {
+		if !strings.Contains(segment, "]("+evidence+")") {
+			violations = append(violations, "missing linked evidence "+evidence)
+		}
+	}
+	for n := 1; n <= 14; n++ {
+		id := fmt.Sprintf("D%02d", n)
+		line := v2ChecklistLine(segment, "- [ ] "+id+" ")
+		if line == "" || !strings.Contains(strings.ToLower(line), "(#"+strings.ToLower(id)+"-") {
+			violations = append(violations, "missing decision checklist mapping "+id)
+		}
+	}
+	for _, item := range []struct {
+		label  string
+		anchor string
+	}{
+		{"Release blockers", "#release-blockers|#发布阻断项"},
+		{"Rollback guarantees", "#rollback|#回滚"},
+	} {
+		line := v2ChecklistLine(segment, "- [ ] "+item.label+" ")
+		if line == "" || !v2ContainsAnySectionLink(line, strings.Split(item.anchor, "|")...) {
+			violations = append(violations, "missing checklist mapping "+item.label)
+		}
+	}
+	return violations
+}
+
+func v2ContainsAnySectionLink(line string, anchors ...string) bool {
+	for _, anchor := range anchors {
+		if strings.Contains(line, "("+anchor+")") {
+			return true
+		}
+	}
+	return false
+}
+
+func v2ChecklistLine(segment, prefix string) string {
+	for _, line := range strings.Split(segment, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, prefix) {
+			return line
+		}
+	}
+	return ""
 }
 
 func assertV2SectionAnchors(t *testing.T, name, body string) {
@@ -316,6 +422,37 @@ func testV2StaleClaimScannerAdversarial(t *testing.T) {
 	active, violations := excludeHistoricalPushGuidance(historical)
 	if len(violations) != 0 || len(staleV2Claims(active)) != 0 {
 		t.Fatalf("historical exclusion failed: violations=%v stale=%v", violations, staleV2Claims(active))
+	}
+}
+
+func testV2ReviewerMappingAdversarial(t *testing.T) {
+	var valid strings.Builder
+	for _, spec := range v2BCReviewSpecs {
+		fmt.Fprintf(&valid, "- [ ] %s — [matrix](#bc-contract-matrix), [evidence](%s)\n", spec.id, spec.evidence)
+	}
+	for _, evidence := range v2AdditionalChildEvidence {
+		fmt.Fprintf(&valid, "[additional evidence](%s)\n", evidence)
+	}
+	for n := 1; n <= 14; n++ {
+		fmt.Fprintf(&valid, "- [ ] D%02d — [decision](#d%02d-contract)\n", n, n)
+	}
+	valid.WriteString("- [ ] Release blockers — [section](#release-blockers)\n")
+	valid.WriteString("- [ ] Rollback guarantees — [section](#rollback)\n")
+	if got := v2ReviewerMappingViolations(valid.String()); len(got) != 0 {
+		t.Fatalf("valid reviewer mapping rejected: %v", got)
+	}
+	fixtures := map[string]string{
+		"unlinked child evidence":  strings.Replace(valid.String(), "](plans/issue-23-publication-intent.md)", "](`plans/issue-23-publication-intent.md`)", 1),
+		"missing BC checklist":     strings.Replace(valid.String(), "- [ ] BC-7 ", "BC-7 ", 1),
+		"detached BC evidence":     strings.Replace(valid.String(), "[evidence](plans/issue-25-exact-push-scopes.md)", "evidence\n[detached](plans/issue-25-exact-push-scopes.md)", 1),
+		"missing D checklist":      strings.Replace(valid.String(), "- [ ] D14 ", "D14 ", 1),
+		"missing release mapping":  strings.Replace(valid.String(), "(#release-blockers)", "release-blockers", 1),
+		"missing rollback mapping": strings.Replace(valid.String(), "- [ ] Rollback guarantees ", "Rollback guarantees ", 1),
+	}
+	for name, body := range fixtures {
+		if got := v2ReviewerMappingViolations(body); len(got) == 0 {
+			t.Errorf("%s fixture was accepted", name)
+		}
 	}
 }
 

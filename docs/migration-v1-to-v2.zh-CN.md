@@ -346,25 +346,52 @@ provenance、所有精确发布资产、干净且权威的 CI 以及成功审查
 
 ## 审查者映射
 
-根据下表审查 BC-1 至 BC-10；根据决策登记表审查架构 D01 至 D14；验证上面的发布阻断项、回滚
-假设、provenance runbook，以及所有公开的 help/README、agent、schema、security 和 release-note
-界面。实现证据索引位于 `docs/plans/issue-20-*` 至 `issue-29-*`，另有独立的 BC-7 transfer matrix
-和 verification manifest。
+以下每一项都是必审项。每条 BC 把摘要矩阵映射到已检查的旧/新 fixture 和最终行为；决策与发布项
+映射到稳定的章节锚点。
+
+- [ ] BC-1 — [BC 矩阵](#bc-contract-matrix)；[Issue #20 已检查 fixture 和最终行为](plans/issue-20-sync-transaction-ownership.md)
+- [ ] BC-2 — [BC 矩阵](#bc-contract-matrix)；[Issue #22 已检查 fixture 和最终行为](plans/issue-22-inventory-transaction-ownership.md)
+- [ ] BC-3 — [BC 矩阵](#bc-contract-matrix)；[Issue #21 已检查 fixture 和最终行为](plans/issue-21-stream-contract-migration.md)
+- [ ] BC-4 — [BC 矩阵](#bc-contract-matrix)；[Issue #24 已检查 fixture 和最终行为](plans/issue-24-legacy-mutation-ownership.md)；[Issue #23 发布与协调证据](plans/issue-23-publication-intent.md)
+- [ ] BC-5 — [BC 矩阵](#bc-contract-matrix)；[Issue #25 已检查 fixture 和最终行为](plans/issue-25-exact-push-scopes.md)
+- [ ] BC-6 — [BC 矩阵](#bc-contract-matrix)；[Issue #21 已检查 fixture 和最终行为](plans/issue-21-stream-contract-migration.md)
+- [ ] BC-7 — [BC 矩阵](#bc-contract-matrix)；[Issue #26 已检查 fixture 和最终行为](plans/bc-7-transfer-outcome-migration.md)
+- [ ] BC-8 — [BC 矩阵](#bc-contract-matrix)；[Issue #27 已检查 fixture 和最终行为](plans/issue-27-major-update-migration.md)
+- [ ] BC-9 — [BC 矩阵](#bc-contract-matrix)；[Issue #28 已检查 fixture 和最终行为](plans/issue-28-pinned-provenance.md)
+- [ ] BC-10 — [BC 矩阵](#bc-contract-matrix)；[已检查的验证 fixture 和最终行为](plans/verification-manifest.md)
+- [ ] D01 — [决策契约](#d01--默认保留兼容性)
+- [ ] D02 — [决策契约](#d02--缺失配置不同于无效配置)
+- [ ] D03 — [决策契约](#d03--有范围的发布具有传递依赖)
+- [ ] D04 — [决策契约](#d04--远程-identity-相等是提交点)
+- [ ] D05 — [决策契约](#d05--json-和-ndjson-基数精确)
+- [ ] D06 — [决策契约](#d06--每次-inventory-mutation-都可审查)
+- [ ] D07 — [决策契约](#d07--无范围和空-ledger-的-push-不能发布)
+- [ ] D08 — [决策契约](#d08--online-stream-保持可刷新)
+- [ ] D09 — [决策契约](#d09--inventory-更改关闭整个-ssh-pool)
+- [ ] D10 — [决策契约](#d10--三个模块专门负责策略)；[Issue #29 最终三模块 ownership 证据](plans/issue-29-three-module-contraction.md)
+- [ ] D11 — [决策契约](#d11--自动更新从不授权-major-迁移)
+- [ ] D12 — [决策契约](#d12--固定-provenance-阻止不合规发布)
+- [ ] D13 — [决策契约](#d13--一个-manifest-定义验证)
+- [ ] D14 — [决策契约](#d14--传输输出表明真实保证)
+- [ ] Release blockers — [初始 v2 发布门禁](#发布阻断项)
+- [ ] Rollback guarantees — [迁移回滚契约](#回滚)
 
 <!-- markdownlint-disable MD013 -->
+### BC contract matrix
+
 <!-- ssm-v2-migration: bc-table columns=bc|old|new|affected|action|machine|rollback -->
 | bc | old | new | affected | action | machine | rollback |
 | --- | --- | --- | --- | --- | --- | --- |
-| BC-1 | 现有无效 `cloud.json` 可能被当作未配置同步处理。 | 每条 online inventory 路径都失败并返回 `sync_config_error`。 | Online 读取、mutations、stream 启动、sync、push 和 pull。 | 修复文件/权限，或用明确的 `--offline` 接受过期状态。 | 一条 JSON/终止 NDJSON 失败，包含 `stage=sync_config`、`exit=1`；offline 发出零网络请求。 | 不改变状态；恢复有效配置或备份的 encrypted state。 |
-| BC-2 | 同别名检查可能发布带有跨别名悬空 saved-key 引用的内容。 | 传递依赖（如 `saved_key_create`）在网络前拒绝。 | `push --only <transaction-id>` 调用方和共享 saved-key 更改。 | 按 ledger 顺序发布每个报告的 prerequisite transaction，然后重试原始 ID。 | 稳定且安全的 transaction/alias/key/reason 字段；零网络（network）请求且不自动扩展范围。 | 本地 encrypted vault 保持 pending，字节/逻辑状态得到保留。 |
-| BC-3 | Stream 启动失败是一个缩进的普通 JSON 文档。 | Stream 输出从 `startup` 起是紧凑（compact）NDJSON，并有一条 `terminal` 初始化结果。 | 面向行的 stream 读取器和 supervisor。 | 每行解析一条紧凑（compact）记录，在终止的启动/刷新失败后停止。 | `startup` 不消费输入；一条 `terminal` 记录，没有 stderr、ready、summary 或 footer。 | 修复刷新后再重启，或明确选择 offline 缓存状态。 |
-| BC-4 | `remove`、`keys remove` 和 `import-json` 可能保存/自动发布而没有可审查 mutation。 | 每个操作追加一个 pending transaction，且从不自动 publish。 | 旧式 mutation 和批量迁移调用方。 | 审查 `transaction_id`、依赖，然后明确发布精确 ID。 | 稳定 ID 和不含 secret 的 pending receipt；已配置 mutation 会刷新但不 publish。 | 保留之前的 ledger；晚期验证失败保持 vault 字节不变。 |
-| BC-5 | Bare push 表现得像 all，空 ledger all 可能 PUT 整个本地 blob。 | Bare push 返回 `invalid_arguments`；非空 all 对 invocation-start ID 做 snapshot；空 all 不执行 PUT，并可能返回 `sync_conflict`。 | 所有发布包装器和恢复工具。 | 使用精确 `--only`，或有意使用非空 `--all`；对 divergence 遵循审查过的 merge 恢复。 | Bare 在 unlock/network 前以 exit 2 返回；空相等是 no PUT、noop，divergence 为 `stage=sync_compare`、exit 1。 | 保留本地/远程 blob 和私有冲突证据；只有审查后才能 pull/import/re-publish。 |
-| BC-6 | Online `--refresh=0` 接受仅启动时的 snapshot。 | Online refresh 必须为 positive；零值需要明确的 `--offline`。 | 长时间运行的 stream 消费者。 | 使用 positive 默认值/间隔，或明确接受一份过期的 offline 缓存 snapshot。 | Online 零值是 `invalid_arguments`、`exit=2`，不消费输入，也不建立 sync/SSH 连接。 | 使用 positive 间隔重启；offline 回滚意味着保留固定缓存 snapshot。 |
-| BC-7 | Direct/request-v1 传输字段不同，且可以推断 directory 保证。 | Direct 和 request-v1 共用 `direction`、`kind`、`stage`；request-v1 支持 get。 | 文件/目录 put/get JSON 消费者。 | 按 direction/kind 分支：文件 put 有 `bytes_sent`；文件 get 有 `bytes_received`；directory get 保持 `bytes_received` omitted。 | 文件 put 按条件增加 `local_sha256`、`remote_sha256`、`bytes_reused`；文件 get 为 `not_checked`、atomic true、resume unsupported；directory put/get 为 `not_available`、`atomic=false`、`resume=unsupported` 并省略 digest/reuse；directory put 的 bytes_sent 为零；direct/request-v1 parity。 | 文件 staging 保留先前 final；directory restore 失败保留一条 backup 路径，且不声称 unchanged-final。 |
-| BC-8 | 自动最新版本替换可能跨越 major 边界。 | 自动/手动普通更新为 same-major；`update --major --yes` 是明确迁移。 | Installer、无人值守更新作业和发布系统。 | 先运行 review，要求自动/手动检查，然后授权精确目标。 | Review 报告 `installed=false`、breaks/checks/rollback；普通状态只报告跨 major 可用性。 | Trust/preflight 失败保留旧可执行文件；仅在兼容状态假设下恢复经审查的 v1。 |
-| BC-9 | 仅相邻 `checksums.txt` digest 就能授权替换。 | digest 加精确 pinned provenance 以及 14-name release manifest 是强制要求。 | Updater、installer、release workflow 和全部六个平台。 | 验证 `Cd1s/ssm`、精确 tag 的 `release.yml` identity、issuer、subject、digest 和 rotation 状态。 | 任一选择/trust/digest/provenance 失败都停止，无 fallback，并保留已安装字节/模式。 | 使用保留的可执行文件；通过审查的 overlap 进行轮换，绝不使用 checksum-only 或 skip 路径。 |
-| BC-10 | `make check` 运行了 `gofmt -w`、PATH lint 和仓库根目录构建。 | `make check` 是 non-mutating `verify ci`；`verify release` 是 non-publishing 严格超集。 | 贡献者、CI、release 维护者和外部门禁包装器。 | 安装精确前置条件，并要求在安全的干净 worktree 上完成配置。 | 确定性的配置输出；release 成功是 `preflight_passed`，不是发布或 initial-v2 readiness。 | 恢复未改动的源代码；修复前置条件或操作失败，不削弱 manifest。 |
+| BC-1 | 现有无效 `cloud.json` 可能被当作未配置同步处理。 | 每条 online inventory 路径都失败并返回 `sync_config_error`。 | Online 读取、mutations、stream 启动、sync、push 和 pull。 | 修复文件/权限，或用明确的 `--offline` 接受过期状态。 | `process exit=1`；`cardinality=one JSON value or one terminal NDJSON record`；失败包含 `stage=sync_config`、`exit=1`；offline 发出零网络请求。 | 不改变状态；恢复有效配置或备份的 encrypted state。 |
+| BC-2 | 同别名检查可能发布带有跨别名悬空 saved-key 引用的内容。 | 传递依赖（如 `saved_key_create`）在网络前拒绝。 | `push --only <transaction-id>` 调用方和共享 saved-key 更改。 | 按 ledger 顺序发布每个报告的 prerequisite transaction，然后重试原始 ID。 | `process exit=1`；`cardinality=one JSON value`；稳定且安全的 transaction/alias/key/reason 字段、零网络（network）请求且不自动扩展范围。 | 本地 encrypted vault 保持 pending，字节/逻辑状态得到保留。 |
+| BC-3 | Stream 启动失败是一个缩进的普通 JSON 文档。 | Stream 输出从 `startup` 起是紧凑（compact）NDJSON，并有一条 `terminal` 初始化结果。 | 面向行的 stream 读取器和 supervisor。 | 每行解析一条紧凑（compact）记录，在终止的启动/刷新失败后停止。 | `process exit=1`；`cardinality=one terminal NDJSON record`；`startup` 不消费输入，也没有 stderr、ready、summary 或 footer。 | 修复刷新后再重启，或明确选择 offline 缓存状态。 |
+| BC-4 | `remove`、`keys remove` 和 `import-json` 可能保存/自动发布而没有可审查 mutation。 | 每个操作追加一个 pending transaction，且从不自动 publish。 | 旧式 mutation 和批量迁移调用方。 | 审查 `transaction_id`、依赖，然后明确发布精确 ID。 | `process exit=0 on success`，已分类失败的 exit 不变；`cardinality=one JSON value`；稳定 ID 和不含 secret 的 pending receipt；已配置 mutation 会刷新但不 publish。 | 保留之前的 ledger；晚期验证失败保持 vault 字节不变。 |
+| BC-5 | Bare push 表现得像 all，空 ledger all 可能 PUT 整个本地 blob。 | Bare push 返回 `invalid_arguments`；非空 all 对 invocation-start ID 做 snapshot；空 all 不执行 PUT，并可能返回 `sync_conflict`。 | 所有发布包装器和恢复工具。 | 使用精确 `--only`，或有意使用非空 `--all`；对 divergence 遵循审查过的 merge 恢复。 | `process exit=2 for bare`；`process exit=1 for divergence`；`cardinality=one JSON value`；bare 在 unlock/network 前失败，空相等是 no PUT、noop，divergence 为 `stage=sync_compare`。 | 保留本地/远程 blob 和私有冲突证据；只有审查后才能 pull/import/re-publish。 |
+| BC-6 | Online `--refresh=0` 接受仅启动时的 snapshot。 | Online refresh 必须为 positive；零值需要明确的 `--offline`。 | 长时间运行的 stream 消费者。 | 使用 positive 默认值/间隔，或明确接受一份过期的 offline 缓存 snapshot。 | `process exit=2`；`cardinality=one terminal NDJSON record`；online 零值是 `invalid_arguments`、`exit=2`，不消费输入，也不建立 sync/SSH 连接。 | 使用 positive 间隔重启；offline 回滚意味着保留固定缓存 snapshot。 |
+| BC-7 | Direct/request-v1 传输字段不同，且可以推断 directory 保证。 | Direct 和 request-v1 共用 `direction`、`kind`、`stage`；request-v1 支持 get。 | 文件/目录 put/get JSON 消费者。 | 按 direction/kind 分支：文件 put 有 `bytes_sent`；文件 get 有 `bytes_received`；directory get 保持 `bytes_received` omitted。 | `process exit=0 on success`，已分类失败的 exit 不变；`cardinality=one JSON value`；文件 put 按条件增加 `local_sha256`、`remote_sha256`、`bytes_reused`；文件 get 为 `not_checked`、atomic true、resume unsupported；directory put/get 为 `not_available`、`atomic=false`、`resume=unsupported` 并省略 digest/reuse；directory put 的 bytes_sent 为零；direct/request-v1 parity。 | 文件 staging 保留先前 final；directory restore 失败保留一条 backup 路径，且不声称 unchanged-final。 |
+| BC-8 | 自动最新版本替换可能跨越 major 边界。 | 自动/手动普通更新为 same-major；`update --major --yes` 是明确迁移。 | Installer、无人值守更新作业和发布系统。 | 先运行 review，要求自动/手动检查，然后授权精确目标。 | `process exit=0 on successful review/install`，已分类失败的 exit 不变；`cardinality=one JSON value`；review 报告 `installed=false`、breaks/checks/rollback；普通状态只报告跨 major 可用性。 | Trust/preflight 失败保留旧可执行文件；仅在兼容状态假设下恢复经审查的 v1。 |
+| BC-9 | 仅相邻 `checksums.txt` digest 就能授权替换。 | digest 加精确 pinned provenance 以及 14-name release manifest 是强制要求。 | Updater、installer、release workflow 和全部六个平台。 | 验证 `Cd1s/ssm`、精确 tag 的 `release.yml` identity、issuer、subject、digest 和 rotation 状态。 | `process exit=1 on trust failure`；`cardinality=one JSON value for updater machine mode`，installer 保持非 JSON；任一 selection/trust/digest/provenance 失败都无 fallback，并保留已安装字节/模式。 | 使用保留的可执行文件；通过审查的 overlap 进行轮换，绝不使用 checksum-only 或 skip 路径。 |
+| BC-10 | `make check` 运行了 `gofmt -w`、PATH lint 和仓库根目录构建。 | `make check` 是 non-mutating `verify ci`；`verify release` 是 non-publishing 严格超集。 | 贡献者、CI、release 维护者和外部门禁包装器。 | 安装精确前置条件，并要求在安全的干净 worktree 上完成配置。 | `process exit=0 only on completed profile`，否则非零；`cardinality=not a JSON/NDJSON contract`：确定性的检查行加一条终止状态；release 成功是 `preflight_passed`，不是发布或 initial-v2 readiness。 | 恢复未改动的源代码；修复前置条件或操作失败，不削弱 manifest。 |
 <!-- markdownlint-enable MD013 -->
 
 <!-- ssm-v2-migration: guide-end -->
