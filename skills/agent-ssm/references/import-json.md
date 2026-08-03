@@ -135,6 +135,12 @@ review sshctl --offline --json doctor and preserve the local vault and sync-conf
 
 There is no force flag, automatic repair, evidence deletion, or empty-ledger overwrite path.
 
+During publication, a private `publishing-intent.json` may bind the selected
+pending transaction IDs, prerequisite identities, and target encrypted blob.
+If it remains after an interrupted request, preserve it and reconcile the exact
+identities before retrying; do not delete it, broaden the scope, or treat a
+pending transaction as published without remote identity confirmation.
+
 ## Remove
 
 After authorization for the exact alias:

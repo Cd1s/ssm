@@ -177,7 +177,8 @@ promotes the former `provenance-extension` metadata to two required executable
 checks: `release-provenance` and `provenance-failure-paths`. Their generated
 roots, certificates, signed statements, and executable subjects are
 test-owned and remain inside verifier-controlled temporary storage. The
-initial v2 release remains blocked on the separate migration extension.
+initial v2 release (`initial_v2_release`) remains blocked on the separate
+migration extension.
 
 Accordingly, the exact command
 

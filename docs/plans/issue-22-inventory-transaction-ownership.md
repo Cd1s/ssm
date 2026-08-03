@@ -6,7 +6,7 @@ decrypted candidates locally, but delegates publication as opaque encrypted
 bytes to `internal/synctransaction`.
 
 The bounded legacy routes reserved below were subsequently migrated by Issue
-#24. See the
+24. See the
 [Issue 24 ownership and BC-4 evidence](./issue-24-legacy-mutation-ownership.md).
 
 ## BC-2 old/new compiled fixture

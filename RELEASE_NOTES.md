@@ -1,21 +1,33 @@
 # Release Notes Draft
 
+These notes describe the planned v2.0.0 migration contract; they do not
+announce a release. The source and current release remain v1.4.3, and this
+document does not publish a tag, artifact, or executable. See the [v1→v2
+migration guide](docs/migration-v1-to-v2.md) and [update-provenance
+runbook](docs/update-provenance-runbook.md) for operator and maintainer gates.
+
 ## v2.0.0
+
+The initial v2 release remains blocked on the `migration-extension`. BC-1
+through BC-10 are the approved compatibility migration rows; verification is
+non-mutating and does not publish a tag or release. A v2 binary is not
+available until the migration review, pinned provenance checks, and rollback
+evidence pass.
 
 ### Pinned release provenance
 
-- Automatic and manual same-major updates, explicitly authorized major
-  migrations, and installer replacements now require both the selected
+- The planned updater contract requires automatic and manual same-major updates,
+  explicitly authorized major migrations, and installer replacements to carry both the selected
   SHA-256 digest and keyless provenance for the exact downloaded asset.
 - Provenance is pinned to `Cd1s/ssm`, the reviewed release workflow identity,
   GitHub Actions' OIDC issuer, the supported six-target manifest, and the
   reviewed identity-rotation state. Missing, malformed, unverifiable,
   wrong-subject, or expired provenance leaves the existing executable intact.
-- Release builds publish one adjacent Sigstore bundle per binary. Checksums
-  remain an independent digest input but cannot authorize replacement alone.
+- A planned release build publishes one adjacent Sigstore bundle per binary.
+  Checksums remain an independent digest input but cannot authorize replacement alone.
 - Redirected and unknown-length release responses are streamed through exact
   1 MiB metadata/provenance, 16 KiB checksum, and 64 MiB binary ceilings.
-- The installer now uses a same-directory staging template accepted by both
+- The planned installer uses a same-directory staging template accepted by both
   GNU and macOS/BSD `mktemp`. Windows self-update renames the mapped old image
   aside under an exclusive same-directory update lock, installs the
   identity-checked sibling stage synchronously, and rolls back bytes and
@@ -30,7 +42,7 @@
 
 ### Reviewed saved-key publication
 
-- `sshctl --json push --only <transaction-id>` now rejects unsatisfied cross-alias saved-key
+- The planned v2 publication preflight rejects unsatisfied cross-alias saved-key
   create, replace, rename, delete, prune, and reference prerequisites before
   any sync request.
 - The safe failure message lists every required stable transaction ID in
@@ -39,7 +51,8 @@
   prerequisites or unrelated pending mutations to the selected scope.
 - Modern direct and request-v1 host mutations retain their existing encrypted
   vault/ledger schema, transaction ID format, and typed success fields. Legacy
-  removal and import behavior remains unchanged pending its separate migration.
+  remove, saved-key removal, and guarded import now append pending transactions
+  without automatic publication.
 
 ### Exact push scopes and empty-ledger safety
 
@@ -57,6 +70,62 @@
 - The empty-ledger `sync_conflict` hint recommends the guarded `--merge`
   recovery path. It does not suggest `--replace --yes`; the longer recovery
   guide permits replacement only after explicit full-replacement review.
+
+### Complete v2 compatibility migration
+
+- **BC-1:** a present malformed or unreadable `cloud.json` is a fatal
+  `sync_config_error` for every online inventory operation. Missing remains
+  unconfigured; explicit global `--offline` alone accepts cached state and
+  performs no cloud parsing or network access.
+- **BC-2:** exact scoped publication preflights transitive alias and saved-key
+  prerequisites without automatically adding them. Publish the listed stable
+  IDs explicitly in ledger order.
+- **BC-3:** stream startup and terminal failures use compact NDJSON from the
+  first byte. After initialization, each consumed non-empty input line has one
+  ordered result; no ready, summary, or footer record is emitted.
+- **BC-4:** all inventory entry points, including legacy remove, saved-key
+  removal, and guarded import, create stable pending transactions and never
+  auto-publish.
+- **BC-5:** bare push is invalid, non-empty `--all` fixes its ordered scope at
+  invocation start, and empty `--all` never performs a PUT.
+- **BC-6:** online streams require a positive refresh interval. Zero refresh
+  is valid only with explicit global offline mode and one fixed cached
+  snapshot.
+- **BC-7:** direct and request-v1 file/directory put/get results have matching
+  `direction`, `kind`, and `stage`. Directory operations report
+  `atomic:false`, `integrity:not_available`, and `resume:unsupported`;
+  directory get omits `bytes_received` rather than inventing a tar byte count.
+- **BC-8:** automatic and ordinary manual replacement remains within the
+  installed major. `ssm update --major` reviews the migration and
+  `ssm update --major --yes` is the sole non-interactive major authorization.
+- **BC-9:** checksums cannot authorize replacement without pinned keyless
+  provenance and the exact 14-name release manifest.
+- **BC-10:** `make check` is the non-mutating `go run ./cmd/verify ci` adapter;
+  `verify release` is a non-publishing strict superset.
+
+The completed issues #2 through #11 remain preserved baselines rather than new
+v2 features: non-interactive execution, scoped transactions, stable machine
+errors, explicit offline/freshness, exact alias and host-key handling,
+observable/resumable transfers, agent-safe invocation, and pre-unlock help all
+remain compatible.
+
+### Migration and rollback
+
+- Back up the encrypted vault, `remote.etag`, `publishing-intent.json`,
+  `sync-conflict.json`, pending ID order, and authenticated executable-recovery
+  state without exposing their contents.
+- Run `ssm --json update --major` first. Require all automated checks and
+  manually review bare-push consumers, zero-refresh online streams, and
+  directory-transfer parsers before using `--major --yes` on a canary.
+- Authorization never bypasses digest/provenance verification. A failed trust,
+  migration, or replacement gate preserves the old executable and evidence.
+- There is no automatic down-migration. Reinstall v1 only when the encrypted
+  on-disk state is compatible, no publication/update recovery is outstanding,
+  and remote identities and pending transactions have been reconciled. When
+  state is uncertain, restore/recover v2 first and do not mutate further.
+- Verification does not merge, tag, install, upload, publish artifacts, or
+  create a release. Only the official exact-tag workflow can publish after all
+  migration, CI, provenance, rollback, and review blockers pass.
 
 <!-- documentation-contract: historical-begin -->
 

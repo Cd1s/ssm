@@ -12,6 +12,11 @@ We will respond within 48 hours and work on a fix as quickly as possible.
 
 ## Release Verification
 
+The planned v2 update-trust contract is detailed in the [update-provenance
+runbook](docs/update-provenance-runbook.md). It includes a reviewed identity rotation
+overlap and recovery procedure; the current source/release remains
+v1.4.3 and this policy does not announce a v2 release.
+
 Official release replacements require the selected SHA-256 digest and
 keyless provenance pinned to the exact selected release tag in the `Cd1s/ssm`
 release workflow and GitHub Actions OIDC issuer. Release selection also
@@ -31,3 +36,8 @@ reject on the next byte even when a redirect has no `Content-Length`; declared
 length and curl checks are early optimizations only. The installer therefore
 requires `curl`, `head -c`, `wc`, `jq`, a SHA-256 tool, and a current GitHub CLI
 with `gh attestation verify`.
+
+There is **no verification bypass**. A checksum, `--major --yes`, alternate
+issuer, wildcard identity, or copied binary cannot replace the pinned
+repository/workflow/issuer provenance checks; preserve the existing executable
+and report failures privately.

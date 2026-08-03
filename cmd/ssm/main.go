@@ -189,6 +189,7 @@ Usage:
   ssm keys remove <n>  remove a SSH key
   ssm update           update within the installed major version
   ssm update --major [--yes]  review or explicitly authorize a major migration
+                       digest and provenance verification are never bypassed
   ssm import-json <path> (--merge | --replace --yes) import reviewed JSON connections
   ssm server           run the headless encrypted sync server
 
