@@ -97,10 +97,61 @@ as `tx := syncTransaction(false); tx.Refresh()` and typed transaction/stream
 parameters, while a separate shallow fixture caught an unrelated branch being
 counted as an owner's policy decision. The GREEN analyzer resolves ownership
 by import path, tracks reviewed command invocation boundaries through a local
-call graph (including closures), carries lightweight transaction/stream
-receiver provenance (including dot-imported types and `BeginStream` results),
-treats `synctransaction.New` as an owner construction seam while retaining
-only the reviewed `syncTransaction` factory, and only counts reachable,
-meaningful decision branches.
+call graph (including closures), uses conservative policy-selector matching
+instead of scope-insensitive receiver provenance, treats
+`synctransaction.New` as an owner construction seam while retaining only the
+reviewed `syncTransaction` factory, and only counts reachable, meaningful
+decision branches.
 The focused ownership and compiled/push suites plus the full `cmd/ssm` test
 run passed after these checks were added.
+
+The third remediation cycle first recorded this exact RED command:
+
+```text
+go test ./cmd/ssm -run '^TestDeepPolicyOwnershipAnalyzerAdversarialFixtures$' -count=1 -v
+```
+
+The failing subtests were `renamed_local_factory_returning_syncTransaction_remains_a_seam`,
+`stored_transaction_and_stream_fields_retain_ownership`,
+`transaction_and_stream_aliases_retain_ownership`,
+`transaction_and_stream_method_expressions_remain_policy_references`,
+`function-value_syncTransaction_factories_remain_policy_references`,
+`named_constant_false_is_dead`, `for_false_is_dead`,
+`panic_terminates_policy_path`, `os.Exit_terminates_policy_path`,
+`runtime.Goexit_terminates_policy_path`, and
+`unrelated_returns_do_not_satisfy_policy_decisions`.
+
+The corresponding GREEN command is:
+
+```text
+gofmt -w cmd/ssm/deep_policy_ownership_test.go
+go test ./cmd/ssm -run '^(TestDeepPolicyOwnershipContraction|TestDeepPolicyOwnershipAnalyzerAdversarialFixtures)$' -count=1
+```
+
+The correction uses conservative selector/method-name matching outside the
+explicit invocation boundaries, import-path-qualified construction matching
+for `synctransaction.New` (so unrelated `errors.New` remains valid), and
+rejects local `syncTransaction` factory uses outside its reviewed boundary.
+Reachability now resolves package and local named boolean constants, handles
+`for false`, stops after `panic` and imported `os.Exit`/`runtime.Goexit` (with
+aliases), and requires owner-specific calls/selectors rather than generic
+returns. The only push wiring boundary added is
+`pushTransactionScopeInSession`: it directly places the retained
+`syncTransaction(false)` factory into `inventorytransaction.Options`; its
+outer `pushTransactionScope`/`pushTransactions` helpers only delegate and are
+not grandfathered as policy owners. A positive wiring fixture covers this
+boundary, while renamed factories remain rejected.
+
+The final scope-soundness RED used the same focused command and exposed
+`terminator_imports_remain_file-scoped`,
+`local_terminator_alias_shadowing_remains_ordinary_code`, and
+`constant_shadowing_remains_block_scoped_and_sequential`. GREEN was then
+verified with:
+
+```text
+gofmt -w cmd/ssm/deep_policy_ownership_test.go
+go test ./cmd/ssm -run '^(TestDeepPolicyOwnershipContraction|TestDeepPolicyOwnershipAnalyzerAdversarialFixtures)$' -count=1
+```
+
+The final all-package ownership/compiled/push suite and full `go test
+./cmd/ssm -count=1` also passed.

@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -132,6 +133,224 @@ func foo() *synctransaction.Transaction { return synctransaction.New() }`)
 		}
 	})
 
+	t.Run("renamed local factory returning syncTransaction remains a seam", func(t *testing.T) {
+		fixture := parseOwnershipFixture(t, `package main
+import "ssm/internal/synctransaction"
+func runList() { foo().Refresh() }
+func foo() *synctransaction.Transaction { return syncTransaction(false) }`)
+		if got := duplicatePolicyDeclarationViolations(fixture); len(got) == 0 {
+			t.Fatalf("analyzer accepted renamed local syncTransaction factory")
+		}
+	})
+
+	t.Run("stored transaction and stream fields retain ownership", func(t *testing.T) {
+		fixture := parseOwnershipFixture(t, `package main
+import "ssm/internal/synctransaction"
+type holders struct {
+    transaction *synctransaction.Transaction
+    stream *synctransaction.Stream
+}
+func helper(value holders) {
+    value.transaction.Refresh()
+    value.stream.BeforeLine()
+}`)
+		if got := duplicatePolicyDeclarationViolations(fixture); len(got) == 0 {
+			t.Fatalf("analyzer accepted stored transaction/stream field receivers")
+		}
+	})
+
+	t.Run("transaction and stream aliases retain ownership", func(t *testing.T) {
+		fixture := parseOwnershipFixture(t, `package main
+import "ssm/internal/synctransaction"
+type aliasTransaction = synctransaction.Transaction
+type aliasStream = synctransaction.Stream
+func helper(tx *aliasTransaction, stream *aliasStream) {
+    tx.Refresh()
+    stream.BeforeLine()
+}`)
+		if got := duplicatePolicyDeclarationViolations(fixture); len(got) == 0 {
+			t.Fatalf("analyzer accepted transaction/stream type aliases")
+		}
+	})
+
+	t.Run("transaction and stream method expressions remain policy references", func(t *testing.T) {
+		fixture := parseOwnershipFixture(t, `package main
+import "ssm/internal/synctransaction"
+func helper() {
+    refresh := (*synctransaction.Transaction).Refresh
+    beforeLine := (*synctransaction.Stream).BeforeLine
+    _ = refresh
+    _ = beforeLine
+}`)
+		if got := duplicatePolicyDeclarationViolations(fixture); len(got) == 0 {
+			t.Fatalf("analyzer accepted transaction/stream method expressions")
+		}
+	})
+
+	t.Run("function-value syncTransaction factories remain policy references", func(t *testing.T) {
+		fixture := parseOwnershipFixture(t, `package main
+func helper() {
+    factory := syncTransaction
+    transaction := factory(false)
+    transaction.Refresh()
+}`)
+		if got := duplicatePolicyDeclarationViolations(fixture); len(got) == 0 {
+			t.Fatalf("analyzer accepted function-value syncTransaction factory")
+		}
+	})
+
+	t.Run("reviewed invocation and inventory wiring boundaries stay allowed", func(t *testing.T) {
+		fixture := parseOwnershipFixture(t, `package main
+import "ssm/internal/synctransaction"
+func syncTransaction(bool) *synctransaction.Transaction { return nil }
+func runList() { syncTransaction(false).Refresh() }
+func pushTransactionScopeInSession() {
+    options := struct{ Sync *synctransaction.Transaction }{Sync: syncTransaction(false)}
+    _ = options
+}`)
+		if got := duplicatePolicyDeclarationViolations(fixture); len(got) != 0 {
+			t.Fatalf("analyzer rejected reviewed invocation/wiring boundary: %v", got)
+		}
+	})
+
+	t.Run("named constant false is dead", func(t *testing.T) {
+		fixture := parseOwnershipFixture(t, `package main
+const disabled = false
+func Classify() {
+    if disabled { RedactString() }
+}`)
+		got := policyPathViolations(fixture, "machine contract", []policyPath{{function: "Classify", calls: []string{"RedactString"}, branch: true, decisions: []string{"RedactString"}}})
+		if len(got) == 0 {
+			t.Fatalf("analyzer accepted named-constant dead policy branch")
+		}
+		localFixture := parseOwnershipFixture(t, `package main
+func Classify() {
+    const disabled = false
+    if disabled { RedactString() }
+}`)
+		localViolations := policyPathViolations(localFixture, "machine contract", []policyPath{{function: "Classify", calls: []string{"RedactString"}, branch: true, decisions: []string{"RedactString"}}})
+		if len(localViolations) == 0 {
+			t.Fatalf("analyzer accepted local named-constant dead policy branch")
+		}
+	})
+
+	t.Run("for false is dead", func(t *testing.T) {
+		fixture := parseOwnershipFixture(t, `package main
+func Classify() {
+    for false { RedactString() }
+}`)
+		got := policyPathViolations(fixture, "machine contract", []policyPath{{function: "Classify", calls: []string{"RedactString"}, branch: true, decisions: []string{"RedactString"}}})
+		if len(got) == 0 {
+			t.Fatalf("analyzer accepted for-false dead policy branch")
+		}
+	})
+
+	for _, terminator := range []struct {
+		name       string
+		importLine string
+		body       string
+	}{
+		{name: "panic", body: `panic("stop"); if unrelated { RedactString() }`},
+		{name: "os.Exit", importLine: `import "os"`, body: `os.Exit(1); if unrelated { RedactString() }`},
+		{name: "runtime.Goexit", importLine: `import "runtime"`, body: `runtime.Goexit(); if unrelated { RedactString() }`},
+	} {
+		t.Run(terminator.name+" terminates policy path", func(t *testing.T) {
+			fixture := parseOwnershipFixture(t, fmt.Sprintf("package main\n%s\nfunc Classify() { %s }", terminator.importLine, terminator.body))
+			got := policyPathViolations(fixture, "machine contract", []policyPath{{function: "Classify", calls: []string{"RedactString"}, branch: true, decisions: []string{"render"}}})
+			if len(got) == 0 {
+				t.Fatalf("analyzer accepted policy path after %s terminator", terminator.name)
+			}
+		})
+	}
+
+	t.Run("fake Exit method is not a terminator", func(t *testing.T) {
+		fixture := parseOwnershipFixture(t, `package main
+type fake struct{}
+func (fake) Exit(int) {}
+func Classify() {
+    fakeObject := fake{}
+    fakeObject.Exit(1)
+    if unrelated { RedactString() }
+}`)
+		got := policyPathViolations(fixture, "machine contract", []policyPath{{function: "Classify", calls: []string{"RedactString"}, branch: true, decisions: []string{"RedactString"}}})
+		if len(got) != 0 {
+			t.Fatalf("analyzer treated fake Exit method as a terminator: %v", got)
+		}
+	})
+
+	t.Run("terminator imports remain file-scoped", func(t *testing.T) {
+		fixture := parseOwnershipFixtures(t, map[string]string{
+			"imports_fixture.go": `package main
+import hostos "os"`,
+			"policy_fixture.go": `package main
+type fake struct{}
+func (fake) Exit(int) {}
+func Classify() {
+    hostos := fake{}
+    hostos.Exit(1)
+    if unrelated { RedactString() }
+}`,
+		})
+		got := policyPathViolations(fixture, "machine contract", []policyPath{{function: "Classify", calls: []string{"RedactString"}, branch: true, decisions: []string{"RedactString"}}})
+		if len(got) != 0 {
+			t.Fatalf("analyzer let another file's os alias terminate this policy path: %v", got)
+		}
+	})
+
+	t.Run("local terminator alias shadowing remains ordinary code", func(t *testing.T) {
+		fixture := parseOwnershipFixture(t, `package main
+import hostos "os"
+type fake struct{}
+func (fake) Exit(int) {}
+func Classify() {
+    hostos := fake{}
+    hostos.Exit(1)
+    if unrelated { RedactString() }
+}`)
+		got := policyPathViolations(fixture, "machine contract", []policyPath{{function: "Classify", calls: []string{"RedactString"}, branch: true, decisions: []string{"RedactString"}}})
+		if len(got) != 0 {
+			t.Fatalf("analyzer let a local os alias shadow terminate this policy path: %v", got)
+		}
+	})
+
+	t.Run("constant shadowing remains block scoped and sequential", func(t *testing.T) {
+		fixture := parseOwnershipFixture(t, `package main
+const enabled = true
+func Classify() {
+    {
+        const enabled = false
+        if enabled { RedactString() }
+        {
+            if enabled { RedactString() }
+        }
+    }
+    if enabled { RedactString() }
+}`)
+		function := packageFunctions(fixture)["Classify"]
+		context := reachabilityContext{
+			constants:   packageBooleanConstants(fixture),
+			terminators: terminatorBindingsForFile(function.bindings),
+		}
+		analysis := reachableNodeAnalysis(function.declaration.Body, context)
+		if !analysis.calls["RedactString"] {
+			t.Fatalf("analyzer leaked local constant shadowing across blocks: %v", analysis.calls)
+		}
+	})
+
+	t.Run("unrelated returns do not satisfy policy decisions", func(t *testing.T) {
+		fixture := parseOwnershipFixture(t, `package main
+func Classify() { if unrelated { return }; RedactString() }
+func ProcessExit() { if unrelated { return } }`)
+		paths := []policyPath{
+			{function: "Classify", calls: []string{"RedactString"}, branch: true, decisions: []string{"RedactString"}},
+			{function: "ProcessExit", branch: true, decisions: []string{"processExit"}},
+		}
+		got := policyPathViolations(fixture, "machine contract", paths)
+		if len(got) == 0 {
+			t.Fatalf("analyzer accepted unrelated return as policy decision")
+		}
+	})
+
 	t.Run("shallow owner with dead policy paths is rejected", func(t *testing.T) {
 		deadFixture := parseOwnershipFixture(t, `package main
 func Classify() { if false { RedactString() } }
@@ -170,15 +389,38 @@ func containsViolation(violations []string, fragment string) bool {
 
 func parseOwnershipFixture(t *testing.T, source string) astPackage {
 	t.Helper()
-	file, err := parser.ParseFile(token.NewFileSet(), "ownership_fixture.go", source, 0)
-	if err != nil {
-		t.Fatalf("parse ownership fixture: %v", err)
+	return parseOwnershipFixtures(t, map[string]string{"ownership_fixture.go": source})
+}
+
+func parseOwnershipFixtures(t *testing.T, sources map[string]string) astPackage {
+	t.Helper()
+	files := make(map[string]*ast.File, len(sources))
+	for name, source := range sources {
+		file, err := parser.ParseFile(token.NewFileSet(), name, source, 0)
+		if err != nil {
+			t.Fatalf("parse ownership fixture %s: %v", name, err)
+		}
+		files[name] = file
 	}
-	return astPackage{files: map[string]*ast.File{"ownership_fixture.go": file}}
+	return astPackage{files: files}
 }
 
 type astPackage struct {
 	files map[string]*ast.File
+}
+
+type namedASTFile struct {
+	name string
+	file *ast.File
+}
+
+func sortedASTFiles(packageAST astPackage) []namedASTFile {
+	files := make([]namedASTFile, 0, len(packageAST.files))
+	for name, file := range packageAST.files {
+		files = append(files, namedASTFile{name: name, file: file})
+	}
+	sort.Slice(files, func(left, right int) bool { return files[left].name < files[right].name })
+	return files
 }
 
 func loadASTPackage(t *testing.T, root, relative string) astPackage {
@@ -290,7 +532,8 @@ func commandPolicyReferenceViolations(packageAST astPackage) []string {
 		},
 	}
 	violations := make([]string, 0)
-	for fileName, file := range packageAST.files {
+	for _, namedFile := range sortedASTFiles(packageAST) {
+		fileName, file := namedFile.name, namedFile.file
 		bindings := importBindings(file)
 		selectorNames := selectorIdentifierSet(file)
 		ast.Inspect(file, func(node ast.Node) bool {
@@ -315,6 +558,7 @@ func commandPolicyReferenceViolations(packageAST astPackage) []string {
 			return true
 		})
 	}
+	sort.Strings(violations)
 	return violations
 }
 
@@ -392,7 +636,8 @@ func duplicatePolicyDeclarationViolations(packageAST astPackage) []string {
 		"redactString":                true,
 	}
 	violations := make([]string, 0)
-	for fileName, file := range packageAST.files {
+	for _, namedFile := range sortedASTFiles(packageAST) {
+		fileName, file := namedFile.name, namedFile.file
 		for _, declaration := range file.Decls {
 			function, ok := declaration.(*ast.FuncDecl)
 			if !ok || !forbidden[function.Name.Name] {
@@ -402,6 +647,7 @@ func duplicatePolicyDeclarationViolations(packageAST astPackage) []string {
 		}
 	}
 	violations = append(violations, commandPolicyGraphViolations(packageAST)...)
+	sort.Strings(violations)
 	return violations
 }
 
@@ -409,36 +655,39 @@ var reviewedCommandPolicyBoundaries = map[string]bool{
 	// These are the command's reviewed invocation roots. A root may invoke an
 	// owner directly; policy-bearing helpers and closures below it are still
 	// rejected by the graph.
-	"runArgvStream":          true,
-	"runAgentRequest":        true,
-	"runCheck":               true,
-	"runDoctor":              true,
-	"runExecSpec":            true,
-	"exitRunArgvStream":      true,
-	"runGet":                 true,
-	"runHostCommand":         true,
-	"runHostKeyCommand":      true,
-	"runKeysList":            true,
-	"runKeysRemove":          true,
-	"runList":                true,
-	"runMap":                 true,
-	"runPull":                true,
-	"runPullIfChanged":       true,
-	"runPush":                true,
-	"runRemoteHash":          true,
-	"runImportJSON":          true,
-	"runPutArgs":             true,
-	"runPutWithOptions":      true,
-	"runRemove":              true,
-	"runSSHCTL":              true,
-	"runSSHCTLDoctor":        true,
-	"runSSHCTLList":          true,
-	"runSSHCTLMap":           true,
-	"runSSHCTLParsed":        true,
-	"runSSHCTLPlan":          true,
-	"runSSHCTLRun":           true,
-	"runSSHCTLRunInvocation": true,
-	"runSSHCTLStatus":        true,
+	"runArgvStream":     true,
+	"runAgentRequest":   true,
+	"runCheck":          true,
+	"runDoctor":         true,
+	"runExecSpec":       true,
+	"exitRunArgvStream": true,
+	"runGet":            true,
+	"runHostCommand":    true,
+	"runHostKeyCommand": true,
+	"runKeysList":       true,
+	"runKeysRemove":     true,
+	"runList":           true,
+	"runMap":            true,
+	"runPull":           true,
+	"runPullIfChanged":  true,
+	"runPush":           true,
+	// This is the only push helper that constructs inventory publication
+	// options with the retained sync factory; its callers only delegate here.
+	"pushTransactionScopeInSession": true,
+	"runRemoteHash":                 true,
+	"runImportJSON":                 true,
+	"runPutArgs":                    true,
+	"runPutWithOptions":             true,
+	"runRemove":                     true,
+	"runSSHCTL":                     true,
+	"runSSHCTLDoctor":               true,
+	"runSSHCTLList":                 true,
+	"runSSHCTLMap":                  true,
+	"runSSHCTLParsed":               true,
+	"runSSHCTLPlan":                 true,
+	"runSSHCTLRun":                  true,
+	"runSSHCTLRunInvocation":        true,
+	"runSSHCTLStatus":               true,
 	// The sole retained command-side construction boundary. Callers may wire
 	// this factory into inventory/stream options without inheriting New's
 	// transport policy; renamed constructors remain graph violations.
@@ -447,7 +696,6 @@ var reviewedCommandPolicyBoundaries = map[string]bool{
 }
 
 var commandSyncPolicyMethods = map[string]bool{
-	"New":                        true,
 	"Refresh":                    true,
 	"Pull":                       true,
 	"Sync":                       true,
@@ -480,7 +728,8 @@ type commandPolicyNode struct {
 func commandPolicyGraphViolations(packageAST astPackage) []string {
 	nodes := make(map[string]*commandPolicyNode)
 	closureNumber := 0
-	for _, file := range packageAST.files {
+	for _, namedFile := range sortedASTFiles(packageAST) {
+		file := namedFile.file
 		bindings := importBindings(file)
 		for _, declaration := range file.Decls {
 			function, ok := declaration.(*ast.FuncDecl)
@@ -488,11 +737,10 @@ func commandPolicyGraphViolations(packageAST astPackage) []string {
 				continue
 			}
 			node := &commandPolicyNode{name: function.Name.Name, body: function.Body}
-			provenance := commandPolicyReceiverProvenance(function.Type.Params, function.Body, bindings, nil)
 			node.edges = collectLocalFunctionCalls(function.Body)
 			nodes[node.name] = node
-			node.refs = collectCommandPolicyReferencesWithProvenance(function.Body, bindings, provenance)
-			collectCommandPolicyClosures(function.Body, function.Name.Name, bindings, provenance, nodes, &closureNumber)
+			node.refs = collectCommandPolicyReferences(function.Body, bindings)
+			collectCommandPolicyClosures(function.Body, function.Name.Name, bindings, nodes, &closureNumber)
 		}
 	}
 
@@ -534,7 +782,13 @@ func commandPolicyGraphViolations(packageAST astPackage) []string {
 	}
 
 	violations := make([]string, 0)
-	for name, node := range nodes {
+	names := make([]string, 0, len(nodes))
+	for name := range nodes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		node := nodes[name]
 		if !reachesPolicy[name] || (!node.closure && reviewedCommandPolicyBoundaries[name]) {
 			continue
 		}
@@ -544,10 +798,11 @@ func commandPolicyGraphViolations(packageAST astPackage) []string {
 		}
 		violations = append(violations, fmt.Sprintf("cmd/ssm function %q reaches refresh/redaction policy outside a reviewed invocation boundary", name))
 	}
+	sort.Strings(violations)
 	return violations
 }
 
-func collectCommandPolicyClosures(root *ast.BlockStmt, owner string, bindings fileImportBindings, inherited commandReceiverProvenance, nodes map[string]*commandPolicyNode, counter *int) {
+func collectCommandPolicyClosures(root *ast.BlockStmt, owner string, bindings fileImportBindings, nodes map[string]*commandPolicyNode, counter *int) {
 	ast.Inspect(root, func(node ast.Node) bool {
 		literal, ok := node.(*ast.FuncLit)
 		if !ok {
@@ -556,138 +811,15 @@ func collectCommandPolicyClosures(root *ast.BlockStmt, owner string, bindings fi
 		name := fmt.Sprintf("%s$closure%d", owner, *counter)
 		(*counter)++
 		closure := &commandPolicyNode{name: name, body: literal.Body, closure: true}
-		provenance := commandPolicyReceiverProvenance(literal.Type.Params, literal.Body, bindings, inherited)
-		closure.refs = collectCommandPolicyReferencesWithProvenance(literal.Body, bindings, provenance)
+		closure.refs = collectCommandPolicyReferences(literal.Body, bindings)
 		closure.edges = collectLocalFunctionCalls(literal.Body)
 		nodes[name] = closure
-		collectCommandPolicyClosures(literal.Body, name, bindings, provenance, nodes, counter)
+		collectCommandPolicyClosures(literal.Body, name, bindings, nodes, counter)
 		return false
 	})
 }
 
-type commandReceiverKind uint8
-
-const (
-	commandReceiverTransaction commandReceiverKind = 1 << iota
-	commandReceiverStream
-)
-
-type commandReceiverProvenance map[string]commandReceiverKind
-
-func commandPolicyReceiverProvenance(params *ast.FieldList, root ast.Node, bindings fileImportBindings, inherited commandReceiverProvenance) commandReceiverProvenance {
-	provenance := make(commandReceiverProvenance, len(inherited))
-	for name, kind := range inherited {
-		provenance[name] = kind
-	}
-	if params != nil {
-		for _, field := range params.List {
-			kind := commandReceiverTypeKind(field.Type, bindings)
-			if kind == 0 {
-				continue
-			}
-			for _, name := range field.Names {
-				provenance[name.Name] = kind
-			}
-		}
-	}
-	ast.Inspect(root, func(node ast.Node) bool {
-		if _, ok := node.(*ast.FuncLit); ok {
-			return false
-		}
-		switch declaration := node.(type) {
-		case *ast.AssignStmt:
-			for index, left := range declaration.Lhs {
-				identifier, ok := left.(*ast.Ident)
-				if !ok {
-					continue
-				}
-				if index < len(declaration.Rhs) {
-					if kind := commandReceiverExpressionKind(declaration.Rhs[index], bindings, provenance); kind != 0 {
-						provenance[identifier.Name] = kind
-					}
-				} else if len(declaration.Rhs) == 1 {
-					if kind := commandReceiverExpressionKind(declaration.Rhs[0], bindings, provenance); kind != 0 {
-						provenance[identifier.Name] = kind
-					}
-				}
-			}
-		case *ast.ValueSpec:
-			declaredKind := commandReceiverTypeKind(declaration.Type, bindings)
-			for index, name := range declaration.Names {
-				kind := declaredKind
-				if index < len(declaration.Values) {
-					if inferred := commandReceiverExpressionKind(declaration.Values[index], bindings, provenance); inferred != 0 {
-						kind = inferred
-					}
-				} else if len(declaration.Values) == 1 {
-					if inferred := commandReceiverExpressionKind(declaration.Values[0], bindings, provenance); inferred != 0 {
-						kind = inferred
-					}
-				}
-				if kind != 0 {
-					provenance[name.Name] = kind
-				}
-			}
-		}
-		return true
-	})
-	return provenance
-}
-
-func commandReceiverTypeKind(expression ast.Expr, bindings fileImportBindings) commandReceiverKind {
-	switch expression := expression.(type) {
-	case *ast.StarExpr:
-		return commandReceiverTypeKind(expression.X, bindings)
-	case *ast.SelectorExpr:
-		binding, ok := selectorImportBinding(expression, bindings)
-		if !ok || binding.path != "ssm/internal/synctransaction" {
-			return 0
-		}
-		switch expression.Sel.Name {
-		case "Transaction":
-			return commandReceiverTransaction
-		case "Stream":
-			return commandReceiverStream
-		}
-	case *ast.Ident:
-		for _, binding := range bindings.dots {
-			if binding.path != "ssm/internal/synctransaction" {
-				continue
-			}
-			switch expression.Name {
-			case "Transaction":
-				return commandReceiverTransaction
-			case "Stream":
-				return commandReceiverStream
-			}
-		}
-	}
-	return 0
-}
-
-func commandReceiverExpressionKind(expression ast.Expr, bindings fileImportBindings, provenance commandReceiverProvenance) commandReceiverKind {
-	switch expression := expression.(type) {
-	case *ast.Ident:
-		return provenance[expression.Name]
-	case *ast.CallExpr:
-		switch function := expression.Fun.(type) {
-		case *ast.Ident:
-			if function.Name == "syncTransaction" {
-				return commandReceiverTransaction
-			}
-		case *ast.SelectorExpr:
-			if binding, ok := selectorImportBinding(function, bindings); ok && binding.path == "ssm/internal/synctransaction" && function.Sel.Name == "New" {
-				return commandReceiverTransaction
-			}
-			if function.Sel.Name == "BeginStream" && commandReceiverExpressionKind(function.X, bindings, provenance)&commandReceiverTransaction != 0 {
-				return commandReceiverStream
-			}
-		}
-	}
-	return 0
-}
-
-func collectCommandPolicyReferencesWithProvenance(root ast.Node, bindings fileImportBindings, provenance commandReceiverProvenance) []string {
+func collectCommandPolicyReferences(root ast.Node, bindings fileImportBindings) []string {
 	refs := make([]string, 0)
 	selectorNames := selectorIdentifierSet(root)
 	ast.Inspect(root, func(node ast.Node) bool {
@@ -704,14 +836,13 @@ func collectCommandPolicyReferencesWithProvenance(root ast.Node, bindings fileIm
 						refs = append(refs, binding.path+"."+reference.Sel.Name)
 					}
 				case "ssm/internal/synctransaction":
-					if commandSyncPolicyMethods[reference.Sel.Name] {
+					if reference.Sel.Name == "New" || commandSyncPolicyMethods[reference.Sel.Name] {
 						refs = append(refs, binding.path+"."+reference.Sel.Name)
 					}
 				}
 				return true
 			}
-			if commandSyncPolicyMethods[reference.Sel.Name] &&
-				(syncTransactionExpression(reference.X) || commandReceiverExpressionKind(reference.X, bindings, provenance) != 0) {
+			if commandSyncPolicyMethods[reference.Sel.Name] {
 				refs = append(refs, "ssm/internal/synctransaction."+reference.Sel.Name)
 			}
 		case *ast.Ident:
@@ -720,23 +851,17 @@ func collectCommandPolicyReferencesWithProvenance(root ast.Node, bindings fileIm
 			}
 			for _, binding := range bindings.dots {
 				if (binding.path == "ssm/internal/machinecontract" && commandRedactionPolicyMethods[reference.Name]) ||
-					(binding.path == "ssm/internal/synctransaction" && commandSyncPolicyMethods[reference.Name]) {
+					(binding.path == "ssm/internal/synctransaction" && (commandSyncPolicyMethods[reference.Name] || reference.Name == "New")) {
 					refs = append(refs, binding.path+"."+reference.Name)
 				}
 			}
 		}
+		if reference, ok := node.(*ast.Ident); ok && reference.Name == "syncTransaction" && !selectorNames[reference] {
+			refs = append(refs, "cmd/ssm.syncTransaction")
+		}
 		return true
 	})
 	return refs
-}
-
-func syncTransactionExpression(expression ast.Expr) bool {
-	call, ok := expression.(*ast.CallExpr)
-	if !ok {
-		return false
-	}
-	function, ok := call.Fun.(*ast.Ident)
-	return ok && function.Name == "syncTransaction"
 }
 
 func collectLocalFunctionCalls(root ast.Node) []string {
@@ -758,9 +883,10 @@ func collectLocalFunctionCalls(root ast.Node) []string {
 }
 
 type policyPath struct {
-	function string
-	calls    []string
-	branch   bool
+	function  string
+	calls     []string
+	decisions []string
+	branch    bool
 }
 
 func assertMachineContractDepth(t *testing.T, packageAST astPackage) {
@@ -770,12 +896,12 @@ func assertMachineContractDepth(t *testing.T, packageAST astPackage) {
 
 func machineContractPolicyPaths() []policyPath {
 	return []policyPath{
-		{function: "Classify", calls: []string{"RedactString"}, branch: true},
-		{function: "ClassifySSH", calls: []string{"Classify"}, branch: true},
+		{function: "Classify", calls: []string{"RedactString"}, decisions: []string{"RedactString"}, branch: true},
+		{function: "ClassifySSH", calls: []string{"Classify"}, decisions: []string{"errors.As", "strings.Contains", "isTimeoutErrorMessage"}, branch: true},
 		{function: "Render", calls: []string{"render"}},
 		{function: "WriteFailure", calls: []string{"WriteFailureJSON", "WriteHuman", "ProcessExit"}},
 		{function: "RedactString", calls: []string{"redactAssignmentValues", "redactStructuredValues"}},
-		{function: "ProcessExit", branch: true},
+		{function: "ProcessExit", decisions: []string{"processExit"}, branch: true},
 	}
 }
 
@@ -787,8 +913,8 @@ func assertSyncTransactionDepth(t *testing.T, packageAST astPackage) {
 		{function: "PreparePublication", calls: []string{"InspectRemoteBlob", "preserveConflict"}},
 		{function: "SendPublication", calls: []string{"ObservePublicationIdentity", "PushBlobObserved"}},
 		{function: "Facts", calls: []string{"configuration", "localFacts"}},
-		{function: "Initialize", calls: []string{"refresh"}, branch: true},
-		{function: "BeforeLine", calls: []string{"refresh"}, branch: true},
+		{function: "Initialize", calls: []string{"refresh"}, decisions: []string{"transaction", "initialized", "offline"}, branch: true},
+		{function: "BeforeLine", calls: []string{"refresh"}, decisions: []string{"transaction", "initialized", "offline", "now"}, branch: true},
 	})
 }
 
@@ -813,14 +939,20 @@ func assertPolicyPaths(t *testing.T, packageAST astPackage, owner string, paths 
 
 func policyPathViolations(packageAST astPackage, owner string, paths []policyPath) []string {
 	functions := packageFunctions(packageAST)
+	packageConstants := packageBooleanConstants(packageAST)
 	violations := make([]string, 0)
 	for _, path := range paths {
-		declaration := functions[path.function]
-		if declaration == nil || declaration.Body == nil {
+		function, ok := functions[path.function]
+		declaration := function.declaration
+		if !ok || declaration == nil || declaration.Body == nil {
 			violations = append(violations, fmt.Sprintf("%s is missing concrete policy function %q", owner, path.function))
 			continue
 		}
-		analysis := reachableBodyAnalysis(declaration.Body)
+		context := reachabilityContext{
+			constants:   packageConstants,
+			terminators: terminatorBindingsForFile(function.bindings),
+		}
+		analysis := reachableNodeAnalysis(declaration.Body, context)
 		for _, wanted := range path.calls {
 			if !analysis.calls[wanted] && !analysis.calls[strings.TrimPrefix(wanted, "config.")] {
 				violations = append(violations, fmt.Sprintf("%s function %q does not own policy path through %q", owner, path.function, wanted))
@@ -842,23 +974,26 @@ func policyDecisionGovernsPath(analysis reachableAnalysis, path policyPath) bool
 				return true
 			}
 		}
-		// Some policy owners make the decision by returning from one branch
-		// and continuing to a shared mechanism call afterward (for example
-		// ClassifySSH). A reachable return is therefore a meaningful branch
-		// even when the required call is outside that branch.
-		if decision.returns {
-			return true
+		for _, wanted := range path.decisions {
+			if decision.calls[wanted] || decision.selectors[wanted] || decision.selectors[strings.TrimPrefix(wanted, "config.")] {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-func packageFunctions(packageAST astPackage) map[string]*ast.FuncDecl {
-	functions := make(map[string]*ast.FuncDecl)
-	for _, file := range packageAST.files {
-		for _, declaration := range file.Decls {
+type functionInfo struct {
+	declaration *ast.FuncDecl
+	bindings    fileImportBindings
+}
+
+func packageFunctions(packageAST astPackage) map[string]functionInfo {
+	functions := make(map[string]functionInfo)
+	for _, namedFile := range sortedASTFiles(packageAST) {
+		for _, declaration := range namedFile.file.Decls {
 			if function, ok := declaration.(*ast.FuncDecl); ok {
-				functions[function.Name.Name] = function
+				functions[function.Name.Name] = functionInfo{declaration: function, bindings: importBindings(namedFile.file)}
 			}
 		}
 	}
@@ -867,24 +1002,67 @@ func packageFunctions(packageAST astPackage) map[string]*ast.FuncDecl {
 
 type reachableAnalysis struct {
 	calls     map[string]bool
+	selectors map[string]bool
 	branches  int
 	decisions []reachableDecision
 	returns   bool
+	context   reachabilityContext
+}
+
+type reachabilityContext struct {
+	constants   map[string]bool
+	terminators reachabilityTerminators
+}
+
+type reachabilityTerminators struct {
+	packages  map[string]string
+	functions map[string]string
 }
 
 type reachableDecision struct {
-	calls   map[string]bool
-	returns bool
+	calls     map[string]bool
+	selectors map[string]bool
+	returns   bool
 }
 
-func reachableBodyAnalysis(root *ast.BlockStmt) reachableAnalysis {
-	return reachableNodeAnalysis(root)
-}
-
-func reachableNodeAnalysis(root ast.Node) reachableAnalysis {
-	analysis := reachableAnalysis{calls: make(map[string]bool)}
+func reachableNodeAnalysis(root ast.Node, context reachabilityContext) reachableAnalysis {
+	context.constants = cloneBooleanConstants(context.constants)
+	analysis := reachableAnalysis{
+		calls:     make(map[string]bool),
+		selectors: make(map[string]bool),
+		context:   context,
+	}
 	walkReachable(root, &analysis)
 	return analysis
+}
+
+func cloneBooleanConstants(constants map[string]bool) map[string]bool {
+	cloned := make(map[string]bool, len(constants))
+	for name, value := range constants {
+		cloned[name] = value
+	}
+	return cloned
+}
+
+func collectBooleanDecl(declaration ast.Decl, constants map[string]bool) {
+	genDecl, ok := declaration.(*ast.GenDecl)
+	if !ok || genDecl.Tok != token.CONST {
+		return
+	}
+	for _, specification := range genDecl.Specs {
+		valueSpec, ok := specification.(*ast.ValueSpec)
+		if !ok {
+			continue
+		}
+		for index, name := range valueSpec.Names {
+			if index >= len(valueSpec.Values) {
+				continue
+			}
+			if value, known := constantBool(valueSpec.Values[index], constants); known {
+				constants[name.Name] = value
+			}
+		}
+	}
 }
 
 // walkReachable follows ordinary control flow while ignoring dead branches
@@ -897,21 +1075,27 @@ func walkReachable(node ast.Node, analysis *reachableAnalysis) bool {
 	}
 	switch statement := node.(type) {
 	case *ast.BlockStmt:
+		outerConstants := analysis.context.constants
+		analysis.context.constants = cloneBooleanConstants(outerConstants)
+		defer func() { analysis.context.constants = outerConstants }()
 		for _, child := range statement.List {
 			if !walkReachable(child, analysis) {
 				return false
 			}
 		}
 		return true
+	case *ast.DeclStmt:
+		collectBooleanDecl(statement.Decl, analysis.context.constants)
+		return true
 	case *ast.IfStmt:
 		visitSimpleNode(statement.Init, analysis)
 		visitSimpleNode(statement.Cond, analysis)
-		value, known := constantBool(statement.Cond)
+		value, known := constantBool(statement.Cond, analysis.context.constants)
 		if !known {
 			analysis.branches++
-			analysis.decisions = append(analysis.decisions, reachableDecisionFor(statement.Body))
+			analysis.decisions = append(analysis.decisions, reachableDecisionForCondition(statement.Cond, statement.Body, analysis.context))
 			if statement.Else != nil {
-				analysis.decisions = append(analysis.decisions, reachableDecisionFor(statement.Else))
+				analysis.decisions = append(analysis.decisions, reachableDecisionForCondition(statement.Cond, statement.Else, analysis.context))
 			}
 		}
 		bodyContinues := true
@@ -933,15 +1117,19 @@ func walkReachable(node ast.Node, analysis *reachableAnalysis) bool {
 		visitSimpleNode(statement.Init, analysis)
 		visitSimpleNode(statement.Tag, analysis)
 		analysis.branches++
-		analysis.decisions = append(analysis.decisions, reachableDecisionFor(statement.Body))
+		analysis.decisions = append(analysis.decisions, reachableDecisionForCondition(statement.Tag, statement.Body, analysis.context))
 		walkReachable(statement.Body, analysis)
 		return true
 	case *ast.ForStmt:
 		visitSimpleNode(statement.Init, analysis)
 		visitSimpleNode(statement.Cond, analysis)
 		visitSimpleNode(statement.Post, analysis)
+		value, known := constantBool(statement.Cond, analysis.context.constants)
+		if known && !value {
+			return true
+		}
 		analysis.branches++
-		analysis.decisions = append(analysis.decisions, reachableDecisionFor(statement.Body))
+		analysis.decisions = append(analysis.decisions, reachableDecisionForCondition(statement.Cond, statement.Body, analysis.context))
 		walkReachable(statement.Body, analysis)
 		return true
 	case *ast.RangeStmt:
@@ -949,7 +1137,7 @@ func walkReachable(node ast.Node, analysis *reachableAnalysis) bool {
 		visitSimpleNode(statement.Value, analysis)
 		visitSimpleNode(statement.X, analysis)
 		analysis.branches++
-		analysis.decisions = append(analysis.decisions, reachableDecisionFor(statement.Body))
+		analysis.decisions = append(analysis.decisions, reachableDecisionForCondition(statement.X, statement.Body, analysis.context))
 		walkReachable(statement.Body, analysis)
 		return true
 	case *ast.CaseClause:
@@ -969,16 +1157,31 @@ func walkReachable(node ast.Node, analysis *reachableAnalysis) bool {
 		return true
 	default:
 		visitSimpleNode(node, analysis)
+		if statementTerminates(node, analysis.context.terminators) {
+			return false
+		}
 		return true
 	}
 }
 
-func reachableDecisionFor(root ast.Node) reachableDecision {
+func reachableDecisionForWithContext(root ast.Node, context reachabilityContext) reachableDecision {
 	if root == nil {
 		return reachableDecision{}
 	}
-	analysis := reachableNodeAnalysis(root)
-	return reachableDecision{calls: analysis.calls, returns: analysis.returns}
+	analysis := reachableNodeAnalysis(root, context)
+	return reachableDecision{calls: analysis.calls, selectors: analysis.selectors, returns: analysis.returns}
+}
+
+func reachableDecisionForCondition(condition ast.Node, branch ast.Node, context reachabilityContext) reachableDecision {
+	decision := reachableDecisionForWithContext(branch, context)
+	conditionAnalysis := reachableNodeAnalysis(condition, context)
+	for call := range conditionAnalysis.calls {
+		decision.calls[call] = true
+	}
+	for selector := range conditionAnalysis.selectors {
+		decision.selectors[selector] = true
+	}
+	return decision
 }
 
 func visitSimpleNode(root ast.Node, analysis *reachableAnalysis) {
@@ -1000,11 +1203,20 @@ func visitSimpleNode(root ast.Node, analysis *reachableAnalysis) {
 		switch node := node.(type) {
 		case *ast.FuncLit:
 			return false
+		case *ast.SelectorExpr:
+			recordSelector(node, analysis.selectors)
 		case *ast.CallExpr:
 			recordCall(node, analysis.calls)
 		}
 		return true
 	})
+}
+
+func recordSelector(selector *ast.SelectorExpr, selectors map[string]bool) {
+	selectors[selector.Sel.Name] = true
+	if identifier, ok := selector.X.(*ast.Ident); ok {
+		selectors[identifier.Name+"."+selector.Sel.Name] = true
+	}
 }
 
 func recordCall(call *ast.CallExpr, calls map[string]bool) {
@@ -1019,9 +1231,14 @@ func recordCall(call *ast.CallExpr, calls map[string]bool) {
 	}
 }
 
-func constantBool(expression ast.Expr) (bool, bool) {
+func constantBool(expression ast.Expr, constants map[string]bool) (bool, bool) {
 	switch value := expression.(type) {
 	case *ast.Ident:
+		if constants != nil {
+			if constant, ok := constants[value.Name]; ok {
+				return constant, true
+			}
+		}
 		switch value.Name {
 		case "true":
 			return true, true
@@ -1029,12 +1246,88 @@ func constantBool(expression ast.Expr) (bool, bool) {
 			return false, true
 		}
 	case *ast.ParenExpr:
-		return constantBool(value.X)
+		return constantBool(value.X, constants)
 	case *ast.UnaryExpr:
 		if value.Op == token.NOT {
-			inner, known := constantBool(value.X)
+			inner, known := constantBool(value.X, constants)
 			return !inner, known
 		}
 	}
 	return false, false
+}
+
+func statementTerminates(node ast.Node, bindings reachabilityTerminators) bool {
+	expression, ok := node.(*ast.ExprStmt)
+	if !ok {
+		return false
+	}
+	call, ok := expression.X.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	switch function := call.Fun.(type) {
+	case *ast.Ident:
+		if function.Name == "panic" {
+			return true
+		}
+		if function.Obj != nil {
+			return false
+		}
+		path, ok := bindings.functions[function.Name]
+		return ok && ((path == "os" && function.Name == "Exit") || (path == "runtime" && function.Name == "Goexit"))
+	case *ast.SelectorExpr:
+		identifier, ok := function.X.(*ast.Ident)
+		if !ok || identifier.Obj != nil {
+			return false
+		}
+		path, ok := bindings.packages[identifier.Name]
+		return ok && ((path == "os" && function.Sel.Name == "Exit") || (path == "runtime" && function.Sel.Name == "Goexit"))
+	default:
+		return false
+	}
+}
+
+func terminatorBindingsForFile(fileBindings fileImportBindings) reachabilityTerminators {
+	bindings := reachabilityTerminators{packages: make(map[string]string), functions: make(map[string]string)}
+	for localName, binding := range fileBindings.named {
+		if binding.path == "os" || binding.path == "runtime" {
+			bindings.packages[localName] = binding.path
+		}
+	}
+	for _, binding := range fileBindings.dots {
+		if binding.path == "os" {
+			bindings.functions["Exit"] = binding.path
+		}
+		if binding.path == "runtime" {
+			bindings.functions["Goexit"] = binding.path
+		}
+	}
+	return bindings
+}
+
+func packageBooleanConstants(packageAST astPackage) map[string]bool {
+	constants := make(map[string]bool)
+	for _, file := range sortedASTFiles(packageAST) {
+		for _, declaration := range file.file.Decls {
+			genDecl, ok := declaration.(*ast.GenDecl)
+			if !ok || genDecl.Tok != token.CONST {
+				continue
+			}
+			for _, specification := range genDecl.Specs {
+				valueSpec, ok := specification.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for index, name := range valueSpec.Names {
+					if index >= len(valueSpec.Values) {
+						continue
+					}
+					if value, known := constantBool(valueSpec.Values[index], constants); known {
+						constants[name.Name] = value
+					}
+				}
+			}
+		}
+	}
+	return constants
 }
