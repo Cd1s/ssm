@@ -40,3 +40,35 @@ func TestWindowsRenameGapFixtureUsesInProcessHookSynchronization(t *testing.T) {
 		}
 	}
 }
+
+func TestWindowsMappedCleanupUsesDeletePendingHandleEvidence(t *testing.T) {
+	source, err := os.ReadFile("replace_windows_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const start = "func testWindowsMappedExecutableReplacementSucceedsAndCleansOnNextLaunch"
+	const end = "func testWindowsPrivilegedReplacement"
+	body := string(source)
+	startIndex := strings.Index(body, start)
+	endIndex := strings.Index(body, end)
+	if startIndex < 0 || endIndex <= startIndex {
+		t.Fatal("cannot isolate Windows mapped cleanup fixture")
+	}
+	body = body[startIndex:endIndex]
+	for _, required := range []string{
+		"openWindowsReplacementFile(backup, 0)",
+		"windows.FileStandardInfo",
+		"deletePending",
+	} {
+		if !strings.Contains(body, required) {
+			t.Errorf("Windows mapped cleanup fixture lacks handle evidence %q", required)
+		}
+	}
+	cleanupIndex := strings.Index(body, "cleanup := exec.Command")
+	if cleanupIndex < 0 {
+		t.Fatal("Windows mapped cleanup fixture lacks cleanup child")
+	}
+	if strings.Contains(body[cleanupIndex:], "os.Stat(backup)") {
+		t.Fatal("Windows mapped cleanup fixture races a delete-pending pathname reopen")
+	}
+}

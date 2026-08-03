@@ -637,6 +637,16 @@ func testWindowsMappedExecutableReplacementSucceedsAndCleansOnNextLaunch(t *test
 	if _, err := os.Stat(backup); err != nil {
 		t.Fatalf("running executable rollback file was not retained until process exit: %v", err)
 	}
+	backupObserver, err := openWindowsReplacementFile(backup, 0)
+	if err != nil {
+		t.Fatalf("open running executable rollback observer: %v", err)
+	}
+	backupObserverOpen := true
+	defer func() {
+		if backupObserverOpen {
+			_ = windows.CloseHandle(backupObserver)
+		}
+	}()
 	assertWindowsControlFileSecurity(t, windowsReplacementLock(target))
 	assertWindowsControlFileSecurity(t, windowsReplacementRecord(target))
 
@@ -645,9 +655,29 @@ func testWindowsMappedExecutableReplacementSucceedsAndCleansOnNextLaunch(t *test
 	if output, err := cleanup.CombinedOutput(); err != nil {
 		t.Fatalf("next-launch cleanup failed: %v; output=%q", err, output)
 	}
-	if _, err := os.Stat(backup); !os.IsNotExist(err) {
-		t.Fatalf("next launch retained old executable rollback file: %v", err)
+	var backupState struct {
+		allocationSize int64
+		endOfFile      int64
+		numberOfLinks  uint32
+		deletePending  byte
+		directory      byte
+		padding        [2]byte
 	}
+	if err := windows.GetFileInformationByHandleEx(
+		backupObserver,
+		windows.FileStandardInfo,
+		(*byte)(unsafe.Pointer(&backupState)),
+		uint32(unsafe.Sizeof(backupState)),
+	); err != nil {
+		t.Fatalf("inspect scheduled rollback deletion: %v", err)
+	}
+	if backupState.deletePending == 0 {
+		t.Fatal("next-launch cleanup did not schedule rollback deletion")
+	}
+	if err := windows.CloseHandle(backupObserver); err != nil {
+		t.Fatalf("close running executable rollback observer: %v", err)
+	}
+	backupObserverOpen = false
 	if _, err := os.Stat(windowsReplacementRecord(target)); !os.IsNotExist(err) {
 		t.Fatalf("next launch retained completed rollback ownership record: %v", err)
 	}
