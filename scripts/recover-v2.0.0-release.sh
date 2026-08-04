@@ -30,7 +30,10 @@ jq -e -s --arg tag "$expected_tag" --argjson id "$expected_release_id" '
 
 api "repos/$expected_repository/releases/$expected_release_id" > "$work/release.json"
 api "repos/$expected_repository/releases/latest" > "$work/latest.json"
-api "repos/$expected_repository/contents/RELEASE_NOTES.md?ref=$expected_source_sha" --jq .content | tr -d '\n' | base64 -d > "$work/RELEASE_NOTES.md"
+api "repos/$expected_repository/contents/RELEASE_NOTES.md?ref=$expected_source_sha" > "$work/release-notes-content.json"
+jq -e '.type=="file" and .encoding=="base64" and (.size|type)=="number" and .size>0 and (.content|type)=="string" and (.content|length)>0' "$work/release-notes-content.json" >/dev/null || die "tagged release notes content is invalid"
+jq -r .content "$work/release-notes-content.json" | tr -d '\n' | base64 -d > "$work/RELEASE_NOTES.md"
+[[ -s "$work/RELEASE_NOTES.md" ]] || die "tagged release notes materialized empty"
 awk -v h="## $expected_tag" '$0==h{f=1;next} f&&/^## /{exit} f{print} END{if(!f)exit 1}' "$work/RELEASE_NOTES.md" > "$work/body.md"
 assert_release() {
   jq -e --argjson id "$expected_release_id" --arg tag "$expected_tag" --arg sha "$expected_source_sha" --rawfile body "$work/body.md" '
@@ -64,7 +67,10 @@ for i in "${!artifact_names[@]}"; do
   install -m 0600 "$work/extract-$i/${artifact_names[$i]}" "$work/assets/${artifact_names[$i]}"
   install -m 0600 "$work/extract-$i/${artifact_names[$i]}.sigstore.json" "$work/assets/${artifact_names[$i]}.sigstore.json"
 done
-api "repos/$expected_repository/contents/install.sh?ref=$expected_source_sha" --jq .content | tr -d '\n' | base64 -d > "$work/assets/install.sh"
+api "repos/$expected_repository/contents/install.sh?ref=$expected_source_sha" > "$work/install-content.json"
+jq -e '.type=="file" and .encoding=="base64" and (.size|type)=="number" and .size>0 and (.content|type)=="string" and (.content|length)>0' "$work/install-content.json" >/dev/null || die "tagged install.sh content is invalid"
+jq -r .content "$work/install-content.json" | tr -d '\n' | base64 -d > "$work/assets/install.sh"
+[[ -s "$work/assets/install.sh" && ! -L "$work/assets/install.sh" ]] || die "tagged install.sh materialized invalid"
 (cd "$work/assets" && sha256sum ssm-linux-amd64 ssm-linux-arm64 ssm-darwin-amd64 ssm-darwin-arm64 ssm-windows-amd64.exe ssm-windows-arm64.exe install.sh > checksums.txt)
 for binary in "${artifact_names[@]}"; do go run ./cmd/recoveryverify "$work/assets/$binary" "$work/assets/$binary.sigstore.json"; done
 
