@@ -122,3 +122,8 @@ land.
   overlap, expiry/removal, rollback/audit, fail-closed recovery, and no-bypass
   gates. The candidate additionally materializes and re-parses its exact
   seven-entry checksum manifest and reports its SHA-256.
+- Native Darwin RED: PR run `30866848674`, job `91860499974`, passed the native
+  replacement suite but exposed a BSD fixture defect: `cp` attempted to copy
+  modes and extended attributes to `/dev/stdout`. GREEN streams test-owned curl
+  fixture bytes with portable `dd`, matching the already-reviewed v2 fixture;
+  production installer behavior is unchanged.

@@ -81,7 +81,7 @@ case "$url" in
   */ssm-linux-amd64) source="$PAYLOAD_FIXTURE" ;;
   *) exit 90 ;;
 esac
-if [ -n "$output" ]; then cp "$source" "$output"; else cp "$source" /dev/stdout; fi
+if [ -n "$output" ]; then cp "$source" "$output"; else dd if="$source" bs=1024 2>/dev/null; fi
 `)
 	writeExecutable(t, filepath.Join(fakeBin, "gh"), `#!/bin/sh
 printf called >"$GH_MARKER"
@@ -180,7 +180,7 @@ case "$url" in
   */ssm-linux-amd64) source="$PAYLOAD_FIXTURE" ;;
   *) exit 90 ;;
 esac
-if [ -n "$output" ]; then cp "$source" "$output"; else cp "$source" /dev/stdout; fi
+if [ -n "$output" ]; then cp "$source" "$output"; else dd if="$source" bs=1024 2>/dev/null; fi
 `)
 	writeExecutable(t, filepath.Join(fakeBin, "gh"), `#!/bin/sh
 set -eu
