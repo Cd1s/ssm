@@ -34,14 +34,23 @@ func TestBridgeDocumentationStatesMajorSafetyAndPublicationBoundary(t *testing.T
 	}
 
 	migration := readRepositoryFile(t, "docs/v1-to-v2-bridge.md")
-	for _, required := range []string{
-		"BC-1", "BC-2", "BC-3", "BC-4", "BC-5", "BC-6", "BC-7", "BC-8", "BC-9", "BC-10",
-		"Cd1s/ssm/.github/workflows/release.yml@refs/tags/",
-		"https://token.actions.githubusercontent.com",
-		"ssm update --major --yes",
+	for description, required := range map[string]string{
+		"BC-1 meaning":                 "BC-1 — invalid cloud configuration",
+		"BC-2 meaning":                 "BC-2 — cross-alias saved-key dependencies",
+		"BC-3 meaning":                 "BC-3 — stream startup NDJSON",
+		"BC-4 meaning":                 "BC-4 — legacy mutations become pending",
+		"BC-5 meaning":                 "BC-5 — bare and empty-ledger push",
+		"BC-6 meaning":                 "BC-6 — positive online stream refresh",
+		"BC-7 meaning":                 "BC-7 — directory transfer fields",
+		"BC-8 meaning":                 "BC-8 — same-major ordinary update",
+		"BC-9 meaning":                 "BC-9 — digest plus pinned provenance",
+		"BC-10 meaning":                "BC-10 — non-mutating CI-equivalent checks",
+		"exact workflow tag identity":  "Cd1s/ssm/.github/workflows/release.yml@refs/tags/",
+		"GitHub Actions issuer":        "https://token.actions.githubusercontent.com",
+		"explicit major authorization": "ssm update --major --yes",
 	} {
 		if !strings.Contains(migration, required) {
-			t.Errorf("migration guide lacks %q", required)
+			t.Errorf("migration guide lacks %s %q", description, required)
 		}
 	}
 

@@ -127,3 +127,14 @@ land.
   modes and extended attributes to `/dev/stdout`. GREEN streams test-owned curl
   fixture bytes with portable `dd`, matching the already-reviewed v2 fixture;
   production installer behavior is unchanged.
+- Fresh scope-review RED: the guide attached unrelated meanings to BC-1..BC-7
+  and BC-10 while its shallow test checked identifiers only. GREEN binds every
+  BC identifier to the canonical Issue #16/#30 old/new meaning and explains
+  that BC-1..BC-7/BC-10 begin only after verified v2 replacement.
+- Fresh security-review RED: a cached remote ETag differing from the encrypted
+  local-vault hash passed `ReviewMajor`; GREEN blocks this safely observable
+  divergence while preserving all encrypted/config files.
+- Fresh security-review RED: `install.sh` requested an older or cross-major
+  binary for an existing v1.4.4 installation. GREEN reads the stable installed
+  version before any asset request and permits only the same or a newer version
+  in that major; explicit major migration remains the sole cross-major path.

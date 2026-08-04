@@ -216,6 +216,13 @@ func checkDivergence() MigrationCheck {
 	if _, err := os.Lstat(path); err == nil || !os.IsNotExist(err) {
 		return failedCheck("untracked_divergence", "A recorded local/remote synchronization conflict exists or cannot be inspected.", "Resolve the preserved conflict through reviewed pull, repair, or import before migration.")
 	}
+	cachedRemote := strings.TrimSpace(cloud.CachedRemoteETag())
+	if cachedRemote != "" {
+		local, err := cloud.LocalVaultETag()
+		if err != nil || local != cachedRemote {
+			return failedCheck("untracked_divergence", "The encrypted local vault differs from the last safely observed remote identity or cannot be compared.", "Reconcile the local and remote encrypted vault with the current executable before migration.")
+		}
+	}
 	return passedCheck("untracked_divergence", "No safely observable local/remote divergence record was found.")
 }
 

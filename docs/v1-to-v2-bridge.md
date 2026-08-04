@@ -22,29 +22,44 @@ any stage preserves the current v1 executable and encrypted state.
 
 ## Compatibility evidence
 
-The review presents all ten established boundaries:
+The review presents all ten approved changes. BC-1..BC-7 and BC-10 describe
+behavior that begins only after verified v2 replacement; the bridge does not
+backport those runtime semantics.
 
-- **BC-1 — configuration ownership:** v1 paths and the encrypted vault remain
-  unchanged by the bridge; v2 owns its configuration only after migration.
-- **BC-2 — inventory mapping:** the bridge does not rewrite v1 inventory or
-  import v2 inventory runtime behavior.
-- **BC-3 — redirect mapping:** v1 redirects are reviewed as migration input;
-  the bridge does not invent or persist v2 redirect state.
-- **BC-4 — host-key trust:** existing v1 host trust is preserved; no trust-on-
-  first-use or automatic host-key replacement is introduced.
-- **BC-5 — encrypted state:** preflight is read-only and never decrypts into a
-  new on-disk format or publishes state.
-- **BC-6 — cloud configuration:** local v1 cloud configuration is syntax- and
-  endpoint-validated without network access or authentication side effects.
-- **BC-7 — pending/divergent state:** pending mutations, recovery evidence, or
-  sync-conflict evidence blocks migration instead of being silently dropped.
-- **BC-8 — release selection:** ordinary update is same-major; only the
-  explicit major command can select a supported v2 release.
-- **BC-9 — verified replacement:** the selected platform asset must pass the
-  exact manifest, SHA-256, provenance, and authenticated native replacement
-  checks described below.
-- **BC-10 — v2 runtime policy:** v2 runtime policy is not backported into the
-  bridge and takes ownership only after an independently verified replacement.
+- **BC-1 — invalid cloud configuration:** a present invalid or unreadable
+  `cloud.json` becomes fatal for online inventory operations. Repair it or
+  deliberately choose the documented explicit-offline path.
+- **BC-2 — cross-alias saved-key dependencies:** scoped publication rejects an
+  unsatisfied saved-key prerequisite before network I/O. Publish each reported
+  prerequisite transaction in ledger order, then retry the original scope.
+- **BC-3 — stream startup NDJSON:** stream initialization failures use the same
+  compact NDJSON framing as later results, with one terminal startup record and
+  no ready, summary, or footer record.
+- **BC-4 — legacy mutations become pending:** legacy remove, key removal, and
+  merge/replace import operations create reviewable pending transactions and
+  never auto-publish them.
+- **BC-5 — bare and empty-ledger push:** bare push is rejected; a deliberate
+  empty-ledger `push --all` performs no PUT. Use exact `--only` scopes or a
+  reviewed non-empty `--all` snapshot.
+- **BC-6 — positive online stream refresh:** online streams require a positive
+  refresh interval. Zero refresh is valid only with explicit offline mode and
+  one fixed cached snapshot.
+- **BC-7 — directory transfer fields:** direct CLI and request-v1 transfer
+  results share truthful direction, kind, and stage fields; digest, byte,
+  atomicity, and resume fields appear only when that transfer supports them.
+- **BC-8 — same-major ordinary update:** automatic and ordinary manual update
+  cannot cross a major boundary; only the explicit major command can select a
+  supported v2 release.
+- **BC-9 — digest plus pinned provenance:** updater and installer replacement
+  require the exact 14-entry manifest, SHA-256, pinned keyless provenance, and
+  authenticated native replacement described below.
+- **BC-10 — non-mutating CI-equivalent checks:** `make check` becomes the
+  non-mutating CI-equivalent verification profile; release verification is a
+  non-publishing strict superset rather than a release action.
+
+The bridge preflight itself is read-only with respect to v1 encrypted/config
+state: it validates cloud syntax, blocks pending transactions/recovery or
+sync-conflict evidence, and never rewrites the v1 vault format or publishes it.
 
 Preflight also requires a supported `linux`, `darwin`, or `windows` target on
 `amd64` or `arm64`, an exact release manifest, and a writable sibling staging
@@ -84,7 +99,9 @@ accepted as success.
 The future bridge release retains the legacy binary names, checksum layout,
 and `install.sh` asset so installed v1.4.3 clients can receive it. The installer
 uses the exact selected tag and requires the 14-entry manifest, digest, and
-pinned adjacent provenance before replacing an existing installation. Those
-same bundles support the separately authorized major migration. Identity
-rotation and fail-closed emergency recovery follow the
-[bridge provenance runbook](update-provenance-runbook.md).
+pinned adjacent provenance before replacing an existing installation. It
+refuses a selected version below the installed version or outside the installed
+major before requesting any binary; only `ssm update --major --yes` can replace
+an existing v1 installation with v2. Those same bundles support that separately
+authorized major migration. Identity rotation and fail-closed emergency
+recovery follow the [bridge provenance runbook](update-provenance-runbook.md).

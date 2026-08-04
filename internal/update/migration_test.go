@@ -133,6 +133,25 @@ func TestFailedMigrationPreflightPreservesExecutableAndEncryptedState(t *testing
 			},
 			check: "untracked_divergence",
 		},
+		{
+			name: "cached remote etag divergence",
+			setup: func(t *testing.T) string {
+				t.Helper()
+				const password = "cached etag divergence" //nolint:gosec // test-only encrypted-vault passphrase
+				if err := config.Save(&config.Vault{}, password); err != nil {
+					t.Fatal(err)
+				}
+				if err := config.WritePrivateFile(filepath.Join(config.Dir(), "remote.etag"), []byte("different-cached-remote-identity\n")); err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(t.TempDir(), "master.pass")
+				if err := os.WriteFile(path, []byte(password+"\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				return path
+			},
+			check: "untracked_divergence",
+		},
 	}
 
 	for _, test := range tests {
@@ -229,7 +248,7 @@ func migrationReleaseAssetsJSON(t *testing.T) string {
 func migrationStateSnapshot(t *testing.T) []byte {
 	t.Helper()
 	var snapshot []byte
-	for _, name := range []string{"connections.enc", "cloud.json", "sync-conflict.json"} {
+	for _, name := range []string{"connections.enc", "cloud.json", "remote.etag", "sync-conflict.json"} {
 		data, err := os.ReadFile(filepath.Join(config.Dir(), name)) //nolint:gosec // names are fixed test fixtures beneath a test-owned config directory
 		if err != nil && !os.IsNotExist(err) {
 			t.Fatal(err)

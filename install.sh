@@ -116,6 +116,38 @@ if ! printf '%s\n' "$release_tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
   echo "resolved release identity is invalid" >&2
   exit 1
 fi
+release_version="${release_tag#v}"
+if [ -e "$prefix/ssm" ] || [ -L "$prefix/ssm" ]; then
+  if [ ! -f "$prefix/ssm" ] || [ ! -x "$prefix/ssm" ]; then
+    echo "existing SSM installation is not an executable regular file" >&2
+    exit 1
+  fi
+  installed_output=""
+  if ! installed_output="$("$prefix/ssm" --version 2>/dev/null)"; then
+    echo "existing SSM version cannot be read safely" >&2
+    exit 1
+  fi
+  installed_version="$(printf '%s\n' "$installed_output" | awk '$1 == "ssm" && NF == 2 && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+$/ { print $2 }')"
+  case "$installed_version" in
+    ''|*'
+'*)
+      echo "existing SSM version is not one exact stable version" >&2
+      exit 1
+      ;;
+  esac
+  if ! awk -v current="$installed_version" -v selected="$release_version" 'BEGIN {
+    split(current, c, "."); split(selected, s, ".")
+    if (s[1] != c[1]) exit 1
+    for (i = 1; i <= 3; i++) {
+      if ((s[i] + 0) < (c[i] + 0)) exit 1
+      if ((s[i] + 0) > (c[i] + 0)) exit 0
+    }
+    exit 0
+  }'; then
+    echo "existing SSM can be replaced only by the same or a newer release in its installed major; use ssm update --major --yes for migration" >&2
+    exit 1
+  fi
+fi
 url="https://github.com/$repo/releases/download/$release_tag/$asset"
 checksums_url="https://github.com/$repo/releases/download/$release_tag/checksums.txt"
 provenance_url="https://github.com/$repo/releases/download/$release_tag/$provenance"

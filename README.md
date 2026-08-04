@@ -10,7 +10,7 @@
 curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 ```
 
-安装脚本会从 `Cd1s/ssm` 下载当前系统匹配的程序，安装到 `/usr/local/bin/ssm`，并创建 `/usr/local/bin/sshctl -> /usr/local/bin/ssm`。`sshctl` 不是额外脚本，它和 `ssm` 是同一个二进制。安装需要 `jq`、`head`、`sha256sum` 或 `shasum`，以及支持 `gh attestation verify` 的新版 GitHub CLI；仅当所选精确 tag 的 manifest、摘要和固定 provenance 全部验证通过后才会替换程序。
+安装脚本会从 `Cd1s/ssm` 下载当前系统匹配的程序，安装到 `/usr/local/bin/ssm`，并创建 `/usr/local/bin/sshctl -> /usr/local/bin/ssm`。`sshctl` 不是额外脚本，它和 `ssm` 是同一个二进制。安装需要 `jq`、`head`、`sha256sum` 或 `shasum`，以及支持 `gh attestation verify` 的新版 GitHub CLI；仅当所选精确 tag 的 manifest、摘要和固定 provenance 全部验证通过后才会替换程序。已有安装只接受同一 major 内相同或更新的版本；经过审查的跨 major 迁移必须使用 `ssm update --major --yes`。
 
 ## 常用命令
 

@@ -20,7 +20,7 @@ func TestBridgeInstallerRejectsChecksumOnlyAndPreservesExecutable(t *testing.T) 
 		t.Fatal(err)
 	}
 	executable := filepath.Join(prefix, "ssm")
-	original := []byte("original v1 executable")
+	original := []byte("#!/bin/sh\nprintf 'ssm 1.4.4\\n'\n")
 	if err := os.WriteFile(executable, original, 0751); err != nil { //nolint:gosec // test-owned installed executable
 		t.Fatal(err)
 	}
@@ -117,6 +117,96 @@ exit 92
 	}
 	if _, err := os.Stat(ghMarker); err != nil {
 		t.Fatalf("installer did not invoke pinned provenance verifier: %v; output=%q", err, output)
+	}
+}
+
+func TestBridgeInstallerRefusesExistingCrossMajorAndDowngradeBeforeAssetRequest(t *testing.T) {
+	for _, selectedTag := range []string{"v1.4.3", "v2.0.0"} {
+		t.Run(selectedTag, func(t *testing.T) {
+			prefix := filepath.Join(t.TempDir(), "bin")
+			if err := os.MkdirAll(prefix, 0700); err != nil {
+				t.Fatal(err)
+			}
+			executable := filepath.Join(prefix, "ssm")
+			original := []byte("#!/bin/sh\nprintf 'ssm 1.4.4\\n'\n")
+			if err := os.WriteFile(executable, original, 0751); err != nil { //nolint:gosec // test-owned installed executable
+				t.Fatal(err)
+			}
+			if err := os.Chmod(executable, 0751); err != nil { //nolint:gosec // exact original mode is part of preservation proof
+				t.Fatal(err)
+			}
+			assets := make([]map[string]string, 0, len(ExpectedReleaseNames()))
+			for _, name := range ExpectedReleaseNames() {
+				assets = append(assets, map[string]string{"name": name})
+			}
+			metadata, err := json.Marshal(map[string]any{"tag_name": selectedTag, "assets": assets})
+			if err != nil {
+				t.Fatal(err)
+			}
+			metadataPath := filepath.Join(t.TempDir(), "metadata.json")
+			if err := os.WriteFile(metadataPath, metadata, 0600); err != nil { //nolint:gosec // test-owned release fixture
+				t.Fatal(err)
+			}
+
+			fakeBin := t.TempDir()
+			requestLog := filepath.Join(t.TempDir(), "requests")
+			writeExecutable(t, filepath.Join(fakeBin, "uname"), `#!/bin/sh
+case "$1" in
+  -s) printf 'Linux\n' ;;
+  -m) printf 'x86_64\n' ;;
+  *) exit 2 ;;
+esac
+`)
+			writeExecutable(t, filepath.Join(fakeBin, "curl"), `#!/bin/sh
+set -eu
+url=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --max-filesize) shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+printf '%s\n' "$url" >>"$REQUEST_LOG"
+case "$url" in
+  https://api.github.com/*) dd if="$METADATA_FIXTURE" bs=1024 2>/dev/null ;;
+  *) exit 90 ;;
+esac
+`)
+
+			command := exec.Command("sh", filepath.Join("..", "..", "install.sh")) //nolint:gosec // fixed repository installer path
+			command.Env = append(os.Environ(),
+				"HOME="+t.TempDir(),
+				"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"SSM_PREFIX="+prefix,
+				"SSM_CONFIG_DIR="+filepath.Join(t.TempDir(), "config"),
+				"METADATA_FIXTURE="+metadataPath,
+				"REQUEST_LOG="+requestLog,
+			)
+			output, runErr := command.CombinedOutput()
+			if runErr == nil {
+				t.Fatalf("installer accepted selected tag %s over existing v1.4.4; output=%q", selectedTag, output)
+			}
+			requests, err := os.ReadFile(requestLog) //nolint:gosec // test-owned request observation
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantRequests := "https://api.github.com/repos/Cd1s/ssm/releases/latest\n"
+			if string(requests) != wantRequests {
+				t.Fatalf("unsafe installer requested an asset for %s: requests=%q output=%q", selectedTag, requests, output)
+			}
+			installed, err := os.ReadFile(executable) //nolint:gosec // test-owned installed executable
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(executable)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(installed, original) || info.Mode().Perm() != 0751 {
+				t.Fatalf("installer refusal changed executable: bytes=%q mode=%o output=%q", installed, info.Mode().Perm(), output)
+			}
+		})
 	}
 }
 

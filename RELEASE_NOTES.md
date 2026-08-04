@@ -27,8 +27,10 @@ claim that a v1.4.4 tag or GitHub Release exists.
 - Keep all legacy asset names, `checksums.txt`, and the `install.sh` asset so
   existing v1.4.3 clients can receive a future bridge candidate. The bridge
   installer now verifies the exact 14-entry selected-tag manifest, digest, and
-  pinned provenance before replacement; adjacent provenance also supports the
-  later explicitly authorized v2 migration.
+  pinned provenance before replacement. For an existing installation it also
+  refuses an older or cross-major selected release before any asset request;
+  major migration remains solely `ssm update --major --yes`. Adjacent
+  provenance also supports that later explicitly authorized v2 migration.
 - Document the reviewed identity overlap/expiry/removal gates and fail-closed
   emergency recovery. Rotation never permits checksum-only fallback or a
   verification bypass.
