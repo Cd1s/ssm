@@ -82,10 +82,14 @@ publish_release() {
   local payload
   local created
   local bound
+  local upload_response
   local final
   local latest
   local created_release_id
   local expected_json
+  local asset_name
+  local encoded_name
+  local upload_endpoint
 
   validate_context "$tag"
   [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || die "release source must be one exact lowercase commit SHA"
@@ -105,9 +109,10 @@ publish_release() {
   payload="$(mktemp "$RUNNER_TEMP/ssm-release-create-payload.XXXXXX")"
   created="$(mktemp "$RUNNER_TEMP/ssm-release-created.XXXXXX")"
   bound="$(mktemp "$RUNNER_TEMP/ssm-release-bound.XXXXXX")"
+  upload_response="$(mktemp "$RUNNER_TEMP/ssm-release-upload.XXXXXX")"
   final="$(mktemp "$RUNNER_TEMP/ssm-release-final.XXXXXX")"
   latest="$(mktemp "$RUNNER_TEMP/ssm-release-latest.XXXXXX")"
-  cleanup_paths=("$payload" "$created" "$bound" "$final" "$latest")
+  cleanup_paths=("$payload" "$created" "$bound" "$upload_response" "$final" "$latest")
 
   jq -n \
     --arg tag "$tag" \
@@ -157,9 +162,24 @@ publish_release() {
     "$bound" >/dev/null ||
     die "created GitHub Release binding is ambiguous before asset upload; partial state is preserved"
 
-  if ! gh release upload "$tag" "${files[@]}" --repo "$GITHUB_REPOSITORY"; then
-    die "GitHub Release $tag asset upload failed; partial state is preserved and must not be retried"
-  fi
+  for index in "${!files[@]}"; do
+    asset_name="${expected_names[$index]}"
+    if ! encoded_name="$(jq -rn --arg name "$asset_name" '$name | @uri')"; then
+      die "unable to encode GitHub Release asset name $asset_name; partial state is preserved"
+    fi
+    upload_endpoint="repos/$GITHUB_REPOSITORY/releases/$created_release_id/assets?name=$encoded_name"
+    if ! gh api --hostname uploads.github.com --method POST \
+      "$upload_endpoint" \
+      -H "Content-Type: application/octet-stream" \
+      --input "${files[$index]}" > "$upload_response"; then
+      die "GitHub Release $tag asset $asset_name upload failed; partial state is preserved and must not be retried"
+    fi
+    jq -e \
+      --arg name "$asset_name" \
+      '(.id | type == "number" and . > 0) and .name == $name and .state == "uploaded"' \
+      "$upload_response" >/dev/null ||
+      die "GitHub Release $tag asset $asset_name response is not the bound uploaded asset; partial state is preserved"
+  done
 
   expected_json="$(printf '%s\n' "${expected_names[@]}" | jq -R . | jq -s .)"
   if ! gh api "repos/$GITHUB_REPOSITORY/releases/$created_release_id" > "$final"; then

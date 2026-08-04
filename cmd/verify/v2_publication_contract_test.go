@@ -98,6 +98,8 @@ func TestCreateOnlyReleaseScriptContract(t *testing.T) {
 		"draft-visible exhaustive lookup": `gh api --paginate`,
 		"authenticated release listing":   `releases?per_page=100`,
 		"one create-only REST call":       `gh api --method POST`,
+		"ID-bound asset upload host":      `gh api --hostname uploads.github.com`,
+		"ID-bound asset upload endpoint":  `releases/$created_release_id/assets?name=`,
 		"stable creation":                 `draft: false`,
 		"non-prerelease creation":         `prerelease: false`,
 		"non-latest creation":             `make_latest: "false"`,
@@ -110,7 +112,7 @@ func TestCreateOnlyReleaseScriptContract(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{
-		"softprops/action-gh-release", "--clobber", "--method PATCH", "--method DELETE", "release edit", `make_latest: "true"`,
+		"softprops/action-gh-release", "gh release upload", "--clobber", "--method PATCH", "--method DELETE", "release edit", `make_latest: "true"`,
 	} {
 		if strings.Contains(text, forbidden) {
 			t.Errorf("create-only publisher contains forbidden update/reuse behavior %q", forbidden)
@@ -160,7 +162,7 @@ esac
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if strings.Contains(string(calls), "release upload") {
+	if strings.Contains(string(calls), "release upload") || strings.Contains(string(calls), "uploads.github.com") {
 		t.Fatalf("failed create fell through to asset upload: %s", calls)
 	}
 }
@@ -199,8 +201,15 @@ if [ "${1:-}" = api ] && [ "${2:-}" = --method ] && [ "${3:-}" = POST ]; then
   jq '. + {id: 4242, assets: []}' "$input"
   exit 0
 fi
-if [ "${1:-}" = release ] && [ "${2:-}" = upload ]; then
-  exit 0
+if [ "${1:-}" = api ] && [ "${2:-}" = --hostname ] && [ "${3:-}" = uploads.github.com ] && [ "${4:-}" = --method ] && [ "${5:-}" = POST ]; then
+  case "${6:-}" in
+    repos/Cd1s/ssm/releases/4242/assets?name=*)
+      name="${6##*name=}"
+      jq -n --arg name "$name" '{id:9001,name:$name,state:"uploaded"}'
+      exit 0
+      ;;
+  esac
+  exit 96
 fi
 case "${2:-}" in
   repos/Cd1s/ssm/releases/tags/v2.0.0)
@@ -264,8 +273,12 @@ esac
 	if got := strings.Count(callText, "api --method POST"); got != 1 {
 		t.Fatalf("create calls = %d, want 1; calls=%s", got, calls)
 	}
-	if got := strings.Count(callText, "release upload"); got != 1 {
-		t.Fatalf("upload calls = %d, want 1; calls=%s", got, calls)
+	if strings.Contains(callText, "release upload") {
+		t.Fatalf("publication used mutable tag-resolved upload: %s", calls)
+	}
+	idBoundUpload := "api --hostname uploads.github.com --method POST repos/Cd1s/ssm/releases/4242/assets?name="
+	if got := strings.Count(callText, idBoundUpload); got != len(assets) {
+		t.Fatalf("ID-bound upload calls = %d, want %d; calls=%s", got, len(assets), calls)
 	}
 	for _, forbidden := range []string{"--clobber", "--method PATCH", "--method DELETE", "release edit"} {
 		if strings.Contains(callText, forbidden) {
