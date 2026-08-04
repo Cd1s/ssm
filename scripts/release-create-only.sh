@@ -131,7 +131,7 @@ publish_release() {
     expected_sizes[$index]="$(wc -c < "${files[$index]}" | tr -d '[:space:]')"
     [[ "${expected_sizes[$index]}" =~ ^[1-9][0-9]*$ ]] ||
       die "release upload file ${expected_names[$index]} has an invalid byte size"
-    asset_sha256="$(sha256sum "${files[$index]}" | awk '{print $1}')"
+    asset_sha256="$(sha256sum < "${files[$index]}" | awk '{print $1}')"
     [[ "$asset_sha256" =~ ^[0-9a-f]{64}$ ]] ||
       die "release upload file ${expected_names[$index]} has an invalid SHA-256 digest"
     expected_digests[$index]="sha256:$asset_sha256"

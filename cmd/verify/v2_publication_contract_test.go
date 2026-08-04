@@ -209,7 +209,10 @@ esac
 func TestCreateOnlyReleaseScriptPublishesNewReleaseOnce(t *testing.T) {
 	root := filepath.Join("..", "..")
 	bin := t.TempDir()
-	fixture := t.TempDir()
+	fixture := filepath.Join(t.TempDir(), `windows\path`)
+	if err := os.Mkdir(fixture, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	logPath := filepath.Join(t.TempDir(), "gh.log")
 	statePath := filepath.Join(t.TempDir(), "created.json")
 	assetsPath := filepath.Join(t.TempDir(), "assets.json")
@@ -255,7 +258,7 @@ if [ "${1:-}" = api ] && [ "${2:-}" = --method ] && [ "${3:-}" = POST ]; then
       done
       [ -n "$input" ]
       size="$(wc -c < "$input" | tr -d '[:space:]')"
-      digest="sha256:$(sha256sum "$input" | awk '{print $1}')"
+      digest="sha256:$(sha256sum < "$input" | awk '{print $1}')"
       jq -n --arg name "$name" --argjson size "$size" --arg digest "$digest" \
         '{id:9001,name:$name,state:"uploaded",content_type:"application/octet-stream",size:$size,digest:$digest}'
       exit 0
