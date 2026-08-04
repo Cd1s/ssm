@@ -150,3 +150,7 @@ jobs:
 
       - name: Verify native Darwin replacement security
         run: go test ./internal/update -run '^TestDarwinNativeReplacementSecurity$' -count=1
+
+      - name: Verify native Darwin fast profile
+        if: ${{ always() }}
+        run: go run ./cmd/verify fast

@@ -768,8 +768,8 @@ func TestCIWorkflowMatchesReviewedGoldenAndHasReadOnlyCredentialFreeJobs(t *test
 	if got, want := strings.Count(text, "        run: go run ./cmd/verify ci\n"), 1; got != want {
 		t.Fatalf("exact Linux ci invocation count = %d, want %d", got, want)
 	}
-	if got, want := strings.Count(text, "        run: go run ./cmd/verify fast\n"), 1; got != want {
-		t.Fatalf("exact Windows fast invocation count = %d, want %d", got, want)
+	if got, want := strings.Count(text, "        run: go run ./cmd/verify fast\n"), 2; got != want {
+		t.Fatalf("exact native Windows/Darwin fast invocation count = %d, want %d", got, want)
 	}
 	const nativeReplacementCommand = "        run: go test ./internal/update -run '^TestWindowsNativeReplacementSecurity$' -count=1\n"
 	if got, want := strings.Count(text, nativeReplacementCommand), 1; got != want {
@@ -797,6 +797,13 @@ func TestCIWorkflowMatchesReviewedGoldenAndHasReadOnlyCredentialFreeJobs(t *test
 			nativeDarwinReplacementCommand,
 	) {
 		t.Fatal("native Darwin replacement-security gate is not explicit")
+	}
+	if !strings.Contains(text,
+		"      - name: Verify native Darwin fast profile\n"+
+			"        if: ${{ always() }}\n"+
+			"        run: go run ./cmd/verify fast\n",
+	) {
+		t.Fatal("native Darwin fast profile is not unconditional after the focused security suite")
 	}
 	if strings.Contains(text, "SSM_REQUIRE_WINDOWS_PRIVILEGED_TEST") {
 		t.Fatal("native Windows gate incorrectly requires optional host privileges")
