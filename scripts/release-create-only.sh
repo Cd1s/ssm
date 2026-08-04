@@ -24,16 +24,40 @@ validate_context() {
   [[ "$tag" =~ ^v2\.[0-9]+\.[0-9]+$ ]] || die "v2 release tag must look like v2.0.0: $tag"
 }
 
+read_release_inventory() {
+  local stage="$1"
+  local inventory
+
+  if ! inventory="$(gh api --paginate \
+    "repos/$GITHUB_REPOSITORY/releases?per_page=100")"; then
+    die "unable to read exhaustive GitHub Release inventory $stage"
+  fi
+  if ! jq -e -s '
+    length > 0 and
+    all(.[];
+      type == "array" and
+      all(.[];
+        type == "object" and
+        ((.id | type) == "number") and .id > 0 and
+        ((.tag_name | type) == "string") and (.tag_name | length) > 0
+      )
+    ) and
+    ([.[][] | .id] | length) == ([.[][] | .id] | unique | length) and
+    ([.[][] | .tag_name] | length) == ([.[][] | .tag_name] | unique | length)
+  ' <<< "$inventory" >/dev/null; then
+    die "GitHub Release inventory is malformed $stage; external state is preserved"
+  fi
+  printf '%s\n' "$inventory"
+}
+
 assert_release_absent() {
   local tag="$1"
+  local release_inventory
   local release_tags
 
   validate_context "$tag"
-  if ! release_tags="$(gh api --paginate \
-    "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-    --jq '.[].tag_name')"; then
-    die "unable to prove GitHub Release $tag is absent"
-  fi
+  release_inventory="$(read_release_inventory "while proving $tag is absent")"
+  release_tags="$(jq -r -s '.[][] | .tag_name' <<< "$release_inventory")"
   if printf '%s\n' "$release_tags" | grep -Fqx -- "$tag"; then
     die "GitHub Release $tag already exists; refusing to mutate or overwrite it"
   fi
@@ -43,14 +67,12 @@ assert_only_created_release() {
   local tag="$1"
   local release_id="$2"
   local stage="$3"
+  local release_inventory
   local release_rows
   local matching_ids
 
-  if ! release_rows="$(gh api --paginate \
-    "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-    --jq '.[] | [.id, .tag_name] | @tsv')"; then
-    die "unable to prove GitHub Release $tag is unique $stage; created state is preserved"
-  fi
+  release_inventory="$(read_release_inventory "while proving $tag is unique $stage")"
+  release_rows="$(jq -r -s '.[][] | [.id, .tag_name] | @tsv' <<< "$release_inventory")"
   matching_ids="$(printf '%s\n' "$release_rows" | awk -F '\t' -v tag="$tag" '$2 == tag { print $1 }')"
   [[ "$matching_ids" == "$release_id" ]] ||
     die "GitHub Release $tag is not the sole created Release $stage; external state is preserved"
@@ -78,6 +100,8 @@ publish_release() {
     install.sh
     checksums.txt
   )
+  local -a expected_sizes=()
+  local -a expected_digests=()
   local index
   local payload
   local created
@@ -90,6 +114,8 @@ publish_release() {
   local asset_name
   local encoded_name
   local upload_endpoint
+  local asset_size
+  local asset_sha256
 
   validate_context "$tag"
   [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || die "release source must be one exact lowercase commit SHA"
@@ -102,6 +128,13 @@ publish_release() {
       die "release upload file $index is not ${expected_names[$index]}"
     [[ -f "${files[$index]}" && ! -L "${files[$index]}" && -s "${files[$index]}" ]] ||
       die "release upload file ${expected_names[$index]} is missing, empty, or not regular"
+    expected_sizes[$index]="$(wc -c < "${files[$index]}" | tr -d '[:space:]')"
+    [[ "${expected_sizes[$index]}" =~ ^[1-9][0-9]*$ ]] ||
+      die "release upload file ${expected_names[$index]} has an invalid byte size"
+    asset_sha256="$(sha256sum "${files[$index]}" | awk '{print $1}')"
+    [[ "$asset_sha256" =~ ^[0-9a-f]{64}$ ]] ||
+      die "release upload file ${expected_names[$index]} has an invalid SHA-256 digest"
+    expected_digests[$index]="sha256:$asset_sha256"
   done
 
   assert_release_absent "$tag"
@@ -167,8 +200,8 @@ publish_release() {
     if ! encoded_name="$(jq -rn --arg name "$asset_name" '$name | @uri')"; then
       die "unable to encode GitHub Release asset name $asset_name; partial state is preserved"
     fi
-    upload_endpoint="repos/$GITHUB_REPOSITORY/releases/$created_release_id/assets?name=$encoded_name"
-    if ! gh api --hostname uploads.github.com --method POST \
+    upload_endpoint="https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$created_release_id/assets?name=$encoded_name"
+    if ! gh api --method POST \
       "$upload_endpoint" \
       -H "Content-Type: application/octet-stream" \
       --input "${files[$index]}" > "$upload_response"; then
@@ -176,7 +209,11 @@ publish_release() {
     fi
     jq -e \
       --arg name "$asset_name" \
-      '(.id | type == "number" and . > 0) and .name == $name and .state == "uploaded"' \
+      --argjson size "${expected_sizes[$index]}" \
+      --arg digest "${expected_digests[$index]}" \
+      '(.id | type == "number" and . > 0) and .name == $name and
+       .state == "uploaded" and .content_type == "application/octet-stream" and
+       .size == $size and .digest == $digest' \
       "$upload_response" >/dev/null ||
       die "GitHub Release $tag asset $asset_name response is not the bound uploaded asset; partial state is preserved"
   done
@@ -197,6 +234,18 @@ publish_release() {
      ([.assets[].name] | sort) == ($expected | sort) and
      (.assets | all(.[]; .state == "uploaded"))' "$final" >/dev/null ||
     die "GitHub Release $tag readback is not the exact reviewed 14-asset stable release"
+  for index in "${!expected_names[@]}"; do
+    jq -e \
+      --arg name "${expected_names[$index]}" \
+      --argjson size "${expected_sizes[$index]}" \
+      --arg digest "${expected_digests[$index]}" \
+      'any(.assets[];
+        .name == $name and .state == "uploaded" and
+        .content_type == "application/octet-stream" and
+        .size == $size and .digest == $digest
+      )' "$final" >/dev/null ||
+      die "GitHub Release $tag asset ${expected_names[$index]} final byte metadata does not match the reviewed file"
+  done
   assert_only_created_release "$tag" "$created_release_id" "after asset upload"
 
   if ! gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$latest"; then

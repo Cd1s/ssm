@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,7 +65,7 @@ func TestCreateOnlyReleaseScriptRefusesExistingDraft(t *testing.T) {
 set -eu
 printf '%s\n' "$*" >> "$GH_FAKE_LOG"
 case "$*" in
-  *"releases?per_page=100"*) printf '%s\n' 'v1.4.4' 'v2.0.0' ;;
+  *"releases?per_page=100"*) printf '%s\n' '[{"id":364597135,"tag_name":"v1.4.4"},{"id":5252,"tag_name":"v2.0.0"}]' ;;
   *) exit 97 ;;
 esac
 `
@@ -88,6 +90,40 @@ esac
 	}
 }
 
+func TestCreateOnlyReleaseScriptRejectsMalformedReleaseInventory(t *testing.T) {
+	root := filepath.Join("..", "..")
+	bin := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "gh.log")
+	fakeGH := filepath.Join(bin, "gh")
+	fake := `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$GH_FAKE_LOG"
+case "$*" in
+  *"releases?per_page=100"*) printf '%s\n' '[{"id":1}]' ;;
+  *) exit 97 ;;
+esac
+`
+	if err := os.WriteFile(fakeGH, []byte(fake), 0o755); err != nil { //nolint:gosec // test-owned fake CLI must be executable
+		t.Fatal(err)
+	}
+	command := exec.Command("bash", filepath.Join(root, "scripts", "release-create-only.sh"), "assert-absent", "v2.0.0") //nolint:gosec // repository script and fixed arguments
+	command.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "GH_FAKE_LOG="+logPath, "GITHUB_REPOSITORY=Cd1s/ssm", "GH_TOKEN=test-only")
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("malformed release inventory was accepted: %s", output)
+	}
+	if !strings.Contains(string(output), "Release inventory is malformed") {
+		t.Fatalf("malformed inventory refusal output = %q", output)
+	}
+	calls, readErr := os.ReadFile(logPath) //nolint:gosec // test-owned temporary log path
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if strings.Contains(string(calls), "--method POST") {
+		t.Fatalf("malformed inventory reached a mutating API call: %s", calls)
+	}
+}
+
 func TestCreateOnlyReleaseScriptContract(t *testing.T) {
 	script, err := os.ReadFile(filepath.Join("..", "..", "scripts", "release-create-only.sh"))
 	if err != nil {
@@ -98,8 +134,11 @@ func TestCreateOnlyReleaseScriptContract(t *testing.T) {
 		"draft-visible exhaustive lookup": `gh api --paginate`,
 		"authenticated release listing":   `releases?per_page=100`,
 		"one create-only REST call":       `gh api --method POST`,
-		"ID-bound asset upload host":      `gh api --hostname uploads.github.com`,
-		"ID-bound asset upload endpoint":  `releases/$created_release_id/assets?name=`,
+		"literal ID-bound upload URL":     `https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$created_release_id/assets?name=`,
+		"strict inventory schema":         `Release inventory is malformed`,
+		"exact upload content type":       `application/octet-stream`,
+		"exact upload size":               `.size == $size`,
+		"exact upload digest":             `.digest == $digest`,
 		"stable creation":                 `draft: false`,
 		"non-prerelease creation":         `prerelease: false`,
 		"non-latest creation":             `make_latest: "false"`,
@@ -112,7 +151,7 @@ func TestCreateOnlyReleaseScriptContract(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{
-		"softprops/action-gh-release", "gh release upload", "--clobber", "--method PATCH", "--method DELETE", "release edit", `make_latest: "true"`,
+		"softprops/action-gh-release", "gh release upload", "--hostname uploads.github.com", "--clobber", "--method PATCH", "--method DELETE", "release edit", `make_latest: "true"`,
 	} {
 		if strings.Contains(text, forbidden) {
 			t.Errorf("create-only publisher contains forbidden update/reuse behavior %q", forbidden)
@@ -130,7 +169,7 @@ func TestCreateOnlyReleaseScriptStopsWhenCreateConflicts(t *testing.T) {
 set -eu
 printf '%s\n' "$*" >> "$GH_FAKE_LOG"
 case "$*" in
-  api\ --paginate*) exit 0 ;;
+  api\ --paginate*) printf '%s\n' '[]' ;;
   api\ --method\ POST*) exit 42 ;;
   *) exit 97 ;;
 esac
@@ -180,13 +219,13 @@ set -eu
 printf '%s\n' "$*" >> "$GH_FAKE_LOG"
 if [ "${1:-}" = api ] && [ "${2:-}" = --paginate ]; then
   if [ -n "${GH_FAKE_STATE:-}" ] && [ -s "$GH_FAKE_STATE" ]; then
-    case "$*" in
-      *"[.id, .tag_name]"*) printf '4242\tv2.0.0\n' ;;
-    esac
+    printf '%s\n' '[{"id":4242,"tag_name":"v2.0.0"}]'
+  else
+    printf '%s\n' '[]'
   fi
   exit 0
 fi
-if [ "${1:-}" = api ] && [ "${2:-}" = --method ] && [ "${3:-}" = POST ]; then
+if [ "${1:-}" = api ] && [ "${2:-}" = --method ] && [ "${3:-}" = POST ] && [ "${4:-}" = repos/Cd1s/ssm/releases ]; then
   shift 3
   input=""
   while [ "$#" -gt 0 ]; do
@@ -201,11 +240,24 @@ if [ "${1:-}" = api ] && [ "${2:-}" = --method ] && [ "${3:-}" = POST ]; then
   jq '. + {id: 4242, assets: []}' "$input"
   exit 0
 fi
-if [ "${1:-}" = api ] && [ "${2:-}" = --hostname ] && [ "${3:-}" = uploads.github.com ] && [ "${4:-}" = --method ] && [ "${5:-}" = POST ]; then
-  case "${6:-}" in
-    repos/Cd1s/ssm/releases/4242/assets?name=*)
-      name="${6##*name=}"
-      jq -n --arg name "$name" '{id:9001,name:$name,state:"uploaded"}'
+if [ "${1:-}" = api ] && [ "${2:-}" = --method ] && [ "${3:-}" = POST ]; then
+  case "${4:-}" in
+    https://uploads.github.com/repos/Cd1s/ssm/releases/4242/assets?name=*)
+      name="${4##*name=}"
+      shift 4
+      input=""
+      while [ "$#" -gt 0 ]; do
+        if [ "$1" = --input ]; then
+          input="$2"
+          break
+        fi
+        shift
+      done
+      [ -n "$input" ]
+      size="$(wc -c < "$input" | tr -d '[:space:]')"
+      digest="sha256:$(sha256sum "$input" | awk '{print $1}')"
+      jq -n --arg name "$name" --argjson size "$size" --arg digest "$digest" \
+        '{id:9001,name:$name,state:"uploaded",content_type:"application/octet-stream",size:$size,digest:$digest}'
       exit 0
       ;;
   esac
@@ -228,9 +280,13 @@ esac
 		t.Fatal(err)
 	}
 	assets := v2ReleaseAssetNames()
-	assetObjects := make([]map[string]string, 0, len(assets))
+	assetObjects := make([]map[string]any, 0, len(assets))
 	for _, name := range assets {
-		assetObjects = append(assetObjects, map[string]string{"name": name, "state": "uploaded"})
+		digest := sha256.Sum256([]byte(name))
+		assetObjects = append(assetObjects, map[string]any{
+			"name": name, "state": "uploaded", "content_type": "application/octet-stream",
+			"size": len(name), "digest": fmt.Sprintf("sha256:%x", digest),
+		})
 	}
 	assetJSON, err := json.Marshal(assetObjects)
 	if err != nil {
@@ -270,13 +326,13 @@ esac
 		t.Fatal(err)
 	}
 	callText := string(calls)
-	if got := strings.Count(callText, "api --method POST"); got != 1 {
+	if got := strings.Count(callText, "api --method POST repos/Cd1s/ssm/releases --input"); got != 1 {
 		t.Fatalf("create calls = %d, want 1; calls=%s", got, calls)
 	}
 	if strings.Contains(callText, "release upload") {
 		t.Fatalf("publication used mutable tag-resolved upload: %s", calls)
 	}
-	idBoundUpload := "api --hostname uploads.github.com --method POST repos/Cd1s/ssm/releases/4242/assets?name="
+	idBoundUpload := "api --method POST https://uploads.github.com/repos/Cd1s/ssm/releases/4242/assets?name="
 	if got := strings.Count(callText, idBoundUpload); got != len(assets) {
 		t.Fatalf("ID-bound upload calls = %d, want %d; calls=%s", got, len(assets), calls)
 	}
