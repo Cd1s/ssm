@@ -210,7 +210,7 @@ func TestCreateOnlyReleaseScriptPublishesNewReleaseOnce(t *testing.T) {
 	root := filepath.Join("..", "..")
 	bin := t.TempDir()
 	fixture := filepath.Join(t.TempDir(), `windows\path`)
-	if err := os.Mkdir(fixture, 0o700); err != nil {
+	if err := os.MkdirAll(fixture, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	logPath := filepath.Join(t.TempDir(), "gh.log")
