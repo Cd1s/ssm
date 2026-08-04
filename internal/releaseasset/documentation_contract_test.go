@@ -21,12 +21,13 @@ func TestBridgeDocumentationStatesMajorSafetyAndPublicationBoundary(t *testing.T
 
 	notes := readRepositoryFile(t, "RELEASE_NOTES.md")
 	for description, required := range map[string]string{
-		"candidate heading":      "## v1.4.4",
-		"not published":          "not published",
-		"bridge-first staging":   "bridge-first",
-		"separate v2 decision":   "v2 cannot become GitHub latest",
-		"legacy compatibility":   "legacy asset names",
-		"provenance requirement": "pinned keyless provenance",
+		"candidate heading":             "## v1.4.4",
+		"verbatim publication boundary": "exact-tag release workflow",
+		"non-publishing candidate":      "non-publishing candidate gate",
+		"bridge-first staging":          "bridge-first",
+		"separate v2 decision":          "v2 cannot become GitHub latest",
+		"legacy compatibility":          "legacy asset names",
+		"provenance requirement":        "pinned keyless provenance",
 	} {
 		if !strings.Contains(notes, required) {
 			t.Errorf("release notes lack %s %q", description, required)

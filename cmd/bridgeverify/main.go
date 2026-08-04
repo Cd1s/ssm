@@ -249,8 +249,16 @@ func readReleaseNotes(repo, tag string) (string, error) {
 	if !inside || notes == "" {
 		return "", fmt.Errorf("release notes for %s are missing or empty", tag)
 	}
-	if !strings.Contains(strings.ToLower(notes), "not published") {
-		return "", fmt.Errorf("release notes for %s do not state candidate publication status", tag)
+	lower := strings.ToLower(notes)
+	for _, staleClaim := range []string{"release candidate only", "not published", "future bridge candidate"} {
+		if strings.Contains(lower, staleClaim) {
+			return "", fmt.Errorf("release notes for %s contain stale pre-publication claim %q", tag, staleClaim)
+		}
+	}
+	for _, requiredBoundary := range []string{"exact-tag release workflow", "non-publishing candidate gate"} {
+		if !strings.Contains(lower, requiredBoundary) {
+			return "", fmt.Errorf("release notes for %s omit durable publication boundary %q", tag, requiredBoundary)
+		}
 	}
 	return notes, nil
 }
