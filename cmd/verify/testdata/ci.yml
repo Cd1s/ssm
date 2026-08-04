@@ -150,3 +150,16 @@ jobs:
 
       - name: Verify native Darwin replacement security
         run: go test ./internal/update -run '^TestDarwinNativeReplacementSecurity$' -count=1
+
+      - name: Verify native Darwin vet
+        if: ${{ always() }}
+        run: go vet ./...
+
+      - name: Verify native Darwin runtime packages
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          go list ./... |
+            grep -v '^ssm/cmd/verify$' |
+            xargs go test -count=1

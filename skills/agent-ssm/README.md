@@ -6,10 +6,12 @@
 [![skills.sh](https://skills.sh/b/Cd1s/ssm)](https://skills.sh/Cd1s/ssm)
 [![Project](https://img.shields.io/badge/Project-Cd1s%2Fssm-blue)](https://github.com/Cd1s/ssm)
 
-The source and current release remain v1.4.3. The v2 contract is planned
-documentation, not a published binary; review the [v1→v2 migration guide](../../docs/migration-v1-to-v2.md)
-and [update-provenance runbook](../../docs/update-provenance-runbook.md) before
-any cross-major rollout.
+The one official skill supports exact v1.4.3/v1.4.4 and v2.0.0 binaries through
+separate compatibility branches. It probes `sshctl --json --version` before
+state-aware operations and fails closed on an unlisted version or unsupported
+major. Review the [version matrix](references/version-compatibility.md),
+[v1→v2 migration guide](../../docs/migration-v1-to-v2.md), and
+[update-provenance runbook](../../docs/update-provenance-runbook.md).
 
 ## When to use it
 
@@ -45,6 +47,10 @@ Install the skill:
 npx skills add Cd1s/ssm -g
 ```
 
+For release-bound Codex or Hermes deployment, do not install from a moving
+branch. Use the [exact-tag install/update procedure](references/install-update.md),
+which stages the matching bundle and preserves the prior directory on update.
+
 Or copy `skills/agent-ssm` into your agent skills directory, then ask:
 
 ```text
@@ -69,6 +75,7 @@ For pi-agent local installs, the skill directory is commonly:
 ## Expected workflow
 
 ```bash
+sshctl --json --version
 sshctl --json status
 sshctl sync
 sshctl --json host list
@@ -77,13 +84,19 @@ sshctl run <exact-alias> --stream
 sshctl request --file ./ssm-request.json
 ```
 
-Use direct `run --argv` for a simple fixed one-shot, `run --stream` for repeated simple commands, and request schema version 1 for dynamic argv, scripts, put, and host operations. Online streams require a positive --refresh interval; `--refresh=0` requires explicit global `--offline`. Add/update requests default to candidate verification; publish a changed result's returned transaction with `sshctl --json push --only <transaction-id>`. If it returns `changed:false`, `action:"unchanged"`, and omits `transaction_id`, do not publish. Bare push is invalid. Use `sshctl --json push --all` only after reviewing every mutation in its non-empty invocation-start pending set; an empty set is an identity-checked no-op or a safe divergence failure, never full-blob publication. Direct and request-v1 transfer results use `direction` and `kind`; directory guarantees are explicit (`atomic:false`, `integrity:not_available`, `resume:unsupported`) and directory get omits `bytes_received`. Detailed request, empty-ledger recovery, `publishing-intent.json` reconciliation, and legacy bulk-import guidance is in `SKILL.md` and `references/import-json.md`.
+Select `references/request-v1-bridge.schema.json` for exact v1.4.3/v1.4.4 and
+`references/request-v1.schema.json` for exact v2.0.0. Request schema version
+remains 1; only the v2 branch may use request `op:get`. Stop before state-aware
+commands on any other version.
 
-Same-major updates remain automatic/manual defaults. Review a cross-major
-candidate with `ssm update --major`, then authorize only with
+Use direct `run --argv` for a simple fixed one-shot, `run --stream` for repeated simple commands, and the selected request schema version 1 for dynamic argv, scripts, put, and host operations. Keep online streams on a positive --refresh interval in both branches; v2 rejects `--refresh=0` without explicit global `--offline`. Add/update requests default to candidate verification; publish a changed result's returned transaction with `sshctl --json push --only <transaction-id>`. If it returns `changed:false`, `action:"unchanged"`, and omits `transaction_id`, do not publish. Never use bare push even on a v1 binary that retains historical compatibility. Use `sshctl --json push --all` only after reviewing every mutation; v2 fixes its non-empty scope at invocation start and makes empty scope an identity-checked no-op or safe divergence failure, never full-blob publication. Only v2 direct/request-v1 transfer results guarantee `direction` and `kind` parity plus explicit directory fields. Detailed compatibility, request, recovery, and legacy import guidance is in `SKILL.md` and `references/`.
+
+Same-major updates remain automatic/manual defaults. v1 ordinary update remains
+on major 1 while v2.0.0 is non-latest. Review the exact cross-major candidate
+with `ssm update --major`, then authorize only with
 `ssm update --major --yes`; this never bypasses pinned digest or provenance
 verification. Preserve the old executable, pending transactions, and recovery
-intent until exact identities are reconciled.
+intent until exact identities are reconciled, then probe the version again.
 
 ## Safety boundaries
 
@@ -103,7 +116,10 @@ skills/agent-ssm/
 ├── README.md                     # Public install and showcase page
 ├── references/
 │   ├── import-json.md            # Guarded legacy bulk import
-│   └── request-v1.schema.json    # Typed request schema
+│   ├── install-update.md         # Exact-tag Codex/Hermes deployment
+│   ├── request-v1-bridge.schema.json # v1.4.3/v1.4.4 subset
+│   ├── request-v1.schema.json    # v2.0.0 typed request schema v1
+│   └── version-compatibility.md  # Required version branch matrix
 └── test-prompts.json             # Dry-run prompts for skill validation
 ```
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Cd1s/ssm/blob/v2.0.0/skills/agent-ssm/references/request-v1.schema.json",
-  "title": "SSM v2.0.0 agent request schema v1",
+  "$id": "https://github.com/Cd1s/ssm/blob/v2.0.0/skills/agent-ssm/references/request-v1-bridge.schema.json",
+  "title": "SSM v1.4.3-v1.4.4 agent request v1 compatibility subset",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "op"],
@@ -14,7 +14,6 @@
         "check",
         "doctor",
         "put",
-        "get",
         "host.list",
         "host.search",
         "host.show",
@@ -95,13 +94,6 @@
       "then": {
         "required": ["alias", "local_path", "remote_path"],
         "not": {"anyOf": [{"required": ["argv"]}, {"required": ["shell_command"]}, {"required": ["script_file"]}, {"required": ["script_args"]}, {"required": ["shell"]}, {"required": ["secret_files"]}, {"required": ["no_reuse"]}, {"required": ["preflight"]}, {"required": ["deep"]}, {"required": ["host"]}]}
-      }
-    },
-    {
-      "if": {"properties": {"op": {"const": "get"}}},
-      "then": {
-        "required": ["alias", "local_path", "remote_path"],
-        "not": {"anyOf": [{"required": ["argv"]}, {"required": ["shell_command"]}, {"required": ["script_file"]}, {"required": ["script_args"]}, {"required": ["shell"]}, {"required": ["secret_files"]}, {"required": ["timeout"]}, {"required": ["no_reuse"]}, {"required": ["preflight"]}, {"required": ["deep"]}, {"required": ["resume"]}, {"required": ["sha256"]}, {"required": ["host"]}]}
       }
     }
   ]

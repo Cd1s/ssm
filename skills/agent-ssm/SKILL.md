@@ -8,16 +8,38 @@ metadata:
 
 # Agent SSM
 
-Requires ssm >= 1.4.3. The CLI help and `references/request-v1.schema.json` are authoritative.
-The current source/release is v1.4.3; v2 is a planned migration, not a
-published binary. Read the [v1→v2 migration guide](../../docs/migration-v1-to-v2.md)
-and [update-provenance runbook](../../docs/update-provenance-runbook.md) before
+Supports the reviewed exact binaries v1.4.3 / v1.4.4 and v2.0.0 under separate
+compatibility branches. The CLI help and the schema selected by the version
+matrix are authoritative. Read the [v1→v2 migration guide](../../docs/migration-v1-to-v2.md),
+[update-provenance runbook](../../docs/update-provenance-runbook.md), and
+[version compatibility reference](references/version-compatibility.md) before
 cross-major rollout.
 
 ## Start here
 
 ```bash
 command -v sshctl
+sshctl --json --version
+```
+
+The version probe is informational and must run before inventory, sync, SSH,
+transfer, update, or mutation commands. Parse one JSON object with `ok:true` and
+an exact `version`, then choose exactly one branch:
+
+| Exact version | Required branch | Request schema |
+| --- | --- | --- |
+| v1.4.3 / v1.4.4 | v1 compatibility branch | `references/request-v1-bridge.schema.json` |
+| v2.0.0 | v2 compatibility branch | `references/request-v1.schema.json` |
+
+Request schema version remains 1 in both branches; v2 expands that strict
+schema with `op:get`. On an unlisted version or unsupported major, fail closed:
+do not guess flags, fields, or schemas and do not issue state-aware commands.
+Use the [exact-tag Codex/Hermes install/update procedure](references/install-update.md)
+to deploy the matching official skill.
+
+After selecting the branch, begin state-aware discovery:
+
+```bash
 sshctl --help
 sshctl <command> --help
 sshctl --json status
@@ -30,11 +52,14 @@ Use exact aliases. Never select a suggestion automatically. Normal `--json` comm
 
 - Simple fixed/reviewed literal argv: `sshctl --json run <exact-alias> --argv <command> [args...]`; this is the fastest one-shot path and needs no request file.
 - Repeated simple argv on one exact alias: keep `sshctl run <exact-alias> --stream` open and send one JSON string array per line. Inspect every NDJSON result. Online streams require a positive --refresh interval (30s by default) and must stop on refresh failure; `--refresh=0` is valid only with explicit global `--offline`.
-- Dynamic, untrusted, or data-dependent argv: request v1 `op:"run"` with `argv`.
+- Dynamic, untrusted, or data-dependent argv: request schema version 1
+  `op:"run"` with `argv`, using the file selected by the version matrix.
 - Shell syntax or a generated script: `script_file` plus optional `script_args` and `shell`.
 - Secrets: `secret_files` or credential file options; values are file paths, never secret contents.
 - Host change: typed `host.add|host.update|host.upsert|host.remove`; verify first, then publish only a changed result's `transaction_id`. For `changed:false`, `action:"unchanged"`, and omitted `transaction_id`, do not publish.
 - Regular-file upload: typed `put`; add `resume:"v1"` only when requested, and `sha256:true` when integrity verification is required.
+- Download: the v1 compatibility branch uses direct `sshctl get`; the v2
+  compatibility branch may use direct get or request schema v1 `op:"get"`.
 - Fleet operation: `sshctl map` with explicit argv or scripts; inspect every result.
 - Unsure about fields or flags: run the relevant command help or read the request schema. Do not guess.
 
@@ -57,14 +82,26 @@ changed result, review the secret-free pending list, then use:
 sshctl --json push --only <transaction-id>
 ```
 
-Bare push is invalid and stops before vault unlock or HTTP. Use the returned ID with `sshctl --json push --only <transaction-id>`, or use `sshctl --json push --all` only when the user explicitly authorizes every mutation in the non-empty invocation-start pending set. An empty `--all` scope identity-checks as a no-op when local, cached, and remote encrypted blobs are identical; otherwise it preserves both sides and fails with `sync_conflict`, never a full-blob publication. Follow `references/import-json.md` for reviewed empty-ledger recovery and `publishing-intent.json` reconciliation. Never silently switch to `--offline`; stop on `sync_pull_failed` unless the user accepts stale inventory.
+Never use bare push. The v2 compatibility branch rejects it before vault unlock
+or HTTP; the v1 compatibility branch must not rely on its historical bare-push
+behavior. Use the returned ID with `sshctl --json push --only <transaction-id>`,
+or use `sshctl --json push --all` only when the user explicitly authorizes every
+mutation in the non-empty reviewed set. In v2 that set is fixed at invocation
+start, and an empty `--all` scope identity-checks as a no-op when local, cached,
+and remote encrypted blobs are identical; otherwise it preserves both sides
+and fails with `sync_conflict`, never a full-blob publication. Follow
+`references/import-json.md` for reviewed empty-ledger recovery and
+`publishing-intent.json` reconciliation. Never silently switch to `--offline`;
+stop on `sync_pull_failed` unless the user accepts stale inventory.
 
-Transfer results from direct and request-v1 paths identify `direction` and
-`kind`. Directory put/get explicitly report `atomic:false`,
+In the v2 compatibility branch, transfer results from direct and request-v1
+paths identify `direction` and `kind`. Directory put/get explicitly report `atomic:false`,
 `integrity:not_available`, and `resume:unsupported`; directory get omits
 `bytes_received`. File get reports `bytes_received`, `atomic:true`,
 `integrity:not_checked`, and `resume:unsupported`. Do not infer guarantees from
-`action` or an omitted field.
+`action` or an omitted field. In the v1 compatibility branch, do not assume
+these v2 fields or request `op:get`; use direct get and inspect the actual v1
+result/help.
 
 For bulk import only, read `references/import-json.md`. Do not use bulk import for one host.
 
@@ -90,13 +127,16 @@ Never delete/rescan automatically, accept a changed key, or send credentials bef
 
 ## Updates and rollback
 
-Same-major automatic/manual updates remain the default. Review a cross-major
-candidate with `ssm update --major`, then use `ssm update --major --yes` only
-after the migration guide's automated and manual checks pass. The authorization
-flag never bypasses pinned digest/provenance verification. Preserve the old
-executable, encrypted vault, pending ledger, `publishing-intent.json`, and any
-authenticated recovery state; reconcile exact identities before further
-mutation or a v1 reinstall.
+Same-major automatic/manual updates remain the default. In the v1 compatibility
+branch, ordinary update remains on major 1 even though stable non-latest v2.0.0
+exists. Review it with `ssm update --major`, then use
+`ssm update --major --yes` only after the migration guide's automated and
+manual checks pass. The authorization flag never bypasses pinned
+digest/provenance verification. Rerun `sshctl --json --version` after
+replacement and enter the v2 compatibility branch only on exact 2.0.0.
+Preserve the old executable, encrypted vault, pending ledger,
+`publishing-intent.json`, and authenticated recovery state; reconcile exact
+identities before further mutation or a v1 reinstall.
 
 ## Hard boundaries
 
@@ -104,4 +144,5 @@ mutation or a v1 reinstall.
 - Do not place credentials in argv, JSON values, logs, Issues, or commits; only protected file paths may be referenced.
 - Do not use bare `ssh`/`sshpass`, a TUI, an interactive shell, or terminal prompts.
 - Do not guess aliases, repair host keys automatically, silently go offline, or publish unrelated transactions.
+- Do not continue on an unparseable version, an unlisted version, or an unsupported major; fail closed before any state-aware command.
 - Do not claim success without checking the structured result and the requested postcondition.

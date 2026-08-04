@@ -4,9 +4,9 @@
 
 [中文](README.md) | [English](README.en.md)
 
-## 计划中的 v2 迁移（尚未发布）
+## 分阶段发布的 v2
 
-当前源码和发布版本仍是 v1.4.3。下述 v2.0.0 内容是计划中的迁移合同，不表示 v2 二进制已发布。更改自动化或授权大版本升级前，请先阅读双语的
+v2.0.0 契约已准备好由官方 exact-tag workflow 授权发布为稳定、non-latest 的 Release；发布前后 v1.4.4 都保持为 GitHub latest，因此普通安装和 v1 同 major 更新不会跨越 major。更改自动化或授权大版本升级前，请先阅读双语的
 [v1→v2 迁移指南](docs/migration-v1-to-v2.zh-CN.md)和[更新来源凭证运行手册](docs/update-provenance-runbook.zh-CN.md)。
 
 ## 安装
@@ -16,6 +16,13 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 ```
 
 安装脚本会从 `Cd1s/ssm` 下载当前系统匹配的程序，安装到 `/usr/local/bin/ssm`，并创建 `/usr/local/bin/sshctl -> /usr/local/bin/ssm`。`sshctl` 不是额外脚本，它和 `ssm` 是同一个二进制。
+
+默认安装跟随 GitHub latest，因此安装 v1.4.4。官方 v2.0.0 Release 存在后，全新安装经过审查的精确 tag v2 时，下载 v2 安装脚本并显式选择同一 tag：
+
+```bash
+curl -fsSL https://github.com/Cd1s/ssm/releases/download/v2.0.0/install.sh -o ./install-v2.0.0.sh
+SSM_RELEASE_TAG=v2.0.0 sh ./install-v2.0.0.sh
+```
 
 ## 常用命令
 
@@ -319,7 +326,7 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 
 ## 自动更新
 
-源码和当前可用版本仍是 v1.4.3；计划中的 v2 更新在审查并明确授权之前不会替换当前可执行文件。同 major 的自动/普通手动更新保持不变；跨 major 候选只能进入审查。详细步骤见 [v1→v2 迁移指南](docs/migration-v1-to-v2.zh-CN.md) 与 [更新来源凭证运行手册](docs/update-provenance-runbook.zh-CN.md)。
+v1.4.4 在稳定但非 latest 的 v2.0.0 迁移经过审查并明确授权之前不会被替换。同 major 的自动/普通手动更新保持不变；跨 major 候选只能进入审查。详细步骤见 [v1→v2 迁移指南](docs/migration-v1-to-v2.zh-CN.md) 与 [更新来源凭证运行手册](docs/update-provenance-runbook.zh-CN.md)。
 每次替换仍需要选中 asset 的 SHA-256 和绑定仓库/workflow/issuer/tag 的 keyless provenance；`ssm update --major --yes` 只是审查后的明确授权，没有任何跳过验证的方式。失败时保留旧可执行文件、pending ledger 和 `publishing-intent.json`；先核对身份再做 v1 回滚。
 
 `1.0.0` 起默认从 `Cd1s/ssm` 检查 GitHub release。自动更新和普通手动更新只会替换为当前 major 内的更高版本；发现更高 major 时只报告迁移可用，不会替换当前程序。普通手动更新：

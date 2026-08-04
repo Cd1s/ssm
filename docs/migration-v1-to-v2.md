@@ -1,9 +1,9 @@
 # SSM v1 to v2 migration contract
 
-This guide is the operator and machine-consumer contract for the planned
-SSM v2.0.0 release. The source version remains v1 until the official release
-workflow publishes v2; this document does not mean that v2 is already
-available.
+This guide is the operator and machine-consumer contract for authorized stable
+v2.0.0. The exact-tag workflow may publish it only as non-latest while v1.4.4
+remains GitHub latest; v1 clients select it only through explicit reviewed
+major migration.
 
 [中文](migration-v1-to-v2.zh-CN.md) | [Provenance runbook](update-provenance-runbook.md)
 

@@ -769,7 +769,7 @@ func TestCIWorkflowMatchesReviewedGoldenAndHasReadOnlyCredentialFreeJobs(t *test
 		t.Fatalf("exact Linux ci invocation count = %d, want %d", got, want)
 	}
 	if got, want := strings.Count(text, "        run: go run ./cmd/verify fast\n"), 1; got != want {
-		t.Fatalf("exact Windows fast invocation count = %d, want %d", got, want)
+		t.Fatalf("exact native Windows fast invocation count = %d, want %d", got, want)
 	}
 	const nativeReplacementCommand = "        run: go test ./internal/update -run '^TestWindowsNativeReplacementSecurity$' -count=1\n"
 	if got, want := strings.Count(text, nativeReplacementCommand), 1; got != want {
@@ -797,6 +797,23 @@ func TestCIWorkflowMatchesReviewedGoldenAndHasReadOnlyCredentialFreeJobs(t *test
 			nativeDarwinReplacementCommand,
 	) {
 		t.Fatal("native Darwin replacement-security gate is not explicit")
+	}
+	for description, step := range map[string]string{
+		"vet": "      - name: Verify native Darwin vet\n" +
+			"        if: ${{ always() }}\n" +
+			"        run: go vet ./...\n",
+		"runtime packages": "      - name: Verify native Darwin runtime packages\n" +
+			"        if: ${{ always() }}\n" +
+			"        shell: bash\n" +
+			"        run: |\n" +
+			"          set -euo pipefail\n" +
+			"          go list ./... |\n" +
+			"            grep -v '^ssm/cmd/verify$' |\n" +
+			"            xargs go test -count=1\n",
+	} {
+		if !strings.Contains(text, step) {
+			t.Errorf("native Darwin %s gate is not unconditional after the focused security suite", description)
+		}
 	}
 	if strings.Contains(text, "SSM_REQUIRE_WINDOWS_PRIVILEGED_TEST") {
 		t.Fatal("native Windows gate incorrectly requires optional host privileges")
@@ -865,7 +882,7 @@ func TestReleaseWorkflowUsesCredentialFreeVerifierPreflightAndManifestParity(t *
 		t.Errorf("release checksum inputs do not exactly match manifest assets and installer: want %q", checksumCommand)
 	}
 	for _, asset := range wantAssets {
-		if got := strings.Count(workflow, "\n            "+asset+"\n"); got != 1 {
+		if got := strings.Count(workflow, "\n            "+asset+" \\\n"); got != 1 {
 			t.Errorf("published files entry count for %s = %d, want 1", asset, got)
 		}
 	}
@@ -908,7 +925,7 @@ func TestReleaseWorkflowProducesPinnedProvenance(t *testing.T) {
 	}
 	for _, target := range releaseasset.SupportedTargets() {
 		bundle := releaseasset.ProvenanceName(releaseasset.Name(target.GOOS, target.GOARCH))
-		if got := strings.Count(workflow, "\n            "+bundle+"\n"); got != 1 {
+		if got := strings.Count(workflow, "\n            "+bundle+" \\\n"); got != 1 {
 			t.Errorf("published provenance entry count for %s = %d, want 1", bundle, got)
 		}
 	}
@@ -3342,6 +3359,7 @@ func manifestCommandLines(manifest Manifest) []string {
 func validateCIAdapters(manifest Manifest, makefile, workflow string) error {
 	const linuxInvocation = "go run ./cmd/verify ci"
 	const windowsInvocation = "go run ./cmd/verify fast"
+	const darwinUnitInvocation = "xargs go test -count=1"
 	if got := makeTargetRecipe(makefile, "check"); got != linuxInvocation {
 		return fmt.Errorf("Makefile check recipe = %q, want %q", got, linuxInvocation)
 	}
@@ -3351,10 +3369,18 @@ func validateCIAdapters(manifest Manifest, makefile, workflow string) error {
 	if got := strings.Count(workflow, "run: "+windowsInvocation); got != 1 {
 		return fmt.Errorf("workflow Windows manifest invocation count = %d, want 1", got)
 	}
+	if got := strings.Count(workflow, darwinUnitInvocation); got != 1 {
+		return fmt.Errorf("workflow Darwin uncached unit invocation count = %d, want 1", got)
+	}
 
 	for _, command := range manifestCommandLines(manifest) {
-		if strings.Contains(makefile, command) || strings.Contains(workflow, command) {
-			return fmt.Errorf("adapter duplicates manifest-owned command %q", command)
+		want := 0
+		if command == "go vet ./..." {
+			want = 1
+		}
+		got := strings.Count(makefile, command) + strings.Count(workflow, command)
+		if got != want {
+			return fmt.Errorf("adapter manifest-owned command %q count = %d, want %d", command, got, want)
 		}
 	}
 	return nil

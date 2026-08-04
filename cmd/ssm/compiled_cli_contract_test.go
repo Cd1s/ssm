@@ -29,6 +29,7 @@ var compiledCLIPaths map[string]string
 
 const compiledCLISubprocessTimeout = 15 * time.Second
 const compiledCLIBuildTimeout = 2 * time.Minute
+const compiledCLIMigrationFixtureVersion = "1.4.3"
 const reviewedCompiledMachineContractPath = "testdata/compiled_contracts/v1_failure_matrix.json"
 
 type compiledCLIResult struct {
@@ -145,8 +146,8 @@ func runCompiledCLITestMain(m *testing.M) (exitCode int) {
 	}
 	ssmPath := filepath.Join(buildDir, "ssm"+extension)
 	updateLDFlags := fmt.Sprintf(
-		"-X=ssm/internal/update.apiBaseURL=%s -X=ssm/internal/update.downloadBaseURL=%s -X=ssm/internal/inventorytransaction.publicationFaultInjection=enabled",
-		compiledUpdateServer.URL(), compiledUpdateServer.URL(),
+		"-X=main.version=%s -X=ssm/internal/update.apiBaseURL=%s -X=ssm/internal/update.downloadBaseURL=%s -X=ssm/internal/inventorytransaction.publicationFaultInjection=enabled",
+		compiledCLIMigrationFixtureVersion, compiledUpdateServer.URL(), compiledUpdateServer.URL(),
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), compiledCLIBuildTimeout)
 	defer cancel()

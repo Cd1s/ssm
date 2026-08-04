@@ -3,10 +3,14 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - "v2.*"
 
 permissions:
   contents: read
+
+concurrency:
+  group: release-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   preflight:
@@ -80,6 +84,7 @@ jobs:
         name: Validate release identity
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_WORKFLOW_REF: ${{ github.workflow_ref }}
         run: |
           set -euo pipefail
@@ -89,26 +94,29 @@ jobs:
             echo "release workflow identity is not accepted: $RELEASE_WORKFLOW_REF" >&2
             exit 1
           fi
-          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "release tag must look like v1.2.3: $tag" >&2
+          if [[ ! "$tag" =~ ^v2\.[0-9]+\.[0-9]+$ ]]; then
+            echo "v2 release tag must look like v2.0.0: $tag" >&2
             exit 1
           fi
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
-            remote_sha="$(git ls-remote --tags origin "refs/tags/$tag^{}" | awk '{print $1}')"
-            if [ -z "$remote_sha" ]; then
-              remote_sha="$(git ls-remote --tags origin "refs/tags/$tag" | awk '{print $1}')"
-            fi
-            current_sha="$(git rev-parse HEAD)"
-            if [ "$remote_sha" != "$current_sha" ]; then
-              echo "tag $tag already exists at $remote_sha, current commit is $current_sha" >&2
-              exit 1
-            fi
+          remote_sha="$(git ls-remote --tags origin "refs/tags/$tag^{}" | awk '{print $1}')"
+          if [ -z "$remote_sha" ]; then
+            remote_sha="$(git ls-remote --tags origin "refs/tags/$tag" | awk '{print $1}')"
+          fi
+          if [ -z "$remote_sha" ]; then
+            echo "tag $tag does not resolve to a remote commit" >&2
+            exit 1
+          fi
+          current_sha="$(git rev-parse HEAD)"
+          if [ "$remote_sha" != "$current_sha" ]; then
+            echo "tag $tag resolves to $remote_sha, current commit is $current_sha" >&2
+            exit 1
           fi
           source_version="$(sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"\([0-9.]*\)"/\1/p' cmd/ssm/main.go)"
           if [ "$source_version" != "${tag#v}" ]; then
             echo "source version $source_version does not match release $tag" >&2
             exit 1
           fi
+          ./scripts/release-create-only.sh assert-absent "$tag"
           printf 'tag=%s\nversion=%s\n' "$tag" "${tag#v}" >> "$GITHUB_OUTPUT"
 
       - name: Verify release profile
@@ -197,32 +205,33 @@ jobs:
           header="## ${{ needs.preflight.outputs.tag }}"
           awk -v header="$header" '
             $0 == header { found=1; next }
-            found && /^## v[0-9]/ { exit }
+            found && /^## / { exit }
             found { print }
             END { if (!found) exit 1 }
           ' RELEASE_NOTES.md > release-body.md
           grep -q '[^[:space:]]' release-body.md
 
-      - name: Publish verified release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ needs.preflight.outputs.tag }}
-          target_commitish: ${{ github.sha }}
-          name: ${{ needs.preflight.outputs.tag }}
-          body_path: release-body.md
-          make_latest: true
-          files: |
-            ssm-linux-amd64
-            ssm-linux-arm64
-            ssm-darwin-amd64
-            ssm-darwin-arm64
-            ssm-windows-amd64.exe
-            ssm-windows-arm64.exe
-            ssm-linux-amd64.sigstore.json
-            ssm-linux-arm64.sigstore.json
-            ssm-darwin-amd64.sigstore.json
-            ssm-darwin-arm64.sigstore.json
-            ssm-windows-amd64.exe.sigstore.json
-            ssm-windows-arm64.exe.sigstore.json
-            install.sh
+      - name: Publish create-only verified release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ./scripts/release-create-only.sh publish \
+            "${{ needs.preflight.outputs.tag }}" \
+            "${{ github.sha }}" \
+            release-body.md \
+            ssm-linux-amd64 \
+            ssm-linux-arm64 \
+            ssm-darwin-amd64 \
+            ssm-darwin-arm64 \
+            ssm-windows-amd64.exe \
+            ssm-windows-arm64.exe \
+            ssm-linux-amd64.sigstore.json \
+            ssm-linux-arm64.sigstore.json \
+            ssm-darwin-amd64.sigstore.json \
+            ssm-darwin-arm64.sigstore.json \
+            ssm-windows-amd64.exe.sigstore.json \
+            ssm-windows-arm64.exe.sigstore.json \
+            install.sh \
             checksums.txt

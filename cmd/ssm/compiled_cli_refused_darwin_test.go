@@ -1,4 +1,4 @@
-//go:build aix || dragonfly || freebsd || linux || netbsd || openbsd || solaris
+//go:build darwin
 
 package main
 
@@ -28,5 +28,11 @@ func reserveCompiledRefusedTCPPort() (string, int, func() error, error) {
 		_ = closeSocket()
 		return "", 0, nil, fmt.Errorf("reserved socket has address type %T", bound)
 	}
-	return "127.0.0.1", inet.Port, closeSocket, nil
+	if err := closeSocket(); err != nil {
+		return "", 0, nil, err
+	}
+	// A bound-but-not-listening socket times out on Darwin. Closing the
+	// test-owned loopback reservation makes the next connection exercise an
+	// actual refused endpoint, which is the machine-contract case under test.
+	return "127.0.0.1", inet.Port, func() error { return nil }, nil
 }
