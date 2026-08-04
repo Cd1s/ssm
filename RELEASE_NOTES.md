@@ -1,5 +1,46 @@
 # Release Notes Draft
 
+## v1.4.4
+
+Release candidate only; this bridge is not published and these notes do not
+claim that a v1.4.4 tag or GitHub Release exists.
+
+### Major-version safety bridge
+
+- Make automatic update and ordinary `ssm update` same-major only. Seeing a v2
+  GitHub Release never requests a v2 binary or replaces the running v1
+  executable; same-major v1 maintenance updates remain available.
+- Add the sole explicit migration path: `ssm update --major` presents the
+  BC-1..BC-10 review and release evidence without mutating state, while
+  `ssm update --major --yes` authorizes replacement only after the approved
+  read-only preflight succeeds.
+- Require the exact selected binary digest and pinned keyless provenance for
+  repository `Cd1s/ssm`, the release workflow, the GitHub Actions issuer and
+  hosted runner, one exact subject, and the exact selected tag ref. Missing,
+  malformed, replayed, branch-based, or mismatched evidence fails closed.
+- Preserve the executable and encrypted v1 state on preflight, verification,
+  or replacement failure. Use authenticated native Unix replacement and
+  Windows deferred replacement/recovery semantics.
+
+### Staging and compatibility
+
+- Keep all legacy asset names, `checksums.txt`, and the `install.sh` asset so
+  existing v1.4.3 clients can receive a future bridge candidate. The bridge
+  installer now verifies the exact 14-entry selected-tag manifest, digest, and
+  pinned provenance before replacement. For an existing installation it also
+  refuses an older or cross-major selected release before any asset request;
+  major migration remains solely `ssm update --major --yes`. Adjacent
+  provenance also supports that later explicitly authorized v2 migration.
+- Document the reviewed identity overlap/expiry/removal gates and fail-closed
+  emergency recovery. Rotation never permits checksum-only fallback or a
+  verification bypass.
+- Use bridge-first staging: a v1 bridge decision must happen before any v2
+  latest decision. v2 cannot become GitHub latest without a separate human
+  release authorization after bridge rollout evidence is reviewed.
+- Add a credential-free, non-publishing candidate gate that verifies exact
+  v1.4.3 ancestry, source version, release notes, all six platform builds,
+  manifest/checksums, and synthetic exact-tag provenance.
+
 ## v1.4.3
 
 ### Fast agent execution

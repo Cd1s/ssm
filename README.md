@@ -10,7 +10,7 @@
 curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 ```
 
-安装脚本会从 `Cd1s/ssm` 下载当前系统匹配的程序，安装到 `/usr/local/bin/ssm`，并创建 `/usr/local/bin/sshctl -> /usr/local/bin/ssm`。`sshctl` 不是额外脚本，它和 `ssm` 是同一个二进制。
+安装脚本会从 `Cd1s/ssm` 下载当前系统匹配的程序，安装到 `/usr/local/bin/ssm`，并创建 `/usr/local/bin/sshctl -> /usr/local/bin/ssm`。`sshctl` 不是额外脚本，它和 `ssm` 是同一个二进制。安装需要 `jq`、`head`、`sha256sum` 或 `shasum`，以及支持 `gh attestation verify` 的新版 GitHub CLI；仅当所选精确 tag 的 manifest、摘要和固定 provenance 全部验证通过后才会替换程序。已有安装只接受同一 major 内相同或更新的版本；经过审查的跨 major 迁移必须使用 `ssm update --major --yes`。
 
 ## 常用命令
 
@@ -259,11 +259,25 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 
 ## 自动更新
 
-`1.0.0` 起默认从 `Cd1s/ssm` 检查 GitHub 最新 release。发现更高版本时会替换当前程序。手动更新：
+v1 维护桥会检查 `Cd1s/ssm` 的 GitHub Release，但自动更新和普通手动更新严格限制在 same-major（相同主版本）内。即使 GitHub latest 是 v2，v1 也只会报告，不会请求 v2 资产或替换可执行文件；v1 同主版本维护更新仍然受支持：
 
 ```bash
 ssm update
 ```
+
+跨主版本迁移采用独立的审阅和授权步骤。先只读查看 BC-1..BC-10 证据与预检结果，不修改可执行文件：
+
+```bash
+ssm update --major
+```
+
+确认输出后，才显式授权经过来源验证的迁移：
+
+```bash
+ssm update --major --yes
+```
+
+授权路径会独立验证所选二进制的摘要，以及精确绑定所选 tag 的固定 keyless provenance。任何预检或验证失败都会保留 v1 可执行文件和加密状态。详见 [`docs/v1-to-v2-bridge.md`](docs/v1-to-v2-bridge.md)。本文不声称桥接 Release 已经存在。
 
 无头测试、离线环境或不希望程序启动时触网时，可以禁用 release 检查：
 

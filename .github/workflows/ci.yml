@@ -3,21 +3,28 @@ name: CI
 on:
   workflow_dispatch:
   push:
-    branches: [agent-headless-sync, dev, main]
+    branches: [agent-headless-sync, dev, main, release/v1.4.x]
   pull_request:
-    branches: [agent-headless-sync, dev, main]
+    branches: [agent-headless-sync, dev, main, release/v1.4.x]
+
+permissions:
+  contents: read
 
 jobs:
   check:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.12"
+          go-version: '1.25.12'
 
       - name: Format check
         run: test -z "$(gofmt -l .)"
@@ -51,11 +58,25 @@ jobs:
       - name: Race test
         run: go test -race ./...
 
-      - name: Validate agent artifacts
+      - name: Windows amd64 compile and vet
         run: |
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test ./... -run '^$' -exec=true
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./...
+
+      - name: Windows arm64 compile and vet
+        run: |
+          GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go test ./... -run '^$' -exec=true
+          GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go vet ./...
+
+      - name: Installer and agent artifacts
+        run: |
+          bash -n install.sh
           jq empty skills/agent-ssm/test-prompts.json
           jq empty skills/agent-ssm/references/request-v1.schema.json
           bash -n scripts/ssh_matrix_test.sh
+
+      - name: Non-publishing bridge release candidate
+        run: go run ./cmd/bridgeverify candidate
 
       - name: Prepare SSH server
         run: |
@@ -65,3 +86,47 @@ jobs:
 
       - name: SSH matrix
         run: scripts/ssh_matrix_test.sh
+
+  windows:
+    permissions:
+      contents: read
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.12'
+
+      - name: Verify native Windows replacement security
+        run: go test ./internal/update -run '^TestWindowsNativeReplacementSecurity$' -count=1
+
+      - name: Verify native Windows contract guards
+        if: ${{ always() }}
+        run: go test ./internal/update -run '^(TestWindowsSecurityContractRMControlCanonicalEncoding|TestWindowsRenameGapFixtureUsesInProcessHookSynchronization|TestWindowsMappedCleanupUsesDeletePendingHandleEvidence|TestRecoveryDispositionsRemainDistinct)$' -count=1
+
+  darwin:
+    permissions:
+      contents: read
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.12'
+
+      - name: Verify native Darwin replacement security
+        run: go test ./internal/update -run '^TestDarwinNativeReplacementSecurity$' -count=1
+
+      - name: Verify native Darwin all packages
+        if: ${{ always() }}
+        run: go test ./... -count=1
