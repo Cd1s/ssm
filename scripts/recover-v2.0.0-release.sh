@@ -56,7 +56,28 @@ jq -e -s '
 
 api --paginate "repos/$expected_repository/actions/runs/$expected_run_id/artifacts?per_page=100" > "$work/artifacts.pages"
 expected_artifacts="$(for i in "${!artifact_names[@]}"; do jq -n --argjson id "${artifact_ids[$i]}" --arg name "${artifact_names[$i]}" '{id:$id,name:$name}'; done | jq -s 'sort_by(.id)')"
-jq -e -s --argjson expected "$expected_artifacts" '[.[].artifacts[]|select(.expired==false)|{id,name}]|sort_by(.id)==$expected and ([.[].artifacts[]]|length)==6' "$work/artifacts.pages" >/dev/null || die "workflow artifacts are missing, expired, duplicate, or extra"
+jq -e -s '
+  length>0 and
+  all(.[];
+    type=="object" and (keys|sort)==["artifacts","total_count"] and
+    (.total_count|type)=="number" and .total_count>=0 and (.total_count|floor)==.total_count and
+    (.artifacts|type)=="array"
+  ) and
+  .[0].total_count as $total |
+  $total==([.[].artifacts[]]|length) and
+  all(.[]; .total_count==$total)
+' "$work/artifacts.pages" >/dev/null || die "workflow artifact inventory is malformed"
+jq -e -s --argjson expected "$expected_artifacts" '
+  [.[].artifacts[]] as $artifacts |
+  ($artifacts|length)==6 and
+  all($artifacts[];
+    (.id|type)=="number" and .id>0 and (.id|floor)==.id and
+    (.name|type)=="string" and .name!="" and .expired==false
+  ) and
+  ($artifacts|map(.id)|length)==($artifacts|map(.id)|unique|length) and
+  ($artifacts|map(.name)|length)==($artifacts|map(.name)|unique|length) and
+  ($artifacts|map({id,name})|sort_by(.id))==$expected
+' "$work/artifacts.pages" >/dev/null || die "workflow artifacts are missing, expired, duplicate, or extra"
 mkdir "$work/assets"
 for i in "${!artifact_names[@]}"; do
   archive="$work/${artifact_ids[$i]}.zip"
