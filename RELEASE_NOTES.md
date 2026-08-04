@@ -1,9 +1,11 @@
-# Release Notes Draft
+# Release Notes
 
 ## v1.4.4
 
-Release candidate only; this bridge is not published and these notes do not
-claim that a v1.4.4 tag or GitHub Release exists.
+These notes are prepared for the authorized official v1.4.4 maintenance bridge.
+Publication is permitted only from the immutable v1.4.4 tag by the official
+exact-tag release workflow. A source checkout or non-publishing candidate gate
+does not create a tag or GitHub Release.
 
 ### Major-version safety bridge
 
@@ -25,7 +27,7 @@ claim that a v1.4.4 tag or GitHub Release exists.
 ### Staging and compatibility
 
 - Keep all legacy asset names, `checksums.txt`, and the `install.sh` asset so
-  existing v1.4.3 clients can receive a future bridge candidate. The bridge
+  existing v1.4.3 clients can receive the official v1.4.4 bridge. The bridge
   installer now verifies the exact 14-entry selected-tag manifest, digest, and
   pinned provenance before replacement. For an existing installation it also
   refuses an older or cross-major selected release before any asset request;

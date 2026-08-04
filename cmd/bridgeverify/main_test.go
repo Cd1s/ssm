@@ -49,6 +49,32 @@ func TestSourceVersionAndCandidateNotesAgree(t *testing.T) {
 	}
 }
 
+func TestV144ReleaseNotesAreSafeForVerbatimPublication(t *testing.T) {
+	repo := filepath.Join("..", "..")
+	notes, err := readReleaseNotes(repo, "v1.4.4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lower := strings.ToLower(notes)
+	for _, staleClaim := range []string{
+		"release candidate only",
+		"not published",
+		"future bridge candidate",
+	} {
+		if strings.Contains(lower, staleClaim) {
+			t.Fatalf("official release body contains stale pre-publication claim %q", staleClaim)
+		}
+	}
+	for _, requiredBoundary := range []string{
+		"exact-tag release workflow",
+		"non-publishing candidate gate",
+	} {
+		if !strings.Contains(lower, requiredBoundary) {
+			t.Fatalf("official release body omits durable publication boundary %q", requiredBoundary)
+		}
+	}
+}
+
 func TestV1PreservationAllowlistRejectsRuntimeBackports(t *testing.T) {
 	for _, path := range []string{
 		"cmd/ssm/stream.go",
