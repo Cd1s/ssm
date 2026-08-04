@@ -18,6 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: 8d907d040994bb2f5997714f1b0cc260f33ce368
           persist-credentials: false
       - uses: actions/setup-go@v6
         with:
@@ -33,4 +34,9 @@ jobs:
           EXPECTED_SOURCE_RUN_ID: "30911029600"
           REQUIRED_LATEST_ID: "364597135"
           REQUIRED_LATEST_TAG: v1.4.4
-        run: ./scripts/recover-v2.0.0-release.sh
+        run: |
+          printf '%s  %s\n' \
+            11b3d084200282dee7d8fa68bab4f28c76a9ecedbcf8c31df6ffe8957979eb51 scripts/recover-v2.0.0-release.sh \
+            db7c5d942aa0da8c16b68371dd5f2ca5428387bb12e3bc5978200606c6ddffa5 cmd/recoveryverify/main.go \
+            | sha256sum -c -
+          ./scripts/recover-v2.0.0-release.sh
