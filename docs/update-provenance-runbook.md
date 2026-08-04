@@ -1,8 +1,9 @@
 # SSM update provenance runbook
 
 This runbook governs updater, installer, release-maintainer, and emergency
-recovery decisions for the planned v2.0.0 release. It does not publish a tag or
-release.
+recovery decisions for authorized stable non-latest v2.0.0. The runbook itself
+does not publish a tag or release; the exact-tag workflow may do so only while
+v1.4.4 remains GitHub latest.
 
 [中文](update-provenance-runbook.zh-CN.md) | [Migration guide](migration-v1-to-v2.md)
 

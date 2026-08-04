@@ -12,10 +12,11 @@ We will respond within 48 hours and work on a fix as quickly as possible.
 
 ## Release Verification
 
-The planned v2 update-trust contract is detailed in the [update-provenance
-runbook](docs/update-provenance-runbook.md). It includes a reviewed identity rotation
-overlap and recovery procedure; the current source/release remains
-v1.4.3 and this policy does not announce a v2 release.
+The authorized stable v2.0.0 update-trust contract is detailed in the
+[update-provenance runbook](docs/update-provenance-runbook.md). It includes a
+reviewed identity rotation overlap and recovery procedure. The exact-tag
+workflow may publish v2.0.0 only as non-latest while v1.4.4 remains GitHub
+latest; only explicit reviewed major migration selects v2.
 
 Official release replacements require the selected SHA-256 digest and
 keyless provenance pinned to the exact selected release tag in the `Cd1s/ssm`

@@ -1,39 +1,40 @@
-# Release Notes Draft
+# Release Notes
 
-These notes describe the planned v2.0.0 migration contract; they do not
-announce a release. The source and current release remain v1.4.3, and this
-document does not publish a tag, artifact, or executable. See the [v1→v2
-migration guide](docs/migration-v1-to-v2.md) and [update-provenance
-runbook](docs/update-provenance-runbook.md) for operator and maintainer gates.
+These notes are the reviewed contract for the authorized stable v2.0.0
+Release. Only the official exact-tag release workflow may publish it, with
+`make_latest=false`; v1.4.4 remains GitHub latest until a separate explicit
+promotion decision. See the [v1→v2 migration guide](docs/migration-v1-to-v2.md)
+and [update-provenance runbook](docs/update-provenance-runbook.md) for operator
+and maintainer gates.
 
 ## v2.0.0
 
-The initial v2 release remains blocked on closure of all child tickets through
-Issue #31 and a passing #31 final readiness proof. That proof is now an executable,
-non-publishing `verify release` profile whose final `v2-readiness-report`
-check validates the checked-in evidence map against the live manifest.
-BC-1 through BC-10 are the approved compatibility migration rows; their
-[complete field-level old/new/action/machine/rollback matrix](docs/migration-v1-to-v2.md#bc-contract-matrix)
-is part of this release contract. Verification is non-mutating and does not
-publish a tag or release. A v2 binary is not available until every source
-release blocker, migration review, pinned provenance check, and rollback
-evidence passes. A passing readiness profile proves that the reviewed source
-is ready for the official release mechanism; it does not publish anything.
+This section is prepared for the authorized stable v2.0.0 Release. The exact-tag
+release workflow may publish it only with `make_latest=false`; v1.4.4 remains
+GitHub latest. All child tickets through Issue #31 are closed and the #31 final readiness
+proof is an executable, non-publishing `verify release` profile whose
+final `v2-readiness-report` check validates the checked-in evidence map against
+the live manifest. BC-1 through BC-10 are the approved compatibility migration
+rows; their [complete field-level old/new/action/machine/rollback matrix](docs/migration-v1-to-v2.md#bc-contract-matrix)
+is part of this release contract. Verification is non-mutating and does not publish
+a tag or release. Only the official exact-tag release workflow may
+publish after every source release blocker, migration review, pinned provenance
+check, rollback rehearsal, native CI gate, and independent review passes.
 
 ### Pinned release provenance
 
-- The planned updater contract requires automatic and manual same-major updates,
+- The updater contract requires automatic and manual same-major updates,
   explicitly authorized major migrations, and installer replacements to carry both the selected
   SHA-256 digest and keyless provenance for the exact downloaded asset.
 - Provenance is pinned to `Cd1s/ssm`, the reviewed release workflow identity,
   GitHub Actions' OIDC issuer, the supported six-target manifest, and the
   reviewed identity-rotation state. Missing, malformed, unverifiable,
   wrong-subject, or expired provenance leaves the existing executable intact.
-- A planned release build publishes one adjacent Sigstore bundle per binary.
+- The official release build publishes one adjacent Sigstore bundle per binary.
   Checksums remain an independent digest input but cannot authorize replacement alone.
 - Redirected and unknown-length release responses are streamed through exact
   1 MiB metadata/provenance, 16 KiB checksum, and 64 MiB binary ceilings.
-- The planned installer uses a same-directory staging template accepted by both
+- The installer uses a same-directory staging template accepted by both
   GNU and macOS/BSD `mktemp`. Windows self-update renames the mapped old image
   aside under an exclusive same-directory update lock, installs the
   identity-checked sibling stage synchronously, and rolls back bytes and
@@ -48,7 +49,7 @@ is ready for the official release mechanism; it does not publish anything.
 
 ### Reviewed saved-key publication
 
-- The planned v2 publication preflight rejects unsatisfied cross-alias saved-key
+- The v2 publication preflight rejects unsatisfied cross-alias saved-key
   create, replace, rename, delete, prune, and reference prerequisites before
   any sync request.
 - The safe failure message lists every required stable transaction ID in

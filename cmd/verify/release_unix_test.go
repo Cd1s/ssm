@@ -67,6 +67,60 @@ func TestInstallerTrustFailurePreservesExecutable(t *testing.T) {
 	}
 }
 
+func TestInstallerRefusesExistingCrossMajorOutsideMigration(t *testing.T) {
+	result := runInstallerFixture(t, installerFixtureOptions{
+		metadata:         installerReleaseMetadataForTag("v2.0.0", releaseasset.ExpectedReleaseNames()),
+		bundle:           []byte("{}\n"),
+		ghPolicy:         "success",
+		installedVersion: "1.4.4",
+	})
+	if result.err == nil {
+		t.Fatalf("installer replaced an existing v1 binary with v2 outside update --major --yes; output=%q", result.output)
+	}
+	assertInstallerExecutablePreserved(t, result)
+	if result.ghCalled {
+		t.Fatalf("installer reached provenance after cross-major replacement was already forbidden; output=%q", result.output)
+	}
+	if !bytes.Contains(result.output, []byte("use ssm update --major --yes for migration")) {
+		t.Fatalf("installer cross-major refusal lacks explicit migration path: %q", result.output)
+	}
+}
+
+func TestInstallerExactTagSelectionMatchesReleaseIdentity(t *testing.T) {
+	t.Run("matching exact tag", func(t *testing.T) {
+		result := runInstallerFixture(t, installerFixtureOptions{
+			metadata:         installerReleaseMetadataForTag("v2.0.0", releaseasset.ExpectedReleaseNames()),
+			bundle:           []byte("{}\n"),
+			ghPolicy:         "success",
+			installedVersion: "2.0.0",
+			requestedTag:     "v2.0.0",
+		})
+		if result.err != nil {
+			t.Fatalf("installer rejected matching exact tag: %v; output=%q", result.err, result.output)
+		}
+		if !result.ghCalled {
+			t.Fatalf("installer did not verify matching exact-tag provenance; output=%q", result.output)
+		}
+	})
+
+	t.Run("mismatched exact tag", func(t *testing.T) {
+		result := runInstallerFixture(t, installerFixtureOptions{
+			metadata:         installerReleaseMetadataForTag("v2.0.1", releaseasset.ExpectedReleaseNames()),
+			bundle:           []byte("{}\n"),
+			ghPolicy:         "success",
+			installedVersion: "2.0.0",
+			requestedTag:     "v2.0.0",
+		})
+		if result.err == nil {
+			t.Fatalf("installer accepted metadata for a different exact tag; output=%q", result.output)
+		}
+		assertInstallerExecutablePreserved(t, result)
+		if result.ghCalled {
+			t.Fatalf("installer verified provenance before rejecting exact-tag mismatch; output=%q", result.output)
+		}
+	})
+}
+
 func TestInstallerStagesWithBSDMktemp(t *testing.T) {
 	result := runInstallerFixture(t, installerFixtureOptions{
 		metadata:  installerReleaseMetadata(releaseasset.ExpectedReleaseNames()),
@@ -333,6 +387,8 @@ type installerFixtureOptions struct {
 	binaryPadding    int
 	unknownLength    bool
 	redirect         bool
+	installedVersion string
+	requestedTag     string
 }
 
 func runInstallerFixture(t *testing.T, options installerFixtureOptions) installerResult {
@@ -342,7 +398,11 @@ func runInstallerFixture(t *testing.T, options installerFixtureOptions) installe
 		t.Fatal(err)
 	}
 	executable := filepath.Join(prefix, "ssm")
-	original := []byte("original executable bytes")
+	installedVersion := options.installedVersion
+	if installedVersion == "" {
+		installedVersion = "9.9.8"
+	}
+	original := []byte("#!/bin/sh\nif [ \"${1:-}\" = --version ]; then printf 'ssm " + installedVersion + "\\n'; exit 0; fi\nexit 1\n")
 	if err := os.WriteFile(executable, original, 0o751); err != nil { //nolint:gosec // test-owned installation target
 		t.Fatal(err)
 	}
@@ -416,7 +476,10 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 case "$url" in
-  https://api.github.com/*) source="$METADATA_FIXTURE" ;;
+  https://api.github.com/*)
+    [ -z "$EXPECTED_METADATA_URL" ] || [ "$url" = "$EXPECTED_METADATA_URL" ] || exit 94
+    source="$METADATA_FIXTURE"
+    ;;
   */checksums.txt) source="$CHECKSUMS_FIXTURE" ;;
   *.sigstore.json) source="$BUNDLE_FIXTURE" ;;
   */"$INSTALLER_ASSET") source="$PAYLOAD_FIXTURE" ;;
@@ -537,6 +600,8 @@ exec "$REAL_UNAME" "$@"
 		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"SSM_PREFIX="+prefix,
 		"SSM_CONFIG_DIR="+filepath.Join(t.TempDir(), "config"),
+		"SSM_RELEASE_TAG="+options.requestedTag,
+		"EXPECTED_METADATA_URL="+expectedInstallerMetadataURL(options.requestedTag),
 		"METADATA_FIXTURE="+metadataPath,
 		"CHECKSUMS_FIXTURE="+checksumsPath,
 		"BUNDLE_FIXTURE="+bundlePath,
@@ -583,12 +648,23 @@ exec "$REAL_UNAME" "$@"
 	}
 }
 
+func expectedInstallerMetadataURL(requestedTag string) string {
+	if requestedTag == "" {
+		return "https://api.github.com/repos/Cd1s/ssm/releases/latest"
+	}
+	return "https://api.github.com/repos/Cd1s/ssm/releases/tags/" + requestedTag
+}
+
 func installerReleaseMetadata(names []string) []byte {
+	return installerReleaseMetadataForTag("v9.9.9", names)
+}
+
+func installerReleaseMetadataForTag(tag string, names []string) []byte {
 	assets := make([]string, 0, len(names))
 	for _, name := range names {
 		assets = append(assets, fmt.Sprintf(`{"name":%q}`, name))
 	}
-	return []byte(fmt.Sprintf(`{"tag_name":"v9.9.9","assets":[%s]}`, strings.Join(assets, ",")))
+	return []byte(fmt.Sprintf(`{"tag_name":%q,"assets":[%s]}`, tag, strings.Join(assets, ",")))
 }
 
 func assertInstallerExecutablePreserved(t *testing.T, result installerResult) {

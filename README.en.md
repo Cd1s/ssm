@@ -4,13 +4,15 @@ Non-interactive SSH vault management CLI for agents and automation. Neither `ssm
 
 [中文](README.md) | [English](README.en.md)
 
-## Planned v2 migration (not released)
+## Staged v2 release
 
-The source and current release remain v1.4.3. The v2.0.0 behavior described
-here is a planned migration contract, not an assertion that a v2 binary has
-been published. Review the bilingual [v1→v2 migration guide](docs/migration-v1-to-v2.md)
-and its [update-provenance runbook](docs/update-provenance-runbook.md) before
-changing automation or authorizing a major update.
+The v2.0.0 contract is prepared for authorized stable, non-latest publication
+through the official exact-tag workflow. v1.4.4 remains GitHub latest before
+and after that publication, so ordinary installs and same-major v1 updates do
+not cross the major boundary. Review the bilingual
+[v1→v2 migration guide](docs/migration-v1-to-v2.md) and its
+[update-provenance runbook](docs/update-provenance-runbook.md) before changing
+automation or authorizing a major update.
 
 ## Install
 
@@ -19,6 +21,15 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 ```
 
 The installer downloads the matching program from `Cd1s/ssm`, installs `/usr/local/bin/ssm`, and creates `/usr/local/bin/sshctl -> /usr/local/bin/ssm`. `sshctl` is the same binary selected by executable name.
+
+The default installer follows GitHub latest and therefore installs v1.4.4.
+After the official v2.0.0 Release exists, a fresh reviewed exact-tag v2
+installation downloads its installer and selects the same tag explicitly:
+
+```bash
+curl -fsSL https://github.com/Cd1s/ssm/releases/download/v2.0.0/install.sh -o ./install-v2.0.0.sh
+SSM_RELEASE_TAG=v2.0.0 sh ./install-v2.0.0.sh
+```
 
 ## Commands
 
@@ -324,9 +335,9 @@ Project agent skill: `skills/agent-ssm/SKILL.md`.
 
 ## Auto Update
 
-The v1.4.3 executable remains installed until a planned v2 migration is
-reviewed and explicitly authorized. Same-major automatic/manual updates remain
-the ordinary path; a cross-major candidate is review-only until
+The v1.4.4 executable remains installed until the stable non-latest v2.0.0
+migration is reviewed and explicitly authorized. Same-major automatic/manual
+updates remain the ordinary path; a cross-major candidate is review-only until
 `ssm update --major --yes`.
 
 Version `1.0.0` and later checks GitHub releases from `Cd1s/ssm` by default. Automatic and ordinary manual updates replace only with a newer release in the installed major; a newer major is reported as a migration and never replaces the current program. Ordinary manual update:

@@ -374,7 +374,7 @@ func validateReleaseNotes(repoRoot, version string) error {
 			}
 			continue
 		}
-		if strings.HasPrefix(line, "## v") {
+		if strings.HasPrefix(line, "## ") {
 			break
 		}
 		body = append(body, line)
@@ -384,6 +384,29 @@ func validateReleaseNotes(repoRoot, version string) error {
 	}
 	if strings.TrimSpace(strings.Join(body, "\n")) == "" {
 		return fmt.Errorf("release-note section %q is empty", header)
+	}
+	if version == "2.0.0" {
+		lower := strings.ToLower(strings.Join(strings.Fields(strings.Join(body, "\n")), " "))
+		for _, stale := range []string{
+			"initial v2 release remains blocked",
+			"a v2 binary is not available",
+			"planned release build",
+			"planned installer",
+		} {
+			if strings.Contains(lower, stale) {
+				return fmt.Errorf("release-note section %q contains stale pre-publication claim %q", header, stale)
+			}
+		}
+		for _, required := range []string{
+			"stable v2.0.0",
+			"make_latest=false",
+			"v1.4.4 remains github latest",
+			"exact-tag release workflow",
+		} {
+			if !strings.Contains(lower, required) {
+				return fmt.Errorf("release-note section %q omits durable publication contract %q", header, required)
+			}
+		}
 	}
 	return nil
 }
