@@ -14,12 +14,16 @@ func TestV2ReleaseWorkflowCannotPromoteGitHubLatest(t *testing.T) {
 	}
 	workflow := string(data)
 	for description, required := range map[string]string{
-		"v2-only tag trigger":      "      - \"v2.*\"\n",
-		"v2-only identity grammar": `if [[ ! "$tag" =~ ^v2\.[0-9]+\.[0-9]+$ ]]; then`,
-		"exact section extraction": "            found && /^## / { exit }\n",
-		"stable release":           "          prerelease: false\n",
-		"non-draft release":        "          draft: false\n",
-		"non-latest release":       "          make_latest: false\n",
+		"v2-only tag trigger":        "      - \"v2.*\"\n",
+		"v2-only identity grammar":   `if [[ ! "$tag" =~ ^v2\.[0-9]+\.[0-9]+$ ]]; then`,
+		"same-tag serialization":     "  group: release-${{ github.repository }}-${{ github.ref }}\n",
+		"no concurrent cancellation": "  cancel-in-progress: false\n",
+		"exact section extraction":   "            found && /^## / { exit }\n",
+		"stable release":             "          prerelease: false\n",
+		"non-draft release":          "          draft: false\n",
+		"non-latest release":         "          make_latest: false\n",
+		"asset non-overwrite":        "          overwrite_files: false\n",
+		"exact file match":           "          fail_on_unmatched_files: true\n",
 	} {
 		if !strings.Contains(workflow, required) {
 			t.Errorf("v2 release workflow lacks %s %q", description, required)
@@ -27,6 +31,18 @@ func TestV2ReleaseWorkflowCannotPromoteGitHubLatest(t *testing.T) {
 	}
 	if strings.Contains(workflow, "make_latest: true") {
 		t.Fatal("v2 release workflow can still promote itself to GitHub latest")
+	}
+	if strings.Contains(workflow, "overwrite_files: true") {
+		t.Fatal("v2 release workflow can still overwrite existing GitHub release assets")
+	}
+	for description, required := range map[string]string{
+		"existing-release endpoint": "releases/tags/$tag",
+		"existing-release refusal":  "GitHub Release $tag already exists; refusing to mutate or overwrite it",
+		"ambiguous-state refusal":   "unable to prove GitHub Release $tag is absent\" >&2",
+	} {
+		if got := strings.Count(workflow, required); got != 2 {
+			t.Errorf("v2 release workflow must enforce %s before preflight and publication: got %d occurrences of %q, want 2", description, got, required)
+		}
 	}
 	if strings.Contains(workflow, "if git ls-remote --exit-code") {
 		t.Fatal("v2 release identity still treats an unresolved remote tag as optional")
