@@ -24,9 +24,14 @@ claim that a v1.4.4 tag or GitHub Release exists.
 
 ### Staging and compatibility
 
-- Keep all legacy asset names, `checksums.txt`, and `install.sh` behavior so
-  existing v1.4.3 clients can receive a future bridge candidate. Add adjacent
-  provenance evidence only for a later explicitly authorized v2 migration.
+- Keep all legacy asset names, `checksums.txt`, and the `install.sh` asset so
+  existing v1.4.3 clients can receive a future bridge candidate. The bridge
+  installer now verifies the exact 14-entry selected-tag manifest, digest, and
+  pinned provenance before replacement; adjacent provenance also supports the
+  later explicitly authorized v2 migration.
+- Document the reviewed identity overlap/expiry/removal gates and fail-closed
+  emergency recovery. Rotation never permits checksum-only fallback or a
+  verification bypass.
 - Use bridge-first staging: a v1 bridge decision must happen before any v2
   latest decision. v2 cannot become GitHub latest without a separate human
   release authorization after bridge rollout evidence is reviewed.

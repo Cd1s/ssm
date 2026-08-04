@@ -11,6 +11,7 @@ import (
 	"ssm/internal/cloud"
 	"ssm/internal/config"
 	"ssm/internal/releaseasset"
+	"ssm/internal/vault"
 )
 
 type BreakingChange struct {
@@ -177,14 +178,34 @@ func checkPendingRecovery(masterPassPath string) MigrationCheck {
 	if err != nil {
 		return failedCheck("pending_recovery", "The master-pass file is unreadable.", "Repair master-pass file access and rerun.")
 	}
-	vault, err := config.Load(strings.TrimRight(string(password), "\r\n"))
+	vaultState, err := loadVaultForPreflight(strings.TrimRight(string(password), "\r\n"))
 	if err != nil {
 		return failedCheck("pending_recovery", "The encrypted vault cannot be inspected.", "Use the correct master-pass file and repair the vault before migration.")
 	}
-	if len(vault.PendingMutations) != 0 {
+	if len(vaultState.PendingMutations) != 0 {
 		return failedCheck("pending_recovery", "Pending inventory transactions require review.", "Publish the exact reviewed scopes or deliberately retain v1 until they are resolved.")
 	}
 	return passedCheck("pending_recovery", "No pending inventory transactions or recovery intent were found.")
+}
+
+func loadVaultForPreflight(masterPass string) (*config.Vault, error) {
+	data, err := os.ReadFile(config.Path()) //nolint:gosec // fixed v1 encrypted-vault path; preflight deliberately does not repair it
+	if err != nil {
+		return nil, err
+	}
+	plaintext, err := vault.Decrypt(data, masterPass)
+	if err != nil {
+		return nil, err
+	}
+	var current config.Vault
+	if err := json.Unmarshal(plaintext, &current); err == nil {
+		return &current, nil
+	}
+	var legacy []config.Connection
+	if err := json.Unmarshal(plaintext, &legacy); err != nil {
+		return nil, err
+	}
+	return &config.Vault{Connections: legacy}, nil
 }
 
 func checkDivergence() MigrationCheck {

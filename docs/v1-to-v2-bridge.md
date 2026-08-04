@@ -82,6 +82,9 @@ explicit recovery-required failure. Generic access-denied errors are not
 accepted as success.
 
 The future bridge release retains the legacy binary names, checksum layout,
-and `install.sh` behavior so installed v1.4.3 clients can receive it. Its
-additional provenance bundles exist only to support the separately authorized
-major migration.
+and `install.sh` asset so installed v1.4.3 clients can receive it. The installer
+uses the exact selected tag and requires the 14-entry manifest, digest, and
+pinned adjacent provenance before replacing an existing installation. Those
+same bundles support the separately authorized major migration. Identity
+rotation and fail-closed emergency recovery follow the
+[bridge provenance runbook](update-provenance-runbook.md).

@@ -10,7 +10,7 @@ Non-interactive SSH vault management CLI for agents and automation. Neither `ssm
 curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 ```
 
-The installer downloads the matching program from `Cd1s/ssm`, installs `/usr/local/bin/ssm`, and creates `/usr/local/bin/sshctl -> /usr/local/bin/ssm`. `sshctl` is the same binary selected by executable name.
+The installer downloads the matching program from `Cd1s/ssm`, installs `/usr/local/bin/ssm`, and creates `/usr/local/bin/sshctl -> /usr/local/bin/ssm`. `sshctl` is the same binary selected by executable name. Installation requires `jq`, `head`, `sha256sum` or `shasum`, and a current GitHub CLI with `gh attestation verify`; the exact selected-tag manifest, digest, and pinned provenance must all verify before replacement.
 
 ## Commands
 

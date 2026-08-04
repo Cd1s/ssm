@@ -3,8 +3,33 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestCandidateChecksumManifestMaterializesExactInputs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "checksums.txt")
+	names := []string{"ssm-linux-amd64", "install.sh"}
+	checksums := map[string]string{
+		"ssm-linux-amd64": strings.Repeat("a", 64),
+		"install.sh":      strings.Repeat("b", 64),
+	}
+	entries, manifestDigest, err := materializeAndVerifyChecksums(path, names, checksums)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries != len(names) || len(manifestDigest) != 64 {
+		t.Fatalf("checksum proof entries=%d digest=%q", entries, manifestDigest)
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // test-owned checksum manifest
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Repeat("a", 64) + "  ssm-linux-amd64\n" + strings.Repeat("b", 64) + "  install.sh\n"
+	if string(data) != want {
+		t.Fatalf("checksum manifest = %q, want %q", data, want)
+	}
+}
 
 func TestSourceVersionAndCandidateNotesAgree(t *testing.T) {
 	repo := filepath.Join("..", "..")

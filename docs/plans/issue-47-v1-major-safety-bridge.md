@@ -38,9 +38,10 @@ runtime owner is imported.
    selected tag ref, one exact subject, and its SHA-256. Backport the reviewed
    Unix and Windows handle-bound replacement/recovery implementation because
    pathname-only replacement cannot prove the required native semantics.
-4. Preserve legacy bridge binary names, `checksums.txt`, and `install.sh`
-   behavior while adding six adjacent provenance bundles to future release
-   output. Add a non-publishing candidate verifier that builds all six targets
+4. Preserve legacy bridge binary names, `checksums.txt`, and the `install.sh`
+   asset while requiring its selected-tag digest/provenance verification and
+   adding six adjacent provenance bundles to future release output. Add a
+   non-publishing candidate verifier that builds all six targets
    in temporary storage and verifies source version, asset/checksum manifest,
    synthetic exact-tag provenance, release notes, and maintenance ancestry.
 5. Extend maintenance CI triggers minimally and require native Linux, macOS,
@@ -87,8 +88,9 @@ land.
   replacement; duplicate checksums and empty/malformed evidence are rejected.
 - Release/workflow RED: the legacy workflow lacked exact tag identity,
   provenance bundles, six-target/native gates, and a non-publishing verifier.
-  GREEN preserves legacy latest URLs/names/checksums/install layout, stages 14
-  exact entries for a separately authorized v1 bridge rollout, and keeps CI
+  GREEN preserves legacy latest URLs/names/checksums/install asset layout,
+  requires installer digest plus exact-tag provenance, stages 14 exact entries
+  for a separately authorized v1 bridge rollout, and keeps CI
   read-only with native Windows/macOS jobs.
 - Candidate/docs RED: source still reported 1.4.3, v1.4.4 notes were absent,
   and both READMEs lacked the major boundary. GREEN binds version/notes/base,
@@ -106,3 +108,17 @@ land.
   contract guards, while both Windows architectures still compile and vet every
   package in the Linux check job. CI checkouts are explicitly bound to the PR
   head SHA rather than GitHub's synthetic merge ref.
+- Exact-HEAD review RED: `TestMajorPreflightDoesNotChangeConfigDirectoryMode`
+  reproduced a persistent config-directory mode change from 0755 to 0700.
+  GREEN decrypts both current and legacy v1 vault encodings directly through a
+  read-only update seam and proves encrypted bytes and directory mode unchanged.
+- Exact-HEAD review RED: `TestBridgeInstallerRejectsChecksumOnlyAndPreservesExecutable`
+  showed that a forged asset/checksum pair replaced an existing executable.
+  GREEN requires the exact selected-tag 14-entry manifest, bounded downloads,
+  digest, pinned GitHub keyless provenance, exact subject, and sibling staging;
+  failed trust preserves the installed bytes and mode.
+- Provenance-operations RED: the documentation contract found no identity
+  rotation/emergency-recovery runbook. GREEN records the current identity,
+  overlap, expiry/removal, rollback/audit, fail-closed recovery, and no-bypass
+  gates. The candidate additionally materializes and re-parses its exact
+  seven-entry checksum manifest and reports its SHA-256.

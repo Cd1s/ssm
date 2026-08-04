@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -30,6 +31,8 @@ type candidateResult struct {
 	Base            string            `json:"base"`
 	Targets         int               `json:"targets"`
 	ManifestEntries int               `json:"manifest_entries"`
+	ChecksumEntries int               `json:"checksum_entries"`
+	ChecksumDigest  string            `json:"checksum_manifest_sha256"`
 	Checksums       map[string]string `json:"checksums"`
 	Publication     bool              `json:"publication"`
 }
@@ -93,6 +96,7 @@ func verifyCandidate(requestedTag string) (candidateResult, error) {
 	defer func() { _ = os.RemoveAll(temporary) }()
 
 	checksums := make(map[string]string, len(releaseasset.SupportedTargets())+1)
+	checksumNames := make([]string, 0, len(releaseasset.SupportedTargets())+1)
 	manifest := make([]string, 0, len(releaseasset.ExpectedReleaseNames()))
 	for _, target := range releaseasset.SupportedTargets() {
 		name := releaseasset.Name(target.GOOS, target.GOARCH)
@@ -110,6 +114,7 @@ func verifyCandidate(requestedTag string) (candidateResult, error) {
 		}
 		digest := sha256.Sum256(asset)
 		checksums[name] = fmt.Sprintf("%x", digest)
+		checksumNames = append(checksumNames, name)
 		if err := verifySyntheticProvenance(name, tag, asset); err != nil {
 			return candidateResult{}, fmt.Errorf("verify %s provenance: %w", name, err)
 		}
@@ -120,8 +125,15 @@ func verifyCandidate(requestedTag string) (candidateResult, error) {
 		return candidateResult{}, fmt.Errorf("read non-empty install.sh: %w", err)
 	}
 	checksums["install.sh"] = fmt.Sprintf("%x", sha256.Sum256(installer))
+	checksumNames = append(checksumNames, "install.sh")
 	manifest = append(manifest, "install.sh", "checksums.txt")
 	if err := releaseasset.ValidateReleaseNames(manifest); err != nil {
+		return candidateResult{}, err
+	}
+	checksumEntries, checksumDigest, err := materializeAndVerifyChecksums(
+		filepath.Join(temporary, "checksums.txt"), checksumNames, checksums,
+	)
+	if err != nil {
 		return candidateResult{}, err
 	}
 
@@ -135,8 +147,55 @@ func verifyCandidate(requestedTag string) (candidateResult, error) {
 	return candidateResult{
 		OK: true, Status: "preflight_passed", Tag: tag, Version: version,
 		Base: v143Commit, Targets: len(releaseasset.SupportedTargets()),
-		ManifestEntries: len(manifest), Checksums: checksums, Publication: false,
+		ManifestEntries: len(manifest), ChecksumEntries: checksumEntries,
+		ChecksumDigest: checksumDigest, Checksums: checksums, Publication: false,
 	}, nil
+}
+
+func materializeAndVerifyChecksums(path string, names []string, checksums map[string]string) (int, string, error) {
+	if len(names) == 0 || len(checksums) != len(names) {
+		return 0, "", errors.New("checksum inputs do not exactly match the release manifest")
+	}
+	var content strings.Builder
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if _, duplicate := seen[name]; duplicate {
+			return 0, "", fmt.Errorf("duplicate checksum input %q", name)
+		}
+		seen[name] = struct{}{}
+		digest, ok := checksums[name]
+		if !ok || len(digest) != sha256.Size*2 {
+			return 0, "", fmt.Errorf("invalid checksum input for %q", name)
+		}
+		if _, err := hex.DecodeString(digest); err != nil {
+			return 0, "", fmt.Errorf("invalid checksum input for %q: %w", name, err)
+		}
+		_, _ = fmt.Fprintf(&content, "%s  %s\n", digest, name)
+	}
+	if err := os.WriteFile(path, []byte(content.String()), 0600); err != nil { //nolint:gosec // path is verifier-owned temporary output
+		return 0, "", err
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // path is verifier-owned temporary output
+	if err != nil {
+		return 0, "", err
+	}
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	entries := 0
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) != 2 || entries >= len(names) || fields[1] != names[entries] || fields[0] != checksums[fields[1]] {
+			return 0, "", fmt.Errorf("checksum manifest entry %d does not match exact inputs", entries+1)
+		}
+		entries++
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, "", err
+	}
+	if entries != len(names) {
+		return 0, "", fmt.Errorf("checksum manifest contains %d entries, want %d", entries, len(names))
+	}
+	digest := sha256.Sum256(data)
+	return entries, fmt.Sprintf("%x", digest), nil
 }
 
 func repositoryRoot() (string, error) {
@@ -242,7 +301,7 @@ func verifyBridgeChangeBoundary(repo string) error {
 func pathAllowedForBridge(path string) bool {
 	for _, exact := range []string{
 		".github/workflows/ci.yml", ".github/workflows/release.yml",
-		"README.md", "README.en.md", "RELEASE_NOTES.md", "SECURITY.md",
+		"README.md", "README.en.md", "RELEASE_NOTES.md", "SECURITY.md", "install.sh",
 		"go.mod", "go.sum", "cmd/ssm/main.go", "cmd/ssm/main_test.go",
 	} {
 		if path == exact {

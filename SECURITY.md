@@ -18,3 +18,6 @@ the exact `Cd1s/ssm/.github/workflows/release.yml@refs/tags/vX.Y.Z` workflow
 ref, issued by `https://token.actions.githubusercontent.com` on a GitHub-hosted
 runner for repository `Cd1s/ssm`. Branch refs, wildcard identities, additional
 subjects, and checksum-only evidence are rejected.
+
+The reviewed identity-rotation, removal, rollback, and emergency-recovery
+procedure is documented in [the bridge provenance runbook](docs/update-provenance-runbook.md).

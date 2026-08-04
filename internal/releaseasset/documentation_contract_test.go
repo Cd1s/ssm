@@ -44,4 +44,20 @@ func TestBridgeDocumentationStatesMajorSafetyAndPublicationBoundary(t *testing.T
 			t.Errorf("migration guide lacks %q", required)
 		}
 	}
+
+	runbook := readRepositoryFile(t, "docs/update-provenance-runbook.md")
+	for description, required := range map[string]string{
+		"current identity":       "release-tag-v1",
+		"overlap window":         "seven full days",
+		"expiry/removal gate":    "NotAfter",
+		"rollback":               "rollback",
+		"audit evidence":         "audit evidence",
+		"emergency recovery":     "Emergency release recovery",
+		"no checksum fallback":   "checksum-only",
+		"no verification bypass": "no verification bypass",
+	} {
+		if !strings.Contains(runbook, required) {
+			t.Errorf("provenance runbook lacks %s %q", description, required)
+		}
+	}
 }
