@@ -123,6 +123,22 @@ func TestFailedMigrationPreflightPreservesExecutableAndEncryptedState(t *testing
 			check: "pending_recovery",
 		},
 		{
+			name: "orphan pending base",
+			setup: func(t *testing.T) string {
+				t.Helper()
+				const password = "orphan pending base" //nolint:gosec // test-only encrypted-vault passphrase
+				if err := config.Save(&config.Vault{PendingBase: &config.InventorySnapshot{}}, password); err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(t.TempDir(), "master.pass")
+				if err := os.WriteFile(path, []byte(password+"\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				return path
+			},
+			check: "pending_recovery",
+		},
+		{
 			name: "preserved divergence",
 			setup: func(t *testing.T) string {
 				t.Helper()
@@ -149,6 +165,31 @@ func TestFailedMigrationPreflightPreservesExecutableAndEncryptedState(t *testing
 					t.Fatal(err)
 				}
 				return path
+			},
+			check: "untracked_divergence",
+		},
+		{
+			name: "empty cached remote etag",
+			setup: func(t *testing.T) string {
+				t.Helper()
+				if err := config.WritePrivateFile(filepath.Join(config.Dir(), "remote.etag"), nil); err != nil {
+					t.Fatal(err)
+				}
+				return ""
+			},
+			check: "untracked_divergence",
+		},
+		{
+			name: "dangling cached remote etag",
+			setup: func(t *testing.T) string {
+				t.Helper()
+				if err := os.MkdirAll(config.Dir(), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(t.TempDir(), "missing-etag"), filepath.Join(config.Dir(), "remote.etag")); err != nil {
+					t.Skipf("symlink fixture unavailable: %v", err)
+				}
+				return ""
 			},
 			check: "untracked_divergence",
 		},
@@ -249,13 +290,32 @@ func migrationStateSnapshot(t *testing.T) []byte {
 	t.Helper()
 	var snapshot []byte
 	for _, name := range []string{"connections.enc", "cloud.json", "remote.etag", "sync-conflict.json"} {
-		data, err := os.ReadFile(filepath.Join(config.Dir(), name)) //nolint:gosec // names are fixed test fixtures beneath a test-owned config directory
-		if err != nil && !os.IsNotExist(err) {
+		path := filepath.Join(config.Dir(), name)
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			snapshot = append(snapshot, []byte(name+"\x00absent\x00")...)
+			continue
+		}
+		if err != nil {
 			t.Fatal(err)
 		}
 		snapshot = append(snapshot, []byte(name)...)
 		snapshot = append(snapshot, 0)
-		snapshot = append(snapshot, data...)
+		snapshot = append(snapshot, []byte(info.Mode().String())...)
+		snapshot = append(snapshot, 0)
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot = append(snapshot, []byte(target)...)
+		} else if info.Mode().IsRegular() {
+			data, err := os.ReadFile(path) //nolint:gosec // names are fixed test fixtures beneath a test-owned config directory
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot = append(snapshot, data...)
+		}
 		snapshot = append(snapshot, 0)
 	}
 	return snapshot

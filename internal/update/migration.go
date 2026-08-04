@@ -182,7 +182,7 @@ func checkPendingRecovery(masterPassPath string) MigrationCheck {
 	if err != nil {
 		return failedCheck("pending_recovery", "The encrypted vault cannot be inspected.", "Use the correct master-pass file and repair the vault before migration.")
 	}
-	if len(vaultState.PendingMutations) != 0 {
+	if vaultState.PendingBase != nil || len(vaultState.PendingMutations) != 0 {
 		return failedCheck("pending_recovery", "Pending inventory transactions require review.", "Publish the exact reviewed scopes or deliberately retain v1 until they are resolved.")
 	}
 	return passedCheck("pending_recovery", "No pending inventory transactions or recovery intent were found.")
@@ -216,12 +216,22 @@ func checkDivergence() MigrationCheck {
 	if _, err := os.Lstat(path); err == nil || !os.IsNotExist(err) {
 		return failedCheck("untracked_divergence", "A recorded local/remote synchronization conflict exists or cannot be inspected.", "Resolve the preserved conflict through reviewed pull, repair, or import before migration.")
 	}
-	cachedRemote := strings.TrimSpace(cloud.CachedRemoteETag())
-	if cachedRemote != "" {
-		local, err := cloud.LocalVaultETag()
-		if err != nil || local != cachedRemote {
-			return failedCheck("untracked_divergence", "The encrypted local vault differs from the last safely observed remote identity or cannot be compared.", "Reconcile the local and remote encrypted vault with the current executable before migration.")
-		}
+	remoteETagPath := filepath.Join(config.Dir(), "remote.etag")
+	info, err := os.Lstat(remoteETagPath)
+	if os.IsNotExist(err) {
+		return passedCheck("untracked_divergence", "No safely observable local/remote divergence record was found.")
+	}
+	if err != nil || !info.Mode().IsRegular() {
+		return failedCheck("untracked_divergence", "The last safely observed remote identity is invalid or cannot be inspected.", "Repair or deliberately remove remote.etag with the current executable before migration.")
+	}
+	cachedRemoteData, err := os.ReadFile(remoteETagPath) //nolint:gosec // fixed remote.etag path beneath SSM's configured private directory
+	cachedRemote := strings.TrimSpace(string(cachedRemoteData))
+	if err != nil || cachedRemote == "" {
+		return failedCheck("untracked_divergence", "The last safely observed remote identity is invalid or cannot be inspected.", "Repair or deliberately remove remote.etag with the current executable before migration.")
+	}
+	local, err := cloud.LocalVaultETag()
+	if err != nil || local != cachedRemote {
+		return failedCheck("untracked_divergence", "The encrypted local vault differs from the last safely observed remote identity or cannot be compared.", "Reconcile the local and remote encrypted vault with the current executable before migration.")
 	}
 	return passedCheck("untracked_divergence", "No safely observable local/remote divergence record was found.")
 }
