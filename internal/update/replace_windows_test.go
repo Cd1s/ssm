@@ -46,6 +46,7 @@ const (
 )
 
 func TestWindowsNativeReplacementSecurity(t *testing.T) {
+	t.Run("named event synchronization reopens an existing event", testWindowsNamedEventReopen)
 	t.Run("ordinary user preserves owner group DACL and inheritance", testWindowsOrdinaryUserReplacement)
 	t.Run("effective token privilege detection cannot escape to the process token", testWindowsRestrictedImpersonationToken)
 	t.Run("no thread token falls back to one process token and closes its handles", testWindowsNoThreadTokenProcessFallback)
@@ -100,6 +101,30 @@ func TestWindowsNativeReplacementSecurity(t *testing.T) {
 	t.Run("writable inherited rollback state is rejected before parsing", testWindowsWritableInheritedRollbackStateIsRejected)
 	t.Run("wrong rollback state owner is rejected", testWindowsWrongOwnerRollbackStateIsRejected)
 	t.Run("inherited update lock control state is rejected", testWindowsInheritedUpdateLockIsRejected)
+}
+
+func testWindowsNamedEventReopen(t *testing.T) {
+	token := filepath.Join(t.TempDir(), "event-reopen")
+	first, err := openWindowsTestEvent(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(first)
+	second, err := openWindowsTestEvent(token)
+	if err != nil {
+		t.Fatalf("reopen named event: %v", err)
+	}
+	defer windows.CloseHandle(second)
+	if err := windows.SetEvent(first); err != nil {
+		t.Fatal(err)
+	}
+	result, err := windows.WaitForSingleObject(second, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != windows.WAIT_OBJECT_0 {
+		t.Fatalf("reopened event wait returned %d", result)
+	}
 }
 
 func testWindowsDeleteGuardAllowsLinkReplacement(t *testing.T) {
@@ -5027,7 +5052,11 @@ func openWindowsTestEvent(token string) (windows.Handle, error) {
 	if err != nil {
 		return windows.InvalidHandle, err
 	}
-	return windows.CreateEvent(nil, 1, 0, name)
+	handle, err := windows.CreateEvent(nil, 1, 0, name)
+	if errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
+		return handle, nil
+	}
+	return handle, err
 }
 
 func impersonateWindowsTestTokenWithoutPrivileges() (func() error, error) {

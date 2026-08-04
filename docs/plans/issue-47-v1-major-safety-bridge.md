@@ -95,3 +95,14 @@ land.
   documents same-major ordinary updates, the one explicit major command,
   BC-1..BC-10, exact trust pins, bridge-first rollout, and the separate v2
   latest decision.
+- Native Windows RED: PR run `30864521674`, job `91853359593`, showed that
+  reopening a named synchronization event returns `ERROR_ALREADY_EXISTS`; the
+  child treated that successful reopen as failure, never signaled readiness,
+  and the adversarial fixtures returned `WAIT_TIMEOUT` (258). GREEN accepts the
+  existing-event handle explicitly and adds a native reopen test. The same run
+  showed that a blanket native `go test ./...` executes unrelated v1 tests whose
+  HOME, permission-bit, newline, and OpenSSH fixtures are Unix-specific; the
+  Windows job now runs the required native replacement suite plus targeted
+  contract guards, while both Windows architectures still compile and vet every
+  package in the Linux check job. CI checkouts are explicitly bound to the PR
+  head SHA rather than GitHub's synthetic merge ref.

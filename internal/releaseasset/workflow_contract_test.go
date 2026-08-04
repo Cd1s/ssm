@@ -36,17 +36,27 @@ func TestBridgeReleaseWorkflowProducesEvidenceForLegacyLatestRollout(t *testing.
 func TestMaintenanceCIRequiresNativeAndNonPublishingCandidateGates(t *testing.T) {
 	ci := readRepositoryFile(t, ".github/workflows/ci.yml")
 	for description, required := range map[string]string{
-		"maintenance PR trigger": "release/v1.4.x",
-		"Windows native job":     "runs-on: windows-latest",
-		"Darwin native job":      "runs-on: macos-latest",
-		"Windows security test":  "TestWindowsNativeReplacementSecurity",
-		"Darwin security test":   "TestDarwinNativeReplacementSecurity",
-		"candidate verifier":     "go run ./cmd/bridgeverify candidate",
-		"read-only permissions":  "permissions:\n  contents: read",
+		"maintenance PR trigger":  "release/v1.4.x",
+		"Windows native job":      "runs-on: windows-latest",
+		"Darwin native job":       "runs-on: macos-latest",
+		"Windows security test":   "TestWindowsNativeReplacementSecurity",
+		"Darwin security test":    "TestDarwinNativeReplacementSecurity",
+		"candidate verifier":      "go run ./cmd/bridgeverify candidate",
+		"read-only permissions":   "permissions:\n  contents: read",
+		"exact PR head checkout":  "ref: ${{ github.event.pull_request.head.sha || github.sha }}",
+		"Windows contract guards": "TestWindowsRenameGapFixtureUsesInProcessHookSynchronization",
 	} {
 		if !strings.Contains(ci, required) {
 			t.Errorf("maintenance CI lacks %s %q", description, required)
 		}
+	}
+	windowsStart := strings.Index(ci, "\n  windows:\n")
+	darwinStart := strings.Index(ci, "\n  darwin:\n")
+	if windowsStart < 0 || darwinStart <= windowsStart {
+		t.Fatal("maintenance CI has no isolated Windows job")
+	}
+	if strings.Contains(ci[windowsStart:darwinStart], "go test ./... -count=1") {
+		t.Error("native Windows job runs unrelated v1 tests whose contracts are Unix-specific; use the native replacement and contract guards")
 	}
 	for _, forbidden := range []string{"action-gh-release", "gh release create", "git tag", "contents: write"} {
 		if strings.Contains(ci, forbidden) {

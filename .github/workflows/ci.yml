@@ -20,6 +20,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-go@v6
         with:
@@ -95,6 +96,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-go@v6
         with:
@@ -103,9 +105,9 @@ jobs:
       - name: Verify native Windows replacement security
         run: go test ./internal/update -run '^TestWindowsNativeReplacementSecurity$' -count=1
 
-      - name: Verify native Windows all packages
+      - name: Verify native Windows contract guards
         if: ${{ always() }}
-        run: go test ./... -count=1
+        run: go test ./internal/update -run '^(TestWindowsSecurityContractRMControlCanonicalEncoding|TestWindowsRenameGapFixtureUsesInProcessHookSynchronization|TestWindowsMappedCleanupUsesDeletePendingHandleEvidence|TestRecoveryDispositionsRemainDistinct)$' -count=1
 
   darwin:
     permissions:
@@ -116,6 +118,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-go@v6
         with:
