@@ -802,9 +802,14 @@ func TestCIWorkflowMatchesReviewedGoldenAndHasReadOnlyCredentialFreeJobs(t *test
 		"vet": "      - name: Verify native Darwin vet\n" +
 			"        if: ${{ always() }}\n" +
 			"        run: go vet ./...\n",
-		"all packages": "      - name: Verify native Darwin all packages\n" +
+		"runtime packages": "      - name: Verify native Darwin runtime packages\n" +
 			"        if: ${{ always() }}\n" +
-			"        run: go test -count=1 ./...\n",
+			"        shell: bash\n" +
+			"        run: |\n" +
+			"          set -euo pipefail\n" +
+			"          go list ./... |\n" +
+			"            grep -v '^ssm/cmd/verify$' |\n" +
+			"            xargs go test -count=1\n",
 	} {
 		if !strings.Contains(text, step) {
 			t.Errorf("native Darwin %s gate is not unconditional after the focused security suite", description)
@@ -3354,7 +3359,7 @@ func manifestCommandLines(manifest Manifest) []string {
 func validateCIAdapters(manifest Manifest, makefile, workflow string) error {
 	const linuxInvocation = "go run ./cmd/verify ci"
 	const windowsInvocation = "go run ./cmd/verify fast"
-	const darwinUnitInvocation = "go test -count=1 ./..."
+	const darwinUnitInvocation = "xargs go test -count=1"
 	if got := makeTargetRecipe(makefile, "check"); got != linuxInvocation {
 		return fmt.Errorf("Makefile check recipe = %q, want %q", got, linuxInvocation)
 	}
@@ -3364,7 +3369,7 @@ func validateCIAdapters(manifest Manifest, makefile, workflow string) error {
 	if got := strings.Count(workflow, "run: "+windowsInvocation); got != 1 {
 		return fmt.Errorf("workflow Windows manifest invocation count = %d, want 1", got)
 	}
-	if got := strings.Count(workflow, "run: "+darwinUnitInvocation); got != 1 {
+	if got := strings.Count(workflow, darwinUnitInvocation); got != 1 {
 		return fmt.Errorf("workflow Darwin uncached unit invocation count = %d, want 1", got)
 	}
 

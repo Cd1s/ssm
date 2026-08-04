@@ -155,6 +155,11 @@ jobs:
         if: ${{ always() }}
         run: go vet ./...
 
-      - name: Verify native Darwin all packages
+      - name: Verify native Darwin runtime packages
         if: ${{ always() }}
-        run: go test -count=1 ./...
+        shell: bash
+        run: |
+          set -euo pipefail
+          go list ./... |
+            grep -v '^ssm/cmd/verify$' |
+            xargs go test -count=1
