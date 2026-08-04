@@ -882,7 +882,7 @@ func TestReleaseWorkflowUsesCredentialFreeVerifierPreflightAndManifestParity(t *
 		t.Errorf("release checksum inputs do not exactly match manifest assets and installer: want %q", checksumCommand)
 	}
 	for _, asset := range wantAssets {
-		if got := strings.Count(workflow, "\n            "+asset+"\n"); got != 1 {
+		if got := strings.Count(workflow, "\n            "+asset+" \\\n"); got != 1 {
 			t.Errorf("published files entry count for %s = %d, want 1", asset, got)
 		}
 	}
@@ -925,7 +925,7 @@ func TestReleaseWorkflowProducesPinnedProvenance(t *testing.T) {
 	}
 	for _, target := range releaseasset.SupportedTargets() {
 		bundle := releaseasset.ProvenanceName(releaseasset.Name(target.GOOS, target.GOARCH))
-		if got := strings.Count(workflow, "\n            "+bundle+"\n"); got != 1 {
+		if got := strings.Count(workflow, "\n            "+bundle+" \\\n"); got != 1 {
 			t.Errorf("published provenance entry count for %s = %d, want 1", bundle, got)
 		}
 	}

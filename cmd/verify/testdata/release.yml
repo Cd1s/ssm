@@ -84,7 +84,7 @@ jobs:
         name: Validate release identity
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
           RELEASE_WORKFLOW_REF: ${{ github.workflow_ref }}
         run: |
           set -euo pipefail
@@ -116,27 +116,7 @@ jobs:
             echo "source version $source_version does not match release $tag" >&2
             exit 1
           fi
-          if ! release_status="$(curl --silent --show-error \
-            --connect-timeout 15 --max-time 30 \
-            --output /dev/null --write-out '%{http_code}' \
-            --header "Accept: application/vnd.github+json" \
-            --header "Authorization: Bearer $GITHUB_TOKEN" \
-            --header "X-GitHub-Api-Version: 2022-11-28" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$tag")"; then
-            echo "unable to prove GitHub Release $tag is absent" >&2
-            exit 1
-          fi
-          case "$release_status" in
-            404) ;;
-            200)
-              echo "GitHub Release $tag already exists; refusing to mutate or overwrite it" >&2
-              exit 1
-              ;;
-            *)
-              echo "unable to prove GitHub Release $tag is absent (HTTP $release_status)" >&2
-              exit 1
-              ;;
-          esac
+          ./scripts/release-create-only.sh assert-absent "$tag"
           printf 'tag=%s\nversion=%s\n' "$tag" "${tag#v}" >> "$GITHUB_OUTPUT"
 
       - name: Verify release profile
@@ -231,59 +211,27 @@ jobs:
           ' RELEASE_NOTES.md > release-body.md
           grep -q '[^[:space:]]' release-body.md
 
-      - name: Revalidate absent release
+      - name: Publish create-only verified release
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag="${{ needs.preflight.outputs.tag }}"
-          if ! release_status="$(curl --silent --show-error \
-            --connect-timeout 15 --max-time 30 \
-            --output /dev/null --write-out '%{http_code}' \
-            --header "Accept: application/vnd.github+json" \
-            --header "Authorization: Bearer $GITHUB_TOKEN" \
-            --header "X-GitHub-Api-Version: 2022-11-28" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$tag")"; then
-            echo "unable to prove GitHub Release $tag is absent" >&2
-            exit 1
-          fi
-          case "$release_status" in
-            404) ;;
-            200)
-              echo "GitHub Release $tag already exists; refusing to mutate or overwrite it" >&2
-              exit 1
-              ;;
-            *)
-              echo "unable to prove GitHub Release $tag is absent (HTTP $release_status)" >&2
-              exit 1
-              ;;
-          esac
-
-      - name: Publish verified release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ needs.preflight.outputs.tag }}
-          target_commitish: ${{ github.sha }}
-          name: ${{ needs.preflight.outputs.tag }}
-          body_path: release-body.md
-          draft: false
-          prerelease: false
-          make_latest: false
-          overwrite_files: false
-          fail_on_unmatched_files: true
-          files: |
-            ssm-linux-amd64
-            ssm-linux-arm64
-            ssm-darwin-amd64
-            ssm-darwin-arm64
-            ssm-windows-amd64.exe
-            ssm-windows-arm64.exe
-            ssm-linux-amd64.sigstore.json
-            ssm-linux-arm64.sigstore.json
-            ssm-darwin-amd64.sigstore.json
-            ssm-darwin-arm64.sigstore.json
-            ssm-windows-amd64.exe.sigstore.json
-            ssm-windows-arm64.exe.sigstore.json
-            install.sh
+          ./scripts/release-create-only.sh publish \
+            "${{ needs.preflight.outputs.tag }}" \
+            "${{ github.sha }}" \
+            release-body.md \
+            ssm-linux-amd64 \
+            ssm-linux-arm64 \
+            ssm-darwin-amd64 \
+            ssm-darwin-arm64 \
+            ssm-windows-amd64.exe \
+            ssm-windows-arm64.exe \
+            ssm-linux-amd64.sigstore.json \
+            ssm-linux-arm64.sigstore.json \
+            ssm-darwin-amd64.sigstore.json \
+            ssm-darwin-arm64.sigstore.json \
+            ssm-windows-amd64.exe.sigstore.json \
+            ssm-windows-arm64.exe.sigstore.json \
+            install.sh \
             checksums.txt
