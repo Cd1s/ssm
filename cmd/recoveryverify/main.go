@@ -57,11 +57,11 @@ func main() {
 	if len(os.Args) != 3 {
 		fatal(errors.New("usage: recoveryverify ASSET BUNDLE"))
 	}
-	asset, err := os.ReadFile(os.Args[1])
+	asset, err := os.ReadFile(os.Args[1]) //nolint:gosec // fixed recovery workflow supplies runner-temporary artifact paths
 	if err != nil {
 		fatal(fmt.Errorf("read asset: %w", err))
 	}
-	bundle, err := os.ReadFile(os.Args[2])
+	bundle, err := os.ReadFile(os.Args[2]) //nolint:gosec // fixed recovery workflow supplies runner-temporary bundle paths
 	if err != nil {
 		fatal(fmt.Errorf("read bundle: %w", err))
 	}
