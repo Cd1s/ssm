@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,10 +17,16 @@ var (
 	masterPassFile string
 	offlineMode    bool
 	unlockedVault  *config.Vault
-	version        = "1.4.3"
+	version        = "1.4.4"
 )
 
 func main() {
+	machineJSON = hasJSONFlagBeforeDash(os.Args[1:])
+	if err := update.CleanupPreviousExecutable(); err != nil {
+		failure := classifyUpdateFailure(err, "update_failed", "update_recovery")
+		writeCLIErrorStage(failure.Error, "startup executable recovery failed: "+failure.Message, failure.Hint, failure.Stage, failure.Exit)
+		os.Exit(failure.Exit)
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			if machineJSON {
@@ -83,7 +90,8 @@ Usage:
   ssm redirect list|set|rm  alias soft-links after migration
   ssm keys             list saved SSH keys
   ssm keys remove <n>  remove a SSH key
-  ssm update           update ssm to the latest version
+  ssm update                  update only within the installed major version
+  ssm update --major [--yes]  review/authorize a provenance-verified major migration
   ssm import-json <path> (--merge | --replace --yes) import reviewed JSON connections
   ssm server           run the headless encrypted sync server
 
@@ -100,11 +108,7 @@ Cloud (optional):
 `)
 		return
 	case "update":
-		fmt.Println("Checking for updates...")
-		if err := update.Download(); err != nil {
-			printError(err)
-			os.Exit(1)
-		}
+		runUpdate(args[1:])
 		return
 	case "host", "hosts":
 		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
@@ -236,17 +240,277 @@ Cloud (optional):
 	}
 }
 
-func isInformationalInvocation(args []string) bool {
+type updateCommandFailure struct {
+	Error   string `json:"error"`
+	Message string `json:"message"`
+	Stage   string `json:"stage"`
+	Hint    string `json:"hint"`
+	Exit    int    `json:"exit"`
+}
+
+func parseUpdateArgs(args []string) (major, yes bool, err error) {
 	for _, arg := range args {
+		switch arg {
+		case "--major":
+			major = true
+		case "--yes":
+			yes = true
+		default:
+			return false, false, fmt.Errorf("unknown update option %q", arg)
+		}
+	}
+	if yes && !major {
+		return false, false, fmt.Errorf("--yes is valid only with update --major")
+	}
+	return major, yes, nil
+}
+
+func runUpdate(args []string) {
+	major, yes, err := parseUpdateArgs(args)
+	if err != nil {
+		writeCLIError("invalid_arguments", err.Error(), "use ssm update or ssm update --major [--yes]", 2)
+		os.Exit(2)
+	}
+	if major {
+		runMajorUpdate(yes)
+		return
+	}
+	if !machineJSON {
+		fmt.Println("Checking for updates...")
+	}
+	result, err := update.Download(version)
+	if err != nil {
+		failure := classifyUpdateFailure(err, "update_failed", "update")
+		writeCLIErrorStage(failure.Error, failure.Message, failure.Hint, failure.Stage, failure.Exit)
+		os.Exit(failure.Exit)
+	}
+	if result.Installed != "" && !machineJSON {
+		fmt.Printf("Updated to %s\n", result.Installed)
+	}
+	if result.CrossMajorAvailable != "" {
+		if machineJSON {
+			writeMachineValue(map[string]any{
+				"ok": true, "installed": result.Installed,
+				"cross_major_available": result.CrossMajorAvailable,
+				"migration_required":    true,
+			})
+		} else {
+			fmt.Printf("Major release %s is available; review with ssm update --major.\n", result.CrossMajorAvailable)
+		}
+	} else if machineJSON {
+		writeMachineValue(map[string]any{"ok": true, "installed": result.Installed})
+	}
+}
+
+func runMajorUpdate(yes bool) {
+	review, err := update.ReviewMajor(version, yes, masterPassFile)
+	if err != nil {
+		failure := migrationFailure(err)
+		review.OK = false
+		review.Error = failure.Error
+		review.Message = failure.Message
+		review.Stage = failure.Stage
+		review.Hint = failure.Hint
+		review.Exit = failure.Exit
+		if machineJSON {
+			writeMachineValue(review)
+		} else {
+			if review.Target != "" {
+				printMigrationReview(review)
+			}
+			writeCLIErrorStage(failure.Error, failure.Message, failure.Hint, failure.Stage, failure.Exit)
+		}
+		os.Exit(failure.Exit)
+	}
+	if !yes {
+		if machineJSON {
+			writeMachineValue(review)
+		} else {
+			printMigrationReview(review)
+		}
+		return
+	}
+
+	reviewRendered := false
+	var finishMachineReview func(bool, updateCommandFailure) error
+	err = update.DownloadVersionBeforeReplace(review.Target, false, func() error {
+		reviewRendered = true
+		if machineJSON {
+			var beginErr error
+			finishMachineReview, beginErr = beginMigrationJSON(review)
+			return beginErr
+		}
+		printMigrationReviewBeforeReplacement(review)
+		return nil
+	})
+	if err != nil {
+		failure := migrationFailure(err)
+		switch {
+		case !reviewRendered:
+			review.OK = false
+			review.Error = failure.Error
+			review.Message = failure.Message
+			review.Stage = failure.Stage
+			review.Hint = failure.Hint
+			review.Exit = failure.Exit
+			if machineJSON {
+				writeMachineValue(review)
+			} else {
+				printMigrationReview(review)
+				writeCLIErrorStage(failure.Error, failure.Message, failure.Hint, failure.Stage, failure.Exit)
+			}
+		case machineJSON:
+			if finishMachineReview != nil {
+				_ = finishMachineReview(false, failure)
+			}
+		default:
+			fmt.Println("Installed: false")
+			writeCLIErrorStage(failure.Error, failure.Message, failure.Hint, failure.Stage, failure.Exit)
+		}
+		os.Exit(failure.Exit)
+	}
+	if machineJSON {
+		if err := finishMachineReview(true, updateCommandFailure{}); err != nil {
+			os.Exit(1)
+		}
+	} else {
+		fmt.Println("Installed: true")
+	}
+}
+
+func migrationFailure(err error) updateCommandFailure {
+	return classifyUpdateFailure(err, "update_migration_failed", "update_migration")
+}
+
+func classifyUpdateFailure(err error, code, stage string) updateCommandFailure {
+	failure := updateCommandFailure{
+		Error:   "update_migration_failed",
+		Message: redactError(err),
+		Stage:   stage,
+		Hint:    "the v1 executable and encrypted state were preserved; resolve the reported review or trust failure and retry",
+		Exit:    1,
+	}
+	failure.Error = code
+	if update.IsRecoveryRequired(err) {
+		failure.Error = "update_recovery_required"
+		failure.Stage = "update_recovery"
+		failure.Hint = "authenticated original evidence was preserved but canonical restoration remains required; rerun this exact executable path to recover"
+	} else if update.IsRecoveryBlocked(err) {
+		failure.Error = "update_recovery_failed"
+		failure.Stage = "update_recovery"
+		failure.Hint = "executable recovery evidence could not be authenticated or cleared; preserve the installation directory and obtain reviewed recovery"
+	}
+	return failure
+}
+
+func printMigrationReview(review update.MigrationReview) {
+	printMigrationReviewBeforeReplacement(review)
+	fmt.Printf("Installed: %t\n", review.Installed)
+}
+
+func printMigrationReviewBeforeReplacement(review update.MigrationReview) {
+	fmt.Printf("Major update review: %s -> %s\n", review.Current, review.Target)
+	fmt.Println("Authorization:", review.AuthorizationState)
+	fmt.Printf("Release notes:\n%s\n", review.ReleaseNotes)
+	fmt.Println("Approved breaking changes:")
+	for _, change := range review.BreakingChanges {
+		fmt.Printf("  %s: %s\n", change.ID, change.Description)
+	}
+	fmt.Println("Automated preflight:")
+	for _, check := range review.AutomatedChecks {
+		fmt.Printf("  %s: %s - %s\n", check.ID, check.Status, check.Description)
+		if check.Remediation != "" {
+			fmt.Printf("    remediation: %s\n", check.Remediation)
+		}
+	}
+	fmt.Println("Manual external-consumer checks:")
+	for _, check := range review.ManualChecks {
+		fmt.Printf("  %s: %s - %s\n", check.ID, check.Status, check.Description)
+	}
+	fmt.Printf("Rollback: %s\n", review.RollbackGuidance)
+	fmt.Printf("Remediation: %s\n", review.Remediation)
+}
+
+func beginMigrationJSON(review update.MigrationReview) (func(bool, updateCommandFailure) error, error) {
+	preamble := struct {
+		Current            string                  `json:"current"`
+		Target             string                  `json:"target"`
+		ReleaseName        string                  `json:"release_name,omitempty"`
+		ReleaseNotes       string                  `json:"release_notes"`
+		BreakingChanges    []update.BreakingChange `json:"breaking_changes"`
+		AutomatedChecks    []update.MigrationCheck `json:"automated_checks"`
+		ManualChecks       []update.MigrationCheck `json:"manual_consumer_checks"`
+		Authorized         bool                    `json:"authorized"`
+		AuthorizationState string                  `json:"authorization_state"`
+		RollbackGuidance   string                  `json:"rollback_guidance"`
+		Remediation        string                  `json:"remediation"`
+	}{
+		Current: review.Current, Target: review.Target, ReleaseName: review.ReleaseName,
+		ReleaseNotes: review.ReleaseNotes, BreakingChanges: review.BreakingChanges,
+		AutomatedChecks: review.AutomatedChecks, ManualChecks: review.ManualChecks,
+		Authorized: review.Authorized, AuthorizationState: review.AuthorizationState,
+		RollbackGuidance: review.RollbackGuidance, Remediation: review.Remediation,
+	}
+	prefix, err := json.Marshal(preamble)
+	if err != nil {
+		return nil, err
+	}
+	if len(prefix) < 2 || prefix[0] != '{' || prefix[len(prefix)-1] != '}' {
+		return nil, fmt.Errorf("migration review must be a JSON object")
+	}
+	if _, err := os.Stdout.Write(prefix[:len(prefix)-1]); err != nil {
+		return nil, err
+	}
+	finished := false
+	return func(ok bool, failure updateCommandFailure) error {
+		if finished {
+			return fmt.Errorf("migration JSON document already finished")
+		}
+		finished = true
+		outcome := map[string]any{"installed": ok, "ok": ok}
+		if !ok {
+			outcome["error"] = failure.Error
+			outcome["message"] = failure.Message
+			outcome["stage"] = failure.Stage
+			outcome["hint"] = failure.Hint
+			outcome["exit"] = failure.Exit
+		}
+		encoded, err := json.Marshal(outcome)
+		if err != nil {
+			return err
+		}
+		if _, err := os.Stdout.Write(append([]byte{','}, encoded[1:]...)); err != nil {
+			return err
+		}
+		_, err = os.Stdout.Write([]byte("\n"))
+		return err
+	}, nil
+}
+
+func isInformationalInvocation(args []string) bool {
+	command := ""
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		if arg == "--" {
 			return false
 		}
 		switch arg {
 		case "--help", "-h", "help", "--version", "-v":
 			return true
+		case "--json", "--offline":
+			continue
+		case "--master-pass-file":
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "--master-pass-file=") || strings.HasPrefix(arg, "-") {
+			continue
+		}
+		if command == "" {
+			command = arg
 		}
 	}
-	return false
+	return command == "update"
 }
 
 func parseGlobalArgs(args []string) ([]string, error) {
@@ -287,7 +551,11 @@ func parseGlobalArgs(args []string) ([]string, error) {
 func checkUpdate() {
 	settings := config.LoadSettings()
 	if settings.AutoUpdate && version != "dev" {
-		_ = update.Auto(version)
+		if err := update.Auto(version); update.IsRecoveryRequired(err) || update.IsRecoveryBlocked(err) {
+			failure := classifyUpdateFailure(err, "update_failed", "update")
+			writeCLIErrorStage(failure.Error, failure.Message, failure.Hint, failure.Stage, failure.Exit)
+			os.Exit(failure.Exit)
+		}
 	}
 }
 

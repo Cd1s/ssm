@@ -258,11 +258,31 @@ Project agent skill: `skills/agent-ssm/SKILL.md`.
 
 ## Auto Update
 
-Version `1.0.0` and later checks GitHub releases from `Cd1s/ssm` by default and replaces the current program when a newer version exists. Manual update:
+The v1 maintenance bridge checks GitHub releases from `Cd1s/ssm`, but automatic updates and ordinary manual updates are strictly same-major. If v2 is latest, v1 may report it but does not request a v2 asset or replace the executable. Same-major v1 maintenance updates remain supported:
 
 ```bash
 ssm update
 ```
+
+A major migration has a separate review and authorization step. Review the
+BC-1..BC-10 evidence and read-only preflight without changing the executable:
+
+```bash
+ssm update --major
+```
+
+Only after reviewing that output, explicitly authorize the provenance-verified
+migration:
+
+```bash
+ssm update --major --yes
+```
+
+The authorized path independently verifies the selected binary digest and
+pinned keyless provenance for the exact selected tag. Any failed preflight or
+verification preserves the v1 executable and encrypted state. See
+[`docs/v1-to-v2-bridge.md`](docs/v1-to-v2-bridge.md). No bridge Release is
+claimed by this documentation.
 
 For headless tests, offline environments, or runs that must not touch the network on startup, disable release checks:
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -9,7 +10,95 @@ import (
 	"testing"
 
 	"ssm/internal/config"
+	"ssm/internal/update"
 )
+
+func TestMajorUpdateOptionsAreExplicit(t *testing.T) {
+	major, yes, err := parseUpdateArgs([]string{"--major", "--yes"})
+	if err != nil || !major || !yes {
+		t.Fatalf("authorized options: major=%t yes=%t err=%v", major, yes, err)
+	}
+	major, yes, err = parseUpdateArgs([]string{"--major"})
+	if err != nil || !major || yes {
+		t.Fatalf("review options: major=%t yes=%t err=%v", major, yes, err)
+	}
+	for _, args := range [][]string{{"--yes"}, {"--force"}, {"--major", "--yes", "--skip-verification"}} {
+		if _, _, err := parseUpdateArgs(args); err == nil {
+			t.Fatalf("unsafe update options accepted: %q", args)
+		}
+	}
+}
+
+func TestMigrationJSONStreamsReviewBeforeTruthfulResult(t *testing.T) {
+	review := update.MigrationReview{
+		Current: "v1.4.4", Target: "v2.0.0", ReleaseNotes: "notes",
+		Authorized: true, AuthorizationState: "authorized",
+		RollbackGuidance: "rollback", Remediation: "remediate",
+	}
+	for _, test := range []struct {
+		name string
+		ok   bool
+	}{
+		{name: "success", ok: true},
+		{name: "failure", ok: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			output, err := os.CreateTemp(t.TempDir(), "migration-json-*")
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldStdout := os.Stdout
+			os.Stdout = output
+			t.Cleanup(func() {
+				os.Stdout = oldStdout
+				_ = output.Close()
+			})
+
+			finish, err := beginMigrationJSON(review)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := output.Sync(); err != nil {
+				t.Fatal(err)
+			}
+			prefix, err := os.ReadFile(output.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if json.Valid(prefix) || !bytes.Contains(prefix, []byte(`"authorization_state":"authorized"`)) || bytes.Contains(prefix, []byte(`"installed"`)) {
+				t.Fatalf("pre-replacement prefix=%q", prefix)
+			}
+
+			failure := updateCommandFailure{}
+			if !test.ok {
+				failure = updateCommandFailure{Error: "update_failed", Message: "rename failed", Stage: "replace", Hint: "old executable preserved", Exit: 1}
+			}
+			if err := finish(test.ok, failure); err != nil {
+				t.Fatal(err)
+			}
+			if err := output.Sync(); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(output.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var document map[string]any
+			if err := json.Unmarshal(data, &document); err != nil {
+				t.Fatalf("final migration JSON: %v; output=%q", err, data)
+			}
+			if bytes.Count(data, []byte(`"ok"`)) != 1 || bytes.Count(data, []byte(`"installed"`)) != 1 {
+				t.Fatalf("final result cardinality: output=%q", data)
+			}
+			if document["ok"] != test.ok || document["installed"] != test.ok {
+				t.Fatalf("result=%v", document)
+			}
+			if !test.ok && document["error"] != failure.Error {
+				t.Fatalf("failure result=%v", document)
+			}
+		})
+	}
+}
 
 func TestMachineErrorContractHasStableFields(t *testing.T) {
 	value := machineErrorOutput{OK: false, Error: "alias_not_found", Message: "missing", Hint: "list aliases", Exit: 255, Stage: "lookup"}
@@ -46,7 +135,7 @@ func TestParseGlobalArgsExtractsMasterPassFile(t *testing.T) {
 }
 
 func TestInformationalInvocationSkipsUpdateCheck(t *testing.T) {
-	for _, args := range [][]string{{"--help"}, {"push", "--help"}, {"help", "put"}, {"--version"}} {
+	for _, args := range [][]string{{"--help"}, {"push", "--help"}, {"help", "put"}, {"--version"}, {"update"}, {"--json", "update", "--major"}} {
 		if !isInformationalInvocation(args) {
 			t.Fatalf("isInformationalInvocation(%q) = false", args)
 		}

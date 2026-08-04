@@ -1,6 +1,8 @@
 package update
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"net/http"
@@ -9,7 +11,130 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"ssm/internal/provenance"
+	"ssm/internal/provenancefixture"
+	"ssm/internal/releaseasset"
 )
+
+func TestAutoV2LatestDoesNotRequestAssetsOrReplace(t *testing.T) {
+	restoreUpdateTestHooks(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
+
+	original := []byte("v1 executable bytes")
+	exe := filepath.Join(t.TempDir(), "ssm")
+	if err := os.WriteFile(exe, original, 0755); err != nil { //nolint:gosec // test-owned executable fixture
+		t.Fatal(err)
+	}
+	executablePath = func() (string, error) { return exe, nil }
+	evalSymlinks = func(path string) (string, error) { return path, nil }
+
+	assetRequests := 0
+	replacement := []byte("unattended v2 replacement")
+	replacementDigest := sha256.Sum256(replacement)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/releases/latest":
+			_, _ = w.Write([]byte(`{"tag_name":"v2.0.0"}`))
+		case "/repos/owner/repo/releases":
+			_, _ = w.Write([]byte(`[{"tag_name":"v2.0.0"}]`))
+		case "/owner/repo/releases/download/v2.0.0/checksums.txt":
+			assetRequests++
+			_, _ = fmt.Fprintf(w, "%x  %s\n", replacementDigest, assetName())
+		case "/owner/repo/releases/download/v2.0.0/" + assetName():
+			assetRequests++
+			_, _ = w.Write(replacement)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	apiBaseURL = server.URL
+	downloadBaseURL = server.URL
+	httpClient = server.Client()
+
+	if err := Auto("1.4.4"); err != nil {
+		t.Fatalf("Auto: %v", err)
+	}
+	if assetRequests != 0 {
+		t.Fatalf("v2 asset requests = %d, want 0", assetRequests)
+	}
+	installed, err := os.ReadFile(exe) //nolint:gosec // exe is a test-owned executable path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(installed, original) {
+		t.Fatalf("executable changed to %q", installed)
+	}
+}
+
+func TestSameMajorSelection(t *testing.T) {
+	releases := []Release{
+		{TagName: "v3.0.0"},
+		{TagName: "v2.0.0"},
+		{TagName: "v2.1.0"},
+		{TagName: "v1.4.5"},
+		{TagName: "v1.9.0", Prerelease: true},
+		{TagName: "v1.4.6"},
+		{TagName: "v1.04.7"},
+		{TagName: "not-a-version"},
+	}
+	sameMajor, crossMajor := SelectRelease(releases, "1.4.4")
+	if sameMajor == nil || sameMajor.TagName != "v1.4.6" {
+		t.Fatalf("same-major release = %#v", sameMajor)
+	}
+	if crossMajor == nil || crossMajor.TagName != "v2.1.0" {
+		t.Fatalf("cross-major release = %#v", crossMajor)
+	}
+}
+
+func TestOrdinaryDownloadReportsV2WithoutAssetRequestOrReplacement(t *testing.T) {
+	restoreUpdateTestHooks(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
+
+	original := []byte("ordinary v1 executable")
+	exe := filepath.Join(t.TempDir(), "ssm")
+	if err := os.WriteFile(exe, original, 0755); err != nil { //nolint:gosec // test-owned executable fixture
+		t.Fatal(err)
+	}
+	executablePath = func() (string, error) { return exe, nil }
+	evalSymlinks = func(path string) (string, error) { return path, nil }
+
+	assetRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/releases":
+			_, _ = w.Write([]byte(`[{"tag_name":"v2.0.0"}]`))
+		default:
+			assetRequests++
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	apiBaseURL = server.URL
+	downloadBaseURL = server.URL
+	httpClient = server.Client()
+
+	result, err := Download("1.4.4")
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if result.Installed != "" || result.CrossMajorAvailable != "v2.0.0" {
+		t.Fatalf("ordinary result = %#v", result)
+	}
+	if assetRequests != 0 {
+		t.Fatalf("v2 asset requests = %d, want 0", assetRequests)
+	}
+	installed, err := os.ReadFile(exe) //nolint:gosec // exe is a test-owned executable path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(installed, original) {
+		t.Fatalf("executable changed to %q", installed)
+	}
+}
 
 func TestNewerVersion(t *testing.T) {
 	cases := []struct {
@@ -143,7 +268,7 @@ func TestDownloadVersionVerifiesChecksumBeforeReplace(t *testing.T) {
 	}
 }
 
-func TestDownloadVersionReplacesAfterChecksumMatch(t *testing.T) {
+func TestDownloadVersionReplacesAfterChecksumAndProvenanceMatch(t *testing.T) {
 	restoreUpdateTestHooks(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -158,10 +283,23 @@ func TestDownloadVersionReplacesAfterChecksumMatch(t *testing.T) {
 
 	payload := []byte("new")
 	sum := sha256.Sum256(payload)
+	claims, err := provenancefixture.DefaultClaims(assetName(), "v9.9.9", payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := provenancefixture.Generate(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyProvenance = func(_ context.Context, bundle []byte, request provenance.Request) error {
+		return provenance.VerifyBundle(bundle, request, provenance.Options{TrustedMaterial: fixture.TrustedMaterial})
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/owner/repo/releases/download/v9.9.9/checksums.txt":
 			fmt.Fprintf(w, "%x  %s\n", sum, assetName())
+		case "/owner/repo/releases/download/v9.9.9/" + releaseasset.ProvenanceName(assetName()):
+			_, _ = w.Write(fixture.Bundle)
 		case "/owner/repo/releases/download/v9.9.9/" + assetName():
 			_, _ = w.Write(payload)
 		default:
@@ -215,16 +353,22 @@ func restoreUpdateTestHooks(t *testing.T) {
 	oldDownloadBaseURL := downloadBaseURL
 	oldExecutablePath := executablePath
 	oldEvalSymlinks := evalSymlinks
+	oldVerifyProvenance := verifyProvenance
+	oldUnixReplacementTestHook := unixReplacementTestHook
 	t.Cleanup(func() {
 		httpClient = oldHTTPClient
 		apiBaseURL = oldAPIBaseURL
 		downloadBaseURL = oldDownloadBaseURL
 		executablePath = oldExecutablePath
 		evalSymlinks = oldEvalSymlinks
+		verifyProvenance = oldVerifyProvenance
+		unixReplacementTestHook = oldUnixReplacementTestHook
 	})
 	httpClient = &http.Client{}
 	apiBaseURL = "https://api.github.com"
 	downloadBaseURL = "https://github.com"
 	executablePath = os.Executable
 	evalSymlinks = filepath.EvalSymlinks
+	verifyProvenance = provenance.VerifyPublicGoodBundle
+	unixReplacementTestHook = nil
 }
