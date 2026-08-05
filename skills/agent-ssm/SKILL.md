@@ -15,6 +15,12 @@ supported v1.4.3/v1.4.4 binaries. Read the [version compatibility reference](ref
 [update-provenance runbook](../../docs/update-provenance-runbook.md) before a
 cross-major rollout.
 
+Fresh installations use the current GitHub latest Release:
+
+```bash
+curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
+```
+
 ## Start here: identify the exact binary first
 
 Run the read-only version probe before inventory, sync, SSH, transfers, updates,
