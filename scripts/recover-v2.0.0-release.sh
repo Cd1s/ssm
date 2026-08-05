@@ -32,7 +32,7 @@ api "repos/$expected_repository/releases/$expected_release_id" > "$work/release.
 api "repos/$expected_repository/releases/latest" > "$work/latest.json"
 api "repos/$expected_repository/contents/RELEASE_NOTES.md?ref=$expected_source_sha" > "$work/release-notes-content.json"
 jq -e '.type=="file" and .encoding=="base64" and (.size|type)=="number" and .size>0 and (.content|type)=="string" and (.content|length)>0' "$work/release-notes-content.json" >/dev/null || die "tagged release notes content is invalid"
-jq -r .content "$work/release-notes-content.json" | tr -d '\n' | base64 -d > "$work/RELEASE_NOTES.md"
+jq -r .content "$work/release-notes-content.json" | tr -d '\r\n' | base64 -d > "$work/RELEASE_NOTES.md"
 [[ -s "$work/RELEASE_NOTES.md" ]] || die "tagged release notes materialized empty"
 awk -v h="## $expected_tag" '$0==h{f=1;next} f&&/^## /{exit} f{print} END{if(!f)exit 1}' "$work/RELEASE_NOTES.md" > "$work/body.md"
 assert_release() {
@@ -56,7 +56,27 @@ jq -e -s '
 
 api --paginate "repos/$expected_repository/actions/runs/$expected_run_id/artifacts?per_page=100" > "$work/artifacts.pages"
 expected_artifacts="$(for i in "${!artifact_names[@]}"; do jq -n --argjson id "${artifact_ids[$i]}" --arg name "${artifact_names[$i]}" '{id:$id,name:$name}'; done | jq -s 'sort_by(.id)')"
-jq -e -s --argjson expected "$expected_artifacts" '[.[].artifacts[]|select(.expired==false)|{id,name}]|sort_by(.id)==$expected and ([.[].artifacts[]]|length)==6' "$work/artifacts.pages" >/dev/null || die "workflow artifacts are missing, expired, duplicate, or extra"
+jq -e -s '
+  length>0 and
+  all(.[];
+    type=="object" and (keys|sort)==["artifacts","total_count"] and
+    (.total_count|type)=="number" and .total_count>=0 and (.total_count|floor)==.total_count and
+    (.artifacts|type)=="array"
+  ) and
+  ([.[].total_count]|unique|length)==1 and
+  ([.[].total_count][0])==([.[].artifacts[]]|length)
+' "$work/artifacts.pages" >/dev/null || die "workflow artifact inventory is malformed"
+jq -e -s --argjson expected "$expected_artifacts" '
+  [.[].artifacts[]] as $artifacts |
+  ($artifacts|length)==6 and
+  all($artifacts[];
+    (.id|type)=="number" and .id>0 and (.id|floor)==.id and
+    (.name|type)=="string" and .name!="" and .expired==false
+  ) and
+  ($artifacts|map(.id)|length)==($artifacts|map(.id)|unique|length) and
+  ($artifacts|map(.name)|length)==($artifacts|map(.name)|unique|length) and
+  ($artifacts|map({id,name})|sort_by(.id))==$expected
+' "$work/artifacts.pages" >/dev/null || die "workflow artifacts are missing, expired, duplicate, or extra"
 mkdir "$work/assets"
 for i in "${!artifact_names[@]}"; do
   archive="$work/${artifact_ids[$i]}.zip"
@@ -69,7 +89,7 @@ for i in "${!artifact_names[@]}"; do
 done
 api "repos/$expected_repository/contents/install.sh?ref=$expected_source_sha" > "$work/install-content.json"
 jq -e '.type=="file" and .encoding=="base64" and (.size|type)=="number" and .size>0 and (.content|type)=="string" and (.content|length)>0' "$work/install-content.json" >/dev/null || die "tagged install.sh content is invalid"
-jq -r .content "$work/install-content.json" | tr -d '\n' | base64 -d > "$work/assets/install.sh"
+jq -r .content "$work/install-content.json" | tr -d '\r\n' | base64 -d > "$work/assets/install.sh"
 [[ -s "$work/assets/install.sh" && ! -L "$work/assets/install.sh" ]] || die "tagged install.sh materialized invalid"
 (cd "$work/assets" && sha256sum ssm-linux-amd64 ssm-linux-arm64 ssm-darwin-amd64 ssm-darwin-arm64 ssm-windows-amd64.exe ssm-windows-arm64.exe install.sh > checksums.txt)
 for binary in "${artifact_names[@]}"; do go run ./cmd/recoveryverify "$work/assets/$binary" "$work/assets/$binary.sigstore.json"; done
