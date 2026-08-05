@@ -74,6 +74,137 @@ func TestBundledAgentSkillProbesVersionBeforeChoosingMajorContract(t *testing.T)
 	}
 }
 
+func TestLatestDocumentationContract(t *testing.T) {
+	root := repositoryRoot(t)
+	documents := []struct {
+		name string
+		path string
+	}{
+		{name: "README.md", path: "README.md"},
+		{name: "README.en.md", path: "README.en.md"},
+		{name: "agent skill", path: filepath.Join("skills", "agent-ssm", "SKILL.md")},
+		{name: "agent skill README", path: filepath.Join("skills", "agent-ssm", "README.md")},
+		{name: "version compatibility", path: filepath.Join("skills", "agent-ssm", "references", "version-compatibility.md")},
+		{name: "install and update", path: filepath.Join("skills", "agent-ssm", "references", "install-update.md")},
+		{name: "security", path: "SECURITY.md"},
+		{name: "migration", path: filepath.Join("docs", "migration-v1-to-v2.md")},
+		{name: "migration Chinese", path: filepath.Join("docs", "migration-v1-to-v2.zh-CN.md")},
+		{name: "update provenance", path: filepath.Join("docs", "update-provenance-runbook.md")},
+		{name: "update provenance Chinese", path: filepath.Join("docs", "update-provenance-runbook.zh-CN.md")},
+	}
+	contents := make(map[string]string, len(documents))
+	for _, document := range documents {
+		contents[document.name] = readLatestContractFile(t, root, document.path)
+	}
+
+	readmes := map[string][]string{
+		"README.md": {
+			"### 1. 安装",
+			"### 2. 验证版本",
+			"### 3. 查看状态",
+			"### 4. 列出主机",
+			"### 5. 对一个精确 alias 运行 hostname",
+		},
+		"README.en.md": {
+			"### 1. Install",
+			"### 2. Verify the version",
+			"### 3. Check status",
+			"### 4. List hosts",
+			"### 5. Run hostname on one exact alias",
+		},
+	}
+	for name, anchors := range readmes {
+		assertLatestContractAnchorsInOrder(t, name, contents[name], anchors)
+		body := strings.ToLower(contents[name])
+		freshInstallAnchor := "fresh install"
+		if name == "README.md" {
+			freshInstallAnchor = "全新安装"
+		}
+		for _, required := range []string{
+			"v2.0.0",
+			"github",
+			"latest",
+			freshInstallAnchor,
+			"releases/latest/download/install.sh",
+		} {
+			if !strings.Contains(body, required) {
+				t.Errorf("%s lacks fresh-install/latest contract %q", name, required)
+			}
+		}
+	}
+
+	skill := strings.ToLower(contents["agent skill"])
+	for _, required := range []string{
+		"v2.0.0 (current/latest)",
+		"v1.4.3/v1.4.4",
+		"sshctl --json --version",
+		"ordinary update remains in major 1",
+		"ssm update --major --yes",
+	} {
+		if !strings.Contains(skill, strings.ToLower(required)) {
+			t.Errorf("agent skill lacks latest compatibility contract %q", required)
+		}
+	}
+
+	compatibility := strings.ToLower(contents["version compatibility"])
+	for _, required := range []string{
+		"v2.0.0 (current/latest)",
+		"v1.4.3 / v1.4.4",
+		"ordinary or automatic v1 update stays in major 1",
+		"ssm update --major --yes",
+	} {
+		if !strings.Contains(compatibility, strings.ToLower(required)) {
+			t.Errorf("version compatibility reference lacks %q", required)
+		}
+	}
+
+	for _, document := range documents {
+		body := strings.ToLower(contents[document.name])
+		if !strings.Contains(body, "v2.0.0") {
+			t.Errorf("%s does not identify v2.0.0 as the active contract", document.name)
+		}
+		for _, stale := range []string{
+			"non-latest",
+			"staged v2 release",
+			"staged v2.0.0",
+			"v2.0.0 is staged",
+			"v2 release is staged",
+			"v1.4.4 remains github latest",
+			"v1.4.4 都保持为 github latest",
+			"default installer follows github latest and therefore installs v1.4.4",
+			"默认安装跟随 github latest，因此安装 v1.4.4",
+		} {
+			if strings.Contains(body, strings.ToLower(stale)) {
+				t.Errorf("%s retains stale latest-state claim %q", document.name, stale)
+			}
+		}
+	}
+}
+
+func readLatestContractFile(t *testing.T, root, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, name)) //nolint:gosec // root and name are repository-owned test inputs
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func assertLatestContractAnchorsInOrder(t *testing.T, name, document string, anchors []string) {
+	t.Helper()
+	lower := strings.ToLower(document)
+	offset := 0
+	for _, anchor := range anchors {
+		anchor = strings.ToLower(anchor)
+		at := strings.Index(lower[offset:], anchor)
+		if at < 0 {
+			t.Errorf("%s lacks beginner-path anchor %q after byte %d", name, anchor, offset)
+			return
+		}
+		offset += at + len(anchor)
+	}
+}
+
 func TestBundledAgentSkillPromptsAlwaysProbeVersionFirst(t *testing.T) {
 	root := repositoryRoot(t)
 	data, err := os.ReadFile(filepath.Join(root, "skills", "agent-ssm", "test-prompts.json")) //nolint:gosec // repositoryRoot and the relative contract path are test-owned
