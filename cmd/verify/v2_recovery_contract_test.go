@@ -152,6 +152,7 @@ func main() {
 		"GH_FAKE_LOG="+logPath,
 		"GITHUB_REPOSITORY=Cd1s/ssm",
 		"GH_TOKEN=test-only",
+		"V2_RECOVERY_DEBUG=1",
 		"RUNNER_TEMP="+t.TempDir(),
 		"EXPECTED_REPOSITORY=Cd1s/ssm",
 		"EXPECTED_SOURCE_SHA=10417d0e235eff9b22081765b0ad17b75cf74990",

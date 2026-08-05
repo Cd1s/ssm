@@ -66,7 +66,15 @@ jq -e -s '
   .[0].total_count as $total |
   $total==([.[].artifacts[]]|length) and
   all(.[]; .total_count==$total)
-' "$work/artifacts.pages" >/dev/null || die "workflow artifact inventory is malformed"
+' "$work/artifacts.pages" >/dev/null || {
+  if [[ "${V2_RECOVERY_DEBUG:-}" == "1" ]]; then
+    printf '%s\n' 'artifact-debug-start' >&2
+    od -An -tx1 -v "$work/artifacts.pages" >&2
+    jq -s . "$work/artifacts.pages" >&2 || true
+    printf '%s\n' 'artifact-debug-end' >&2
+  fi
+  die "workflow artifact inventory is malformed"
+}
 jq -e -s --argjson expected "$expected_artifacts" '
   [.[].artifacts[]] as $artifacts |
   ($artifacts|length)==6 and
