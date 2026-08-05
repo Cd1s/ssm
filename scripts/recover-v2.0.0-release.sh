@@ -63,9 +63,8 @@ jq -e -s '
     (.total_count|type)=="number" and .total_count>=0 and (.total_count|floor)==.total_count and
     (.artifacts|type)=="array"
   ) and
-  (.[0].total_count as $total |
-    $total==([.[].artifacts[]]|length) and
-    all(.[]; .total_count==$total))
+  ([.[].total_count]|unique|length)==1 and
+  ([.[].total_count][0])==([.[].artifacts[]]|length)
 ' "$work/artifacts.pages" >/dev/null || die "workflow artifact inventory is malformed"
 jq -e -s --argjson expected "$expected_artifacts" '
   [.[].artifacts[]] as $artifacts |
