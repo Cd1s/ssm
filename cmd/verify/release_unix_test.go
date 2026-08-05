@@ -52,6 +52,43 @@ func TestReleaseRunsInstallerSyntaxAsAnAction(t *testing.T) {
 	}
 }
 
+func TestInstallerUsesJSONAttestationBundleAndCleansPrivateDirectory(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		ghPolicy string
+		wantErr  bool
+	}{
+		{name: "success", ghPolicy: "success"},
+		{name: "verification failure", ghPolicy: "fail", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := runInstallerFixture(t, installerFixtureOptions{
+				metadata: installerReleaseMetadata(releaseasset.ExpectedReleaseNames()),
+				bundle:   []byte("{}\n"),
+				ghPolicy: test.ghPolicy,
+			})
+			if (result.err != nil) != test.wantErr {
+				t.Fatalf("installer error = %v, want error = %t; output=%q", result.err, test.wantErr, result.output)
+			}
+			if !result.ghCalled {
+				t.Fatalf("installer did not invoke the GitHub CLI; output=%q", result.output)
+			}
+			if result.bundlePath == "" || (!strings.HasSuffix(result.bundlePath, ".json") && !strings.HasSuffix(result.bundlePath, ".jsonl")) {
+				t.Fatalf("GitHub CLI received unsupported attestation bundle path %q; output=%q", result.bundlePath, result.output)
+			}
+			if !result.bundleContentObserved {
+				t.Fatalf("GitHub CLI did not observe downloaded attestation bundle content; output=%q", result.output)
+			}
+			if _, err := os.Stat(result.bundlePath); !os.IsNotExist(err) {
+				t.Fatalf("attestation bundle file remains after installer exit: stat_err=%v path=%q", err, result.bundlePath)
+			}
+			if _, err := os.Stat(filepath.Dir(result.bundlePath)); !os.IsNotExist(err) {
+				t.Fatalf("attestation bundle directory remains after installer exit: stat_err=%v path=%q", err, filepath.Dir(result.bundlePath))
+			}
+		})
+	}
+}
+
 func TestInstallerTrustFailurePreservesExecutable(t *testing.T) {
 	result := runInstallerFixture(t, installerFixtureOptions{
 		metadata: installerReleaseMetadata(releaseasset.ExpectedReleaseNames()),
@@ -363,17 +400,19 @@ func TestInstallerPinsProvenanceTrustPolicy(t *testing.T) {
 }
 
 type installerResult struct {
-	output          []byte
-	err             error
-	executable      string
-	alias           string
-	original        []byte
-	mode            os.FileMode
-	replacement     []byte
-	ghCalled        bool
-	redirected      bool
-	downloadSizes   []string
-	stagingTemplate string
+	output                []byte
+	err                   error
+	executable            string
+	alias                 string
+	original              []byte
+	mode                  os.FileMode
+	replacement           []byte
+	ghCalled              bool
+	bundlePath            string
+	bundleContentObserved bool
+	redirected            bool
+	downloadSizes         []string
+	stagingTemplate       string
 }
 
 type installerFixtureOptions struct {
@@ -519,17 +558,30 @@ trap 'rm -f "$capture"' EXIT
 		t.Fatal(err)
 	}
 	ghMarker := filepath.Join(t.TempDir(), "gh-called")
+	bundleMarker := filepath.Join(t.TempDir(), "gh-bundle-path")
+	bundleContentMarker := filepath.Join(t.TempDir(), "gh-bundle-content")
 	ghPath := filepath.Join(fakeBin, "gh")
 	writeTestFile(t, ghPath, `#!/bin/sh
 set -eu
 printf called >"$GH_MARKER"
 identity=""
+bundle=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --bundle) bundle="$2"; shift 2 ;;
     --cert-identity) identity="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
+printf '%s\n' "$bundle" >"$GH_BUNDLE_MARKER"
+case "$bundle" in
+  *.json|*.jsonl) ;;
+  *) printf 'bundle file extension not supported, must be json or jsonl\n' >&2; exit 93 ;;
+esac
+if [ ! -s "$bundle" ]; then
+  exit 94
+fi
+printf observed >"$GH_BUNDLE_CONTENT_MARKER"
 case "$GH_POLICY" in
   success) printf 'true\n' ;;
   fail) exit 92 ;;
@@ -561,6 +613,9 @@ esac
 set -eu
 if [ "$#" -eq 0 ]; then
   exec "$REAL_MKTEMP"
+fi
+if [ "${1:-}" = "-d" ]; then
+  exec "$REAL_MKTEMP" "$@"
 fi
 template="$1"
 printf '%s\n' "$template" >"$MKTEMP_MARKER"
@@ -608,6 +663,8 @@ exec "$REAL_UNAME" "$@"
 		"PAYLOAD_FIXTURE="+payloadPath,
 		"INSTALLER_ASSET="+asset,
 		"GH_MARKER="+ghMarker,
+		"GH_BUNDLE_MARKER="+bundleMarker,
+		"GH_BUNDLE_CONTENT_MARKER="+bundleContentMarker,
 		"GH_POLICY="+options.ghPolicy,
 		"UNKNOWN_LENGTH_FIXTURE="+fmt.Sprint(options.unknownLength),
 		"REDIRECT_FIXTURE="+fmt.Sprint(options.redirect),
@@ -624,6 +681,11 @@ exec "$REAL_UNAME" "$@"
 	)
 	output, runErr := command.CombinedOutput()
 	_, markerErr := os.Stat(ghMarker)
+	bundlePathData, bundlePathErr := os.ReadFile(bundleMarker) //nolint:gosec // test-owned observation marker
+	if bundlePathErr != nil && !os.IsNotExist(bundlePathErr) {
+		t.Fatal(bundlePathErr)
+	}
+	_, bundleContentErr := os.Stat(bundleContentMarker)
 	_, redirectErr := os.Stat(redirectMarker)
 	sizeData, sizeErr := os.ReadFile(downloadSizeMarker) //nolint:gosec // test-owned observation marker
 	if sizeErr != nil && !os.IsNotExist(sizeErr) {
@@ -634,17 +696,19 @@ exec "$REAL_UNAME" "$@"
 		t.Fatal(templateErr)
 	}
 	return installerResult{
-		output:          output,
-		err:             runErr,
-		executable:      executable,
-		alias:           filepath.Join(prefix, "sshctl"),
-		original:        original,
-		mode:            before.Mode().Perm(),
-		replacement:     payload,
-		ghCalled:        markerErr == nil,
-		redirected:      redirectErr == nil,
-		downloadSizes:   strings.Fields(string(sizeData)),
-		stagingTemplate: strings.TrimSpace(string(templateData)),
+		output:                output,
+		err:                   runErr,
+		executable:            executable,
+		alias:                 filepath.Join(prefix, "sshctl"),
+		original:              original,
+		mode:                  before.Mode().Perm(),
+		replacement:           payload,
+		ghCalled:              markerErr == nil,
+		bundlePath:            strings.TrimSpace(string(bundlePathData)),
+		bundleContentObserved: bundleContentErr == nil,
+		redirected:            redirectErr == nil,
+		downloadSizes:         strings.Fields(string(sizeData)),
+		stagingTemplate:       strings.TrimSpace(string(templateData)),
 	}
 }
 
