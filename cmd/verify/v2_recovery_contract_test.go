@@ -75,10 +75,6 @@ func runV2RecoveryToArtifactDownload(t *testing.T, artifactsPage string) (string
 	t.Helper()
 	bin := t.TempDir()
 	logPath := filepath.Join(t.TempDir(), "gh.log")
-	artifactsPath := filepath.Join(t.TempDir(), "artifacts.json")
-	if err := os.WriteFile(artifactsPath, []byte(artifactsPage), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	fakeGH := filepath.Join(bin, "gh")
 	fake := `#!/bin/sh
 set -eu
@@ -86,7 +82,7 @@ printf '%s\n' "$*" >> "$GH_FAKE_LOG"
 case "$*" in
   *"releases?per_page=100"*) printf '%s\n' '[{"id":364882535,"tag_name":"v2.0.0"},{"id":364597135,"tag_name":"v1.4.4"}]' ;;
   *"actions/runs/30911029600/jobs?per_page=100"*) printf '%s\n' '{"total_count":8,"jobs":[{"name":"preflight","conclusion":"success"},{"name":"publish","conclusion":"failure"},{"name":"build (linux, amd64, ssm-linux-amd64)","conclusion":"success"},{"name":"build (linux, arm64, ssm-linux-arm64)","conclusion":"success"},{"name":"build (darwin, amd64, ssm-darwin-amd64)","conclusion":"success"},{"name":"build (darwin, arm64, ssm-darwin-arm64)","conclusion":"success"},{"name":"build (windows, amd64, ssm-windows-amd64.exe)","conclusion":"success"},{"name":"build (windows, arm64, ssm-windows-arm64.exe)","conclusion":"success"}]}' ;;
-  *"actions/runs/30911029600/artifacts?per_page=100"*) cat "$GH_FAKE_ARTIFACTS_PATH" ;;
+  *"actions/runs/30911029600/artifacts?per_page=100"*) printf '%s\n' ` + shellSingleQuote(artifactsPage) + ` ;;
   "api repos/Cd1s/ssm/releases/364882535") printf '%s\n' '{"id":364882535,"tag_name":"v2.0.0","target_commitish":"10417d0e235eff9b22081765b0ad17b75cf74990","name":"v2.0.0","body":"recovery notes\n","draft":false,"prerelease":false,"assets":[]}' ;;
   "api repos/Cd1s/ssm/releases/latest") printf '%s\n' '{"id":364597135,"tag_name":"v1.4.4","draft":false,"prerelease":false}' ;;
   "api repos/Cd1s/ssm/contents/RELEASE_NOTES.md?ref=10417d0e235eff9b22081765b0ad17b75cf74990") printf '%s\n' '{"type":"file","encoding":"base64","size":30,"content":"IyBOb3RlcwoKIyMgdjIuMC4wCnJlY292ZXJ5IG5vdGVzCg=="}' ;;
@@ -103,7 +99,6 @@ esac
 	command.Env = append(os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"GH_FAKE_LOG="+logPath,
-		"GH_FAKE_ARTIFACTS_PATH="+artifactsPath,
 		"GITHUB_REPOSITORY=Cd1s/ssm",
 		"GH_TOKEN=test-only",
 		"RUNNER_TEMP="+t.TempDir(),
@@ -120,6 +115,10 @@ esac
 		t.Fatal(readErr)
 	}
 	return string(output), string(calls), err
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func assertNoV2RecoveryMutation(t *testing.T, calls string) {
