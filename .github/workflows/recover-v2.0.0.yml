@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: 482b0d6522f660005c68666845b3162b2e6a7787
+          ref: 8e447b8e30b12b6cc1ee975452adcaba110272c6
           persist-credentials: false
       - uses: actions/setup-go@v6
         with:
@@ -36,7 +36,7 @@ jobs:
           REQUIRED_LATEST_TAG: v1.4.4
         run: |
           printf '%s  %s\n' \
-            eb1f17cb24b9d2927e0421d7a15e54d651dfb5ac75f8fd109b3eb06482d6e5ad scripts/recover-v2.0.0-release.sh \
+            0dee45347deeefcd81838fad28f331eddd71cb30b56b8a29bb4635035c59313b scripts/recover-v2.0.0-release.sh \
             db7c5d942aa0da8c16b68371dd5f2ca5428387bb12e3bc5978200606c6ddffa5 cmd/recoveryverify/main.go \
             | sha256sum -c -
           ./scripts/recover-v2.0.0-release.sh
