@@ -71,6 +71,20 @@ jq -e -s '
     printf '%s\n' 'artifact-debug-start' >&2
     od -An -tx1 -v "$work/artifacts.pages" >&2
     jq -s . "$work/artifacts.pages" >&2 || true
+    for filter in \
+      'length' \
+      'all(.[ ]; type=="object")' \
+      'all(.[ ]; (keys|sort)==["artifacts","total_count"])' \
+      'all(.[ ]; (.total_count|type)=="number")' \
+      'all(.[ ]; .total_count>=0)' \
+      'all(.[ ]; (.total_count|floor)==.total_count)' \
+      'all(.[ ]; (.artifacts|type)=="array")' \
+      '.[0].total_count' \
+      '[.[].artifacts[]]|length' \
+      'all(.[]; .total_count==6)'; do
+      printf 'artifact-debug-filter=%s result=' "$filter" >&2
+      jq -s -c "$filter" "$work/artifacts.pages" >&2 || true
+    done
     printf '%s\n' 'artifact-debug-end' >&2
   fi
   die "workflow artifact inventory is malformed"
