@@ -1,8 +1,8 @@
 # SSM 更新 provenance 运行手册
 
-本运行手册规定获授权稳定、non-latest 的 v2.0.0 所涉及的 updater、installer、
-release-maintainer 和紧急恢复决策。运行手册本身不会发布 tag 或 release；exact-tag
-workflow 只能在 v1.4.4 保持为 GitHub latest 时发布。
+本运行手册规定当前 GitHub latest v2.0.0 所涉及的 updater、installer、
+release-maintainer 和紧急恢复决策。运行手册本身不会发布 tag、release 或修改 latest
+指针；v1.4.3/v1.4.4 客户端仍必须经过审查并显式授权 major 迁移才能选择 v2。
 
 [English](update-provenance-runbook.md) | [迁移指南](migration-v1-to-v2.zh-CN.md)
 

@@ -1,282 +1,236 @@
 # ssm
 
-Non-interactive SSH vault management CLI for agents and automation. Neither `ssm` nor `sshctl` starts a TUI, opens an interactive shell, or waits for terminal input. SSH hosts live in a local encrypted vault, sync moves only encrypted data, and real SSH connections always start from the current machine.
+## The one-minute explanation
+
+`ssm` is a non-interactive SSH management tool for agents, scripts, and automation. It helps you keep host records, check connections, run commands, and transfer files without opening a TUI, an interactive shell, or a prompt on the remote machine. It is a good fit when SSH work needs to be safe and repeatable.
+
+`ssm` and `sshctl` are the same binary under two command names. The installer normally creates `/usr/local/bin/ssm` and `/usr/local/bin/sshctl -> /usr/local/bin/ssm`; the examples below use the agent-oriented `sshctl` name.
+
+Passwords and private keys are never printed. The master passphrase is read from the local `~/.config/ssm/master.pass` by default; host passwords, private keys, and host records live in the local encrypted vault. When adding or changing a host, pass only restricted file paths such as `--password-file` or `--key-file`; never put secret values in commands, JSON, logs, or commits.
+
+If sync is enabled, the sync server sees only encrypted vault blobs. It cannot see the decrypted host inventory, SSH passwords, or private keys; the actual SSH connection always starts from the current machine.
 
 [中文](README.md) | [English](README.en.md)
 
-## Staged v2 release
+## Current release: v2.0.0
 
-The v2.0.0 contract is prepared for authorized stable, non-latest publication
-through the official exact-tag workflow. v1.4.4 remains GitHub latest before
-and after that publication, so ordinary installs and same-major v1 updates do
-not cross the major boundary. Review the bilingual
-[v1→v2 migration guide](docs/migration-v1-to-v2.md) and its
-[update-provenance runbook](docs/update-provenance-runbook.md) before changing
-automation or authorizing a major update.
+The current GitHub latest Release is **v2.0.0**, so the one-line fresh install below gets v2.0.0. Existing v1.4.3/v1.4.4 users stay on major 1 when they run ordinary `ssm update`; only an explicitly reviewed `ssm update --major --yes` crosses to v2. See the [v1→v2 migration guide](docs/migration-v1-to-v2.md) for migration details and the [update-provenance runbook](docs/update-provenance-runbook.md) for source and attestation checks.
 
-## Install
+## 3-minute quick start
+
+Run these in order. In the last command, replace `my-server` with the **complete alias** shown by the host list; do not guess from a similar name.
+
+### 1. Install
 
 ```bash
 curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 ```
 
-The installer downloads the matching program from `Cd1s/ssm`, installs `/usr/local/bin/ssm`, and creates `/usr/local/bin/sshctl -> /usr/local/bin/ssm`. `sshctl` is the same binary selected by executable name.
-
-The default installer follows GitHub latest and therefore installs v1.4.4.
-After the official v2.0.0 Release exists, a fresh reviewed exact-tag v2
-installation downloads its installer and selects the same tag explicitly:
+### 2. Verify the version
 
 ```bash
-curl -fsSL https://github.com/Cd1s/ssm/releases/download/v2.0.0/install.sh -o ./install-v2.0.0.sh
-SSM_RELEASE_TAG=v2.0.0 sh ./install-v2.0.0.sh
+sshctl --json --version
 ```
 
-## Commands
+The version field should be `2.0.0`. If `sshctl` is not found, reopen the terminal or check that `/usr/local/bin` is on `PATH`.
+
+### 3. Check status
 
 ```bash
 sshctl --json status
-sshctl --json host list
-sshctl sync
-sshctl --json doctor <alias> --deep
-sshctl check <alias>
-
-# Headless host management (verify the candidate before saving)
-sshctl host list --json
-sshctl host search prod-web --json       # candidates only; never auto-selects or connects
-sshctl host upsert prod-api --host 203.0.113.10 --user root --port 22 --key-file /secure/prod-api.key --verify --json
-sshctl host update prod-api --port 2222 --verify --json
-sshctl host show prod-api --json
-sshctl --json push --only <transaction-id>
-sshctl --json push --all
-
-# Simple one-shot command: fastest path, no request file
-sshctl --json run <alias> --argv hostname
-sshctl --json run <alias> --argv uname -a
-sshctl plan <alias> --argv hostname       # dry-run: remote_command + risk
-sshctl run <alias> --shell bash -s <<'EOF'
-echo "any quotes fine"
-EOF
-
-# Repeated simple commands: one sync/unlock/dial; one JSON argv array per line
-sshctl run <alias> --stream
-["hostname"]
-["uname","-a"]
-
-# Dynamic argv, scripts, secrets, and mutations: typed JSON request
-sshctl request --file ./request.json      # argv/script_file/secret_files paths
-
-# Observe/accept host keys; accept is bound to the full observed fingerprint
-sshctl host-key inspect <alias> --json
-sshctl host-key accept <alias> --fingerprint SHA256:... --yes --json
-
-# Parallel multi-host / multi-script fleet
-sshctl map limee-hk,aws-sg -j 8 hostname
-sshctl map 'limee-*' --json uname -s
-sshctl map host1,host2 --scripts a.sh,b.sh   # host×script jobs
-sshctl run host --scripts a.sh,b.sh          # parallel scripts on one host
-
-# File or directory trees
-sshctl put <alias> ./dir /remote/dir
-sshctl put <alias> ./artifact.tar /srv/artifact.tar --sha256 --timeout 2m --json
-sshctl put <alias> ./artifact.tar /srv/artifact.tar --resume=v1 --timeout 2m --json
-sshctl get <alias> /remote/dir ./dir
-
-# Migration soft-links
-sshctl redirect set old-alias limee-hk
-sshctl run old-alias hostname
-
-sshctl push --all  # deliberately publish the invocation-start pending set after review
 ```
 
-Normal run/check operations reject both first-use and changed host keys. Never use an automatic `ssh-keygen -R` plus `ssh-keyscan` shortcut. Inspect `observed_fingerprint`, `known_fingerprints`, and `classification:new|mismatch|trusted`, verify through a trusted channel, then explicitly accept the exact same fingerprint with `--yes`.
+This reports whether sync is configured, whether the state is fresh, and whether local changes are pending publication. If sync is not configured, the result says so explicitly; it does not silently use an old cache.
 
-Regular-file `put` always streams to a private sibling temporary file, verifies the remote byte count, and atomically renames only after successful completion. Add `--sha256` for local/remote SHA-256 verification and `--timeout <duration>` for an explicit deadline. JSON success and failure report `stage`, `bytes_sent`, `integrity`, `atomic`, and `resume`; failures distinguish `local_read_failed`, SSH dial/auth errors, `remote_write_failed`, `transfer_timeout`, and `integrity_failed`. Directory uploads retain the legacy tar behavior and do not claim atomicity or integrity.
+### 4. List hosts
 
-All direct and request-v1 transfer results identify `direction` (`put` or
-`get`) and `kind` (`file`, `directory`, or `unknown` on a pre-protocol
-failure). File put/get results report only guarantees supplied by that
-protocol. Directory put/get results explicitly report `atomic:false`,
-`integrity:not_available`, and `resume:unsupported`; directory get omits
-`bytes_received` because tar has no stable payload measure. File get reports
-`bytes_received`, `atomic:true`, `integrity:not_checked`, and
-`resume:unsupported`. Consumers must branch on `direction` and `kind`, not
-infer them from `action` or byte fields.
+```bash
+sshctl --json host list
+```
 
-Resume is regular-file-only and explicitly enabled with `--resume=v1`; existing put behavior is unchanged when it is absent. v1 requires remote `sha256sum`, binds a private `0600` sibling partial and metadata file to the protocol version, destination-path hash, complete local size, and SHA-256 digest, then verifies the remote prefix against the same local prefix before appending. A changed source starts separate state rather than reusing the old partial; corrupt, missing, or ambiguous state returns `partial_state_mismatch|partial_state_incompatible` and never replaces the destination. A completed size and digest are verified before atomic publish. Interrupted v1 state is retained for retry, while states for the same destination older than seven days are removed opportunistically during a later probe; operators may review and remove the deterministic `.ssm-resume-v1-*` siblings sooner. Results include `bytes_reused` and `bytes_sent`. Directory resume is unsupported.
+Copy the exact alias you want, such as your own `my-server`. Search returns candidates only and never selects or connects automatically:
 
-`status` checks the configured sync endpoint by default and refreshes when its ETag changed. A sync failure returns `error:sync_pull_failed`, `stage:sync_pull`; cached data is never selected silently. A present malformed or unreadable `cloud.json` stops every online inventory operation with `error:sync_config_error`, `stage:sync_config`; repair the file and its permissions, or use explicit `--offline` only after accepting stale cached inventory. Missing `cloud.json` continues to mean sync is unconfigured. Use `sshctl --json status --offline` (or global `--offline`) only when stale data is explicitly acceptable. Offline results include `offline:true`, `remote_state:not_checked`, `freshness`, `cache_age_seconds`, last pull/push times, `pending_changes`, and non-secret `pending_mutations` (`id`, `alias`, `operation`, `created_at`). State-changing mutation results return a stable `transaction_id`. An idempotent host update/upsert can instead return `changed:false`, `action:"unchanged"`, with `transaction_id` omitted; do not publish that no-op.
+```bash
+sshctl host search my --json
+```
 
-### Reviewed publication scope
+### 5. Run hostname on one exact alias
 
-Bare `push` is invalid. Its arguments are rejected before vault unlock and before any sync HTTP request. Callers must choose one explicit scope:
+```bash
+sshctl --json run my-server --argv hostname
+```
+
+`my-server` is an example name; replace it with an alias from the previous step. `--argv hostname` passes `hostname` as one explicit remote argument instead of assembling a local shell string.
+
+If this is your first use and no host exists yet, follow “Add or change a host” below. If you see `host_key_unknown` or `host_key_mismatch`, verify the fingerprint through the host-key flow under “Check a connection” first.
+
+## Six words to know
+
+| Word | Plain-language meaning |
+| --- | --- |
+| **vault** | A local encrypted safe containing host data and protected references to passwords/keys; sync transfers encrypted data only. |
+| **alias** | The exact name used to address one saved host. Search results are candidates; choose the complete alias before connecting. |
+| **sync** | Pulling or pushing encrypted vault state between this machine and the sync endpoint; it is not the SSH connection. |
+| **push** | Publishing a reviewed local mutation to the sync endpoint; it must name a transaction ID or a deliberately reviewed pending scope. |
+| **request** | A version-1 JSON operation file for dynamic arguments, scripts, secret-file paths, transfers, or host changes. |
+| **host key** | The SSH fingerprint used to confirm that a server is the expected machine. Inspect and verify it before explicitly accepting a new or changed key. |
+
+## Commands by task
+
+Each section says when to use the command, then shows the smallest useful form. Aliases are generic, and `203.0.113.10` is an RFC 5737 documentation address, not a real host.
+
+### View or search hosts
+
+Use this when you want to see saved connections or narrow down several candidates:
+
+```bash
+sshctl --json host list
+sshctl host search my --json
+sshctl host show my-server --json
+```
+
+`search` never chooses a candidate for you; checks and connections always use the exact alias.
+
+### Check a connection
+
+Use this before a change when you want to check local vault state, sync freshness, and SSH health:
+
+```bash
+sshctl check my-server --json
+sshctl --json doctor my-server --deep
+```
+
+For a new or changed host key, inspect and verify the full fingerprint first:
+
+```bash
+sshctl host-key inspect my-server --json
+sshctl host-key accept my-server --fingerprint SHA256:REPLACE_WITH_VERIFIED_FINGERPRINT --yes --json
+```
+
+Replace the fingerprint only with the `observed_fingerprint` you verified through a trusted channel. Do not replace this process with automatic `ssh-keygen -R` plus `ssh-keyscan`.
+
+### Run a command
+
+Use this for one fixed, simple command on a selected host:
+
+```bash
+sshctl --json run my-server --argv hostname
+sshctl --json run my-server --argv uname -sr
+```
+
+For repeated simple commands, reuse one process and connection; send one JSON argv array per line:
+
+```bash
+sshctl run my-server --stream
+["hostname"]
+["uname","-sr"]
+```
+
+Online stream `--refresh` must be positive; `--refresh=0` is valid only with explicit global `--offline`. Use a request file for dynamic arguments, complex shell syntax, or secrets; do not put generated scripts inside `bash -c`.
+
+### Upload or download files
+
+Use these for a regular file or directory tree:
+
+```bash
+sshctl put my-server ./notes.txt /tmp/notes.txt --sha256 --json
+sshctl get my-server /tmp/notes.txt ./notes.txt
+```
+
+`--sha256` is for regular-file integrity verification. Directory transfers provide different guarantees; see [Advanced / for agents and automation](#advanced--for-agents-and-automation).
+
+### Add or change a host
+
+Use this to add a host or change only selected fields. `--verify` checks the candidate before saving it:
+
+```bash
+sshctl host upsert my-server \
+  --host 203.0.113.10 --port 22 --user demo \
+  --key-file /secure/my-server.key --verify --json
+
+sshctl host update my-server --port 2222 --verify --json
+```
+
+Private keys and passwords may only be referenced with `--key-file`, `--password-file`, or a saved `--key` name; they are never inline values. A changed result is saved locally as a pending mutation and returns a reviewable `transaction_id`. An idempotent no-op returns `changed:false`, `action:"unchanged"`, and no ID; do not publish it.
+
+### Publish a reviewed change
+
+After reviewing the result and deciding that the sync endpoint should receive it, publish only that transaction:
 
 ```bash
 sshctl --json push --only <transaction-id>
-sshctl --json push --all
 ```
 
-`push --only` publishes the one reviewed transaction; its preflight lists the exact alias/operation and unrelated changes stay pending. `push --all` publishes only the non-empty ordered pending-ID set fixed when the invocation starts, so transactions created later remain pending.
+Replace `<transaction-id>` with the exact ID returned by the mutation. Do not use bare `push`; use `sshctl --json push --all` only after reviewing every pending change in the invocation-start set.
 
-When that invocation-start set is empty, `push --all` compares the exact local encrypted-blob identity, the last confirmed remote identity, and the current remote identity with one HEAD request. If all three are present and identical, it returns `action:"noop"` and performs no GET or PUT. If any identity is missing or differs, it returns `error:"sync_conflict"`, `stage:"sync_compare"`, preserves both blobs and private identity evidence, and performs no GET or PUT. An empty scope never publishes the full local blob.
+## Safety boundaries
 
-#### Reviewed empty-ledger divergence recovery
+- Never put passwords, private keys, master passphrases, tokens, `cloud.json`, or decrypted vault data in command arguments, JSON, logs, Issues, PRs, or commits.
+- Never auto-select an alias or treat a search suggestion as the target.
+- On a first-use or changed host key, inspect it, verify the full SHA-256 fingerprint out of band, then explicitly accept it.
+- Online sync failures never silently switch to cached inventory; use `--offline` only when stale data is explicitly acceptable.
+- Publication always has an explicit scope. `push --only <transaction-id>` publishes one reviewed transaction and never silently widens it when dependencies are pending.
 
-Retrying `push --all` cannot repair an empty-ledger conflict because it never publishes an untracked full blob.
+## Updates and rollback
 
-The emitted machine hint deliberately recommends guarded merge and does not
-authorize full replacement:
+Fresh installs follow GitHub latest, currently v2.0.0. Ordinary updates choose a newer release only within the installed major:
 
-```text
-review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull to adopt remote, then use guarded ssm --offline --json import-json <reviewed-file> --merge and publish its reviewed transaction with sshctl --json push --only <transaction-id>
+```bash
+ssm update
 ```
 
-1. Run `sshctl --offline --json doctor` and review the safe `sync_conflict` identities.
-2. Preserve private copies of the local encrypted vault, `remote.etag`, `sync-conflict.json`, and any `publishing-intent.json`; keep their permissions private.
-3. Prepare the local inventory that must survive as a reviewed import file. Keep secrets in that private file, never in command arguments or logs.
-4. Run `sshctl --json pull` to adopt the reviewed remote encrypted blob. Pull succeeds only when the cached prerequisite makes replacement safe; if it reports another conflict, stop and retain all evidence for manual repair.
-5. If the remote version wins completely, recovery is finished. Otherwise, reapply the retained local inventory with exactly one guarded command:
+For a v1.4.3/v1.4.4 installation that needs v2, first create the non-installing review:
 
-   ```bash
-   ssm --offline --json import-json <reviewed-file> --merge
-   ```
+```bash
+ssm update --major
+```
 
-   Or, only after explicit full-replacement review:
+After the release notes, automated checks, external consumers, and rollback readiness pass, the only cross-major authorization path is:
 
-   ```bash
-   ssm --offline --json import-json <reviewed-file> --replace --yes
-   ```
+```bash
+ssm update --major --yes
+```
 
-6. Review the returned transaction and publish only that ID:
+`--major --yes` does not bypass SHA-256, exact-tag, keyless-provenance, or failure-recovery checks. A failed update preserves the old executable and recovery evidence. See the [migration guide](docs/migration-v1-to-v2.md) and [provenance runbook](docs/update-provenance-runbook.md).
 
-   ```bash
-   sshctl --json push --only <transaction-id>
-   ```
+## Advanced / for agents and automation
 
-There is no force flag, automatic repair, evidence deletion, or empty-ledger overwrite path.
+Read the [official Agent Skill](skills/agent-ssm/SKILL.md) and [version compatibility matrix](skills/agent-ssm/references/version-compatibility.md) first. They define the v1.4.3/v1.4.4 compatibility branch and the current v2.0.0 branch, including the schema and fields each branch may use.
 
-Use `sshctl --json run <alias> --argv ...` directly for simple, fixed, reviewed literal arguments; no request file is needed. For repeated simple commands, `sshctl run <alias> --stream` reads one JSON string array per stdin line and writes one compact JSON result per stdout line. Online streams require a strictly positive `--refresh` interval (30s by default); `--refresh=0` is valid only with explicit global `--offline`, which accepts one fixed cached snapshot. It syncs and decrypts once at startup, checks inventory again every 30 seconds by default, and stops on refresh failure instead of using stale data. Keep `sshctl request --file` for dynamic or untrusted arguments, scripts, secrets, and host mutations. The project does not provide an interactive shell.
+### Structured output and requests
 
-### Credential safety boundary
+Normal `--json` commands emit one JSON value; explicit `run --stream` emits line-oriented NDJSON. Agents should classify `ok`, `error`, `stage`, `exit`, and `hint`; a remote program can itself exit 255, so the exit code alone cannot identify an SSH transport failure.
 
-Passwords, private keys, and other secrets must only be referenced through permission-restricted file paths. Never put them or vault contents in JSON, command-line arguments, logs, error reports, GitHub Issues, or commits. `--password-file`, `--key-file`, `--master-pass-file`, and request `secret_files` read the referenced files; structured output never echoes their contents.
-
-Connection-layer JSON failures use `error=dial_*|host_key_mismatch|alias_not_found|...` and normally exit **255**. Do not classify from 255 alone because a remote process can also return 255. Connection reuse is process-scoped and on by default (`SSM_REUSE=0` / `--no-reuse`): ordinary one-shot connections close with the process, while `run --stream` keeps that process and its SSH connection alive across commands. Global `sshctl --json ...` also makes argument, unlock, alias, and sync failures emit exactly one JSON value; stream mode explicitly uses one NDJSON result per input line.
-
-### Stable JSON error contract
-
-Failure objects use `ok:false`, `error`, `message`, `hint`, and `exit`, plus `stage` when a failure stage is known. Canonical classes include `alias_not_found`, `invalid_arguments`, `invalid_request`, `sync_pull_failed`, `sync_push_failed`, `dial_timeout|dial_refused|dial_network`, `host_key_unknown|host_key_mismatch`, `auth_failed|no_auth_configured`, `session_failed`, `interpreter_not_found`, `script_syntax_error|remote_script_failed|remote_failed`, and `transfer_failed`. `host_not_found` and `invalid_args` are legacy v1.3-and-earlier values; v1.4 normalizes them to `alias_not_found` and `invalid_arguments`. Classify with `error` and `stage`; use `exit` only for process control.
-
-Agent troubleshooting examples:
-
-- Alias miss: inspect `sshctl --json host list` or `host search`; never execute a suggested candidate automatically.
-- Sync pull failure: stop. Retry connectivity, or use explicit `--offline` only after accepting stale inventory; no silent fallback occurs.
-- Sync push failure: inspect `status.pending_mutations`, then retry `sshctl --json push --only <transaction-id>` with the same returned ID; do not broaden to `sshctl --json push --all`.
-- Host-key change: `host-key inspect --json`, verify `observed_fingerprint` out-of-band, then exact `accept ... --yes`; never remove/rescan automatically.
-- Remote failure: `remote_failed|remote_script_failed` means SSH transport succeeded. Inspect `stage`, `stderr`, and the remote exit—even 255—without reclassifying it as transport failure.
-- Transfer failure: use `stage`, `bytes_sent`, `bytes_reused`, `resume`, and `integrity`; never append an incompatible partial.
-
-### Typed agent request (v1.4; schema version 1)
-
-`sshctl request` reads schema version 1 from stdin or `--file`. A run request must select exactly one of `argv`, `shell_command`, or `script_file`; `secret_files` accepts paths only. Agents should create the JSON with a file-writing tool instead of assembling it with shell `echo`.
+Use schema version 1 for dynamic or untrusted arguments, scripts, secret-file paths, transfers, and host changes. The [v2 request-v1 schema](skills/agent-ssm/references/request-v1.schema.json) supports `op:get`:
 
 ```json
 {
   "version": 1,
   "op": "run",
-  "alias": "prod-api",
-  "argv": ["printf", "%s\n", "value with spaces and ' quotes"],
-  "timeout": "15s"
+  "alias": "my-server",
+  "argv": ["printf", "%s\\n", "literal value"]
 }
 ```
 
-Script requests use `script_file`, `script_args`, `shell`, and `secret_files`. They default to a remote syntax preflight using the same interpreter with `-n`; failure returns `script_syntax_error` before the body executes. Results identify `mode`, `transport`, and `preflight`.
-
-Resumable put also uses request schema version 1 with an explicitly versioned resume capability:
-
-```json
-{
-  "version": 1,
-  "op": "put",
-  "alias": "prod-api",
-  "local_path": "/secure/artifact.tar",
-  "remote_path": "/srv/artifact.tar",
-  "resume": "v1",
-  "sha256": true,
-  "timeout": "2m"
-}
+```bash
+sshctl request --file ./request.json
 ```
 
-Host requests use `op: host.upsert|host.update|...` plus a nested `host` object. Add/update defaults to `verify:true`:
+v1.4.3/v1.4.4 must use the [compatibility bridge schema](skills/agent-ssm/references/request-v1-bridge.schema.json) and must not assume v2-only fields.
 
-```json
-{
-  "version": 1,
-  "op": "host.upsert",
-  "alias": "prod-api",
-  "host": {
-    "address": "203.0.113.10",
-    "port": 22,
-    "user": "root",
-    "key_file": "/secure/prod-api.key",
-    "verify": true,
-    "push": false
-  }
-}
-```
+### Transfer, resume, and public fields
 
-### Agent host management
+In v2, branch on `direction` (`put`/`get`) and `kind` (`file`/`directory`). Regular-file results report only guarantees actually supplied by the protocol; directory transfers explicitly report `atomic:false`, `integrity:not_available`, and `resume:unsupported`, and directory get does not invent `bytes_received`. Regular-file resume is enabled only with explicit `--resume=v1`; incompatible or failed integrity state never replaces the destination.
 
-| Command | Behavior |
-| --------- | ---------- |
-| `sshctl host list/show ... --json` | Structured inventory without passwords or private keys |
-| `sshctl host search <query> --json` | Filter alias/address/user/group; callers must choose when `ambiguous:true` |
-| `sshctl host add ...` | Create only; fails if the alias exists |
-| `sshctl host update ...` | Change only specified fields; fails if the host is missing |
-| `sshctl host upsert ... --verify` | Idempotent declaration; a failed candidate check leaves the vault unchanged |
-| `sshctl host remove ... --yes` | Explicit delete; `--prune-key` removes only an unreferenced key |
+An online refresh failure returns `error:sync_pull_failed` with `stage:sync_pull`; a present malformed `cloud.json` returns `error:sync_config_error`. Only explicit `--offline` reads cached state. Non-capture human runs use an outcome buffer, redact failures before replay, and enforce an 8 MiB limit.
 
-A new host requires `--host`, `--user`, and one auth source: `--key <saved-name>`, `--key-file <path>`, or `--password-file <path>`. Passwords and keys are never accepted inline, and JSON exposes only `auth`/`key_name`. Upserting an existing host preserves auth when no auth option is given.
+### Explicit publication scope and empty ledgers
 
-Structured host mutations require a successful remote refresh. `--verify` checks the in-memory candidate with `hostname; uname -sr`; failure returns `verification_failed`, `applied:false`, and leaves the encrypted vault unchanged. A changed success is saved atomically, returns `sync_pending:true` plus a `transaction_id`, and stays pending. An idempotent update/upsert returns `changed:false`, `action:"unchanged"`, and omits `transaction_id`; it creates nothing to publish. `--push` requires `--verify`; a sync failure leaves the local change pending and returns `sync_push_failed`. Use `--offline` only when stale local state is explicitly acceptable.
+`push --only <transaction-id>` publishes one reviewed transaction. `push --all` fixes the invocation-start pending-ID set and publishes only that set. An empty set never overwrites the complete local blob: identical identities return `action:"noop"`, while missing or divergent identities return `error:"sync_conflict"`; follow the guarded [empty-ledger recovery guidance](skills/agent-ssm/references/import-json.md) for pull, reviewed `--merge`, and a new `push --only <transaction-id>`.
 
-`doctor <alias> --json` returns `resolved_alias` and safe `candidates` on an exact miss, but never selects a candidate or connects. It also reports local/remote vault state, last pull/push, pending state, and non-secret alias/key-name conflict metadata from the latest reviewed merge. When local and remote both diverge from one cached ETag, auto-refresh returns `sync_conflict` and preserves both sides; `sshctl --offline --json doctor` exposes only non-secret blob identifiers in `sync_conflict`. Review `merge_report.conflicts`/`sync_conflict`, then explicitly choose pull or create a reviewed transaction and publish it with `sshctl --json push --only <transaction-id>`. For an empty-ledger conflict, follow the recovery sequence above.
+### Optional sync server
 
-### Agent fleet: map (parallel)
-
-| Command | Meaning |
-| --------- | --------- |
-| `sshctl map a,b,c -j 8 cmd` | Up to 8 concurrent hosts |
-| `sshctl map 'web-*' hostname` | Shell-style alias globs |
-| `sshctl map h --scripts s1.sh,s2.sh` | Parallel scripts on one host |
-| `sshctl map a,b --scripts s1,s2` | host×script cartesian product |
-| `sshctl map ... --plan` / `--json` | Dry-run expand / structured results |
-
-One target failing does **not** drop other targets’ results.
-
-### Remote command quoting
-
-| Form | Behavior | Best for |
-| ------ | ---------- | ---------- |
-| `sshctl --json run host --argv cmd arg1` | Direct one-shot; always quotes every argv item | Simple, fixed, reviewed literal argv |
-| `sshctl run host --stream` | One JSON argv array per line; reuses sync, decrypt, and SSH | Repeated iterative simple commands |
-| `sshctl run host cmd arg1 arg2` | Multi-arg quoting; one string keeps legacy shell parsing | Compatibility only |
-| `sshctl run host -s <<'EOF'` | Body over SSH stdin to a fixed `sh -s` runner | Multi-line, pipes, redirects, quotes |
-| `sshctl run host --shell bash -f x.sh -- arg` | Shebang/explicit shell plus exact script args | Bash and generated scripts |
-| `sshctl run host --preflight -f x.sh` | Same remote interpreter parses with `-n` first | Prevent syntax-error side effects |
-| `sshctl request --file request.json` | argv/script args come from JSON arrays | Dynamic or untrusted input without local shell ambiguity |
-| `sshctl run host --json cmd` | Structured result | Agents |
-| `sshctl plan host cmd` | Dry-run + risk | Confirm before exec |
-| `sshctl run host --secret K=@file cmd` | Secret as remote env; redacted in plan/trace | Secrets |
-
-`-s`, `-f`, and `--scripts` do not require an executable local file and never embed the script body in the SSH command. SSM strips a UTF-8 BOM, normalizes CRLF, rejects NUL/oversized input, and auto-selects `sh/bash/dash/ash/ksh/zsh` from the shebang; no shebang defaults to `sh`. Plan/JSON output includes `interpreter`, `stdin_bytes`, and `script_sha256`, never the body. Syntax preflight proves only that the shell can parse the body; runtime dependencies, permissions, and business logic can still fail.
-
-Direct one-string run and request `shell_command` are compatibility paths. They invoke remote shell quoting, globbing, expansion, substitution, and redirection; generated or untrusted text can change meaning or execute unintended code. New agent flows must use request `argv` for literal arguments or `script_file` for shell semantics.
-
-Legacy bulk import no longer has a destructive default: `ssm import-json` must explicitly use `--merge`, or `--replace --yes` for full-vault replacement. Use host CRUD/request for one host.
-
-## Optional Sync
-
-You can run your own center server to sync the encrypted vault across machines:
+You can run your own sync endpoint; it stores encrypted vault blobs only:
 
 ```bash
 ssm register --server <sync-server-url> --email <email> --password-file <sync-password-file>
@@ -284,91 +238,20 @@ ssm login --server <sync-server-url> --email <email> --password-file <sync-passw
 sshctl sync
 ```
 
-The center server stores only encrypted vault blobs. It never decrypts SSH passwords or private keys. `sshctl list/run/status` and `ssm list/exec` check the remote ETag before reading the vault and auto-pull when it changed. Agent-facing host mutations remain local as transactions: use `sshctl --json push --only <transaction-id>` for one reviewed change, or `sshctl --json push --all` only after reviewing every mutation in the invocation-start pending set. Bare `push` is invalid and performs no vault unlock or HTTP request. During a publication, the private `publishing-intent.json` binds that exact scope and target identity; retain it and reconcile by exact transaction IDs if a response is lost.
-
-## Center Server
+Example local server:
 
 ```bash
 ssm server --listen 127.0.0.1:18787 --data-dir /srv/ssm-sync
 ```
 
-Put it behind your own HTTPS reverse proxy:
+The sync server is not an SSH jump host; SSH still connects from the current machine.
 
-```text
-<sync-server-url> -> 127.0.0.1:18787
-```
-
-systemd example:
-
-```ini
-[Unit]
-Description=SSM encrypted sync server
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-ExecStart=/usr/local/bin/ssm server --listen 127.0.0.1:18787 --data-dir /srv/ssm-sync
-Restart=on-failure
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-```
-
-## Agent Prompt
-
-Send this to another machine's agent:
+### Minimal prompt for another agent
 
 ```text
 Install SSM from Cd1s/ssm:
 curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
-
-If sync is already configured, put master.pass and cloud.json in /root/.config/ssm with chmod 600.
-Then run sshctl sync and verify with sshctl status and sshctl list.
-Use sshctl --json run <alias> --argv ... directly for simple fixed commands; use sshctl run <alias> --stream for repeated simple commands.
-For dynamic or untrusted input, prefer sshctl request --file <json>: put literal arguments in argv, scripts in script_file/script_args, and only paths in secret_files.
-Use host.upsert/host.update requests with verify:true. After a changed success, publish only its returned transaction_id with sshctl --json push --only <transaction-id>. If it returns changed:false, action:"unchanged", and omits transaction_id, do not publish. Use sshctl --json push --all only after reviewing every pending mutation.
-For compatible CLI calls use --argv for literals and --preflight -f for generated scripts; never wrap generated bodies in bash -c.
-```
-
-Project agent skill: `skills/agent-ssm/SKILL.md`.
-
-## Auto Update
-
-The v1.4.4 executable remains installed until the stable non-latest v2.0.0
-migration is reviewed and explicitly authorized. Same-major automatic/manual
-updates remain the ordinary path; a cross-major candidate is review-only until
-`ssm update --major --yes`.
-
-Version `1.0.0` and later checks GitHub releases from `Cd1s/ssm` by default. Automatic and ordinary manual updates replace only with a newer release in the installed major; a newer major is reported as a migration and never replaces the current program. Ordinary manual update:
-
-```bash
-ssm update
-```
-
-Render the complete major-migration review without replacing the program:
-
-```bash
-ssm update --major
-```
-
-The review covers release notes, pending transactions, rollback readiness, and
-the pinned digest/provenance checks in the [migration guide](docs/migration-v1-to-v2.md)
-and [provenance runbook](docs/update-provenance-runbook.md). It reports
-`installed:false` until the explicit authorization path is used; no update
-flag bypasses provenance verification. If a migration fails, preserve the old
-executable, encrypted vault, pending ledger, and `publishing-intent.json`; a v1
-rollback is safe only after exact identities are reconciled and no recovery
-intent remains.
-
-After review, the sole non-interactive authorization path for crossing a major is:
-
-```bash
-ssm update --major --yes
-```
-
-For headless tests, offline environments, or runs that must not touch the network on startup, disable release checks:
-
-```bash
-SSM_UPDATE_REPO=off ssm --version
+Run sshctl --json --version first, then sshctl --json status and sshctl --json host list.
+Use only an exact alias; use sshctl --json run <alias> --argv ... for fixed simple commands.
+Reference passwords and private keys only through restricted file paths; verify host changes and publish only the returned transaction_id.
 ```

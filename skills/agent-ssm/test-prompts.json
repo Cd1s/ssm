@@ -1,7 +1,7 @@
 [
   {
     "name": "list-and-run-exact-alias",
-    "prompt": "Use agent-ssm to find the exact alias matching prod-web and run hostname; uname -sr.",
+    "prompt": "Use agent-ssm to find the exact alias matching my-server and run hostname; uname -sr.",
     "expected_behavior": [
       "Runs sshctl --json --version first and selects only the matching compatibility branch",
       "Runs sshctl status or sync before operating when appropriate",
@@ -13,7 +13,7 @@
   },
   {
     "name": "add-server-headless",
-    "prompt": "Add a new SSM host alias staging-api at 203.0.113.10 as root with private key path /root/staging-api.key, then verify it.",
+    "prompt": "Add a new SSM host alias demo-server at 203.0.113.10 as demo with private key path /secure/demo-server.key, then verify it.",
     "expected_behavior": [
       "Runs sshctl --json --version first and selects only the matching compatibility branch",
       "Verifies the key path with stat or chmod without printing the key",
@@ -37,7 +37,7 @@
   },
   {
     "name": "generated-script-with-quotes",
-    "prompt": "Run a generated Bash script on app-prod that contains nested quotes, redirects, and a token stored at /secure/token. Pass release 42 as its first argument.",
+    "prompt": "Run a generated Bash script on my-server that contains nested quotes, redirects, and a token stored at /secure/token. Pass release 42 as its first argument.",
     "expected_behavior": [
       "Runs sshctl --json --version first and selects only the matching compatibility branch",
       "Uses a version 1 request with script_file, script_args:[\"release 42\"], shell:bash, secret_files, and preflight:true",
@@ -49,10 +49,10 @@
   },
   {
     "name": "repeated-simple-commands-fast-path",
-    "prompt": "On exact alias app-prod, run hostname, uname -a, and df -h as three separate read-only checks with the lowest connection overhead.",
+    "prompt": "On exact alias my-server, run hostname, uname -a, and df -h as three separate read-only checks with the lowest connection overhead.",
     "expected_behavior": [
       "Runs sshctl --json --version first and selects only the matching compatibility branch",
-      "Uses one sshctl run app-prod --stream process",
+      "Uses one sshctl run my-server --stream process",
       "Sends one JSON argv array per input line without shell interpolation",
       "Inspects each NDJSON result using ok, error, stage, and exit",
       "Does not create three request files or start three sshctl processes",
@@ -61,7 +61,7 @@
   },
   {
     "name": "known-hosts-mismatch",
-    "prompt": "sshctl run my-reinstalled-host fails with knownhosts: key mismatch. Fix it safely.",
+    "prompt": "sshctl run example-server fails with knownhosts: key mismatch. Fix it safely.",
     "expected_behavior": [
       "Runs sshctl --json --version first and selects only the matching compatibility branch",
       "Treats changed host keys as a high-risk event requiring confirmation unless the user already confirmed reinstall",
@@ -84,7 +84,7 @@
   },
   {
     "name": "v1-compatibility-branch",
-    "prompt": "Use agent-ssm with an installed sshctl 1.4.4 to download /var/log/app.log from exact alias app-prod and then publish one reviewed host change.",
+    "prompt": "Use agent-ssm with an installed sshctl 1.4.4 to download /var/log/app.log from exact alias my-server and then publish one reviewed host change.",
     "expected_behavior": [
       "Runs sshctl --json --version first and selects the v1 compatibility branch only for exact 1.4.4",
       "Uses references/request-v1-bridge.schema.json for typed requests and direct sshctl get rather than v2-only request op:get",
@@ -95,7 +95,7 @@
   },
   {
     "name": "v2-compatibility-branch",
-    "prompt": "Use agent-ssm with sshctl 2.0.0 to download a directory from exact alias app-prod and explain the structured result.",
+    "prompt": "Use agent-ssm with sshctl 2.0.0 to download a directory from exact alias my-server and explain the structured result.",
     "expected_behavior": [
       "Runs sshctl --json --version first and selects the v2 compatibility branch only for exact 2.0.0",
       "May use strict request schema version 1 op:get from references/request-v1.schema.json",
