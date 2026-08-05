@@ -385,6 +385,32 @@ func validateReleaseNotes(repoRoot, version string) error {
 	if strings.TrimSpace(strings.Join(body, "\n")) == "" {
 		return fmt.Errorf("release-note section %q is empty", header)
 	}
+	if version == "2.0.1" {
+		lower := strings.ToLower(strings.Join(strings.Fields(strings.Join(body, "\n")), " "))
+		for _, stale := range []string{
+			"v1.4.4 remains github latest",
+			"current github latest v2.0.0",
+		} {
+			if strings.Contains(lower, stale) {
+				return fmt.Errorf("release-note section %q contains stale release-state claim %q", header, stale)
+			}
+		}
+		for _, required := range []string{
+			"backward-compatible patch release",
+			"github cli 2.92.0",
+			"private `mktemp` directory",
+			"attestation.json",
+			"no protocol or schema breaking change",
+			"v2 compatibility behavior remains",
+			"make_latest=false",
+			"v2.0.0 remains github latest",
+			"exact-tag release workflow",
+		} {
+			if !strings.Contains(lower, required) {
+				return fmt.Errorf("release-note section %q omits v2.0.1 patch contract %q", header, required)
+			}
+		}
+	}
 	if version == "2.0.0" {
 		lower := strings.ToLower(strings.Join(strings.Fields(strings.Join(body, "\n")), " "))
 		for _, stale := range []string{

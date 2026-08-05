@@ -17,6 +17,12 @@ import (
 	"ssm/internal/update"
 )
 
+func TestCanonicalRuntimeVersion(t *testing.T) {
+	if version != "2.0.1" {
+		t.Fatalf("runtime version = %q, want 2.0.1", version)
+	}
+}
+
 func TestMigrationJSONStreamsReviewBeforeTruthfulResult(t *testing.T) {
 	review := update.MigrationReview{
 		Current: "v1.4.3", Target: "v2.0.0", ReleaseNotes: "notes",

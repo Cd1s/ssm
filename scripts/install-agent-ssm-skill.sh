@@ -96,14 +96,15 @@ if ! version="$(printf '%s\n' "$version_json" | jq -er 'select(type == "object" 
 fi
 case "$version" in
   1.4.3|1.4.4) contract="v1 compatibility branch" ;;
-  2.0.0) contract="v2 compatibility branch" ;;
+  2.0.0|2.0.1) contract="v2 compatibility branch" ;;
   *)
     echo "sshctl version $version is unsupported; fail closed and install a matching official skill" >&2
     exit 1
     ;;
 esac
 if ! grep -Fq "v1.4.3 / v1.4.4" "$source_dir/SKILL.md" ||
-   ! grep -Fq "v2.0.0" "$source_dir/SKILL.md"; then
+   ! grep -Fq "v2.0.0" "$source_dir/SKILL.md" ||
+   ! grep -Fq "v2.0.1" "$source_dir/SKILL.md"; then
   echo "bundled skill does not declare the reviewed version matrix" >&2
   exit 1
 fi

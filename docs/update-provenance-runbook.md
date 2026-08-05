@@ -1,7 +1,7 @@
 # SSM update provenance runbook
 
 This runbook governs updater, installer, release-maintainer, and emergency
-recovery decisions for the current GitHub latest v2.0.0. The runbook itself
+recovery decisions for the current GitHub latest v2.0.1. The runbook itself
 does not publish a tag or release or change the latest pointer; v1.4.3/v1.4.4
 clients still require an explicit reviewed major migration to select v2.
 

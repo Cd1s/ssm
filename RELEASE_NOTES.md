@@ -1,11 +1,27 @@
 # Release Notes
 
-These notes are the reviewed contract for the authorized stable v2.0.0
-Release. Only the official exact-tag release workflow may publish it, with
-`make_latest=false`; v1.4.4 remains GitHub latest until a separate explicit
-promotion decision. See the [v1→v2 migration guide](docs/migration-v1-to-v2.md)
-and [update-provenance runbook](docs/update-provenance-runbook.md) for operator
-and maintainer gates.
+These notes are the reviewed contract for the authorized stable v2.0.1
+Release. Only the official exact-tag release workflow may first publish it,
+with `make_latest=false`; v2.0.0 remains GitHub latest until the published
+candidate assets and canaries pass and a separate explicit promotion decision
+is made. See the [v1→v2 migration guide](docs/migration-v1-to-v2.md) and
+[update-provenance runbook](docs/update-provenance-runbook.md) for operator and
+maintainer gates.
+
+## v2.0.1
+
+This is a backward-compatible patch release. The official exact-tag release
+workflow creates the stable v2.0.1 Release with `make_latest=false`; v2.0.0
+remains GitHub latest until the published candidate assets and canaries pass
+and a separate explicit promotion makes v2.0.1 latest.
+
+- Fix fresh installation with GitHub CLI 2.92.0. `gh attestation verify`
+  requires attestation bundle files to have a `.json` or `.jsonl` suffix;
+  `install.sh` now downloads the bundle into a private `mktemp` directory as
+  `attestation.json` and removes the file and directory on both success and
+  failure.
+- There is no protocol or schema breaking change, and v2 compatibility
+  behavior remains unchanged.
 
 ## v2.0.0
 

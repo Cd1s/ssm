@@ -474,11 +474,17 @@ func TestTrackedReleaseNotesRetainExactV2Heading(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Count(string(data), "\n## v2.0.0\n"); got != 1 {
-		t.Fatalf("exact v2 release heading count = %d, want 1", got)
+	if got := strings.Count(string(data), "\n## v2.0.1\n"); got != 1 {
+		t.Fatalf("exact v2.0.1 release heading count = %d, want 1", got)
 	}
-	if strings.Contains(string(data), "Upcoming v2.0.0") {
-		t.Fatal("v2 release heading drifted to a non-publishable draft form")
+	if got := strings.Count(string(data), "\n## v2.0.0\n"); got != 1 {
+		t.Fatalf("historical v2.0.0 release heading count = %d, want 1", got)
+	}
+	if strings.Index(string(data), "\n## v2.0.1\n") > strings.Index(string(data), "\n## v2.0.0\n") {
+		t.Fatal("v2.0.1 release section does not precede historical v2.0.0")
+	}
+	if strings.Contains(string(data), "Upcoming v2.0.1") {
+		t.Fatal("v2.0.1 release heading drifted to a non-publishable draft form")
 	}
 }
 

@@ -347,7 +347,7 @@ func assertV2PublicSurfaces(t *testing.T, root string) {
 	surfaces := map[string][]string{
 		"README.en.md":               {"docs/migration-v1-to-v2.md", "docs/update-provenance-runbook.md", "--refresh", "update --major --yes", "changed:false", "action:\"unchanged\"", "transaction_id", "do not publish"},
 		"README.md":                  {"docs/migration-v1-to-v2.zh-CN.md", "docs/update-provenance-runbook.zh-CN.md", "--refresh", "update --major --yes", "changed:false", "action:\"unchanged\"", "transaction_id", "do not publish"},
-		"RELEASE_NOTES.md":           {"## v2.0.0", "BC-1", "BC-10", "v2-readiness-report", "all child tickets", "#31", "final readiness", "complete field-level", "changed:false", "action:\"unchanged\"", "does not publish"},
+		"RELEASE_NOTES.md":           {"## v2.0.1", "## v2.0.0", "backward-compatible patch release", "BC-1", "BC-10", "v2-readiness-report", "all child tickets", "#31", "final readiness", "complete field-level", "changed:false", "action:\"unchanged\"", "does not publish"},
 		"SECURITY.md":                {"docs/update-provenance-runbook.md", "identity rotation", "no verification bypass"},
 		"skills/agent-ssm/SKILL.md":  {"docs/migration-v1-to-v2.md", "positive --refresh", "update --major --yes", "changed:false", "action:\"unchanged\"", "transaction_id", "do not publish"},
 		"skills/agent-ssm/README.md": {"docs/migration-v1-to-v2.md", "positive --refresh", "update --major --yes", "changed:false", "action:\"unchanged\"", "transaction_id", "do not publish"},

@@ -8,8 +8,9 @@ metadata:
 
 # Agent SSM
 
-This is the official skill for the current GitHub latest `ssm`/`sshctl` v2.0.0
-binary. It also contains a deliberately separate compatibility branch for the
+This is the official skill for the current GitHub latest `ssm`/`sshctl` v2.0.1
+binary. It also supports the previous v2.0.0 patch in the v2 compatibility
+branch and contains a deliberately separate compatibility branch for the
 supported v1.4.3/v1.4.4 binaries. Read the [version compatibility reference](references/version-compatibility.md),
 [v1→v2 migration guide](../../docs/migration-v1-to-v2.md), and
 [update-provenance runbook](../../docs/update-provenance-runbook.md) before a
@@ -36,7 +37,8 @@ one branch:
 
 | Exact version | Skill branch | Request schema |
 | --- | --- | --- |
-| **v2.0.0 (current/latest)** | v2 compatibility branch | `references/request-v1.schema.json` |
+| **v2.0.1 (current/latest)** | v2 compatibility branch | `references/request-v1.schema.json` |
+| v2.0.0 (supported previous v2 patch) | v2 compatibility branch | `references/request-v1.schema.json` |
 | v1.4.3 / v1.4.4 | v1 compatibility branch | `references/request-v1-bridge.schema.json` |
 
 Request schema version remains 1 in both branches. The v2 schema adds strict
@@ -147,9 +149,9 @@ for the related guarded recovery rules.
 
 ## Updates and rollback
 
-The current v2.0.0 is GitHub latest. Same-major automatic/manual updates remain
+The current v2.0.1 is GitHub latest. Same-major automatic/manual updates remain
 the default. A v1.4.3/v1.4.4 ordinary update remains in major 1 even though
-v2.0.0 is current/latest. Review a cross-major candidate with:
+v2.0.1 is current/latest. Review a cross-major candidate with:
 
 ```bash
 ssm update --major
@@ -164,7 +166,7 @@ ssm update --major --yes
 
 The authorization flag never bypasses pinned digest or keyless provenance
 verification. Rerun `sshctl --json --version` after replacement and enter the
-v2 branch only on exact `2.0.0`. Preserve the old executable, encrypted vault,
+v2 branch only on exact `2.0.0` or `2.0.1`. Preserve the old executable, encrypted vault,
 pending ledger, `publishing-intent.json`, and recovery evidence until exact
 identities are reconciled.
 

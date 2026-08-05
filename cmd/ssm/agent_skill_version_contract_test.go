@@ -20,7 +20,7 @@ func TestCurrentV2BeginnerDocumentationContract(t *testing.T) {
 		document := active[name]
 		for _, required := range []string{
 			"https://github.com/Cd1s/ssm/releases/latest/download/install.sh",
-			"v2.0.0",
+			"v2.0.1",
 			"latest",
 		} {
 			if !strings.Contains(strings.ToLower(document), strings.ToLower(required)) {
@@ -33,7 +33,8 @@ func TestCurrentV2BeginnerDocumentationContract(t *testing.T) {
 	for _, name := range []string{"skills/agent-ssm/SKILL.md", "skills/agent-ssm/README.md"} {
 		document := active[name]
 		for _, required := range []string{
-			"v2.0.0 (current/latest)",
+			"v2.0.1 (current/latest)",
+			"v2.0.0",
 			"v1.4.3/v1.4.4",
 			"v1 compatibility branch",
 			"ssm update --major",
@@ -107,11 +108,11 @@ func assertBeginnerFirstRunOrder(t *testing.T, name, document string) {
 
 func staleCurrentV2DocumentationClaims(document string) []string {
 	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`(?i)\bv2\.0\.0\b.{0,120}\bnon[- ]latest\b`),
-		regexp.MustCompile(`(?i)\bnon[- ]latest\b.{0,120}\bv2\.0\.0\b`),
-		regexp.MustCompile(`(?i)\bstaged\s+v2(?:\.0\.0)?(?:\s+release)?\b`),
-		regexp.MustCompile(`(?i)\bv2\.0\.0\b.{0,120}\bstaged\b`),
-		regexp.MustCompile(`(?i)\bstaged\b.{0,120}\bv2\.0\.0\b`),
+		regexp.MustCompile(`(?i)\bv2\.0\.0\s*\(current/latest\)`),
+		regexp.MustCompile(`(?i)\bcurrent(?:\s+github)?\s+latest\b.{0,80}\bv2\.0\.0\b`),
+		regexp.MustCompile(`(?i)\bv2\.0\.0\b.{0,80}\bcurrent(?:/latest|\s+github\s+latest)\b`),
+		regexp.MustCompile(`当前.{0,40}v2\.0\.0`),
+		regexp.MustCompile(`v2\.0\.0.{0,40}当前.{0,20}latest`),
 		regexp.MustCompile(`(?i)\bv1\.4\.4\b.{0,60}\b(?:remains|is|as|stays)\b.{0,40}\blatest\b`),
 		regexp.MustCompile(`(?i)\b(?:default installer|default install)\b.{0,100}\bv1\.4\.4\b`),
 		regexp.MustCompile(`(?i)默认安装.{0,100}v1\.4\.4`),
@@ -131,15 +132,16 @@ func TestBundledAgentSkillProbesVersionBeforeChoosingMajorContract(t *testing.T)
 		t.Fatalf("bundled skill must run %q before its first state-aware operation", probe)
 	}
 	for description, required := range map[string]string{
-		"v1 bridge versions":        "v1.4.3 / v1.4.4",
-		"v2 release version":        "v2.0.0",
-		"unsupported-major stop":    "unsupported major",
-		"fail-closed instruction":   "fail closed",
-		"v1 compatibility branch":   "v1 compatibility branch",
-		"v2 compatibility branch":   "v2 compatibility branch",
-		"major migration review":    "ssm update --major",
-		"major migration authority": "ssm update --major --yes",
-		"schema stability":          "request schema version remains 1",
+		"v1 bridge versions":         "v1.4.3 / v1.4.4",
+		"previous v2 patch":          "v2.0.0",
+		"current v2 release version": "v2.0.1",
+		"unsupported-major stop":     "unsupported major",
+		"fail-closed instruction":    "fail closed",
+		"v1 compatibility branch":    "v1 compatibility branch",
+		"v2 compatibility branch":    "v2 compatibility branch",
+		"major migration review":     "ssm update --major",
+		"major migration authority":  "ssm update --major --yes",
+		"schema stability":           "request schema version remains 1",
 	} {
 		if !strings.Contains(strings.ToLower(skill), strings.ToLower(required)) {
 			t.Errorf("bundled skill lacks %s %q", description, required)
@@ -148,7 +150,7 @@ func TestBundledAgentSkillProbesVersionBeforeChoosingMajorContract(t *testing.T)
 
 	compatibility := readAgentSkillContractFile(t, root, filepath.Join("references", "version-compatibility.md"))
 	for _, required := range []string{
-		"v1.4.3", "v1.4.4", "v2.0.0", "request-v1.schema.json", "op:get",
+		"v1.4.3", "v1.4.4", "v2.0.0", "v2.0.1", "request-v1.schema.json", "op:get",
 		"push --only", "push --all", "--refresh=0", "sync_config_error",
 		"direction", "kind", "unsupported major",
 	} {
@@ -163,6 +165,9 @@ func TestBundledAgentSkillProbesVersionBeforeChoosingMajorContract(t *testing.T)
 		var parsed any
 		if err := json.Unmarshal([]byte(schema), &parsed); err != nil {
 			t.Errorf("%s request schema is not JSON: %v", name, err)
+		}
+		if !strings.Contains(schema, "https://github.com/Cd1s/ssm/blob/v2.0.1/") {
+			t.Errorf("%s request schema does not bind its active ID to v2.0.1", name)
 		}
 	}
 	if strings.Contains(bridgeSchema, `"get"`) {
@@ -233,7 +238,7 @@ func TestLatestDocumentationContract(t *testing.T) {
 			freshInstallAnchor = "全新安装"
 		}
 		for _, required := range []string{
-			"v2.0.0",
+			"v2.0.1",
 			"github",
 			"latest",
 			freshInstallAnchor,
@@ -247,7 +252,8 @@ func TestLatestDocumentationContract(t *testing.T) {
 
 	skill := strings.ToLower(contents["agent skill"])
 	for _, required := range []string{
-		"v2.0.0 (current/latest)",
+		"v2.0.1 (current/latest)",
+		"v2.0.0",
 		"v1.4.3/v1.4.4",
 		"sshctl --json --version",
 		"ordinary update remains in major 1",
@@ -260,7 +266,8 @@ func TestLatestDocumentationContract(t *testing.T) {
 
 	compatibility := strings.ToLower(contents["version compatibility"])
 	for _, required := range []string{
-		"v2.0.0 (current/latest)",
+		"v2.0.1 (current/latest)",
+		"v2.0.0",
 		"v1.4.3 / v1.4.4",
 		"ordinary or automatic v1 update stays in major 1",
 		"ssm update --major --yes",
@@ -272,15 +279,17 @@ func TestLatestDocumentationContract(t *testing.T) {
 
 	for _, document := range documents {
 		body := strings.ToLower(contents[document.name])
-		if !strings.Contains(body, "v2.0.0") {
-			t.Errorf("%s does not identify v2.0.0 as the active contract", document.name)
+		if !strings.Contains(body, "v2.0.1") {
+			t.Errorf("%s does not identify v2.0.1 as the active contract", document.name)
 		}
 		for _, stale := range []string{
 			"non-latest",
 			"staged v2 release",
-			"staged v2.0.0",
-			"v2.0.0 is staged",
+			"staged v2.0.1",
+			"v2.0.1 is staged",
 			"v2 release is staged",
+			"v2.0.0 (current/latest)",
+			"current github latest v2.0.0",
 			"v1.4.4 remains github latest",
 			"v1.4.4 都保持为 github latest",
 			"default installer follows github latest and therefore installs v1.4.4",
@@ -352,7 +361,7 @@ func TestAgentSkillInstallInstructionsCoverExactTagCodexAndHermes(t *testing.T) 
 	root := repositoryRoot(t)
 	document := readAgentSkillContractFile(t, root, filepath.Join("references", "install-update.md"))
 	for _, required := range []string{
-		"v2.0.0", "exact tag", "CODEX_HOME", "HERMES_HOME", "Codex", "Hermes",
+		"v2.0.0", "v2.0.1", "exact tag", "CODEX_HOME", "HERMES_HOME", "Codex", "Hermes",
 		"install-agent-ssm-skill.sh", "sshctl --json --version", "--replace",
 	} {
 		if !strings.Contains(strings.ToLower(document), strings.ToLower(required)) {
@@ -371,9 +380,11 @@ func TestAgentSkillDeploymentUsesTemporaryCodexAndHermesRoots(t *testing.T) {
 	tests := []struct {
 		platform string
 		version  string
+		contract string
 	}{
-		{platform: "codex", version: "1.4.4"},
-		{platform: "hermes", version: "2.0.0"},
+		{platform: "codex", version: "1.4.4", contract: "v1 compatibility branch"},
+		{platform: "codex", version: "2.0.0", contract: "v2 compatibility branch"},
+		{platform: "hermes", version: "2.0.1", contract: "v2 compatibility branch"},
 	}
 	for _, test := range tests {
 		t.Run(test.platform+"-"+test.version, func(t *testing.T) {
@@ -392,8 +403,12 @@ func TestAgentSkillDeploymentUsesTemporaryCodexAndHermesRoots(t *testing.T) {
 				"--root", installRoot,
 				"--sshctl", binary,
 			)
-			if output, err := command.CombinedOutput(); err != nil {
+			output, err := command.CombinedOutput()
+			if err != nil {
 				t.Fatalf("deploy bundled skill: %v\n%s", err, output)
+			}
+			if !strings.Contains(string(output), test.contract) {
+				t.Fatalf("deployment output = %q, want %q", output, test.contract)
 			}
 			destination := filepath.Join(installRoot, "skills", "agent-ssm")
 			assertAgentSkillTreesEqual(t, source, destination)
@@ -429,7 +444,7 @@ func TestAgentSkillDeploymentUsesTemporaryCodexAndHermesRoots(t *testing.T) {
 			"--platform", "codex",
 			"--source", source,
 			"--root", installRoot,
-			"--sshctl", writeVersionProbeFixture(t, "2.0.0"),
+			"--sshctl", writeVersionProbeFixture(t, "2.0.1"),
 			"--replace",
 		)
 		if output, err := command.CombinedOutput(); err != nil {
