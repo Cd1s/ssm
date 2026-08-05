@@ -5,11 +5,123 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
 	"testing"
 )
+
+func TestCurrentV2BeginnerDocumentationContract(t *testing.T) {
+	root := repositoryRoot(t)
+	active := currentV2ActiveDocumentation(t, root)
+
+	for _, name := range []string{"README.md", "README.en.md"} {
+		document := active[name]
+		for _, required := range []string{
+			"https://github.com/Cd1s/ssm/releases/latest/download/install.sh",
+			"v2.0.0",
+			"latest",
+		} {
+			if !strings.Contains(strings.ToLower(document), strings.ToLower(required)) {
+				t.Errorf("%s lacks fresh-install/latest fact %q", name, required)
+			}
+		}
+		assertBeginnerFirstRunOrder(t, name, document)
+	}
+
+	for _, name := range []string{"skills/agent-ssm/SKILL.md", "skills/agent-ssm/README.md"} {
+		document := active[name]
+		for _, required := range []string{
+			"v2.0.0 (current/latest)",
+			"v1.4.3/v1.4.4",
+			"v1 compatibility branch",
+			"ssm update --major",
+			"ssm update --major --yes",
+			"releases/latest/download/install.sh",
+		} {
+			if !strings.Contains(strings.ToLower(document), strings.ToLower(required)) {
+				t.Errorf("%s lacks current-version contract %q", name, required)
+			}
+		}
+	}
+
+	for name, document := range active {
+		for _, claim := range staleCurrentV2DocumentationClaims(document) {
+			t.Errorf("%s contains stale current-release claim %q", name, claim)
+		}
+	}
+}
+
+func currentV2ActiveDocumentation(t *testing.T, root string) map[string]string {
+	t.Helper()
+	paths := []string{
+		"README.md",
+		"README.en.md",
+		"SECURITY.md",
+		"docs/migration-v1-to-v2.md",
+		"docs/migration-v1-to-v2.zh-CN.md",
+		"docs/update-provenance-runbook.md",
+		"docs/update-provenance-runbook.zh-CN.md",
+		"skills/agent-ssm/SKILL.md",
+		"skills/agent-ssm/README.md",
+		"skills/agent-ssm/references/version-compatibility.md",
+		"skills/agent-ssm/references/install-update.md",
+	}
+	documents := make(map[string]string, len(paths))
+	for _, name := range paths {
+		data, err := os.ReadFile(filepath.Join(root, name)) //nolint:gosec // name is a fixed active-document contract path
+		if err != nil {
+			t.Fatalf("read active documentation %s: %v", name, err)
+		}
+		documents[name] = string(data)
+	}
+	return documents
+}
+
+func assertBeginnerFirstRunOrder(t *testing.T, name, document string) {
+	t.Helper()
+	anchors := []struct {
+		label  string
+		regexp *regexp.Regexp
+	}{
+		{"install", regexp.MustCompile(`https://github\.com/Cd1s/ssm/releases/latest/download/install\.sh`)},
+		{"version", regexp.MustCompile(`sshctl --json --version`)},
+		{"status", regexp.MustCompile(`sshctl --json status`)},
+		{"host list", regexp.MustCompile(`sshctl --json host list`)},
+		{"exact-alias hostname", regexp.MustCompile(`sshctl --json run [A-Za-z0-9._-]+ --argv hostname`)},
+	}
+	previous := -1
+	for _, anchor := range anchors {
+		match := anchor.regexp.FindStringIndex(document)
+		if match == nil {
+			t.Errorf("%s lacks beginner first-run step %q", name, anchor.label)
+			continue
+		}
+		if match[0] <= previous {
+			t.Errorf("%s first-run step %q is out of order", name, anchor.label)
+		}
+		previous = match[0]
+	}
+}
+
+func staleCurrentV2DocumentationClaims(document string) []string {
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\bv2\.0\.0\b.{0,120}\bnon[- ]latest\b`),
+		regexp.MustCompile(`(?i)\bnon[- ]latest\b.{0,120}\bv2\.0\.0\b`),
+		regexp.MustCompile(`(?i)\bstaged\s+v2(?:\.0\.0)?(?:\s+release)?\b`),
+		regexp.MustCompile(`(?i)\bv2\.0\.0\b.{0,120}\bstaged\b`),
+		regexp.MustCompile(`(?i)\bstaged\b.{0,120}\bv2\.0\.0\b`),
+		regexp.MustCompile(`(?i)\bv1\.4\.4\b.{0,60}\b(?:remains|is|as|stays)\b.{0,40}\blatest\b`),
+		regexp.MustCompile(`(?i)\b(?:default installer|default install)\b.{0,100}\bv1\.4\.4\b`),
+		regexp.MustCompile(`(?i)默认安装.{0,100}v1\.4\.4`),
+	}
+	var claims []string
+	for _, pattern := range patterns {
+		claims = append(claims, pattern.FindAllString(document, -1)...)
+	}
+	return claims
+}
 
 func TestBundledAgentSkillProbesVersionBeforeChoosingMajorContract(t *testing.T) {
 	root := repositoryRoot(t)
