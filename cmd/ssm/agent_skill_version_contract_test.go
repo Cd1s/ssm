@@ -118,9 +118,7 @@ func staleCurrentV2DocumentationClaims(document string) []string {
 	}
 	var claims []string
 	for _, pattern := range patterns {
-		for _, match := range pattern.FindAllString(document, -1) {
-			claims = append(claims, match)
-		}
+		claims = append(claims, pattern.FindAllString(document, -1)...)
 	}
 	return claims
 }
