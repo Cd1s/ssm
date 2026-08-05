@@ -40,10 +40,19 @@ binary_limit=67108864
 
 tmp="$(mktemp)"
 checksums="$(mktemp)"
-bundle="$(mktemp)"
+bundle_dir="$(mktemp -d)"
+bundle="$bundle_dir/attestation.json"
 release_metadata="$(mktemp)"
 curl_status="$(mktemp)"
-trap 'rm -f "$tmp" "$checksums" "$bundle" "$release_metadata" "$curl_status"' EXIT
+staged=""
+cleanup() {
+  rm -f "$tmp" "$checksums" "$bundle" "$release_metadata" "$curl_status"
+  if [ -n "$staged" ]; then
+    rm -f "$staged"
+  fi
+  rmdir "$bundle_dir" 2>/dev/null || :
+}
+trap cleanup EXIT
 if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required for exact release manifest validation" >&2
   exit 1
@@ -223,7 +232,6 @@ fi
 chmod 755 "$tmp"
 mkdir -p "$prefix" "$config_dir"
 staged="$(mktemp "$prefix/.ssm.new.XXXXXX")"
-trap 'rm -f "$tmp" "$checksums" "$bundle" "$release_metadata" "$curl_status" "$staged"' EXIT
 install -m 755 "$tmp" "$staged"
 mv -f "$staged" "$prefix/ssm"
 staged=""
