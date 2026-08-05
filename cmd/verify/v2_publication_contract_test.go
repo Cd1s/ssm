@@ -24,6 +24,7 @@ func TestV2ReleaseWorkflowCannotPromoteGitHubLatest(t *testing.T) {
 		"no concurrent cancellation": "  cancel-in-progress: false\n",
 		"exact section extraction":   "            found && /^## / { exit }\n",
 		"create-only helper":         "./scripts/release-create-only.sh",
+		"reviewed previous latest":   "            v2.0.0 \\\n",
 	} {
 		if !strings.Contains(workflow, required) {
 			t.Errorf("v2 release workflow lacks %s %q", description, required)
@@ -144,18 +145,68 @@ func TestCreateOnlyReleaseScriptContract(t *testing.T) {
 		"non-latest creation":             `make_latest: "false"`,
 		"created release binding":         `created_release_id`,
 		"post-create uniqueness binding":  `assert_only_created_release`,
-		"exact latest preservation":       `required_latest_tag="v1.4.4"`,
+		"reviewed latest input":           `local expected_latest_tag="$4"`,
+		"exact latest preservation":       `--arg tag "$expected_latest_tag"`,
+		"latest release has valid ID":     `(.id | type == "number" and . > 0)`,
+		"created release is never latest": `.id != $created_release_id`,
 	} {
 		if !strings.Contains(text, required) {
 			t.Errorf("create-only publisher lacks %s %q", description, required)
 		}
 	}
 	for _, forbidden := range []string{
-		"softprops/action-gh-release", "gh release upload", "--hostname uploads.github.com", "--clobber", "--method PATCH", "--method DELETE", "release edit", `make_latest: "true"`,
+		"softprops/action-gh-release", "gh release upload", "--hostname uploads.github.com", "--clobber", "--method PATCH", "--method DELETE", "release edit", `make_latest: "true"`, `required_latest_tag=`,
 	} {
 		if strings.Contains(text, forbidden) {
 			t.Errorf("create-only publisher contains forbidden update/reuse behavior %q", forbidden)
 		}
+	}
+}
+
+func TestCreateOnlyReleaseScriptRejectsInvalidExpectedLatestBeforeMutation(t *testing.T) {
+	root := filepath.Join("..", "..")
+	bin := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "gh.log")
+	if err := os.WriteFile(logPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fakeGH := filepath.Join(bin, "gh")
+	fake := `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$GH_FAKE_LOG"
+exit 97
+`
+	if err := os.WriteFile(fakeGH, []byte(fake), 0o755); err != nil { //nolint:gosec // test-owned fake CLI must be executable
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name           string
+		expectedLatest string
+		want           string
+	}{
+		{name: "malformed", expectedLatest: "2.0.0", want: "expected latest tag must be an exact stable v-tag"},
+		{name: "same as target", expectedLatest: "v2.0.1", want: "expected latest tag must differ from target tag"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			args := createOnlyPublishArguments(t, "v2.0.1", test.expectedLatest)
+			command := exec.Command("bash", append([]string{filepath.Join(root, "scripts", "release-create-only.sh")}, args...)...) //nolint:gosec // repository script and test-owned fixture paths
+			command.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "GH_FAKE_LOG="+logPath, "GITHUB_REPOSITORY=Cd1s/ssm", "GH_TOKEN=test-only", "RUNNER_TEMP="+t.TempDir())
+			output, err := command.CombinedOutput()
+			if err == nil {
+				t.Fatalf("invalid expected latest was accepted: %s", output)
+			}
+			if !strings.Contains(string(output), test.want) {
+				t.Fatalf("invalid expected latest output = %q, want %q", output, test.want)
+			}
+		})
+	}
+	calls, err := os.ReadFile(logPath) //nolint:gosec // test-owned temporary log path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("invalid expected latest reached GitHub: %s", calls)
 	}
 }
 
@@ -164,12 +215,16 @@ func TestCreateOnlyReleaseScriptStopsWhenCreateConflicts(t *testing.T) {
 	bin := t.TempDir()
 	fixture := t.TempDir()
 	logPath := filepath.Join(t.TempDir(), "gh.log")
+	if err := os.WriteFile(logPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	fakeGH := filepath.Join(bin, "gh")
 	fake := `#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "$GH_FAKE_LOG"
 case "$*" in
   api\ --paginate*) printf '%s\n' '[]' ;;
+  api\ repos/Cd1s/ssm/releases/latest*) printf '%s\n' '{"id":364882535,"tag_name":"v2.0.0","draft":false,"prerelease":false}' ;;
   api\ --method\ POST*) exit 42 ;;
   *) exit 97 ;;
 esac
@@ -178,12 +233,12 @@ esac
 		t.Fatal(err)
 	}
 	assets := v2ReleaseAssetNames()
-	args := []string{"publish", "v2.0.0", strings.Repeat("a", 40)}
+	args := []string{"publish", "v2.0.1", strings.Repeat("a", 40)}
 	body := filepath.Join(fixture, "release-body.md")
 	if err := os.WriteFile(body, []byte("reviewed release notes\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	args = append(args, body)
+	args = append(args, body, "v2.0.0")
 	for _, name := range assets {
 		path := filepath.Join(fixture, name)
 		if err := os.WriteFile(path, []byte(name), 0o600); err != nil {
@@ -204,9 +259,19 @@ esac
 	if strings.Contains(string(calls), "release upload") || strings.Contains(string(calls), "uploads.github.com") {
 		t.Fatalf("failed create fell through to asset upload: %s", calls)
 	}
+	if got := strings.Count(string(calls), "api --method POST repos/Cd1s/ssm/releases --input"); got != 1 {
+		t.Fatalf("create calls = %d, want 1; calls=%s", got, calls)
+	}
 }
 
-func TestCreateOnlyReleaseScriptPublishesNewReleaseOnce(t *testing.T) {
+func runCreateOnlyReleaseScript(
+	t *testing.T,
+	actualLatestTag string,
+	actualLatestIDJSON string,
+	actualLatestDraft bool,
+	actualLatestPrerelease bool,
+) (string, string, error) {
+	t.Helper()
 	root := filepath.Join("..", "..")
 	bin := t.TempDir()
 	fixture := filepath.Join(t.TempDir(), `windows\path`)
@@ -214,6 +279,9 @@ func TestCreateOnlyReleaseScriptPublishesNewReleaseOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	logPath := filepath.Join(t.TempDir(), "gh.log")
+	if err := os.WriteFile(logPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	statePath := filepath.Join(t.TempDir(), "created.json")
 	assetsPath := filepath.Join(t.TempDir(), "assets.json")
 	fakeGH := filepath.Join(bin, "gh")
@@ -222,7 +290,7 @@ set -eu
 printf '%s\n' "$*" >> "$GH_FAKE_LOG"
 if [ "${1:-}" = api ] && [ "${2:-}" = --paginate ]; then
   if [ -n "${GH_FAKE_STATE:-}" ] && [ -s "$GH_FAKE_STATE" ]; then
-    printf '%s\n' '[{"id":4242,"tag_name":"v2.0.0"}]'
+    printf '%s\n' '[{"id":4242,"tag_name":"v2.0.1"}]'
   else
     printf '%s\n' '[]'
   fi
@@ -267,14 +335,16 @@ if [ "${1:-}" = api ] && [ "${2:-}" = --method ] && [ "${3:-}" = POST ]; then
   exit 96
 fi
 case "${2:-}" in
-  repos/Cd1s/ssm/releases/tags/v2.0.0)
+  repos/Cd1s/ssm/releases/tags/v2.0.1)
     jq '. + {id: 4242, assets: []}' "$GH_FAKE_STATE"
     ;;
   repos/Cd1s/ssm/releases/4242)
     jq --slurpfile assets "$GH_FAKE_ASSETS" '. + {id: 4242, assets: $assets[0]}' "$GH_FAKE_STATE"
     ;;
   repos/Cd1s/ssm/releases/latest)
-    printf '%s\n' '{"id":364597135,"tag_name":"v1.4.4","draft":false,"prerelease":false}'
+    jq -n --argjson id "$GH_FAKE_LATEST_ID_JSON" --arg tag "$GH_FAKE_LATEST_TAG" \
+      --argjson draft "$GH_FAKE_LATEST_DRAFT" --argjson prerelease "$GH_FAKE_LATEST_PRERELEASE" \
+      '{id:$id,tag_name:$tag,draft:$draft,prerelease:$prerelease}'
     ;;
   *) exit 97 ;;
 esac
@@ -298,12 +368,12 @@ esac
 	if err := os.WriteFile(assetsPath, assetJSON, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"publish", "v2.0.0", strings.Repeat("a", 40)}
+	args := []string{"publish", "v2.0.1", strings.Repeat("a", 40)}
 	body := filepath.Join(fixture, "release-body.md")
 	if err := os.WriteFile(body, []byte("reviewed release notes\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	args = append(args, body)
+	args = append(args, body, "v2.0.0")
 	for _, name := range assets {
 		path := filepath.Join(fixture, name)
 		if err := os.WriteFile(path, []byte(name), 0o600); err != nil {
@@ -317,33 +387,125 @@ esac
 		"GH_FAKE_LOG="+logPath,
 		"GH_FAKE_STATE="+statePath,
 		"GH_FAKE_ASSETS="+assetsPath,
+		"GH_FAKE_LATEST_TAG="+actualLatestTag,
+		"GH_FAKE_LATEST_ID_JSON="+actualLatestIDJSON,
+		fmt.Sprintf("GH_FAKE_LATEST_DRAFT=%t", actualLatestDraft),
+		fmt.Sprintf("GH_FAKE_LATEST_PRERELEASE=%t", actualLatestPrerelease),
 		"GITHUB_REPOSITORY=Cd1s/ssm",
 		"GH_TOKEN=test-only",
 		"RUNNER_TEMP="+t.TempDir(),
 	)
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("create-only publication failed: %v\n%s", err, output)
-	}
+	output, runErr := command.CombinedOutput()
 	calls, err := os.ReadFile(logPath) //nolint:gosec // test-owned temporary log path
 	if err != nil {
 		t.Fatal(err)
 	}
-	callText := string(calls)
+	return string(output), string(calls), runErr
+}
+
+func TestCreateOnlyReleaseScriptPublishesNewReleaseOnce(t *testing.T) {
+	output, callText, err := runCreateOnlyReleaseScript(t, "v2.0.0", "364882535", false, false)
+	if err != nil {
+		t.Fatalf("create-only publication failed: %v\n%s", err, output)
+	}
 	if got := strings.Count(callText, "api --method POST repos/Cd1s/ssm/releases --input"); got != 1 {
-		t.Fatalf("create calls = %d, want 1; calls=%s", got, calls)
+		t.Fatalf("create calls = %d, want 1; calls=%s", got, callText)
 	}
 	if strings.Contains(callText, "release upload") {
-		t.Fatalf("publication used mutable tag-resolved upload: %s", calls)
+		t.Fatalf("publication used mutable tag-resolved upload: %s", callText)
 	}
 	idBoundUpload := "api --method POST https://uploads.github.com/repos/Cd1s/ssm/releases/4242/assets?name="
-	if got := strings.Count(callText, idBoundUpload); got != len(assets) {
-		t.Fatalf("ID-bound upload calls = %d, want %d; calls=%s", got, len(assets), calls)
+	if got := strings.Count(callText, idBoundUpload); got != len(v2ReleaseAssetNames()) {
+		t.Fatalf("ID-bound upload calls = %d, want %d; calls=%s", got, len(v2ReleaseAssetNames()), callText)
 	}
 	for _, forbidden := range []string{"--clobber", "--method PATCH", "--method DELETE", "release edit"} {
 		if strings.Contains(callText, forbidden) {
-			t.Fatalf("create-only publication used forbidden mutation %q: %s", forbidden, calls)
+			t.Fatalf("create-only publication used forbidden mutation %q: %s", forbidden, callText)
 		}
 	}
+	if got := strings.Count(callText, "api repos/Cd1s/ssm/releases/latest"); got != 2 {
+		t.Fatalf("latest GET calls = %d, want pre-create and post-upload checks; calls=%s", got, callText)
+	}
+}
+
+func TestCreateOnlyReleaseScriptRejectsActualLatestMismatch(t *testing.T) {
+	output, calls, err := runCreateOnlyReleaseScript(t, "v1.4.4", "364597135", false, false)
+	if err == nil {
+		t.Fatalf("actual latest mismatch was accepted: %s", output)
+	}
+	if !strings.Contains(output, "GitHub latest does not match reviewed baseline v2.0.0 before create") {
+		t.Fatalf("actual latest mismatch output = %q", output)
+	}
+	assertNoReleaseMutationCalls(t, calls)
+}
+
+func TestCreateOnlyReleaseScriptRejectsCreatedReleaseAsLatest(t *testing.T) {
+	output, calls, err := runCreateOnlyReleaseScript(t, "v2.0.0", "4242", false, false)
+	if err == nil {
+		t.Fatalf("created Release was accepted as latest: %s", output)
+	}
+	if !strings.Contains(output, "created GitHub Release ID matches reviewed latest Release ID") {
+		t.Fatalf("created Release latest output = %q", output)
+	}
+	if got := strings.Count(calls, "api --method POST repos/Cd1s/ssm/releases --input"); got != 1 {
+		t.Fatalf("create calls = %d, want 1; calls=%s", got, calls)
+	}
+	if got := strings.Count(calls, "api --method POST https://uploads.github.com/repos/Cd1s/ssm/releases/4242/assets?name="); got != 0 {
+		t.Fatalf("ID-bound upload calls = %d, want 0; calls=%s", got, calls)
+	}
+}
+
+func TestCreateOnlyReleaseScriptRejectsInvalidLiveLatestBeforeMutation(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		idJSON     string
+		draft      bool
+		prerelease bool
+	}{
+		{name: "zero ID", idJSON: "0"},
+		{name: "string ID", idJSON: `"364882535"`},
+		{name: "draft", idJSON: "364882535", draft: true},
+		{name: "prerelease", idJSON: "364882535", prerelease: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			output, calls, err := runCreateOnlyReleaseScript(t, "v2.0.0", test.idJSON, test.draft, test.prerelease)
+			if err == nil {
+				t.Fatalf("invalid live latest was accepted: %s", output)
+			}
+			if !strings.Contains(output, "GitHub latest does not match reviewed baseline v2.0.0 before create") {
+				t.Fatalf("invalid live latest output = %q", output)
+			}
+			assertNoReleaseMutationCalls(t, calls)
+		})
+	}
+}
+
+func assertNoReleaseMutationCalls(t *testing.T, calls string) {
+	t.Helper()
+	if got := strings.Count(calls, "api --method POST repos/Cd1s/ssm/releases --input"); got != 0 {
+		t.Fatalf("create calls = %d, want 0; calls=%s", got, calls)
+	}
+	if got := strings.Count(calls, "api --method POST https://uploads.github.com/repos/Cd1s/ssm/releases/"); got != 0 {
+		t.Fatalf("asset upload calls = %d, want 0; calls=%s", got, calls)
+	}
+}
+
+func createOnlyPublishArguments(t *testing.T, targetTag, expectedLatestTag string) []string {
+	t.Helper()
+	fixture := t.TempDir()
+	body := filepath.Join(fixture, "release-body.md")
+	if err := os.WriteFile(body, []byte("reviewed release notes\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"publish", targetTag, strings.Repeat("a", 40), body, expectedLatestTag}
+	for _, name := range v2ReleaseAssetNames() {
+		path := filepath.Join(fixture, name)
+		if err := os.WriteFile(path, []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		args = append(args, path)
+	}
+	return args
 }
 
 func v2ReleaseAssetNames() []string {
@@ -363,8 +525,8 @@ func TestTrackedV2PublicationMetadataIsExactAndDurable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != "2.0.0" {
-		t.Fatalf("source version = %q, want exact v2.0.0", version)
+	if version != "2.0.1" {
+		t.Fatalf("source version = %q, want exact v2.0.1", version)
 	}
 	if err := validateReleaseNotes(root, version); err != nil {
 		t.Fatal(err)
@@ -386,9 +548,14 @@ func TestTrackedV2PublicationMetadataIsExactAndDurable(t *testing.T) {
 		}
 	}
 	for _, durable := range []string{
-		"stable v2.0.0",
+		"backward-compatible patch release",
+		"github cli 2.92.0",
+		"private `mktemp` directory",
+		"attestation.json",
+		"no protocol or schema breaking change",
+		"v2 compatibility behavior remains",
 		"make_latest=false",
-		"v1.4.4 remains github latest",
+		"v2.0.0 remains github latest",
 		"exact-tag release workflow",
 	} {
 		if !strings.Contains(notes, durable) {

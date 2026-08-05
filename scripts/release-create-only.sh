@@ -2,7 +2,6 @@
 set -euo pipefail
 
 readonly expected_repository="Cd1s/ssm"
-readonly required_latest_tag="v1.4.4"
 cleanup_paths=()
 
 cleanup() {
@@ -82,7 +81,8 @@ publish_release() {
   local tag="$1"
   local source_sha="$2"
   local body_path="$3"
-  shift 3
+  local expected_latest_tag="$4"
+  shift 4
   local -a files=("$@")
   local -a expected_names=(
     ssm-linux-amd64
@@ -108,7 +108,9 @@ publish_release() {
   local bound
   local upload_response
   local final
-  local latest
+  local latest_before
+  local latest_after
+  local expected_latest_release_id
   local created_release_id
   local expected_json
   local asset_name
@@ -118,6 +120,10 @@ publish_release() {
   local asset_sha256
 
   validate_context "$tag"
+  [[ "$expected_latest_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+    die "expected latest tag must be an exact stable v-tag: $expected_latest_tag"
+  [[ "$expected_latest_tag" != "$tag" ]] ||
+    die "expected latest tag must differ from target tag: $tag"
   [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || die "release source must be one exact lowercase commit SHA"
   [[ -f "$body_path" && ! -L "$body_path" ]] || die "release body is not a regular reviewed file"
   grep -q '[^[:space:]]' "$body_path" || die "release body is empty"
@@ -144,8 +150,23 @@ publish_release() {
   bound="$(mktemp "$RUNNER_TEMP/ssm-release-bound.XXXXXX")"
   upload_response="$(mktemp "$RUNNER_TEMP/ssm-release-upload.XXXXXX")"
   final="$(mktemp "$RUNNER_TEMP/ssm-release-final.XXXXXX")"
-  latest="$(mktemp "$RUNNER_TEMP/ssm-release-latest.XXXXXX")"
-  cleanup_paths=("$payload" "$created" "$bound" "$upload_response" "$final" "$latest")
+  latest_before="$(mktemp "$RUNNER_TEMP/ssm-release-latest-before.XXXXXX")"
+  latest_after="$(mktemp "$RUNNER_TEMP/ssm-release-latest-after.XXXXXX")"
+  cleanup_paths=("$payload" "$created" "$bound" "$upload_response" "$final" "$latest_before" "$latest_after")
+
+  if ! gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$latest_before"; then
+    die "unable to read GitHub latest before create; no external state changed"
+  fi
+  jq -e \
+    --arg tag "$expected_latest_tag" \
+    --arg target_tag "$tag" \
+    'type == "object" and
+     (.id | type == "number" and . > 0) and
+     .tag_name == $tag and .tag_name != $target_tag and
+     .draft == false and .prerelease == false' \
+    "$latest_before" >/dev/null ||
+    die "GitHub latest does not match reviewed baseline $expected_latest_tag before create; no external state changed"
+  expected_latest_release_id="$(jq -er '.id' "$latest_before")"
 
   jq -n \
     --arg tag "$tag" \
@@ -181,6 +202,8 @@ publish_release() {
     die "created GitHub Release response does not match the reviewed stable non-latest request"
   fi
   created_release_id="$(jq -er '.id' "$created")"
+  [[ "$created_release_id" != "$expected_latest_release_id" ]] ||
+    die "created GitHub Release ID matches reviewed latest Release ID; refusing asset upload and preserving partial state"
   assert_only_created_release "$tag" "$created_release_id" "before asset upload"
 
   if ! gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$bound"; then
@@ -248,15 +271,19 @@ publish_release() {
   done
   assert_only_created_release "$tag" "$created_release_id" "after asset upload"
 
-  if ! gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$latest"; then
-    die "unable to prove GitHub latest remains $required_latest_tag; created state is preserved"
+  if ! gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$latest_after"; then
+    die "unable to prove GitHub latest remains $expected_latest_tag; created state is preserved"
   fi
   jq -e \
-    --arg tag "$required_latest_tag" \
+    --arg tag "$expected_latest_tag" \
+    --argjson expected_latest_release_id "$expected_latest_release_id" \
     --argjson created_release_id "$created_release_id" \
-    '.tag_name == $tag and .id != $created_release_id and .draft == false and .prerelease == false' \
-    "$latest" >/dev/null ||
-    die "GitHub latest changed from $required_latest_tag; created state is preserved"
+    'type == "object" and
+     (.id | type == "number" and . > 0) and
+     .id == $expected_latest_release_id and .id != $created_release_id and
+     .tag_name == $tag and .draft == false and .prerelease == false' \
+    "$latest_after" >/dev/null ||
+    die "GitHub latest changed from $expected_latest_tag; created state is preserved"
 }
 
 case "${1:-}" in
@@ -265,7 +292,7 @@ case "${1:-}" in
     assert_release_absent "$2"
     ;;
   publish)
-    (($# == 18)) || die "usage: release-create-only.sh publish TAG SOURCE_SHA BODY_FILE FILE..."
+    (($# == 19)) || die "usage: release-create-only.sh publish TAG SOURCE_SHA BODY_FILE EXPECTED_LATEST_TAG FILE..."
     publish_release "${@:2}"
     ;;
   *)

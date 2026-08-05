@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Cd1s/ssm/blob/v2.0.0/skills/agent-ssm/references/request-v1.schema.json",
-  "title": "SSM v2.0.0 agent request schema v1",
+  "$id": "https://github.com/Cd1s/ssm/blob/v2.0.1/skills/agent-ssm/references/request-v1.schema.json",
+  "title": "SSM v2.0.1 agent request schema v1",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "op"],

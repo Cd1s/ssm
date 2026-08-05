@@ -2,7 +2,7 @@
 
 Use the one official `agent-ssm` skill name. Obtain the bundle only from the
 same reviewed exact tag as the binary contract being deployed. The current
-GitHub latest v2 release is exact tag `v2.0.0`; do not copy from a moving
+GitHub latest v2 release is exact tag `v2.0.1`; do not copy from a moving
 default branch or from an unreviewed working tree.
 
 Before deployment, run the target binary's read-only version probe:
@@ -11,11 +11,11 @@ Before deployment, run the target binary's read-only version probe:
 sshctl --json --version
 ```
 
-The exact v2.0.0 bundle supports v1.4.3/v1.4.4 through its v1 compatibility
-branch and v2.0.0 through its v2 compatibility branch. Any other version or an
-unsupported major must fail closed.
+The exact v2.0.1 bundle supports v1.4.3/v1.4.4 through its v1 compatibility
+branch and both v2.0.0 and v2.0.1 through its v2 compatibility branch. Any
+other version or an unsupported major must fail closed.
 
-From an exact-tag v2.0.0 checkout or verified source archive, install into an
+From an exact-tag v2.0.1 checkout or verified source archive, install into an
 explicit private platform root without touching the running agent's copy during
 review:
 
