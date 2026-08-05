@@ -109,14 +109,6 @@ func main() {
 	case strings.Contains(call, "actions/runs/30911029600/jobs?per_page=100"):
 		fmt.Println(` + strconv.Quote(`{"total_count":8,"jobs":[{"name":"preflight","conclusion":"success"},{"name":"publish","conclusion":"failure"},{"name":"build (linux, amd64, ssm-linux-amd64)","conclusion":"success"},{"name":"build (linux, arm64, ssm-linux-arm64)","conclusion":"success"},{"name":"build (darwin, amd64, ssm-darwin-amd64)","conclusion":"success"},{"name":"build (darwin, arm64, ssm-darwin-arm64)","conclusion":"success"},{"name":"build (windows, amd64, ssm-windows-amd64.exe)","conclusion":"success"},{"name":"build (windows, arm64, ssm-windows-arm64.exe)","conclusion":"success"}]}`) + `)
 	case strings.Contains(call, "actions/runs/30911029600/artifacts?per_page=100"):
-		if logPath != "" {
-			log, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-			if err != nil {
-				panic(err)
-			}
-			_, _ = fmt.Fprintf(log, "artifact-response-len=%d\n", len(artifactsPage))
-			_ = log.Close()
-		}
 		fmt.Println(artifactsPage)
 	case call == "api repos/Cd1s/ssm/releases/364882535":
 		fmt.Println(` + strconv.Quote(`{"id":364882535,"tag_name":"v2.0.0","target_commitish":"10417d0e235eff9b22081765b0ad17b75cf74990","name":"v2.0.0","body":"recovery notes\n","draft":false,"prerelease":false,"assets":[]}`) + `)
@@ -152,7 +144,6 @@ func main() {
 		"GH_FAKE_LOG="+logPath,
 		"GITHUB_REPOSITORY=Cd1s/ssm",
 		"GH_TOKEN=test-only",
-		"V2_RECOVERY_DEBUG=1",
 		"RUNNER_TEMP="+t.TempDir(),
 		"EXPECTED_REPOSITORY=Cd1s/ssm",
 		"EXPECTED_SOURCE_SHA=10417d0e235eff9b22081765b0ad17b75cf74990",
