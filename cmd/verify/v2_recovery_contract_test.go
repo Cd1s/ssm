@@ -4,6 +4,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -76,29 +78,69 @@ func runV2RecoveryToArtifactDownload(t *testing.T, artifactsPage string) (string
 	bin := t.TempDir()
 	logPath := filepath.Join(t.TempDir(), "gh.log")
 	fakeGH := filepath.Join(bin, "gh")
-	fake := `#!/bin/sh
-set -eu
-printf '%s\n' "$*" >> "$GH_FAKE_LOG"
-case "$*" in
-  *"releases?per_page=100"*) printf '%s\n' '[{"id":364882535,"tag_name":"v2.0.0"},{"id":364597135,"tag_name":"v1.4.4"}]' ;;
-  *"actions/runs/30911029600/jobs?per_page=100"*) printf '%s\n' '{"total_count":8,"jobs":[{"name":"preflight","conclusion":"success"},{"name":"publish","conclusion":"failure"},{"name":"build (linux, amd64, ssm-linux-amd64)","conclusion":"success"},{"name":"build (linux, arm64, ssm-linux-arm64)","conclusion":"success"},{"name":"build (darwin, amd64, ssm-darwin-amd64)","conclusion":"success"},{"name":"build (darwin, arm64, ssm-darwin-arm64)","conclusion":"success"},{"name":"build (windows, amd64, ssm-windows-amd64.exe)","conclusion":"success"},{"name":"build (windows, arm64, ssm-windows-arm64.exe)","conclusion":"success"}]}' ;;
-  *"actions/runs/30911029600/artifacts?per_page=100"*) printf '%s\n' ` + shellSingleQuote(artifactsPage) + ` ;;
-  "api repos/Cd1s/ssm/releases/364882535") printf '%s\n' '{"id":364882535,"tag_name":"v2.0.0","target_commitish":"10417d0e235eff9b22081765b0ad17b75cf74990","name":"v2.0.0","body":"recovery notes\n","draft":false,"prerelease":false,"assets":[]}' ;;
-  "api repos/Cd1s/ssm/releases/latest") printf '%s\n' '{"id":364597135,"tag_name":"v1.4.4","draft":false,"prerelease":false}' ;;
-  "api repos/Cd1s/ssm/contents/RELEASE_NOTES.md?ref=10417d0e235eff9b22081765b0ad17b75cf74990") printf '%s\n' '{"type":"file","encoding":"base64","size":30,"content":"IyBOb3RlcwoKIyMgdjIuMC4wCnJlY292ZXJ5IG5vdGVzCg=="}' ;;
-  "api repos/Cd1s/ssm/actions/runs/30911029600") printf '%s\n' '{"id":30911029600,"event":"push","status":"completed","conclusion":"failure","head_branch":"v2.0.0","head_sha":"10417d0e235eff9b22081765b0ad17b75cf74990","path":".github/workflows/release.yml","name":"Release","run_attempt":1}' ;;
-  "api repos/Cd1s/ssm/actions/artifacts/8893638050/zip") exit 88 ;;
-  *) exit 97 ;;
-esac
+	if runtime.GOOS == "windows" {
+		fakeGH += ".exe"
+	}
+	fakeSource := filepath.Join(bin, "fake-gh.go")
+	fake := `package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	call := strings.Join(os.Args[1:], " ")
+	logPath := os.Getenv("GH_FAKE_LOG")
+	if logPath != "" {
+		log, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			panic(err)
+		}
+		_, _ = fmt.Fprintln(log, call)
+		_ = log.Close()
+	}
+	switch {
+	case strings.Contains(call, "releases?per_page=100"):
+		fmt.Println(` + strconv.Quote(`[{"id":364882535,"tag_name":"v2.0.0"},{"id":364597135,"tag_name":"v1.4.4"}]`) + `)
+	case strings.Contains(call, "actions/runs/30911029600/jobs?per_page=100"):
+		fmt.Println(` + strconv.Quote(`{"total_count":8,"jobs":[{"name":"preflight","conclusion":"success"},{"name":"publish","conclusion":"failure"},{"name":"build (linux, amd64, ssm-linux-amd64)","conclusion":"success"},{"name":"build (linux, arm64, ssm-linux-arm64)","conclusion":"success"},{"name":"build (darwin, amd64, ssm-darwin-amd64)","conclusion":"success"},{"name":"build (darwin, arm64, ssm-darwin-arm64)","conclusion":"success"},{"name":"build (windows, amd64, ssm-windows-amd64.exe)","conclusion":"success"},{"name":"build (windows, arm64, ssm-windows-arm64.exe)","conclusion":"success"}]}`) + `)
+	case strings.Contains(call, "actions/runs/30911029600/artifacts?per_page=100"):
+		fmt.Println(os.Getenv("GH_FAKE_ARTIFACTS_PAGE"))
+	case call == "api repos/Cd1s/ssm/releases/364882535":
+		fmt.Println(` + strconv.Quote(`{"id":364882535,"tag_name":"v2.0.0","target_commitish":"10417d0e235eff9b22081765b0ad17b75cf74990","name":"v2.0.0","body":"recovery notes\n","draft":false,"prerelease":false,"assets":[]}`) + `)
+	case call == "api repos/Cd1s/ssm/releases/latest":
+		fmt.Println(` + strconv.Quote(`{"id":364597135,"tag_name":"v1.4.4","draft":false,"prerelease":false}`) + `)
+	case call == "api repos/Cd1s/ssm/contents/RELEASE_NOTES.md?ref=10417d0e235eff9b22081765b0ad17b75cf74990":
+		fmt.Println(` + strconv.Quote(`{"type":"file","encoding":"base64","size":30,"content":"IyBOb3RlcwoKIyMgdjIuMC4wCnJlY292ZXJ5IG5vdGVzCg=="}`) + `)
+	case call == "api repos/Cd1s/ssm/actions/runs/30911029600":
+		fmt.Println(` + strconv.Quote(`{"id":30911029600,"event":"push","status":"completed","conclusion":"failure","head_branch":"v2.0.0","head_sha":"10417d0e235eff9b22081765b0ad17b75cf74990","path":".github/workflows/release.yml","name":"Release","run_attempt":1}`) + `)
+	case call == "api repos/Cd1s/ssm/actions/artifacts/8893638050/zip":
+		os.Exit(88)
+	default:
+		os.Exit(97)
+	}
+}
 `
-	if err := os.WriteFile(fakeGH, []byte(fake), 0o755); err != nil { //nolint:gosec // test-owned fake CLI must be executable
+	if err := os.WriteFile(fakeSource, []byte(fake), 0o600); err != nil { //nolint:gosec // test-owned fake CLI source
 		t.Fatal(err)
+	}
+	goExecutable, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := exec.Command(goExecutable, "build", "-buildvcs=false", "-o", fakeGH, fakeSource) //nolint:gosec // fixed test-owned compiler and source
+	build.Env = append(os.Environ(), "GO111MODULE=off")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build fake gh: %v: %s", err, output)
 	}
 	root := filepath.Join("..", "..")
 	command := exec.Command("bash", filepath.Join(root, "scripts", "recover-v2.0.0-release.sh")) //nolint:gosec // fixed repository helper
 	command.Env = append(os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"GH_FAKE_LOG="+logPath,
+		"GH_FAKE_ARTIFACTS_PAGE="+artifactsPage,
 		"GITHUB_REPOSITORY=Cd1s/ssm",
 		"GH_TOKEN=test-only",
 		"RUNNER_TEMP="+t.TempDir(),
@@ -115,10 +157,6 @@ esac
 		t.Fatal(readErr)
 	}
 	return string(output), string(calls), err
-}
-
-func shellSingleQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func assertNoV2RecoveryMutation(t *testing.T, calls string) {
