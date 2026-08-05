@@ -7,8 +7,8 @@ must fail closed: do not guess flags, schemas, fields, or publication behavior.
 
 | Installed version | Skill branch | Typed request schema | Changed command/result contracts |
 | --- | --- | --- | --- |
+| v2.0.0 (current/latest) | v2 compatibility branch | `request-v1.schema.json`; request schema version remains 1 and adds strict `op:get` | Bare push is invalid. `push --all` is limited to the non-empty invocation-start pending set and an empty set never PUTs. Online `--refresh=0` is invalid unless global `--offline` is explicit. Invalid present `cloud.json` returns `sync_config_error`. Direct/request transfer results branch on `direction` and `kind`; directory results explicitly use `atomic:false`, `integrity:not_available`, and `resume:unsupported`. |
 | v1.4.3 / v1.4.4 | v1 compatibility branch | `request-v1-bridge.schema.json`; request schema version remains 1 and has no `op:get` | Prefer explicit `push --only` or deliberately reviewed `push --all` even though historical bare-push compatibility may exist. Use direct `sshctl get`; do not assume v2 transfer `direction`/`kind` parity, v2 directory guarantees, fatal-invalid-`cloud.json` behavior, or the v2 online `--refresh=0` rejection. Keep online refresh positive and avoid legacy auto-publishing mutation entry points. |
-| v2.0.0 | v2 compatibility branch | `request-v1.schema.json`; request schema version remains 1 and adds strict `op:get` | Bare push is invalid. `push --all` is limited to the non-empty invocation-start pending set and an empty set never PUTs. Online `--refresh=0` is invalid unless global `--offline` is explicit. Invalid present `cloud.json` returns `sync_config_error`. Direct/request transfer results branch on `direction` and `kind`; directory results explicitly use `atomic:false`, `integrity:not_available`, and `resume:unsupported`. |
 
 ## Common safe subset
 
@@ -27,8 +27,8 @@ must fail closed: do not guess flags, schemas, fields, or publication behavior.
 
 ## Explicit major migration
 
-An ordinary or automatic v1 update stays in major 1 even when v2.0.0 exists as
-a non-latest Release. On v1.4.4, use `ssm update --major` to review the exact
+An ordinary or automatic v1 update stays in major 1 even though v2.0.0 is the
+current/latest Release. On v1.4.4, use `ssm update --major` to review the exact
 v2.0.0 candidate and BC-1 through BC-10. Use `ssm update --major --yes` only
 after automated preflight and manual consumer checks pass. Authorization never
 bypasses the selected digest, exact-tag provenance, or replacement recovery.

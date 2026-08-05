@@ -1,9 +1,9 @@
 # Install or update Agent SSM for Codex and Hermes
 
 Use the one official `agent-ssm` skill name. Obtain the bundle only from the
-same reviewed exact tag as the binary contract being deployed. For the staged
-v2 release that exact tag is `v2.0.0`; do not copy from a moving default branch
-or from an unreviewed working tree.
+same reviewed exact tag as the binary contract being deployed. The current
+GitHub latest v2 release is exact tag `v2.0.0`; do not copy from a moving
+default branch or from an unreviewed working tree.
 
 Before deployment, run the target binary's read-only version probe:
 
