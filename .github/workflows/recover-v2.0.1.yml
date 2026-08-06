@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: REPLACE_WITH_COMMIT_A_SHA
+          ref: 53129c253e976f9d1f8a80a0dc14c2080fd9fa04
           persist-credentials: false
       - uses: actions/setup-go@v6
         with:
@@ -36,7 +36,7 @@ jobs:
           REQUIRED_LATEST_TAG: v2.0.0
         run: |
           printf '%s  %s\n' \
-            REPLACE_WITH_RECOVERY_SCRIPT_SHA256 scripts/recover-v2.0.1-release.sh \
-            REPLACE_WITH_RECOVERY_VERIFY_SHA256 cmd/recoveryverify/main.go \
+            542e44196692763ca0cdef5d9adeb8f368cbb41e2adce3698103a0d2a5796586 scripts/recover-v2.0.1-release.sh \
+            b9d0e34ef6e66b0a5e46fbcdbe2b21acb1460832ee1cf3e8152e269c6df52ab8 cmd/recoveryverify/main.go \
             | sha256sum -c -
           ./scripts/recover-v2.0.1-release.sh

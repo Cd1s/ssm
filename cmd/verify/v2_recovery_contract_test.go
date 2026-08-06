@@ -296,8 +296,9 @@ func main() {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build fake gh: %v: %s", err, output)
 	}
+	bashEnv := ""
 	if scenario.artifactArchive != "" {
-		writeFakeSHA256Sum(t, bin)
+		bashEnv = writeFakeSHA256SumBashEnv(t)
 	}
 	root := filepath.Join("..", "..")
 	command := exec.Command("bash", filepath.Join(root, "scripts", "recover-v2.0.1-release.sh")) //nolint:gosec // fixed repository helper
@@ -315,6 +316,7 @@ func main() {
 		"REQUIRED_LATEST_ID=364882535",
 		"REQUIRED_LATEST_TAG=v2.0.0",
 		"GH_FAKE_ARCHIVE="+scenario.artifactArchive,
+		"BASH_ENV="+bashEnv,
 	)
 	output, err := command.CombinedOutput()
 	calls, readErr := os.ReadFile(logPath) //nolint:gosec // test-owned log
@@ -324,38 +326,21 @@ func main() {
 	return string(output), string(calls), err
 }
 
-func writeFakeSHA256Sum(t *testing.T, bin string) {
+func writeFakeSHA256SumBashEnv(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(bin, "sha256sum")
-	if runtime.GOOS == "windows" {
-		path += ".exe"
-	}
-	source := filepath.Join(bin, "fake-sha256sum.go")
-	program := `package main
-
-import (
-	"fmt"
-	"os"
-)
-
-func main() {
-	name := "-"
-	if len(os.Args) > 1 { name = os.Args[len(os.Args)-1] }
-	fmt.Printf("32da0ec46f51df83dcf534f9b2d7bbdd2a870b59d5ccc9399fcda10001428b6e  %s\n", name)
+	path := filepath.Join(t.TempDir(), "bash-env")
+	script := `sha256sum() {
+  if [[ "$#" -eq 1 && "${1:-}" == *8951330070.zip ]]; then
+    printf '%s  %s\n' '32da0ec46f51df83dcf534f9b2d7bbdd2a870b59d5ccc9399fcda10001428b6e' "$1"
+    return 0
+  fi
+  command sha256sum "$@"
 }
 `
-	if err := os.WriteFile(source, []byte(program), 0o600); err != nil { //nolint:gosec // test-owned fake source
+	if err := os.WriteFile(path, []byte(script), 0o600); err != nil { //nolint:gosec // test-owned BASH_ENV fixture
 		t.Fatal(err)
 	}
-	goExecutable, err := exec.LookPath("go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	build := exec.Command(goExecutable, "build", "-buildvcs=false", "-o", path, source) //nolint:gosec // fixed test-owned compiler and source
-	build.Env = append(os.Environ(), "GO111MODULE=off")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build fake sha256sum: %v: %s", err, output)
-	}
+	return filepath.ToSlash(path)
 }
 
 func assertNoV2RecoveryMutation(t *testing.T, calls string) {
@@ -373,25 +358,27 @@ func TestV2RecoveryWorkflowIsExactlyBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	workflow := string(data)
-	for description, required := range map[string]string{
-		"manual trigger":         "  workflow_dispatch:\n",
-		"repository and branch":  "github.repository == 'Cd1s/ssm' && github.ref == 'refs/heads/agent-headless-sync'",
-		"fixed concurrency":      "group: recover-Cd1s-ssm-v2.0.1-365897243",
-		"no cancellation":        "cancel-in-progress: false",
-		"exact checkout action":  "uses: actions/checkout@v7",
-		"implementation":         "ref: REPLACE_WITH_COMMIT_A_SHA",
-		"credential isolation":   "persist-credentials: false",
-		"reviewed Go toolchain":  "go-version: \"1.25.12\"",
-		"reviewed prerequisites": "sudo apt-get update && sudo apt-get install -y jq unzip",
-		"source SHA":             "379ce2d91825a4d651117e13ec59d9c9baa686f5",
-		"release ID":             "365897243",
-		"source run":             "31057964128",
-		"latest ID":              "364882535",
-		"latest tag":             "v2.0.0",
-		"one-time helper":        "./scripts/recover-v2.0.1-release.sh",
-		"script hash gate":       "scripts/recover-v2.0.1-release.sh",
-		"verifier hash gate":     "cmd/recoveryverify/main.go",
-		"hash verification":      "sha256sum -c -",
+	for description, required := range map[string]string{ //nolint:gosec // public immutable implementation commit and SHA-256 hashes, not credentials
+		"manual trigger":               "  workflow_dispatch:\n",
+		"repository and branch":        "github.repository == 'Cd1s/ssm' && github.ref == 'refs/heads/agent-headless-sync'",
+		"fixed concurrency":            "group: recover-Cd1s-ssm-v2.0.1-365897243",
+		"no cancellation":              "cancel-in-progress: false",
+		"exact checkout action":        "uses: actions/checkout@v7",
+		"implementation":               "ref: 53129c253e976f9d1f8a80a0dc14c2080fd9fa04",
+		"credential isolation":         "persist-credentials: false",
+		"reviewed Go toolchain":        "go-version: \"1.25.12\"",
+		"reviewed prerequisites":       "sudo apt-get update && sudo apt-get install -y jq unzip",
+		"source SHA":                   "379ce2d91825a4d651117e13ec59d9c9baa686f5",
+		"release ID":                   "365897243",
+		"source run":                   "31057964128",
+		"latest ID":                    "364882535",
+		"latest tag":                   "v2.0.0",
+		"one-time helper":              "./scripts/recover-v2.0.1-release.sh",
+		"script hash gate":             "scripts/recover-v2.0.1-release.sh",
+		"verifier hash gate":           "cmd/recoveryverify/main.go",
+		"hash verification":            "sha256sum -c -",
+		"script implementation hash":   "542e44196692763ca0cdef5d9adeb8f368cbb41e2adce3698103a0d2a5796586",
+		"verifier implementation hash": "b9d0e34ef6e66b0a5e46fbcdbe2b21acb1460832ee1cf3e8152e269c6df52ab8",
 	} {
 		if !strings.Contains(workflow, required) {
 			t.Errorf("recovery workflow lacks %s %q", description, required)
