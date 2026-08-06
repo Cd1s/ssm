@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -132,27 +134,33 @@ func TestCreateOnlyReleaseScriptContract(t *testing.T) {
 	}
 	text := string(script)
 	for description, required := range map[string]string{
-		"draft-visible exhaustive lookup": `gh api --paginate`,
-		"authenticated release listing":   `releases?per_page=100`,
-		"one create-only REST call":       `gh api --method POST`,
-		"literal ID-bound upload URL":     `https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$created_release_id/assets?name=`,
-		"strict inventory schema":         `Release inventory is malformed`,
-		"exact upload content type":       `application/octet-stream`,
-		"exact upload size":               `.size == $size`,
-		"exact upload digest":             `.digest == $digest`,
-		"stable creation":                 `draft: false`,
-		"non-prerelease creation":         `prerelease: false`,
-		"non-latest creation":             `make_latest: "false"`,
-		"created release binding":         `created_release_id`,
-		"post-create uniqueness binding":  `assert_only_created_release`,
-		"reviewed latest input":           `local expected_latest_tag="$4"`,
-		"exact latest preservation":       `--arg tag "$expected_latest_tag"`,
-		"latest release has valid ID":     `(.id | type == "number" and . > 0)`,
-		"created release is never latest": `.id != $created_release_id`,
+		"draft-visible exhaustive lookup":   `gh api --paginate`,
+		"authenticated release listing":     `releases?per_page=100`,
+		"one create-only REST call":         `gh api --method POST`,
+		"literal ID-bound upload URL":       `https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$created_release_id/assets?name=`,
+		"strict inventory schema":           `Release inventory is malformed`,
+		"exact upload content type":         `application/octet-stream`,
+		"exact upload size":                 `.size == $size`,
+		"exact upload digest":               `.digest == $digest`,
+		"stable creation":                   `draft: false`,
+		"non-prerelease creation":           `prerelease: false`,
+		"non-latest creation":               `make_latest: "false"`,
+		"created release binding":           `created_release_id`,
+		"post-create uniqueness binding":    `assert_only_created_release`,
+		"bounded visibility reconciliation": `release_visibility_max_attempts=10`,
+		"bounded visibility delay":          `release_visibility_default_delay_seconds=2`,
+		"read-only visibility wait":         `await_only_created_release_visibility`,
+		"reviewed latest input":             `local expected_latest_tag="$4"`,
+		"exact latest preservation":         `--arg tag "$expected_latest_tag"`,
+		"latest release has valid ID":       `(.id | type == "number" and . > 0)`,
+		"created release is never latest":   `.id != $created_release_id`,
 	} {
 		if !strings.Contains(text, required) {
 			t.Errorf("create-only publisher lacks %s %q", description, required)
 		}
+	}
+	if got := strings.Count(text, `"repos/$GITHUB_REPOSITORY/releases"`); got != 1 {
+		t.Errorf("create-only publisher has %d exact Release-create endpoint literals, want 1", got)
 	}
 	for _, forbidden := range []string{
 		"softprops/action-gh-release", "gh release upload", "--hostname uploads.github.com", "--clobber", "--method PATCH", "--method DELETE", "release edit", `make_latest: "true"`, `required_latest_tag=`,
@@ -425,6 +433,228 @@ func TestCreateOnlyReleaseScriptPublishesNewReleaseOnce(t *testing.T) {
 	}
 	if got := strings.Count(callText, "api repos/Cd1s/ssm/releases/latest"); got != 2 {
 		t.Fatalf("latest GET calls = %d, want pre-create and post-upload checks; calls=%s", got, callText)
+	}
+}
+
+func TestCreateOnlyReleaseScriptWaitsForExactCreatedReleaseVisibility(t *testing.T) {
+	exact := `[{"id":4242,"tag_name":"v2.0.1"}]`
+	output, calls, err := runCreateOnlyVisibilityScenario(t, []string{`[]`, `[]`, exact})
+	if err != nil {
+		t.Fatalf("delayed exact visibility failed: %v\n%s", err, output)
+	}
+	if got := strings.Count(calls, "api --method POST repos/Cd1s/ssm/releases --input"); got != 1 {
+		t.Fatalf("create calls = %d, want exactly 1; calls=%s", got, calls)
+	}
+	firstUpload := strings.Index(calls, "api --method POST https://uploads.github.com/")
+	if firstUpload < 0 {
+		t.Fatalf("exact delayed visibility never reached asset upload: %s", calls)
+	}
+	if got := strings.Count(calls[:firstUpload], "api --paginate repos/Cd1s/ssm/releases?per_page=100"); got != 4 {
+		t.Fatalf("Release inventory reads before first upload = %d, want initial absence plus 3 visibility reads; calls=%s", got, calls)
+	}
+}
+
+func TestCreateOnlyReleaseScriptVisibilityTimeoutDoesNotUpload(t *testing.T) {
+	output, calls, err := runCreateOnlyVisibilityScenario(t, []string{`[]`})
+	if err == nil || !strings.Contains(output, "did not become uniquely visible after 10 attempts") {
+		t.Fatalf("visibility timeout output = %q, err=%v", output, err)
+	}
+	if got := strings.Count(calls, "api --method POST repos/Cd1s/ssm/releases --input"); got != 1 {
+		t.Fatalf("create calls = %d, want exactly 1; calls=%s", got, calls)
+	}
+	if got := strings.Count(calls, "api --paginate repos/Cd1s/ssm/releases?per_page=100"); got != 11 {
+		t.Fatalf("Release inventory reads = %d, want initial absence plus 10 bounded visibility reads; calls=%s", got, calls)
+	}
+	assertNoAssetUploadCalls(t, calls)
+}
+
+func TestCreateOnlyReleaseScriptRejectsInexactCreatedReleaseVisibilityBeforeUpload(t *testing.T) {
+	tests := map[string]string{
+		"malformed":        `[{"id":4242}]`,
+		"duplicate tag":    `[{"id":4242,"tag_name":"v2.0.1"},{"id":4243,"tag_name":"v2.0.1"}]`,
+		"duplicate ID":     `[{"id":4242,"tag_name":"v2.0.1"},{"id":4242,"tag_name":"v9.9.9"}]`,
+		"wrong ID for tag": `[{"id":4243,"tag_name":"v2.0.1"}]`,
+		"wrong tag for ID": `[{"id":4242,"tag_name":"v9.9.9"}]`,
+	}
+	for name, inventory := range tests {
+		t.Run(name, func(t *testing.T) {
+			output, calls, err := runCreateOnlyVisibilityScenario(t, []string{inventory})
+			if err == nil {
+				t.Fatalf("inexact visibility unexpectedly succeeded: %s", output)
+			}
+			if got := strings.Count(calls, "api --method POST repos/Cd1s/ssm/releases --input"); got != 1 {
+				t.Fatalf("create calls = %d, want exactly 1; calls=%s", got, calls)
+			}
+			assertNoAssetUploadCalls(t, calls)
+		})
+	}
+}
+
+func runCreateOnlyVisibilityScenario(t *testing.T, inventories []string) (string, string, error) {
+	t.Helper()
+	bin := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "gh.log")
+	statePath := filepath.Join(t.TempDir(), "created.json")
+	counterPath := filepath.Join(t.TempDir(), "inventory-count")
+	assetsPath := filepath.Join(t.TempDir(), "assets.json")
+	fakeGH := filepath.Join(bin, "gh")
+	if runtime.GOOS == "windows" {
+		fakeGH += ".exe"
+	}
+
+	assetObjects := make([]map[string]any, 0, len(v2ReleaseAssetNames()))
+	for _, name := range v2ReleaseAssetNames() {
+		digest := sha256.Sum256([]byte(name))
+		assetObjects = append(assetObjects, map[string]any{
+			"name": name, "state": "uploaded", "content_type": "application/octet-stream",
+			"size": len(name), "digest": fmt.Sprintf("sha256:%x", digest),
+		})
+	}
+	assetsJSON, err := json.Marshal(assetObjects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(assetsPath, assetsJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	quotedInventories := make([]string, 0, len(inventories))
+	for _, inventory := range inventories {
+		quotedInventories = append(quotedInventories, strconv.Quote(inventory))
+	}
+	inventoriesLiteral := "[]string{" + strings.Join(quotedInventories, ",") + "}"
+
+	fakeSource := filepath.Join(bin, "fake-gh.go")
+	fake := `package main
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"net/url"
+	"os"
+	"strconv"
+	"strings"
+)
+
+var inventories = ` + inventoriesLiteral + `
+
+func fatal(err error) {
+	if err != nil { panic(err) }
+}
+
+func logCall(call string) {
+	f, err := os.OpenFile(os.Getenv("GH_FAKE_LOG"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	fatal(err)
+	_, err = fmt.Fprintln(f, call)
+	fatal(err)
+	fatal(f.Close())
+}
+
+func emitRelease(path string, assets json.RawMessage) {
+	b, err := os.ReadFile(path)
+	fatal(err)
+	var release map[string]any
+	fatal(json.Unmarshal(b, &release))
+	release["id"] = float64(4242)
+	var assetValue any
+	fatal(json.Unmarshal(assets, &assetValue))
+	release["assets"] = assetValue
+	fatal(json.NewEncoder(os.Stdout).Encode(release))
+}
+
+func inputPath(args []string) string {
+	for i := range args {
+		if args[i] == "--input" && i+1 < len(args) { return args[i+1] }
+	}
+	return ""
+}
+
+func main() {
+	args := os.Args[1:]
+	call := strings.Join(args, " ")
+	logCall(call)
+	state := os.Getenv("GH_FAKE_STATE")
+	switch {
+	case len(args) >= 3 && args[0] == "api" && args[1] == "--paginate":
+		if _, err := os.Stat(state); err != nil {
+			fmt.Println("[]")
+			return
+		}
+		counterPath := os.Getenv("GH_FAKE_COUNTER")
+		count := 0
+		if b, err := os.ReadFile(counterPath); err == nil { count, _ = strconv.Atoi(string(b)) }
+		fatal(os.WriteFile(counterPath, []byte(strconv.Itoa(count+1)), 0o600))
+		index := count
+		if index >= len(inventories) { index = len(inventories)-1 }
+		fmt.Println(inventories[index])
+	case len(args) >= 4 && args[0] == "api" && args[1] == "--method" && args[2] == "POST" && args[3] == "repos/Cd1s/ssm/releases":
+		input := inputPath(args)
+		b, err := os.ReadFile(input)
+		fatal(err)
+		fatal(os.WriteFile(state, b, 0o600))
+		emitRelease(state, json.RawMessage("[]"))
+	case len(args) >= 4 && args[0] == "api" && args[1] == "--method" && args[2] == "POST" && strings.HasPrefix(args[3], "https://uploads.github.com/repos/Cd1s/ssm/releases/4242/assets?name="):
+		input := inputPath(args)
+		b, err := os.ReadFile(input)
+		fatal(err)
+		sum := sha256.Sum256(b)
+		parsed, err := url.Parse(args[3])
+		fatal(err)
+		name := parsed.Query().Get("name")
+		fmt.Printf("{\"id\":9001,\"name\":%q,\"state\":\"uploaded\",\"content_type\":\"application/octet-stream\",\"size\":%d,\"digest\":\"sha256:%s\"}\n", name, len(b), hex.EncodeToString(sum[:]))
+	case len(args) >= 2 && args[0] == "api" && args[1] == "repos/Cd1s/ssm/releases/tags/v2.0.1":
+		emitRelease(state, json.RawMessage("[]"))
+	case len(args) >= 2 && args[0] == "api" && args[1] == "repos/Cd1s/ssm/releases/4242":
+		assets, err := os.ReadFile(os.Getenv("GH_FAKE_ASSETS"))
+		fatal(err)
+		emitRelease(state, assets)
+	case len(args) >= 2 && args[0] == "api" && args[1] == "repos/Cd1s/ssm/releases/latest":
+		fmt.Println(` + strconv.Quote(`{"id":364882535,"tag_name":"v2.0.0","draft":false,"prerelease":false}`) + `)
+	default:
+		os.Exit(97)
+	}
+}
+`
+	if err := os.WriteFile(fakeSource, []byte(fake), 0o600); err != nil { //nolint:gosec // test-owned fake CLI source
+		t.Fatal(err)
+	}
+	goExecutable, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := exec.Command(goExecutable, "build", "-buildvcs=false", "-o", fakeGH, fakeSource) //nolint:gosec // fixed test-owned compiler and source
+	build.Env = append(os.Environ(), "GO111MODULE=off")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build fake gh: %v: %s", err, output)
+	}
+
+	root := filepath.Join("..", "..")
+	args := createOnlyPublishArguments(t, "v2.0.1", "v2.0.0")
+	command := exec.Command("bash", append([]string{filepath.Join(root, "scripts", "release-create-only.sh")}, args...)...) //nolint:gosec // fixed repository helper and test-owned fixtures
+	command.Env = append(os.Environ(),
+		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"GH_FAKE_LOG="+logPath,
+		"GH_FAKE_STATE="+statePath,
+		"GH_FAKE_COUNTER="+counterPath,
+		"GH_FAKE_ASSETS="+assetsPath,
+		"GITHUB_REPOSITORY=Cd1s/ssm",
+		"GH_TOKEN=test-only",
+		"RUNNER_TEMP="+t.TempDir(),
+		"SSM_RELEASE_VISIBILITY_RETRY_DELAY_SECONDS=0",
+	)
+	output, runErr := command.CombinedOutput()
+	calls, err := os.ReadFile(logPath) //nolint:gosec // test-owned log
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(output), string(calls), runErr
+}
+
+func assertNoAssetUploadCalls(t *testing.T, calls string) {
+	t.Helper()
+	if got := strings.Count(calls, "api --method POST https://uploads.github.com/repos/Cd1s/ssm/releases/"); got != 0 {
+		t.Fatalf("asset upload calls = %d, want 0; calls=%s", got, calls)
 	}
 }
 

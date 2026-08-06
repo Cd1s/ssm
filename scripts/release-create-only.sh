@@ -2,6 +2,8 @@
 set -euo pipefail
 
 readonly expected_repository="Cd1s/ssm"
+readonly release_visibility_max_attempts=10
+readonly release_visibility_default_delay_seconds=2
 cleanup_paths=()
 
 cleanup() {
@@ -77,6 +79,49 @@ assert_only_created_release() {
     die "GitHub Release $tag is not the sole created Release $stage; external state is preserved"
 }
 
+await_only_created_release_visibility() {
+  local tag="$1"
+  local release_id="$2"
+  local retry_delay="${SSM_RELEASE_VISIBILITY_RETRY_DELAY_SECONDS:-$release_visibility_default_delay_seconds}"
+  local attempt
+  local release_inventory
+  local visibility
+
+  [[ "$retry_delay" =~ ^[0-3]$ ]] ||
+    die "Release visibility retry delay is invalid; partial state is preserved"
+  for ((attempt = 1; attempt <= release_visibility_max_attempts; attempt++)); do
+    release_inventory="$(read_release_inventory "while awaiting exact visibility of $tag before asset upload")"
+    visibility="$(jq -r -s --arg tag "$tag" --argjson id "$release_id" '
+      ([.[][] | select(.tag_name == $tag)] | length) as $tag_count |
+      ([.[][] | select(.id == $id)] | length) as $id_count |
+      if $tag_count == 1 and $id_count == 1 and
+         ([.[][] | select(.tag_name == $tag and .id == $id)] | length) == 1 then
+        "exact"
+      elif $tag_count == 0 and $id_count == 0 then
+        "absent"
+      else
+        "wrong"
+      end
+    ' <<< "$release_inventory")" ||
+      die "unable to classify created GitHub Release visibility; partial state is preserved"
+    case "$visibility" in
+      exact)
+        return 0
+        ;;
+      absent)
+        if ((attempt < release_visibility_max_attempts)); then
+          sleep "$retry_delay"
+          continue
+        fi
+        ;;
+      *)
+        die "GitHub Release $tag has a conflicting ID/tag visibility binding before asset upload; partial state is preserved"
+        ;;
+    esac
+  done
+  die "GitHub Release $tag did not become uniquely visible after $release_visibility_max_attempts attempts; partial state is preserved"
+}
+
 publish_release() {
   local tag="$1"
   local source_sha="$2"
@@ -143,6 +188,9 @@ publish_release() {
     expected_digests[$index]="sha256:$asset_sha256"
   done
 
+  [[ "${SSM_RELEASE_VISIBILITY_RETRY_DELAY_SECONDS:-$release_visibility_default_delay_seconds}" =~ ^[0-3]$ ]] ||
+    die "Release visibility retry delay is invalid; no external state changed"
+
   assert_release_absent "$tag"
   [[ -n "${RUNNER_TEMP:-}" && -d "$RUNNER_TEMP" ]] || die "RUNNER_TEMP is not an existing directory"
   payload="$(mktemp "$RUNNER_TEMP/ssm-release-create-payload.XXXXXX")"
@@ -204,7 +252,7 @@ publish_release() {
   created_release_id="$(jq -er '.id' "$created")"
   [[ "$created_release_id" != "$expected_latest_release_id" ]] ||
     die "created GitHub Release ID matches reviewed latest Release ID; refusing asset upload and preserving partial state"
-  assert_only_created_release "$tag" "$created_release_id" "before asset upload"
+  await_only_created_release_visibility "$tag" "$created_release_id"
 
   if ! gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$bound"; then
     die "unable to bind created GitHub Release $tag before asset upload; partial state is preserved"
