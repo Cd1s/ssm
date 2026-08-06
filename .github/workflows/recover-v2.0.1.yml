@@ -1,0 +1,42 @@
+name: Recover v2.0.1 Release assets
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: recover-Cd1s-ssm-v2.0.1-365897243
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    if: github.repository == 'Cd1s/ssm' && github.ref == 'refs/heads/agent-headless-sync'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: REPLACE_WITH_COMMIT_A_SHA
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.12"
+      - name: Install recovery prerequisites
+        run: sudo apt-get update && sudo apt-get install -y jq unzip
+      - name: Recover exact missing assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_REPOSITORY: Cd1s/ssm
+          EXPECTED_SOURCE_SHA: 379ce2d91825a4d651117e13ec59d9c9baa686f5
+          EXPECTED_RELEASE_ID: "365897243"
+          EXPECTED_SOURCE_RUN_ID: "31057964128"
+          REQUIRED_LATEST_ID: "364882535"
+          REQUIRED_LATEST_TAG: v2.0.0
+        run: |
+          printf '%s  %s\n' \
+            REPLACE_WITH_RECOVERY_SCRIPT_SHA256 scripts/recover-v2.0.1-release.sh \
+            REPLACE_WITH_RECOVERY_VERIFY_SHA256 cmd/recoveryverify/main.go \
+            | sha256sum -c -
+          ./scripts/recover-v2.0.1-release.sh
