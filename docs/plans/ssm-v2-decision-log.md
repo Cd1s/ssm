@@ -474,11 +474,18 @@ The verification manifest and keyless provenance work were outside the
 original audit's three-module implementation core, but the maintainer
 explicitly brought both into v2 release scope through Decisions 12 and 13.
 
-## Unresolved non-blocking follow-up work
+## Follow-up work status
 
-- Name the stable configuration and invariant/divergence error values after
-  characterizing current machine fields; naming must not alter the meanings
-  approved here.
+### Completed
+
+- **Stable configuration and divergence vocabulary.** The existing runtime
+  sentinels and machine fields are now explicitly frozen in
+  `docs/plans/sync-error-vocabulary.md`. The implementation remains owned by
+  `internal/synctransaction` and serialization remains owned by
+  `internal/machinecontract`; no public meaning changed.
+
+### Unresolved non-blocking follow-up work
+
 - Define the reviewed repair flow for no-transaction local/remote divergence.
 - Select the durable encoding and backward-compatible storage location for
   publishing intent.
