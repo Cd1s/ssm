@@ -334,7 +334,7 @@ Cloud (optional):
 	case "push":
 		runPush(args[1:])
 	case "pull":
-		runPull()
+		runPull(nil)
 	case "pull-if-changed":
 		runPullIfChanged()
 	case "remote-hash":

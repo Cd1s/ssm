@@ -47,10 +47,7 @@ func runSSHCTLParsed(args []string) {
 	case "request":
 		runAgentRequest(args[1:])
 	case "sync", "pull":
-		if len(args) != 1 {
-			sshctlUsageExit()
-		}
-		runPull()
+		runPull(args[1:])
 	case "push":
 		runPush(args[1:])
 	case "list":

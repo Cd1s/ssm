@@ -130,7 +130,7 @@ The emitted machine hint is deliberately merge-only and does not authorize
 replacement:
 
 ```text
-review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull to adopt remote, then use guarded ssm --offline --json import-json <reviewed-file> --merge and publish its reviewed transaction with sshctl --json push --only <transaction-id>
+review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull --adopt-remote <remote-sha256> --yes only after reviewing the exact remote identity, then use guarded ssm --offline --json import-json <reviewed-file> --merge and publish its reviewed transaction with sshctl --json push --only <transaction-id>
 ```
 
 1. Run `sshctl --offline --json doctor` and review the safe `sync_conflict`
@@ -139,10 +139,10 @@ review sshctl --offline --json doctor and preserve the local vault and sync-conf
    `remote.etag`, and `sync-conflict.json`. Keep their permissions private.
 3. Prepare any local inventory that must survive as a reviewed import file;
    keep secrets in that private file, never in command arguments or logs.
-4. Run `sshctl --json pull` to adopt the reviewed remote encrypted blob. The
-   existing pull policy succeeds only when the cached prerequisite makes that
-   replacement safe; if it reports another conflict, stop and retain all
-   evidence for manual repair.
+4. Run `sshctl --json pull --adopt-remote <remote-sha256> --yes` with the exact
+   remote identity from the preserved evidence. The reviewed path rechecks the
+   remote HEAD, verifies the GET body identity, and atomically adopts the
+   encrypted blob. If any identity changes, stop and retain all evidence.
 5. If remote wins completely, recovery is finished. To reapply retained local
    inventory, run exactly one guarded command:
 

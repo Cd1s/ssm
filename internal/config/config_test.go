@@ -168,6 +168,29 @@ func assertNoPrivateTempFiles(t *testing.T, dir string) {
 	}
 }
 
+func TestConfigDirOverrideIsUsedForAllState(t *testing.T) {
+	home := t.TempDir()
+	setTestHome(t, home)
+	override := filepath.Join(t.TempDir(), "ssm-state")
+	t.Setenv("SSM_CONFIG_DIR", override)
+
+	if got := Dir(); got != override {
+		t.Fatalf("Dir() = %q, want %q", got, override)
+	}
+	if got := Path(); got != filepath.Join(override, "connections.enc") {
+		t.Fatalf("Path() = %q, want override path", got)
+	}
+	if err := SaveSettings(DefaultSettings()); err != nil {
+		t.Fatalf("SaveSettings: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(override, "settings.json")); err != nil {
+		t.Fatalf("settings were not written below override: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".config", "ssm")); !os.IsNotExist(err) {
+		t.Fatalf("default config directory was touched: %v", err)
+	}
+}
+
 func connectionNames(conns []Connection) string {
 	out := ""
 	for i, c := range conns {

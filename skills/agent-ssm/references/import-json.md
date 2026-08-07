@@ -115,7 +115,7 @@ Retrying `push --all` cannot repair this conflict.
 The emitted machine hint is merge-only and does not authorize replacement:
 
 ```text
-review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull to adopt remote, then use guarded ssm --offline --json import-json <reviewed-file> --merge and publish its reviewed transaction with sshctl --json push --only <transaction-id>
+review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull --adopt-remote <remote-sha256> --yes only after reviewing the exact remote identity, then use guarded ssm --offline --json import-json <reviewed-file> --merge and publish its reviewed transaction with sshctl --json push --only <transaction-id>
 ```
 
 1. Run `sshctl --offline --json doctor` and review the safe `sync_conflict` identities.

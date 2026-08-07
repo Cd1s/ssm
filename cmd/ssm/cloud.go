@@ -345,7 +345,41 @@ func runPullIfChanged() {
 	}
 }
 
-func runPull() {
+func runPull(args []string) {
+	adoptRemote := ""
+	yes := false
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--yes":
+			yes = true
+		case args[i] == "--adopt-remote" && i+1 < len(args):
+			i++
+			adoptRemote = args[i]
+		case strings.HasPrefix(args[i], "--adopt-remote="):
+			adoptRemote = strings.TrimPrefix(args[i], "--adopt-remote=")
+		default:
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.InvalidSSHCTLArguments, machinecontract.Details{Message: "pull accepts only --adopt-remote <sha256> --yes"}))
+		}
+	}
+	if adoptRemote != "" || yes {
+		if adoptRemote == "" || !yes || len(adoptRemote) != 64 || strings.Trim(adoptRemote, "0123456789abcdef") != "" {
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.InvalidSSHCTLArguments, machinecontract.Details{Message: "--adopt-remote requires a lowercase SHA-256 identity and --yes"}))
+		}
+		_, err := syncTransaction(false).AdoptRemote(synctransaction.BlobIdentity{Exists: true, Value: adoptRemote})
+		if err != nil {
+			failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullReplaceFailed)
+			os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+		}
+		if machineJSON {
+			writeMachineValue(struct {
+				OK     bool   `json:"ok"`
+				Action string `json:"action"`
+			}{OK: true, Action: "adopted_remote"})
+			return
+		}
+		fmt.Println("Reviewed remote vault adopted.")
+		return
+	}
 	_, err := syncTransaction(false).Pull()
 	if errors.Is(err, synctransaction.ErrUnconfigured) {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.SyncUnconfigured, machinecontract.Details{

@@ -113,6 +113,9 @@ func (c Connection) Display() string {
 }
 
 func Dir() string {
+	if configured := filepath.Clean(os.Getenv("SSM_CONFIG_DIR")); configured != "." && configured != "" {
+		return configured
+	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".config", "ssm")
 }

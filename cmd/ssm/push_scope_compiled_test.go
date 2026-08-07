@@ -13,7 +13,7 @@ import (
 	"ssm/internal/config"
 )
 
-const emptyLedgerRecoveryHint = "review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull to adopt remote, then use guarded ssm --offline --json import-json <reviewed-file> --merge and publish its reviewed transaction with sshctl --json push --only <transaction-id>"
+const emptyLedgerRecoveryHint = "review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull --adopt-remote <remote-sha256> --yes only after reviewing the exact remote identity, then use guarded ssm --offline --json import-json <reviewed-file> --merge and publish its reviewed transaction with sshctl --json push --only <transaction-id>"
 
 func TestPushScopeArgumentsFailBeforePublicationSideEffects(t *testing.T) {
 	const (

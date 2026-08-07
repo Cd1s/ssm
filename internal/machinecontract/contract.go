@@ -273,7 +273,7 @@ var failurePolicies = map[Kind]failurePolicy{
 	},
 	EmptyLedgerSyncConflict: {
 		Code: "sync_conflict", Stage: "sync_compare",
-		Hint: "review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull to adopt remote, then use guarded ssm --offline --json import-json <reviewed-file> --merge and publish its reviewed transaction with sshctl --json push --only <transaction-id>", Exit: 1,
+		Hint: "review sshctl --offline --json doctor and preserve the local vault and sync-conflict.json; run sshctl --json pull --adopt-remote <remote-sha256> --yes only after reviewing the exact remote identity, then use guarded ssm --offline --json import-json <reviewed-file> --merge and publish its reviewed transaction with sshctl --json push --only <transaction-id>", Exit: 1,
 	},
 	SyncPullFailed: {
 		Code: CodeSyncPull, Stage: "sync_pull", Hint: "fix sync connectivity or retry explicitly with --offline", Exit: 1,

@@ -393,6 +393,46 @@ func (t *Transaction) Pull() (Facts, error) {
 	return t.refreshConfigured(cfg, facts, true)
 }
 
+// AdoptRemote performs the explicit reviewed recovery path for an empty-ledger
+// divergence. Ordinary Pull never calls this method and therefore retains its
+// no-silent-overwrite behavior.
+func (t *Transaction) AdoptRemote(expected BlobIdentity) (Facts, error) {
+	facts := t.localFacts()
+	cfg, state, err := t.configuration()
+	facts.Configuration = state
+	facts.Offline = t.offline
+	if err != nil {
+		return facts, err
+	}
+	if state != ConfigurationConfigured || !expected.Exists || !publicationIdentityPattern.MatchString(expected.Value) {
+		return facts, fmt.Errorf("%w: reviewed remote identity is invalid", ErrConflict)
+	}
+	conflict := loadConflict()
+	if conflict == nil || conflict.RemoteETag != expected.Value {
+		return facts, fmt.Errorf("%w: reviewed remote identity does not match preserved evidence", ErrConflict)
+	}
+	observed, err := t.ObservePublicationIdentity()
+	if err != nil {
+		return facts, fmt.Errorf("%w: reviewed remote identity was not confirmed", ErrConflict)
+	}
+	if !observed.equal(expected) {
+		return facts, fmt.Errorf("%w: reviewed remote identity changed", ErrConflict)
+	}
+	committed, err := cloud.PullExpected(cfg, expected.Value)
+	if err != nil {
+		return facts, fmt.Errorf("%w: reviewed remote identity changed during pull", ErrConflict)
+	}
+	if t.invalidate != nil {
+		t.invalidate()
+	}
+	t.commitSuccess("pull", committed)
+	facts = t.localFacts()
+	facts.Configuration = ConfigurationConfigured
+	facts.Remote = RemoteChecked
+	facts.Changed = true
+	return facts, nil
+}
+
 func (t *Transaction) RemoteIdentity() (string, error) {
 	cfg, state, err := t.configuration()
 	if err != nil {
