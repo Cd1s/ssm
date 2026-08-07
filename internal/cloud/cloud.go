@@ -282,7 +282,7 @@ func InspectRemoteBlob(cfg *CloudConfig) (RemoteBlobIdentity, error) {
 	if err != nil {
 		return RemoteBlobIdentity{}, fmt.Errorf("connection failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == 404 {
 		return RemoteBlobIdentity{}, nil

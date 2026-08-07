@@ -38,7 +38,7 @@ func TestAdoptRemoteRequiresReviewedIdentityAndCommitsVerifiedBlob(t *testing.T)
 		}
 	}))
 	t.Cleanup(server.Close)
-	if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: "opaque-test-token"}); err != nil {
+	if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: server.URL}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -78,7 +78,7 @@ func TestAdoptRemoteRejectsChangedHeadWithoutLocalMutation(t *testing.T) {
 		w.Header().Set("ETag", `"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"`)
 	}))
 	t.Cleanup(server.Close)
-	if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: "opaque-test-token"}); err != nil {
+	if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: server.URL}); err != nil {
 		t.Fatal(err)
 	}
 	_, err := New(Options{}).AdoptRemote(BlobIdentity{Exists: true, Value: expected})
