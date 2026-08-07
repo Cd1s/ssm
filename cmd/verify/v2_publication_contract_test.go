@@ -785,7 +785,7 @@ func TestTrackedV2PublicationMetadataIsExactAndDurable(t *testing.T) {
 		"no protocol or schema breaking change",
 		"v2 compatibility behavior remains",
 		"make_latest=false",
-		"v2.0.1 remains github latest",
+		"v2.0.2 is now github latest",
 		"exact-tag release workflow",
 	} {
 		if !strings.Contains(notes, durable) {

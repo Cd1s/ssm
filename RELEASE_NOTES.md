@@ -1,10 +1,9 @@
 # Release Notes
 
 These notes are the reviewed contract for the authorized stable v2.0.2
-Release. Only the official exact-tag release workflow may first publish it,
-with `make_latest=false`; v2.0.1 remains GitHub latest until the published
-candidate assets and canaries pass and a separate explicit promotion decision
-is made. See the [v1→v2 migration guide](docs/migration-v1-to-v2.md) and
+Release. The official exact-tag workflow published it non-latest first;
+published-asset canaries then passed and the authorized promotion made v2.0.2
+GitHub latest. See the [v1→v2 migration guide](docs/migration-v1-to-v2.md) and
 [update-provenance runbook](docs/update-provenance-runbook.md) for operator and
 maintainer gates.
 
@@ -18,16 +17,15 @@ repair work:
 - honor `SSM_CONFIG_DIR` for the encrypted vault and private sidecars;
 - keep ordinary pull fail-closed and preserve the v2.0.1 public contract.
 
-The official exact-tag release workflow creates the stable v2.0.2 Release with
-`make_latest=false`; v2.0.1 remains GitHub latest until a separate explicit
-latest-promotion decision and its canaries pass.
+The official exact-tag release workflow created the stable v2.0.2 Release with
+`make_latest=false`; after the published-asset canaries passed, the authorized
+latest-promotion step made v2.0.2 GitHub latest.
 
 ## v2.0.1
 
 This is a backward-compatible patch release. The official exact-tag release
-workflow creates the stable v2.0.1 Release with `make_latest=false`; v2.0.0
-remains GitHub latest until the published candidate assets and canaries pass
-and a separate explicit promotion makes v2.0.1 latest.
+workflow creates the stable v2.0.1 Release with `make_latest=false`; v2.0.2 is now GitHub latest after the published candidate
+assets and canaries passed.
 
 - Fix fresh installation with GitHub CLI 2.92.0. `gh attestation verify`
   requires attestation bundle files to have a `.json` or `.jsonl` suffix;
