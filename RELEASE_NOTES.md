@@ -1,12 +1,26 @@
 # Release Notes
 
-These notes are the reviewed contract for the authorized stable v2.0.1
+These notes are the reviewed contract for the authorized stable v2.0.2
 Release. Only the official exact-tag release workflow may first publish it,
-with `make_latest=false`; v2.0.0 remains GitHub latest until the published
+with `make_latest=false`; v2.0.1 remains GitHub latest until the published
 candidate assets and canaries pass and a separate explicit promotion decision
 is made. See the [v1→v2 migration guide](docs/migration-v1-to-v2.md) and
 [update-provenance runbook](docs/update-provenance-runbook.md) for operator and
 maintainer gates.
+
+## v2.0.2
+
+This is a backward-compatible patch release containing the reviewed v2.0.2
+repair work:
+
+- add explicit, identity-checked reviewed remote adoption for true
+  no-transaction divergence;
+- honor `SSM_CONFIG_DIR` for the encrypted vault and private sidecars;
+- keep ordinary pull fail-closed and preserve the v2.0.1 public contract.
+
+The official exact-tag release workflow creates the stable v2.0.2 Release with
+`make_latest=false`; v2.0.1 remains GitHub latest until a separate explicit
+latest-promotion decision and its canaries pass.
 
 ## v2.0.1
 
