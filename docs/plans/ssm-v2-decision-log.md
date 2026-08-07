@@ -484,18 +484,23 @@ explicitly brought both into v2 release scope through Decisions 12 and 13.
   `internal/synctransaction` and serialization remains owned by
   `internal/machinecontract`; no public meaning changed.
 
-### Unresolved non-blocking follow-up work
+### Completed / closed decisions
 
-- Define the reviewed repair flow for no-transaction local/remote divergence.
-- Select the durable encoding and backward-compatible storage location for
-  publishing intent.
-- Characterize directory put/get field presence and omissions, then write the
-  approved field-level migration table.
-- Define the operational keyless identity-rotation procedure and emergency
-  recovery path without weakening pinned identity verification.
-- Re-evaluate selective pool invalidation only after defining a complete
-  connection security identity.
+The five previously listed non-blocking follow-ups are resolved as recorded in
+`docs/plans/v2-follow-up-closure-status.md`:
 
-These follow-ups refine implementation and operations. They do not block the
-proceed verdict for Candidates 1–3, but release-blocking items remain subject to
-Decisions 12 and 13.
+- Reviewed repair flow for no-transaction local/remote divergence is implemented
+  and merge-only.
+- Publishing-intent encoding and backward-compatible private sidecar location
+  are implemented and version-frozen.
+- Directory put/get presence and omission rules are characterized in the BC-7
+  field-level migration matrix.
+- Keyless identity rotation and emergency recovery are defined as fail-closed
+  overlap and recovery procedures.
+- Selective pool invalidation is explicitly not adopted; full process-scoped
+  pool invalidation remains the v2 security contract until a complete identity
+  model exists.
+
+These decisions close the non-blocking follow-up list without weakening the
+release gates or authorizing tag, release, latest-promotion, or live-install
+side effects.
