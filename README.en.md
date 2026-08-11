@@ -12,9 +12,9 @@ If sync is enabled, the sync server sees only encrypted vault blobs. It cannot s
 
 [中文](README.md) | [English](README.en.md)
 
-## Current release: v2.0.1
+## Current release: v2.0.2
 
-The current GitHub latest Release is **v2.0.1**, so the one-line fresh install below gets v2.0.1. Existing v1.4.3/v1.4.4 users stay on major 1 when they run ordinary `ssm update`; only an explicitly reviewed `ssm update --major --yes` crosses to v2. See the [v1→v2 migration guide](docs/migration-v1-to-v2.md) for migration details and the [update-provenance runbook](docs/update-provenance-runbook.md) for source and attestation checks.
+The current GitHub latest Release is **v2.0.2**, so the one-line fresh install below gets v2.0.2. Existing v1.4.3/v1.4.4 users stay on major 1 when they run ordinary `ssm update`; only an explicitly reviewed `ssm update --major --yes` crosses to v2. See the [v1→v2 migration guide](docs/migration-v1-to-v2.md) for migration details and the [update-provenance runbook](docs/update-provenance-runbook.md) for source and attestation checks.
 
 ## 3-minute quick start
 
@@ -173,7 +173,7 @@ Replace `<transaction-id>` with the exact ID returned by the mutation. Do not us
 
 ## Updates and rollback
 
-Fresh installs follow GitHub latest, currently v2.0.1. Ordinary updates choose a newer release only within the installed major:
+Fresh installs follow GitHub latest, currently v2.0.2. Ordinary updates choose a newer release only within the installed major:
 
 ```bash
 ssm update
@@ -195,7 +195,7 @@ ssm update --major --yes
 
 ## Advanced / for agents and automation
 
-Read the [official Agent Skill](skills/agent-ssm/SKILL.md) and [version compatibility matrix](skills/agent-ssm/references/version-compatibility.md) first. They define the v1.4.3/v1.4.4 compatibility branch and the v2 branch shared by supported v2.0.0 and current v2.0.1, including the schema and fields each branch may use.
+Read the [official Agent Skill](skills/agent-ssm/SKILL.md) and [version compatibility matrix](skills/agent-ssm/references/version-compatibility.md) first. They define the v1.4.3/v1.4.4 compatibility branch and the v2 branch shared by supported v2.0.0 and current v2.0.2, including the schema and fields each branch may use.
 
 ### Structured output and requests
 

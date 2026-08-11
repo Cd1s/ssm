@@ -1,7 +1,7 @@
 # SSM v1 to v2 migration contract
 
 This guide is the operator and machine-consumer contract for the current
-GitHub latest v2.0.1. Fresh installs select v2.0.1; v1 clients remain on major
+GitHub latest v2.0.2. Fresh installs select v2.0.2; v1 clients remain on major
 1 for ordinary updates and select v2 only through an explicit reviewed major
 migration.
 
