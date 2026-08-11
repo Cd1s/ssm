@@ -1,6 +1,6 @@
 # SSM v1 到 v2 的迁移契约
 
-本指南是当前 GitHub latest SSM v2.0.1 的运维者和机器消费者契约。全新安装选择 v2.0.1；
+本指南是当前 GitHub latest SSM v2.0.2 的运维者和机器消费者契约。全新安装选择 v2.0.2；
 v1 客户端普通更新仍留在 major 1，只有经过审查并显式授权的 major 迁移才能选择 v2。
 
 [English](migration-v1-to-v2.md) | [来源证明运行手册](update-provenance-runbook.zh-CN.md)

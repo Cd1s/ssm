@@ -13,9 +13,9 @@ We will respond within 48 hours and work on a fix as quickly as possible.
 ## Release Verification
 
 The authorized stable v2 update-trust contract introduced in v2.0.0 and
-carried unchanged by v2.0.1 is detailed in the
+carried unchanged through v2.0.1 and v2.0.2 is detailed in the
 [update-provenance runbook](docs/update-provenance-runbook.md). It includes a
-reviewed identity rotation overlap and recovery procedure. v2.0.1 is the
+reviewed identity rotation overlap and recovery procedure. v2.0.2 is the
 current GitHub latest Release for fresh installs; v1.4.3/v1.4.4 clients still
 require an explicit reviewed major migration to select it.
 

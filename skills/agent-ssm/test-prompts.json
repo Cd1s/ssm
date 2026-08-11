@@ -95,9 +95,9 @@
   },
   {
     "name": "v2-compatibility-branch",
-    "prompt": "Use agent-ssm with sshctl 2.0.1 to download a directory from exact alias my-server and explain the structured result.",
+    "prompt": "Use agent-ssm with sshctl 2.0.2 to download a directory from exact alias my-server and explain the structured result.",
     "expected_behavior": [
-      "Runs sshctl --json --version first and selects the v2 compatibility branch for exact 2.0.1",
+      "Runs sshctl --json --version first and selects the v2 compatibility branch for exact 2.0.2",
       "May use strict request schema version 1 op:get from references/request-v1.schema.json",
       "Branches on direction:get and kind:directory",
       "Reports atomic:false, integrity:not_available, resume:unsupported, and does not invent bytes_received",

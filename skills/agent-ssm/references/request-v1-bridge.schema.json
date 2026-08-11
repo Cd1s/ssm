@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Cd1s/ssm/blob/v2.0.1/skills/agent-ssm/references/request-v1-bridge.schema.json",
+  "$id": "https://github.com/Cd1s/ssm/blob/v2.0.2/skills/agent-ssm/references/request-v1-bridge.schema.json",
   "title": "SSM v1.4.3-v1.4.4 agent request v1 compatibility subset",
   "type": "object",
   "additionalProperties": false,
