@@ -12,7 +12,7 @@ v1 客户端普通更新仍留在 major 1，只有经过审查并显式授权的
 ## 前置条件和保留的基线
 
 更改客户端之前，确定其当前可执行文件、配置目录、同步端点、操作系统、架构，以及所有
-解析 SSM 输出的自动化程序。发布门禁要求 Go 1.25.12、`jq`、`bash`、官方 golangci-lint 2.11.4
+解析 SSM 输出的自动化程序。发布门禁要求 Go 1.25.13、`jq`、`bash`、官方 golangci-lint 2.11.4
 二进制文件、`v1.2.0` lint 基线，以及 `go run ./cmd/verify list` 报告的其他工具。
 
 [#2](https://github.com/Cd1s/ssm/issues/2) 至 [#11](https://github.com/Cd1s/ssm/issues/11)

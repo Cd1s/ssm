@@ -33,7 +33,7 @@ The versions below were observed in the Linux final-gate environment. The manife
 
 | tool | observed version |
 | --- | --- |
-| Go | `1.25.12` |
+| Go | `1.25.13` |
 | git | `2.47.3` |
 | jq | `1.7` |
 | golangci-lint | `2.11.4` |
@@ -103,7 +103,7 @@ Release profile prerequisites: `tool:git@any`, `repository:fully-populated-regul
 - requirement: `required`
 - description: Require gofmt-clean source without rewriting files.
 - action: command `{goroot}/bin/gofmt{exe} -l . expect=stdout_empty`
-- tool/file/capability prerequisites: `tool:gofmt@go1.25.12`
+- tool/file/capability prerequisites: `tool:gofmt@go1.25.13`
 
 ### 02. `lint`
 
@@ -118,28 +118,28 @@ Release profile prerequisites: `tool:git@any`, `repository:fully-populated-regul
 - requirement: `required`
 - description: Run Go vet across all packages.
 - action: command `go vet ./...`
-- tool/file/capability prerequisites: `tool:go@1.25.12`, `capability:repository-modules@go-mod-download`
+- tool/file/capability prerequisites: `tool:go@1.25.13`, `capability:repository-modules@go-mod-download`
 
 ### 04. `vulnerability`
 
 - requirement: `required`
 - description: Run govulncheck v1.6.0 across all packages.
 - action: command `go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...`
-- tool/file/capability prerequisites: `tool:go@1.25.12`, `capability:repository-modules@go-mod-download`, `capability:govulncheck-module@network-or-module-cache`
+- tool/file/capability prerequisites: `tool:go@1.25.13`, `capability:repository-modules@go-mod-download`, `capability:govulncheck-module@network-or-module-cache`
 
 ### 05. `build`
 
 - requirement: `required`
 - description: Build ssm into a profile-owned temporary directory.
 - action: command `go build -buildvcs=false -o {temp}/ssm{exe} ./cmd/ssm`
-- tool/file/capability prerequisites: `tool:go@1.25.12`, `capability:repository-modules@go-mod-download`
+- tool/file/capability prerequisites: `tool:go@1.25.13`, `capability:repository-modules@go-mod-download`
 
 ### 06. `unit`
 
 - requirement: `required`
 - description: Run the complete Go unit and integration test suite.
 - action: command `go test ./...`
-- tool/file/capability prerequisites: `tool:go@1.25.12`, `capability:repository-modules@go-mod-download`
+- tool/file/capability prerequisites: `tool:go@1.25.13`, `capability:repository-modules@go-mod-download`
 
 ### 07. `race`
 
@@ -148,7 +148,7 @@ Release profile prerequisites: `tool:git@any`, `repository:fully-populated-regul
 - activation: `native_supported_host_with_cgo_and_c_compiler`
 - required contexts: `github_actions_linux`
 - action: command `go test -race -timeout=15m ./...`
-- tool/file/capability prerequisites: `tool:go@1.25.12`, `capability:repository-modules@go-mod-download`, `capability:native-race@supported-host-cgo-c-compiler`
+- tool/file/capability prerequisites: `tool:go@1.25.13`, `capability:repository-modules@go-mod-download`, `capability:native-race@supported-host-cgo-c-compiler`
 
 ### 08. `agent-prompts-json`
 
@@ -177,7 +177,7 @@ Release profile prerequisites: `tool:git@any`, `repository:fully-populated-regul
 - description: Run the existing live OpenSSH behavior matrix when its Linux prerequisites are available.
 - required contexts: `github_actions_linux`
 - action: command `bash scripts/ssh_matrix_test.sh`
-- tool/file/capability prerequisites: `platform:linux@any`, `tool:awk@any`, `tool:bash@any`, `tool:cat@any`, `tool:chmod@any`, `tool:cp@any`, `tool:dd@any`, `tool:dirname@any`, `tool:find@any`, `tool:go@1.25.12`, `capability:repository-modules@go-mod-download`, `tool:grep@any`, `tool:head@any`, `tool:id@any`, `tool:ln@any`, `tool:mkdir@any`, `tool:mktemp@any`, `tool:nohup@any`, `tool:printenv@any`, `tool:rm@any`, `tool:script@any`, `tool:sed@any`, `tool:seq@any`, `tool:sh@any`, `tool:sha256sum@any`, `tool:sleep@any`, `tool:ssh@any`, `tool:ssh-keygen@any`, `tool:touch@any`, `executable_alternatives:sshd@SSHD-then-PATH-then-/usr/sbin/sshd [alternatives: environment_executable:SSHD@if-set-required, path_executable:sshd@fallback, system_path:/usr/sbin/sshd@executable-fallback]`, `tool:tr@any`, `tool:wc@any`, `system_path:/dev/null@readable`, `system_path:/dev/zero@readable`, `system_path:/run/sshd@directory`, `system_path:/usr/lib/openssh/sftp-server@executable`
+- tool/file/capability prerequisites: `platform:linux@any`, `tool:awk@any`, `tool:bash@any`, `tool:cat@any`, `tool:chmod@any`, `tool:cp@any`, `tool:dd@any`, `tool:dirname@any`, `tool:find@any`, `tool:go@1.25.13`, `capability:repository-modules@go-mod-download`, `tool:grep@any`, `tool:head@any`, `tool:id@any`, `tool:ln@any`, `tool:mkdir@any`, `tool:mktemp@any`, `tool:nohup@any`, `tool:printenv@any`, `tool:rm@any`, `tool:script@any`, `tool:sed@any`, `tool:seq@any`, `tool:sh@any`, `tool:sha256sum@any`, `tool:sleep@any`, `tool:ssh@any`, `tool:ssh-keygen@any`, `tool:touch@any`, `executable_alternatives:sshd@SSHD-then-PATH-then-/usr/sbin/sshd [alternatives: environment_executable:SSHD@if-set-required, path_executable:sshd@fallback, system_path:/usr/sbin/sshd@executable-fallback]`, `tool:tr@any`, `tool:wc@any`, `system_path:/dev/null@readable`, `system_path:/dev/zero@readable`, `system_path:/run/sshd@directory`, `system_path:/usr/lib/openssh/sftp-server@executable`
 
 ### 12. `source-version`
 
@@ -191,49 +191,49 @@ Release profile prerequisites: `tool:git@any`, `repository:fully-populated-regul
 - requirement: `required`
 - description: Build the canonical ssm-linux-amd64 release asset in temporary storage.
 - action: command `go build -buildvcs=false "-ldflags=-s -w -X main.version={version}" -o {temp}/ssm-linux-amd64 ./cmd/ssm env=GOOS=linux,GOARCH=amd64`
-- tool/file/capability prerequisites: `tool:go@1.25.12`, `capability:repository-modules@go-mod-download`
+- tool/file/capability prerequisites: `tool:go@1.25.13`, `capability:repository-modules@go-mod-download`
 
 ### 14. `asset-linux-arm64`
 
 - requirement: `required`
 - description: Build the canonical ssm-linux-arm64 release asset in temporary storage.
 - action: command `go build -buildvcs=false "-ldflags=-s -w -X main.version={version}" -o {temp}/ssm-linux-arm64 ./cmd/ssm env=GOOS=linux,GOARCH=arm64`
-- tool/file/capability prerequisites: `tool:go@1.25.12`, `capability:repository-modules@go-mod-download`
+- tool/file/capability prerequisites: `tool:go@1.25.13`, `capability:repository-modules@go-mod-download`
 
 ### 15. `asset-darwin-amd64`
 
 - requirement: `required`
 - description: Build the canonical ssm-darwin-amd64 release asset in temporary storage.
 - action: command `go build -buildvcs=false "-ldflags=-s -w -X main.version={version}" -o {temp}/ssm-darwin-amd64 ./cmd/ssm env=GOOS=darwin,GOARCH=amd64`
-- tool/file/capability prerequisites: `tool:go@1.25.12`, `capability:repository-modules@go-mod-download`
+- tool/file/capability prerequisites: `tool:go@1.25.13`, `capability:repository-modules@go-mod-download`
 
 ### 16. `asset-darwin-arm64`
 
 - requirement: `required`
 - description: Build the canonical ssm-darwin-arm64 release asset in temporary storage.
 - action: command `go build -buildvcs=false "-ldflags=-s -w -X main.version={version}" -o {temp}/ssm-darwin-arm64 ./cmd/ssm env=GOOS=darwin,GOARCH=arm64`
-- tool/file/capability prerequisites: `tool:go@1.25.12`, `capability:repository-modules@go-mod-download`
+- tool/file/capability prerequisites: `tool:go@1.25.13`, `capability:repository-modules@go-mod-download`
 
 ### 17. `asset-windows-amd64`
 
 - requirement: `required`
 - description: Build the canonical ssm-windows-amd64.exe release asset in temporary storage.
 - action: command `go build -buildvcs=false "-ldflags=-s -w -X main.version={version}" -o {temp}/ssm-windows-amd64.exe ./cmd/ssm env=GOOS=windows,GOARCH=amd64`
-- tool/file/capability prerequisites: `tool:go@1.25.12`, `capability:repository-modules@go-mod-download`
+- tool/file/capability prerequisites: `tool:go@1.25.13`, `capability:repository-modules@go-mod-download`
 
 ### 18. `asset-windows-arm64`
 
 - requirement: `required`
 - description: Build the canonical ssm-windows-arm64.exe release asset in temporary storage.
 - action: command `go build -buildvcs=false "-ldflags=-s -w -X main.version={version}" -o {temp}/ssm-windows-arm64.exe ./cmd/ssm env=GOOS=windows,GOARCH=arm64`
-- tool/file/capability prerequisites: `tool:go@1.25.12`, `capability:repository-modules@go-mod-download`
+- tool/file/capability prerequisites: `tool:go@1.25.13`, `capability:repository-modules@go-mod-download`
 
 ### 19. `updater-selection`
 
 - requirement: `required`
 - description: Prove updater selection matches all six release asset names and rejects incomplete or unsupported release manifests without fallback.
 - action: command `go test ./internal/update -run ^(TestAssetNameForSupportedPlatforms|TestReleaseAssetSelectionIsStrict|TestInvalidSelectedReleaseDoesNotFallBackOrDownload)$ -count=1`
-- tool/file/capability prerequisites: `tool:go@1.25.12`, `capability:repository-modules@go-mod-download`
+- tool/file/capability prerequisites: `tool:go@1.25.13`, `capability:repository-modules@go-mod-download`
 
 ### 20. `release-notes`
 
@@ -268,49 +268,49 @@ Release profile prerequisites: `tool:git@any`, `repository:fully-populated-regul
 - requirement: `required`
 - description: Exercise pinned certificate/statement identity, exact digest binding, and byte-preserving trust failures through the updater verifier.
 - action: command `go test ./internal/update -run ^(TestProvenanceIdentityMatrix|TestProvenanceDigestBinding|TestTrustFailurePreservesExecutable)$ -count=1`
-- tool/file/capability prerequisites: `tool:go@1.25.12`, `capability:repository-modules@go-mod-download`
+- tool/file/capability prerequisites: `tool:go@1.25.13`, `capability:repository-modules@go-mod-download`
 
 ### 25. `checksum-failure-paths`
 
 - requirement: `required`
 - description: Exercise checksum selection, mismatch, and no-replacement failure paths.
 - action: command `go test ./internal/update -run ^(TestChecksumForAsset|TestChecksumForAssetRequiresMatchingAsset|TestCopyAndVerifyRejectsChecksumMismatch|TestDownloadVersionVerifiesChecksumBeforeReplace)$ -count=1`
-- tool/file/capability prerequisites: `tool:go@1.25.12`, `capability:repository-modules@go-mod-download`
+- tool/file/capability prerequisites: `tool:go@1.25.13`, `capability:repository-modules@go-mod-download`
 
 ### 26. `v2-public-contracts`
 
 - requirement: `required`
 - description: Run the compiled SSM v2 public, sync, publication, stream, push, and transfer contract fixtures directly.
 - action: command `go test ./cmd/ssm -run ^(TestCompiledCLIContractMatrix|TestApprovedV2BreakingChangeBaselines|TestCompiledSyncStateMatrix|TestCompiledStreamContract|TestCompiledStreamStartupNetworkPolicy|TestStreamRefreshClosesPool|TestStreamOfflineUsesFixedSnapshot|TestInventoryTransactionPolicy|TestScopedPublicationSavedKeyDependencies|TestLegacyMutationsCreatePendingTransactions|TestImportCreatesOneAtomicBulkTransaction|TestMutationEntryPointsNeverAutoPublish|TestPushScopeArgumentsFailBeforePublicationSideEffects|TestPushOnlyEqualsPreservesExactScope|TestEmptyLedgerPushNeverPuts|TestPushAllUsesInvocationStartSnapshot|TestEveryPushPathUsesInventoryTransactions|TestPublicationIntentCrashMatrix|TestPublicationReconcilesLostResponse|TestPublicationReconcilesFinalizeFailure|TestCompiledTransferOutcomeMatrix|TestTransferDirectAndRequestParity|TestTransferGuaranteesAreTruthful)$ -count=1`
-- tool/file/capability prerequisites: `tool:go@1.25.12`, `capability:repository-modules@go-mod-download`
+- tool/file/capability prerequisites: `tool:go@1.25.13`, `capability:repository-modules@go-mod-download`
 
 ### 27. `v2-policy-contracts`
 
 - requirement: `required`
 - description: Run the deep sync and inventory transaction policy fixtures directly.
 - action: command `go test ./internal/synctransaction ./internal/inventorytransaction -run ^(TestSyncTransactionPolicy|TestStreamTransactionPolicy|TestInventoryTransactionPolicy)$ -count=1`
-- tool/file/capability prerequisites: `tool:go@1.25.12`, `capability:repository-modules@go-mod-download`
+- tool/file/capability prerequisites: `tool:go@1.25.13`, `capability:repository-modules@go-mod-download`
 
 ### 28. `v2-update-contracts`
 
 - requirement: `required`
 - description: Run explicit migration authorization, same-major selection, preflight, rollback, and executable-preservation fixtures directly.
 - action: command `go test ./internal/update -run ^(TestMigrationPreflightInspectsLocalSyncStateWithoutNetwork|TestMigrationPreflightFailsForPreservedSyncConflictWithoutNetwork|TestSameMajorSelection|TestCrossMajorRequiresExplicitAuthorization|TestFailedMigrationPreservesExecutable)$ -count=1`
-- tool/file/capability prerequisites: `tool:go@1.25.12`, `capability:repository-modules@go-mod-download`
+- tool/file/capability prerequisites: `tool:go@1.25.13`, `capability:repository-modules@go-mod-download`
 
 ### 29. `v2-structure-docs`
 
 - requirement: `required`
 - description: Run three-module contraction, adversarial ownership, bilingual migration documentation, and public help fixtures directly.
 - action: command `go test ./cmd/ssm -run ^(TestDeepPolicyOwnershipContraction|TestDeepPolicyOwnershipAnalyzerAdversarialFixtures|TestV2MigrationDocumentationContract|TestSSHCTLCommandHelpNeedsNoUnlockOrTTY|TestRunHelpDocumentsFastStream)$ -count=1`
-- tool/file/capability prerequisites: `tool:go@1.25.12`, `capability:repository-modules@go-mod-download`
+- tool/file/capability prerequisites: `tool:go@1.25.13`, `capability:repository-modules@go-mod-download`
 
 ### 30. `v2-release-contracts`
 
 - requirement: `required`
 - description: Run release superset, non-mutation, no-publication-authority, source grammar, workflow identity, and provenance workflow fixtures directly.
 - action: command `go test ./cmd/verify -run ^(TestReleaseStrictlyContainsCI|TestProfilesAreNonMutating|TestVerificationChildrenHaveNoInheritedPublicationAuthority|TestSourceVersionMatchesReleaseWorkflowGrammar|TestReleaseProvenanceForEveryTarget|TestReleaseWorkflowUsesCredentialFreeVerifierPreflightAndManifestParity|TestReleaseWorkflowProducesPinnedProvenance|TestReleaseWorkflowPublishesOnlySelectedTagIdentity|TestReleaseV2ReadinessIsExecutable)$ -count=1`
-- tool/file/capability prerequisites: `tool:go@1.25.12`, `capability:repository-modules@go-mod-download`
+- tool/file/capability prerequisites: `tool:go@1.25.13`, `capability:repository-modules@go-mod-download`
 
 ### 31. `markdown-contracts`
 
@@ -324,7 +324,7 @@ Release profile prerequisites: `tool:git@any`, `repository:fully-populated-regul
 - requirement: `required`
 - description: Emit observed package coverage without enforcing any percentage threshold.
 - action: command `go test -cover -count=1 ./...`
-- tool/file/capability prerequisites: `tool:go@1.25.12`, `capability:repository-modules@go-mod-download`
+- tool/file/capability prerequisites: `tool:go@1.25.13`, `capability:repository-modules@go-mod-download`
 
 ### 33. `v2-readiness-report`
 

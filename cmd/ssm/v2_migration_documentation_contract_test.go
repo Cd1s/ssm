@@ -311,7 +311,7 @@ func v2ChecklistLine(segment, prefix string) string {
 func assertV2SectionAnchors(t *testing.T, name, body string) {
 	t.Helper()
 	anchors := map[string][]string{
-		"prerequisites":                       {"Go 1.25.12", "jq", "golangci-lint 2.11.4"},
+		"prerequisites":                       {"Go 1.25.13", "jq", "golangci-lint 2.11.4"},
 		"backup-recovery-metadata":            {"encrypted vault", "publishing-intent.json", "sync-conflict.json"},
 		"automated-preflight":                 {"go run ./cmd/verify release", "cloud_configuration", "rollback_readiness"},
 		"manual-external-consumer-review":     {"legacy_bare_push_consumers", "zero_refresh_online_streams", "directory_transfer_consumers"},

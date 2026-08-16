@@ -3,8 +3,30 @@ package ssh
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestValidateUploadDirWalkRejectsEmptyDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "empty"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateUploadDirWalk(dir); err == nil || !strings.Contains(err.Error(), "empty directory") {
+		t.Fatalf("expected empty-directory validation error, got %v", err)
+	}
+}
+
+func TestValidateUploadDirWalkRejectsNonRegularEntry(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink("missing-target", link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := validateUploadDirWalk(dir); err == nil || !strings.Contains(err.Error(), "non-regular entry") {
+		t.Fatalf("expected non-regular validation error, got %v", err)
+	}
+}
 
 func TestLocalTreeFiles(t *testing.T) {
 	dir := t.TempDir()

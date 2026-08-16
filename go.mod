@@ -1,6 +1,6 @@
 module ssm
 
-go 1.25.12
+go 1.25.13
 
 require (
 	github.com/sigstore/protobuf-specs v0.5.1

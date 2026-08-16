@@ -15,7 +15,7 @@ migration.
 
 Before changing a client, identify its current executable, config directory,
 sync endpoint, operating system, architecture, and all automation that parses
-SSM output. The release gate requires Go 1.25.12, `jq`, `bash`, the official
+SSM output. The release gate requires Go 1.25.13, `jq`, `bash`, the official
 golangci-lint 2.11.4 binary, the `v1.2.0` lint baseline, and the other tools
 reported by `go run ./cmd/verify list`.
 

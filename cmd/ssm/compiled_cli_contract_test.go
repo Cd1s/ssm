@@ -1929,7 +1929,7 @@ func TestCompiledSuccessfulTransferDiagnosticsRemainByteExact(t *testing.T) {
 	}
 }
 
-func TestCompiledSuccessfulDirectoryFallbackPreservesOrderedDiagnostics(t *testing.T) {
+func TestCompiledSuccessfulDirectoryFallbackSuppressesFailedTarDiagnostics(t *testing.T) {
 	const (
 		alias    = "fallback-diagnostics"
 		password = "FALLBACK_DIAGNOSTICS_PASSWORD_CANARY" //nolint:gosec // test-only fake credential canary
@@ -1953,8 +1953,7 @@ func TestCompiledSuccessfulDirectoryFallbackPreservesOrderedDiagnostics(t *testi
 		"PATH":                cli.TarFailureHelperDir(t),
 		"SSM_TEST_TAR_HELPER": "1",
 	}, "--offline", "put", alias, local, remote)
-	wantStderr := "config=\"{\\\"token\\\":\\\"FALLBACK_LOCAL_TAR_DIAGNOSTIC\\\"}\"\n" +
-		"compiled fixture tar stream invalid\n"
+	wantStderr := ""
 	if result.ProcessExit != 0 || result.Stdout != "" || result.Stderr != wantStderr {
 		t.Fatalf(
 			"successful fallback diagnostics changed: exit=%d stdout=%q stderr=%q, want exit=0 stdout empty stderr=%q",

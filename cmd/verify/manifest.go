@@ -334,7 +334,7 @@ func formatCheck() Check {
 		Requirement: requirementRequired,
 		Action:      commandAction("{goroot}/bin/gofmt{exe}", []string{"-l", "."}, nil, "stdout_empty"),
 		Prerequisites: []Prerequisite{
-			{Kind: "tool", Name: "gofmt", Version: "go1.25.12"},
+			{Kind: "tool", Name: "gofmt", Version: "go1.25.13"},
 		},
 	}
 }
@@ -502,7 +502,7 @@ func sshMatrixCheck() Check {
 			{Kind: "tool", Name: "dd", Version: "any"},
 			{Kind: "tool", Name: "dirname", Version: "any"},
 			{Kind: "tool", Name: "find", Version: "any"},
-			{Kind: "tool", Name: "go", Version: "1.25.12"},
+			{Kind: "tool", Name: "go", Version: "1.25.13"},
 			repositoryModulesPrerequisite(),
 			{Kind: "tool", Name: "grep", Version: "any"},
 			{Kind: "tool", Name: "head", Version: "any"},
@@ -558,7 +558,7 @@ func assetCheck(goos, goarch string) Check {
 
 func goPrerequisites() []Prerequisite {
 	return []Prerequisite{
-		{Kind: "tool", Name: "go", Version: "1.25.12"},
+		{Kind: "tool", Name: "go", Version: "1.25.13"},
 		repositoryModulesPrerequisite(),
 	}
 }

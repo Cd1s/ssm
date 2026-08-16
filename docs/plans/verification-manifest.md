@@ -237,7 +237,7 @@ Required prerequisites are listed in the manifest:
   command authority: fsmonitor, clean/process/smudge filters, external
   diff/textconv/merge commands, hooks paths, credential helpers/askpass,
   SSH/proxy commands, extra headers, URL rewrites, and push URLs fail closed;
-- Go 1.25.12 and the gofmt executable from that same resolved toolchain;
+- Go 1.25.13 and the gofmt executable from that same resolved toolchain;
 - the official golangci-lint 2.11.4 prebuilt;
 - the `v1.2.0` lint baseline tag/ref resolving to a commit for profiles that
   include lint;

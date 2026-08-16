@@ -32,7 +32,7 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 sshctl --json --version
 ```
 
-应看到版本字段为 `2.0.1`。如果 `sshctl` 不存在，重新打开终端或检查 `/usr/local/bin` 是否在 `PATH` 中。
+应看到版本字段为 `2.0.2`。如果 `sshctl` 不存在，重新打开终端或检查 `/usr/local/bin` 是否在 `PATH` 中。
 
 ### 3. 查看状态
 
