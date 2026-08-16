@@ -32,7 +32,7 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 sshctl --json --version
 ```
 
-The version field should be `2.0.1`. If `sshctl` is not found, reopen the terminal or check that `/usr/local/bin` is on `PATH`.
+The version field should be `2.0.2`. If `sshctl` is not found, reopen the terminal or check that `/usr/local/bin` is on `PATH`.
 
 ### 3. Check status
 
