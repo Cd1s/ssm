@@ -152,7 +152,7 @@ func prepareVerifierCache(repoRoot, requestedRoot string) (verifierCache, error)
 		if err != nil {
 			return verifierCache{}, fmt.Errorf("resolve user cache directory: %w", err)
 		}
-		root = filepath.Join(base, "ssm", "verify", "go1.25.12")
+		root = filepath.Join(base, "ssm", "verify", "go1.25.13")
 	}
 	root, err := filepath.Abs(root)
 	if err != nil {

@@ -54,7 +54,7 @@
             {
               "kind": "tool",
               "name": "gofmt",
-              "version": "go1.25.12"
+              "version": "go1.25.13"
             }
           ]
         },
@@ -76,7 +76,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -103,7 +103,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -160,7 +160,7 @@
             {
               "kind": "tool",
               "name": "gofmt",
-              "version": "go1.25.12"
+              "version": "go1.25.13"
             }
           ]
         },
@@ -227,7 +227,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -255,7 +255,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -290,7 +290,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -317,7 +317,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -350,7 +350,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -495,7 +495,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -694,7 +694,7 @@
             {
               "kind": "tool",
               "name": "gofmt",
-              "version": "go1.25.12"
+              "version": "go1.25.13"
             }
           ]
         },
@@ -761,7 +761,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -789,7 +789,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -824,7 +824,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -851,7 +851,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -884,7 +884,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -1029,7 +1029,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -1222,7 +1222,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -1257,7 +1257,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -1292,7 +1292,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -1327,7 +1327,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -1362,7 +1362,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -1397,7 +1397,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -1427,7 +1427,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -1526,7 +1526,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -1556,7 +1556,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -1586,7 +1586,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -1617,7 +1617,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -1647,7 +1647,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -1677,7 +1677,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -1707,7 +1707,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",
@@ -1763,7 +1763,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.25.12"
+              "version": "1.25.13"
             },
             {
               "kind": "capability",

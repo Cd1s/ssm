@@ -28,7 +28,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
 
       - name: Install verification prerequisites
         run: |
@@ -158,7 +158,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
 
       - name: Build verified release asset
         run: |
