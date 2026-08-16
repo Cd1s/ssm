@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -129,19 +130,30 @@ func uploadDirTar(c config.Connection, v *config.Vault, localDir, remoteDir stri
 	}
 
 	// Prefer system tar for correct metadata; fall back to pure Go walk+files.
+	// Keep local tar diagnostics separate from remote extractor diagnostics.
+	// A tar failure is allowed to fall back to the walk implementation; its
+	// failure output must not be replayed as if the overall transfer succeeded.
+	var tarDiagnostics bytes.Buffer
 	tarCmd := exec.Command("tar", "-C", localDir, "-cf", "-", ".")
 	tarCmd.Stdout = stdin
-	tarCmd.Stderr = stderrSpool
+	tarCmd.Stderr = &tarDiagnostics
 	if err := tarCmd.Run(); err != nil {
 		_ = stdin.Close()
-		// Drain the failed tar session before falling back so diagnostics already
-		// emitted by the remote extractor retain their historical ordering and
-		// bytes. Its failure does not override a successful walk fallback.
+		// Drain the failed tar session before falling back. Its failure does not
+		// override a successful walk fallback.
 		_ = session.Wait()
+		// The remote extractor may have emitted partial output before the local
+		// tar failure. Discard both spools before falling back so that output is
+		// never replayed as part of a successful walk transfer.
+		stdoutDiscardErr := stdoutSpool.Close()
+		stderrDiscardErr := stderrSpool.Close()
 		// Fallback: recursive single-file upload
-		resultErr = uploadDirWalk(c, v, localDir, remoteDir)
-		diagnosticsSucceeded = resultErr == nil
+		resultErr = errors.Join(uploadDirWalk(c, v, localDir, remoteDir), stdoutDiscardErr, stderrDiscardErr)
+		diagnosticsSucceeded = false
 		return resultErr
+	}
+	if _, err := stderrSpool.Write(tarDiagnostics.Bytes()); err != nil {
+		return err
 	}
 	if err := stdin.Close(); err != nil {
 		return err
@@ -221,6 +233,9 @@ func downloadDirTar(c config.Connection, v *config.Vault, remoteDir, localDir st
 }
 
 func uploadDirWalk(c config.Connection, v *config.Vault, localDir, remoteDir string) error {
+	if err := validateUploadDirWalk(localDir); err != nil {
+		return err
+	}
 	return filepath.Walk(localDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -240,6 +255,41 @@ func uploadDirWalk(c config.Connection, v *config.Vault, localDir, remoteDir str
 		remote := strings.TrimRight(remoteDir, "/") + "/" + rel
 		return UploadFile(c, v, path, remote)
 	})
+}
+
+// validateUploadDirWalk ensures the pure-Go fallback can represent every
+// entry in the source tree. It only uploads regular files and cannot create
+// empty directories or preserve non-regular entries, so those cases fail
+// closed instead of being reported as a successful partial transfer.
+func validateUploadDirWalk(localDir string) error {
+	dirsWithEntries := map[string]bool{}
+	if err := filepath.Walk(localDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			dirsWithEntries[path] = false
+			if path != localDir {
+				dirsWithEntries[filepath.Dir(path)] = true
+			}
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("directory fallback cannot preserve non-regular entry %s", path)
+		}
+		dirsWithEntries[filepath.Dir(path)] = true
+		return nil
+	}); err != nil {
+		return err
+	}
+	for path, hasEntries := range dirsWithEntries {
+		// The caller creates remoteDir before invoking the fallback, so an
+		// otherwise empty source root is already representable.
+		if path != localDir && !hasEntries {
+			return fmt.Errorf("directory fallback cannot preserve empty directory %s", path)
+		}
+	}
+	return nil
 }
 
 // LocalTreeFiles lists relative slash-paths of regular files under dir (tests).
