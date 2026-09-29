@@ -1126,7 +1126,7 @@ func govulncheckModuleCapability(
 	repoRoot string,
 	environment []string,
 ) prerequisiteState {
-	command := exec.Command("go", "mod", "download", "golang.org/x/vuln@v1.6.0") //nolint:gosec // fixed reviewed public module and version
+	command := exec.Command("go", "mod", "download", govulncheckModuleName+"@"+pinnedGovulncheckVersion) //nolint:gosec // fixed reviewed public module and version
 	command.Dir = repoRoot
 	command.Env = environment
 	output, err := ownedCommandCombinedOutput(ctx, command)
@@ -1137,7 +1137,7 @@ func govulncheckModuleCapability(
 		}
 		return prerequisiteState{detail: "govulncheck module download failed: " + detail}
 	}
-	return prerequisiteState{available: true, detail: "govulncheck v1.6.0 is available in the verifier cache"}
+	return prerequisiteState{available: true, detail: "govulncheck " + pinnedGovulncheckVersion + " is available in the verifier cache"}
 }
 
 func raceSupportedHost(goos, goarch string) bool {

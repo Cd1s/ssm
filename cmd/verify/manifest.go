@@ -18,7 +18,8 @@ const (
 	pinnedGoVersion            = "1.26.8"
 	pinnedGolangciLintVersion  = "2.11.4"
 	pinnedGovulncheckVersion   = "v1.6.0"
-	govulncheckModule          = "golang.org/x/vuln/cmd/govulncheck"
+	govulncheckModuleName      = "golang.org/x/vuln"
+	govulncheckModule          = govulncheckModuleName + "/cmd/govulncheck"
 	golangciLintInstallPackage = "github.com/golangci/golangci-lint/v2/cmd/golangci-lint"
 )
 

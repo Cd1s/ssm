@@ -225,6 +225,12 @@ func TestPinnedGoVersionMatchesGoModAndWorkflows(t *testing.T) {
 	}
 	for _, name := range []string{"ci.yml", "release.yml", "vulncheck.yml"} {
 		text := readWorkflowFile(t, name)
+		if name != "vulncheck.yml" {
+			want := "GOLANGCI_LINT_VERSION: \"" + pinnedGolangciLintVersion + "\"\n"
+			if !strings.Contains(text, want) || strings.Count(text, "GOLANGCI_LINT_VERSION:") != 1 {
+				t.Errorf("%s does not pin GOLANGCI_LINT_VERSION to the manifest value %s", name, pinnedGolangciLintVersion)
+			}
+		}
 		if strings.Count(text, "go-version: \"") != strings.Count(text, "go-version: \""+pinnedGoVersion+"\"") {
 			t.Errorf("%s has a setup-go version that is not the manifest pin %s", name, pinnedGoVersion)
 		}
