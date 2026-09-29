@@ -906,7 +906,11 @@ func Classify(kind Kind, details Details) Failure {
 		processExit = exit
 	}
 	if kind == InterpreterNotFound {
-		policy.Hint = fmt.Sprintf("remote shell %q is unavailable; retry with --shell sh or install it", details.Interpreter)
+		if isShellInterpreterName(details.Interpreter) {
+			policy.Hint = fmt.Sprintf("remote shell %q is unavailable; retry with --shell sh or install it", details.Interpreter)
+		} else {
+			policy.Hint = fmt.Sprintf("remote interpreter %q is unavailable; install it or pass another --interpreter", details.Interpreter)
+		}
 	}
 	if kind == ScriptSyntaxFailed && details.Line != "" {
 		policy.Hint += "; line=" + RedactString(details.Line)
@@ -1103,6 +1107,17 @@ type SSHContext struct {
 	Port               int
 	Stage              string
 	SessionAcquisition bool
+}
+
+func isShellInterpreterName(interpreter string) bool {
+	if i := strings.LastIndexByte(interpreter, '/'); i >= 0 {
+		interpreter = interpreter[i+1:]
+	}
+	switch interpreter {
+	case "", "sh", "bash", "dash", "ash", "ksh", "zsh":
+		return true
+	}
+	return false
 }
 
 // InterpreterNotFoundDiagnostic returns the stable marker emitted by remote

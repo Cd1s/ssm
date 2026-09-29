@@ -135,6 +135,7 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		secrets   = map[string]string{}
 		parts     []string
 		shell     string
+		interp    string
 		argvMode  bool
 		preflight bool
 		afterDash bool
@@ -222,14 +223,18 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		case arg == "--shell", arg == "--interpreter":
 			remaining := args[i+1:]
 			if len(remaining) == 0 {
-				return remoteRunSpec{}, fmt.Errorf("%s requires a shell name", arg)
+				return remoteRunSpec{}, fmt.Errorf("%s requires a shell or interpreter name", arg)
 			}
-			shell = remaining[0]
+			if arg == "--shell" {
+				shell = remaining[0]
+			} else {
+				interp = remaining[0]
+			}
 			i++
 		case strings.HasPrefix(arg, "--shell="):
 			shell = strings.TrimPrefix(arg, "--shell=")
 		case strings.HasPrefix(arg, "--interpreter="):
-			shell = strings.TrimPrefix(arg, "--interpreter=")
+			interp = strings.TrimPrefix(arg, "--interpreter=")
 		case arg == "-s", arg == "--script":
 			fromStdin = true
 		case arg == "-f", arg == "--file":
@@ -312,7 +317,7 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		if err != nil {
 			return remoteRunSpec{}, fmt.Errorf("read stdin script: %w", err)
 		}
-		script, err := ssh.PrepareScript("<stdin>", data, shell, parts)
+		script, err := ssh.PrepareScriptWithInterpreter("<stdin>", data, shell, interp, parts)
 		if err != nil {
 			return remoteRunSpec{}, fmt.Errorf("stdin script: %w", err)
 		}
@@ -327,7 +332,7 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 				if err != nil {
 					return remoteRunSpec{}, fmt.Errorf("read script file %s: %w", p, err)
 				}
-				script, err := ssh.PrepareScript(p, data, shell, parts)
+				script, err := ssh.PrepareScriptWithInterpreter(p, data, shell, interp, parts)
 				if err != nil {
 					return remoteRunSpec{}, fmt.Errorf("script file %s: %w", p, err)
 				}
@@ -335,7 +340,7 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 			}
 			break
 		}
-		if shell != "" {
+		if shell != "" || interp != "" {
 			return remoteRunSpec{}, fmt.Errorf("--shell/--interpreter requires -s, -f, or --scripts")
 		}
 		if raw && argvMode {
@@ -360,7 +365,7 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 			if err != nil {
 				return remoteRunSpec{}, fmt.Errorf("read script file %s: %w", p, err)
 			}
-			script, err := ssh.PrepareScript(p, data, shell, nil)
+			script, err := ssh.PrepareScriptWithInterpreter(p, data, shell, interp, nil)
 			if err != nil {
 				return remoteRunSpec{}, fmt.Errorf("script file %s: %w", p, err)
 			}
@@ -368,6 +373,11 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		}
 	default:
 		return remoteRunSpec{}, fmt.Errorf("missing remote command (use args, -s/--script, or -f/--file/--scripts)")
+	}
+	for _, script := range scripts {
+		if preflight && script.NonShell {
+			return remoteRunSpec{}, fmt.Errorf("--preflight only checks shell syntax and is not supported with a non-shell --interpreter; remove --preflight")
+		}
 	}
 	if preflight && len(scripts) == 0 {
 		return remoteRunSpec{}, fmt.Errorf("--preflight requires -s, -f, or --scripts")

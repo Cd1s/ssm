@@ -25,6 +25,7 @@ type agentRequest struct {
 	ScriptFile   string                     `json:"script_file,omitempty"`
 	ScriptArgs   []string                   `json:"script_args,omitempty"`
 	Shell        string                     `json:"shell,omitempty"`
+	Interpreter  string                     `json:"interpreter,omitempty"`
 	SecretFiles  map[string]string          `json:"secret_files,omitempty"`
 	Timeout      string                     `json:"timeout,omitempty"`
 	NoReuse      bool                       `json:"no_reuse,omitempty"`
@@ -110,7 +111,7 @@ func runAgentRequest(args []string) {
 		if err := validateRequestAlias(req); err != nil {
 			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestAlias, machinecontract.Details{Cause: err, Alias: req.Alias}))
 		}
-		if req.Host != nil || req.Deep || req.Argv != nil || req.ShellCommand != nil || req.ScriptFile != "" || len(req.ScriptArgs) > 0 || req.Shell != "" || len(req.SecretFiles) > 0 || req.NoReuse || req.Preflight != nil || req.StdinFile != "" {
+		if req.Host != nil || req.Deep || req.Argv != nil || req.ShellCommand != nil || req.ScriptFile != "" || len(req.ScriptArgs) > 0 || req.Shell != "" || req.Interpreter != "" || len(req.SecretFiles) > 0 || req.NoReuse || req.Preflight != nil || req.StdinFile != "" {
 			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestPutFields, machinecontract.Details{
 				Message: "put accepts only alias, local_path, remote_path, resume, sha256, timeout, and dir_mode", Alias: req.Alias,
 			}))
@@ -303,8 +304,8 @@ func requestRunSpec(req agentRequest) (remoteRunSpec, error) {
 		if len(req.Argv) == 0 {
 			return remoteRunSpec{}, fmt.Errorf("argv must contain at least one item")
 		}
-		if req.Shell != "" || len(req.ScriptArgs) > 0 || req.Preflight != nil {
-			return remoteRunSpec{}, fmt.Errorf("shell, script_args, and preflight are only valid with script_file")
+		if req.Shell != "" || req.Interpreter != "" || len(req.ScriptArgs) > 0 || req.Preflight != nil {
+			return remoteRunSpec{}, fmt.Errorf("shell, interpreter, script_args, and preflight are only valid with script_file")
 		}
 		for _, arg := range req.Argv {
 			if strings.IndexByte(arg, 0) >= 0 {
@@ -315,8 +316,8 @@ func requestRunSpec(req agentRequest) (remoteRunSpec, error) {
 		spec.FromArgs = true
 		spec.Mode = "argv"
 	case req.ShellCommand != nil:
-		if req.Shell != "" || len(req.ScriptArgs) > 0 || req.Preflight != nil {
-			return remoteRunSpec{}, fmt.Errorf("shell, script_args, and preflight are only valid with script_file")
+		if req.Shell != "" || req.Interpreter != "" || len(req.ScriptArgs) > 0 || req.Preflight != nil {
+			return remoteRunSpec{}, fmt.Errorf("shell, interpreter, script_args, and preflight are only valid with script_file")
 		}
 		if strings.TrimSpace(*req.ShellCommand) == "" || strings.IndexByte(*req.ShellCommand, 0) >= 0 {
 			return remoteRunSpec{}, fmt.Errorf("shell_command must be non-empty and contain no NUL byte")
@@ -329,14 +330,17 @@ func requestRunSpec(req agentRequest) (remoteRunSpec, error) {
 		if err != nil {
 			return remoteRunSpec{}, fmt.Errorf("read script file %s: %w", req.ScriptFile, err)
 		}
-		script, err := ssh.PrepareScript(req.ScriptFile, data, req.Shell, req.ScriptArgs)
+		script, err := ssh.PrepareScriptWithInterpreter(req.ScriptFile, data, req.Shell, req.Interpreter, req.ScriptArgs)
 		if err != nil {
 			return remoteRunSpec{}, fmt.Errorf("script file %s: %w", req.ScriptFile, err)
 		}
 		spec.Scripts = []ssh.ScriptSpec{script}
 		spec.Mode = "script"
-		spec.Preflight = true
+		spec.Preflight = !script.NonShell
 		if req.Preflight != nil {
+			if *req.Preflight && script.NonShell {
+				return remoteRunSpec{}, fmt.Errorf("preflight only checks shell syntax and is not supported with a non-shell interpreter")
+			}
 			spec.Preflight = *req.Preflight
 		}
 	}
@@ -424,7 +428,7 @@ func validateRequestAlias(req agentRequest) error {
 
 func hasRunRequestFields(req agentRequest) bool {
 	return req.Argv != nil || req.ShellCommand != nil || req.ScriptFile != "" || len(req.ScriptArgs) > 0 ||
-		req.Shell != "" || len(req.SecretFiles) > 0 || req.Timeout != "" || req.NoReuse || req.Preflight != nil || req.StdinFile != "" ||
+		req.Shell != "" || req.Interpreter != "" || len(req.SecretFiles) > 0 || req.Timeout != "" || req.NoReuse || req.Preflight != nil || req.StdinFile != "" ||
 		req.LocalPath != "" || req.RemotePath != "" || req.Resume != "" || req.SHA256
 }
 
