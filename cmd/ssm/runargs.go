@@ -119,14 +119,13 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		afterDash bool
 	)
 
-parse:
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "--":
 			parts = args[i+1:]
 			afterDash = true
-			break parse
+			i = len(args)
 		case arg == "--raw":
 			raw = true
 		case arg == "--argv":
@@ -139,7 +138,7 @@ parse:
 				parts = parts[1:]
 				afterDash = true
 			}
-			break parse
+			i = len(args)
 		case arg == "--trace", arg == "-v":
 			trace = true
 		case arg == "--json":
@@ -156,11 +155,10 @@ parse:
 			if i+1 >= len(args) {
 				return remoteRunSpec{}, fmt.Errorf("%s requires a number", arg)
 			}
-			value := args[i+1]
 			i++
-			n, err := strconv.Atoi(value)
+			n, err := strconv.Atoi(args[i])
 			if err != nil || n < 1 {
-				return remoteRunSpec{}, fmt.Errorf("invalid jobs value %q", value)
+				return remoteRunSpec{}, fmt.Errorf("invalid jobs value %q", args[i])
 			}
 			workers = n
 		case strings.HasPrefix(arg, "--jobs="):
@@ -189,9 +187,8 @@ parse:
 			if i+1 >= len(args) {
 				return remoteRunSpec{}, fmt.Errorf("%s requires NAME=value or NAME=@path", arg)
 			}
-			value := args[i+1]
 			i++
-			if err := parseSecretKV(value, secrets); err != nil {
+			if err := parseSecretKV(args[i], secrets); err != nil {
 				return remoteRunSpec{}, err
 			}
 		case strings.HasPrefix(arg, "--secret="):
@@ -240,7 +237,7 @@ parse:
 			return remoteRunSpec{}, fmt.Errorf("unknown run option: %s", arg)
 		default:
 			parts = args[i:]
-			break parse
+			i = len(args)
 		}
 	}
 
