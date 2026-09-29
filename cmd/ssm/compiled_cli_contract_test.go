@@ -1733,13 +1733,13 @@ func TestCompiledTransferAdaptersPreserveFailureProjections(t *testing.T) {
 	regularSessionHuman := cli.Run(t, "sshctl", nil, "--offline", "put", alias, localFile, "/remote/session")
 	assertHuman(t, regularSessionHuman, machinecontract.ExitConnectionFailed,
 		"ssm: error=session_failed alias="+alias+" address="+server.Address()+"\n"+
-			"Error: ssh: rejected: resource shortage (fixture session rejected)\n"+
+			"Error: ssh: rejected: resource shortage (\"fixture session rejected\")\n"+
 			"ssm: hint=SSH connected but session failed; remote sshd or resources may be unhealthy\n",
 	)
 	regularSessionMachine := cli.Run(t, "sshctl", nil, "--offline", "--json", "put", alias, localFile, "/remote/session")
 	assertCompiledTransferSnapshot(t, regularSessionMachine, map[string]any{
 		"ok": false, "error": "session_failed",
-		"message": "ssh: rejected: resource shortage (fixture session rejected)",
+		"message": "ssh: rejected: resource shortage (\"fixture session rejected\")",
 		"hint":    "retry after checking SSH session limits",
 		"exit":    machinecontract.ExitConnectionFailed, "stage": "dial",
 		"direction": "put", "kind": "file",
@@ -1750,8 +1750,9 @@ func TestCompiledTransferAdaptersPreserveFailureProjections(t *testing.T) {
 	if err := os.Mkdir(localDirectory, 0o700); err != nil {
 		t.Fatalf("create fallback transfer directory: %v", err)
 	}
+	// golang.org/x/crypto v0.56.0 quotes the peer-supplied rejection message.
 	const (
-		sessionMessage = "ssh: rejected: resource shortage (fixture session rejected)"
+		sessionMessage = "ssh: rejected: resource shortage (\"fixture session rejected\")"
 		sessionHint    = "SSH connected but session failed; remote sshd or resources may be unhealthy"
 	)
 	fallbackStderr := "ssm: error=session_failed alias=" + alias + " address=" + server.Address() + "\n" +
