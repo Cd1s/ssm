@@ -28,7 +28,7 @@ func assertCompiledFileUnchanged(t *testing.T, path string, before compiledFileI
 }
 
 func TestCompiledWindowsBlockedPreparedRecoveryStopsStartupDispatch(t *testing.T) {
-	cli := newCompiledCLIHarness(t)
+	cli := newCompiledCLIHarnessWithPrivateBinaries(t)
 	replacement, err := os.ReadFile(cli.paths["ssm"]) //nolint:gosec // test-owned compiled CLI fixture
 	if err != nil {
 		t.Fatal(err)
@@ -253,7 +253,7 @@ func TestCompiledWindowsBlockedPreparedRecoveryStopsStartupDispatch(t *testing.T
 }
 
 func TestCompiledWindowsOrdinaryStartupNeedsNoExecutableDirectoryWrite(t *testing.T) {
-	cli := newCompiledCLIHarness(t)
+	cli := newCompiledCLIHarnessWithPrivateBinaries(t)
 	restore := makeCompiledDirectoryReadOnly(t, filepath.Dir(cli.paths["ssm"]))
 	defer restore()
 	writeProbe := filepath.Join(filepath.Dir(cli.paths["ssm"]), ".directory-write-probe")

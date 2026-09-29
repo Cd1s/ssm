@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unsafe"
@@ -47,60 +48,60 @@ const (
 )
 
 func TestWindowsNativeReplacementSecurity(t *testing.T) {
-	t.Run("ordinary user preserves owner group DACL and inheritance", testWindowsOrdinaryUserReplacement)
-	t.Run("effective token privilege detection cannot escape to the process token", testWindowsRestrictedImpersonationToken)
-	t.Run("no thread token falls back to one process token and closes its handles", testWindowsNoThreadTokenProcessFallback)
-	t.Run("process token fallback requires ERROR_NO_TOKEN", testWindowsProcessTokenFallbackRequiresNoThreadToken)
-	t.Run("ordinary inherited descriptor capture apply and verification are semantic", testWindowsInheritedOrdinaryDescriptorPreparation)
-	t.Run("ordinary descriptor differences identify the changed security component", testWindowsOrdinaryDescriptorDiagnostics)
-	t.Run("complete descriptor RM control binding is byte exact", testWindowsCompleteDescriptorRMControlBinding)
-	t.Run("strong file identity is required", testWindowsStrongFileIdentityRequired)
-	t.Run("authenticated rollback record binds strong identities descriptor and bytes", testWindowsReplacementRecordDescriptorBinding)
-	t.Run("optional complete descriptor denial falls back to ordinary preservation", testWindowsOptionalFullTierFallback)
-	t.Run("optional complete descriptor sharing conflict fails closed", testWindowsOptionalFullTierSharingFailsClosed)
-	t.Run("complete descriptor is preserved when supported with ordinary fallback", testWindowsPrivilegedReplacement)
-	t.Run("privileges and thread identity are restored", testWindowsReplacementPrivilegeRestoration)
-	t.Run("SetThreadToken restoration failure is retried before unlock", testWindowsPreviousTokenRestorationFailure)
-	t.Run("RevertToSelf restoration failure is retried before unlock", testWindowsNoTokenRestorationFailure)
-	t.Run("privilege restoration is confirmed before unlock", testWindowsPrivilegeRestorationConfirmation)
-	t.Run("persistent privilege restoration failure fail-stops before unlock", testWindowsPrivilegeRestorationFailStop)
-	t.Run("native descriptor buffers are freed exactly once", testWindowsSecurityDescriptorOwnership)
-	t.Run("delete guard permits POSIX link replacement", testWindowsDeleteGuardAllowsLinkReplacement)
-	t.Run("mapped target defers displaced image cleanup", testWindowsMappedLinkTransition)
-	t.Run("mapped executable is replaced and completed rollback is cleaned", testWindowsMappedExecutableReplacementSucceedsAndCleansOnNextLaunch)
-	t.Run("install failure rolls back", testWindowsMappedExecutableReplacementFailureRollsBack)
-	t.Run("descriptor failure rolls back", testWindowsSecurityDescriptorApplyFailureRollsBack)
-	t.Run("synchronous rollback authenticates the full descriptor binding", testWindowsSynchronousRollbackRejectsDescriptorMutation)
-	t.Run("synchronous rollback blocks byte-mismatched evidence after canonical restoration", testWindowsSynchronousRollbackRejectsPostRenameContentMutation)
-	t.Run("synchronous rollback blocks ordinary descriptor-mismatched evidence after canonical restoration", testWindowsSynchronousRollbackRejectsPostRenameOrdinaryDescriptorMutation)
-	t.Run("synchronous rollback blocks full descriptor-mismatched evidence after canonical restoration", testWindowsSynchronousRollbackRejectsPostRenameFullDescriptorMutation)
-	t.Run("returned replacement failure preserves the canonical executable", testWindowsReturnedReplacementFailurePreservesCanonical)
-	t.Run("post-commit cleanup failures are deferred success", testWindowsPostCommitCleanupFailuresAreDeferred)
-	t.Run("concurrent updaters are excluded", testWindowsConcurrentUpdaters)
-	t.Run("cleanup cannot delete a live updater rollback", testWindowsConcurrentCleanup)
-	t.Run("ordinary startup discovery creates no sibling state", testWindowsOrdinaryStartupDiscoveryIsNonMutating)
-	t.Run("unexplained stale rollback is preserved", testWindowsUnexplainedRollbackIsPreserved)
-	t.Run("verified download callback races fail closed", testWindowsVerifiedDownloadCallbackRacesFailClosed)
-	t.Run("stage substitution fails closed", testWindowsStageSubstitutionFailsClosed)
-	t.Run("same-object stage mutation fails closed", testWindowsStageContentMutationFailsClosed)
-	t.Run("source substitution at the rename gap is blocked", testWindowsSourceSubstitutionAtRenameGap)
-	t.Run("canonical substitution at the rename gap fails closed until recovery", testWindowsCanonicalSubstitutionAtRenameGap)
-	t.Run("rollback over a locked canonical substitute fails closed until recovery", testWindowsRollbackReplacesCanonicalSubstitute)
-	t.Run("rollback rejects a late hard link to its image", testWindowsRollbackRejectsLateHardLink)
-	t.Run("late hard links retain recovery evidence until safe recovery", testWindowsLateHardLinksCannotCompromiseTarget)
-	t.Run("prepared and canonical recovery authenticate rollback bytes", testWindowsRecoveryRejectsSameIdentityContentMutation)
-	t.Run("completed cleanup authenticates rollback bytes", testWindowsCompletedCleanupRejectsSameIdentityContentMutation)
-	t.Run("prepared recovery rejects descriptor mutation with the same file ID", testWindowsPreparedRecoveryRejectsDescriptorMutation)
-	t.Run("prepared full recovery rejects same-ID RM control mutation", testWindowsPreparedFullRecoveryRejectsRMControlMutation)
-	t.Run("hard-linked targets and stages fail closed", testWindowsHardLinksFailClosed)
-	t.Run("rename authenticates held handle final path", testWindowsRenameHeldHandleFinalPath)
-	t.Run("rename final path normalization and failures", testWindowsRenameFinalPathNormalizationAndFailures)
-	t.Run("rename canonicalizes short parent aliases", testWindowsRenameShortParentAlias)
-	t.Run("rollback failure preserves recovery evidence", testWindowsRollbackFailurePreservesEvidence)
-	t.Run("forged rollback control state is rejected", testWindowsForgedRollbackControlStateIsRejected)
-	t.Run("writable inherited rollback state is rejected before parsing", testWindowsWritableInheritedRollbackStateIsRejected)
-	t.Run("wrong rollback state owner is rejected", testWindowsWrongOwnerRollbackStateIsRejected)
-	t.Run("inherited update lock control state is rejected", testWindowsInheritedUpdateLockIsRejected)
+	t.Run("ordinary user preserves owner group DACL and inheritance", windowsSharingRetry(testWindowsOrdinaryUserReplacement))
+	t.Run("effective token privilege detection cannot escape to the process token", windowsSharingRetry(testWindowsRestrictedImpersonationToken))
+	t.Run("no thread token falls back to one process token and closes its handles", windowsSharingRetry(testWindowsNoThreadTokenProcessFallback))
+	t.Run("process token fallback requires ERROR_NO_TOKEN", windowsSharingRetry(testWindowsProcessTokenFallbackRequiresNoThreadToken))
+	t.Run("ordinary inherited descriptor capture apply and verification are semantic", windowsSharingRetry(testWindowsInheritedOrdinaryDescriptorPreparation))
+	t.Run("ordinary descriptor differences identify the changed security component", windowsSharingRetry(testWindowsOrdinaryDescriptorDiagnostics))
+	t.Run("complete descriptor RM control binding is byte exact", windowsSharingRetry(testWindowsCompleteDescriptorRMControlBinding))
+	t.Run("strong file identity is required", windowsSharingRetry(testWindowsStrongFileIdentityRequired))
+	t.Run("authenticated rollback record binds strong identities descriptor and bytes", windowsSharingRetry(testWindowsReplacementRecordDescriptorBinding))
+	t.Run("optional complete descriptor denial falls back to ordinary preservation", windowsSharingRetry(testWindowsOptionalFullTierFallback))
+	t.Run("optional complete descriptor sharing conflict fails closed", windowsSharingRetry(testWindowsOptionalFullTierSharingFailsClosed))
+	t.Run("complete descriptor is preserved when supported with ordinary fallback", windowsSharingRetry(testWindowsPrivilegedReplacement))
+	t.Run("privileges and thread identity are restored", windowsSharingRetry(testWindowsReplacementPrivilegeRestoration))
+	t.Run("SetThreadToken restoration failure is retried before unlock", windowsSharingRetry(testWindowsPreviousTokenRestorationFailure))
+	t.Run("RevertToSelf restoration failure is retried before unlock", windowsSharingRetry(testWindowsNoTokenRestorationFailure))
+	t.Run("privilege restoration is confirmed before unlock", windowsSharingRetry(testWindowsPrivilegeRestorationConfirmation))
+	t.Run("persistent privilege restoration failure fail-stops before unlock", windowsSharingRetry(testWindowsPrivilegeRestorationFailStop))
+	t.Run("native descriptor buffers are freed exactly once", windowsSharingRetry(testWindowsSecurityDescriptorOwnership))
+	t.Run("delete guard permits POSIX link replacement", windowsSharingRetry(testWindowsDeleteGuardAllowsLinkReplacement))
+	t.Run("mapped target defers displaced image cleanup", windowsSharingRetry(testWindowsMappedLinkTransition))
+	t.Run("mapped executable is replaced and completed rollback is cleaned", windowsSharingRetry(testWindowsMappedExecutableReplacementSucceedsAndCleansOnNextLaunch))
+	t.Run("install failure rolls back", windowsSharingRetry(testWindowsMappedExecutableReplacementFailureRollsBack))
+	t.Run("descriptor failure rolls back", windowsSharingRetry(testWindowsSecurityDescriptorApplyFailureRollsBack))
+	t.Run("synchronous rollback authenticates the full descriptor binding", windowsSharingRetry(testWindowsSynchronousRollbackRejectsDescriptorMutation))
+	t.Run("synchronous rollback blocks byte-mismatched evidence after canonical restoration", windowsSharingRetry(testWindowsSynchronousRollbackRejectsPostRenameContentMutation))
+	t.Run("synchronous rollback blocks ordinary descriptor-mismatched evidence after canonical restoration", windowsSharingRetry(testWindowsSynchronousRollbackRejectsPostRenameOrdinaryDescriptorMutation))
+	t.Run("synchronous rollback blocks full descriptor-mismatched evidence after canonical restoration", windowsSharingRetry(testWindowsSynchronousRollbackRejectsPostRenameFullDescriptorMutation))
+	t.Run("returned replacement failure preserves the canonical executable", windowsSharingRetry(testWindowsReturnedReplacementFailurePreservesCanonical))
+	t.Run("post-commit cleanup failures are deferred success", windowsSharingRetry(testWindowsPostCommitCleanupFailuresAreDeferred))
+	t.Run("concurrent updaters are excluded", windowsSharingRetry(testWindowsConcurrentUpdaters))
+	t.Run("cleanup cannot delete a live updater rollback", windowsSharingRetry(testWindowsConcurrentCleanup))
+	t.Run("ordinary startup discovery creates no sibling state", windowsSharingRetry(testWindowsOrdinaryStartupDiscoveryIsNonMutating))
+	t.Run("unexplained stale rollback is preserved", windowsSharingRetry(testWindowsUnexplainedRollbackIsPreserved))
+	t.Run("verified download callback races fail closed", windowsSharingRetry(testWindowsVerifiedDownloadCallbackRacesFailClosed))
+	t.Run("stage substitution fails closed", windowsSharingRetry(testWindowsStageSubstitutionFailsClosed))
+	t.Run("same-object stage mutation fails closed", windowsSharingRetry(testWindowsStageContentMutationFailsClosed))
+	t.Run("source substitution at the rename gap is blocked", windowsSharingRetry(testWindowsSourceSubstitutionAtRenameGap))
+	t.Run("canonical substitution at the rename gap fails closed until recovery", windowsSharingRetry(testWindowsCanonicalSubstitutionAtRenameGap))
+	t.Run("rollback over a locked canonical substitute fails closed until recovery", windowsSharingRetry(testWindowsRollbackReplacesCanonicalSubstitute))
+	t.Run("rollback rejects a late hard link to its image", windowsSharingRetry(testWindowsRollbackRejectsLateHardLink))
+	t.Run("late hard links retain recovery evidence until safe recovery", windowsSharingRetry(testWindowsLateHardLinksCannotCompromiseTarget))
+	t.Run("prepared and canonical recovery authenticate rollback bytes", windowsSharingRetry(testWindowsRecoveryRejectsSameIdentityContentMutation))
+	t.Run("completed cleanup authenticates rollback bytes", windowsSharingRetry(testWindowsCompletedCleanupRejectsSameIdentityContentMutation))
+	t.Run("prepared recovery rejects descriptor mutation with the same file ID", windowsSharingRetry(testWindowsPreparedRecoveryRejectsDescriptorMutation))
+	t.Run("prepared full recovery rejects same-ID RM control mutation", windowsSharingRetry(testWindowsPreparedFullRecoveryRejectsRMControlMutation))
+	t.Run("hard-linked targets and stages fail closed", windowsSharingRetry(testWindowsHardLinksFailClosed))
+	t.Run("rename authenticates held handle final path", windowsSharingRetry(testWindowsRenameHeldHandleFinalPath))
+	t.Run("rename final path normalization and failures", windowsSharingRetry(testWindowsRenameFinalPathNormalizationAndFailures))
+	t.Run("rename canonicalizes short parent aliases", windowsSharingRetry(testWindowsRenameShortParentAlias))
+	t.Run("rollback failure preserves recovery evidence", windowsSharingRetry(testWindowsRollbackFailurePreservesEvidence))
+	t.Run("forged rollback control state is rejected", windowsSharingRetry(testWindowsForgedRollbackControlStateIsRejected))
+	t.Run("writable inherited rollback state is rejected before parsing", windowsSharingRetry(testWindowsWritableInheritedRollbackStateIsRejected))
+	t.Run("wrong rollback state owner is rejected", windowsSharingRetry(testWindowsWrongOwnerRollbackStateIsRejected))
+	t.Run("inherited update lock control state is rejected", windowsSharingRetry(testWindowsInheritedUpdateLockIsRejected))
 }
 
 func testWindowsDeleteGuardAllowsLinkReplacement(t *testing.T) {
@@ -526,7 +527,7 @@ func testWindowsMappedLinkTransition(t *testing.T) {
 		{name: "renames mapped target"},
 		{name: "resumes guarded hard link", resume: true},
 	} {
-		t.Run(test.name, func(t *testing.T) {
+		t.Run(test.name, windowsSharingRetry(func(t *testing.T) {
 			directory := t.TempDir()
 			target := filepath.Join(directory, "ssm.exe")
 			source := filepath.Join(directory, ".ssm.authenticated-old.exe")
@@ -564,7 +565,7 @@ func testWindowsMappedLinkTransition(t *testing.T) {
 				command.Env = append(command.Env, windowsMappedLinkResumeEnv+"=1")
 			}
 			if output, err := command.CombinedOutput(); err != nil {
-				t.Fatalf("mapped-link native transition failed: %v; output=%q", err, output)
+				failWindowsChild(t, "mapped-link native transition failed", err, output)
 			}
 			if err := requireWindowsReplacementPathIdentity(
 				target,
@@ -603,7 +604,7 @@ func testWindowsMappedLinkTransition(t *testing.T) {
 			if err := os.Remove(mappedLink); err != nil {
 				t.Fatalf("remove deferred mapped executable after child exit: %v", err)
 			}
-		})
+		}))
 	}
 }
 
@@ -629,7 +630,7 @@ func testWindowsMappedExecutableReplacementSucceedsAndCleansOnNextLaunch(t *test
 		windowsReplacementStageEnv+"="+stage,
 	)
 	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("mapped executable replacement failed: %v; output=%q", err, output)
+		failWindowsChild(t, "mapped executable replacement failed", err, output)
 	}
 	assertWindowsFileBytes(t, target, want)
 
@@ -653,7 +654,7 @@ func testWindowsMappedExecutableReplacementSucceedsAndCleansOnNextLaunch(t *test
 	cleanup := exec.Command(target, "-test.run=^TestWindowsCleanupPreviousExecutableChildProcess$", "-test.count=1") //nolint:gosec // fixed test-owned executable and arguments
 	cleanup.Env = append(os.Environ(), windowsCleanupChildEnv+"=1")
 	if output, err := cleanup.CombinedOutput(); err != nil {
-		t.Fatalf("next-launch cleanup failed: %v; output=%q", err, output)
+		failWindowsChild(t, "next-launch cleanup failed", err, output)
 	}
 	var backupState struct {
 		allocationSize int64
@@ -713,7 +714,7 @@ func testWindowsPrivilegedReplacement(t *testing.T) {
 		windowsReplacementStageEnv+"="+stage,
 	)
 	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("mapped executable replacement failed: %v; output=%q", err, output)
+		failWindowsChild(t, "mapped executable replacement failed", err, output)
 	}
 
 	gotOrdinaryDescriptor := readWindowsTestSecurityDescriptor(t, target)
@@ -766,7 +767,7 @@ func testWindowsMappedExecutableReplacementFailureRollsBack(t *testing.T) {
 		windowsReplacementFailEnv+"=1",
 	)
 	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("rollback fixture failed: %v; output=%q", err, output)
+		failWindowsChild(t, "rollback fixture failed", err, output)
 	}
 	assertWindowsFileBytes(t, target, original)
 	assertWindowsCanonicalExecutable(t, target, originalCanonical)
@@ -806,7 +807,7 @@ func testWindowsSecurityDescriptorApplyFailureRollsBack(t *testing.T) {
 		windowsOrdinaryUserEnv+"=1",
 	)
 	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("descriptor rollback fixture failed: %v; output=%q", err, output)
+		failWindowsChild(t, "descriptor rollback fixture failed", err, output)
 	}
 
 	assertWindowsFileBytes(t, target, original)
@@ -1502,7 +1503,7 @@ func testWindowsOrdinaryUserReplacement(t *testing.T) {
 	command := windowsReplacementTestCommand(target, stage)
 	command.Env = append(command.Env, windowsOrdinaryUserEnv+"=1")
 	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("ordinary non-privileged replacement failed: %v; output=%q", err, output)
+		failWindowsChild(t, "ordinary non-privileged replacement failed", err, output)
 	}
 
 	gotDescriptor := readWindowsTestSecurityDescriptor(t, target)
@@ -2101,7 +2102,7 @@ func testWindowsOptionalFullTierFallback(t *testing.T) {
 	command := windowsReplacementTestCommand(target, stage)
 	command.Env = append(command.Env, windowsFullTierDeniedEnv+"=1")
 	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("optional full-tier fallback failed: %v; output=%q", err, output)
+		failWindowsChild(t, "optional full-tier fallback failed", err, output)
 	}
 	assertWindowsFileBytes(t, target, want)
 	gotDescriptor := readWindowsTestSecurityDescriptor(t, target)
@@ -2528,7 +2529,7 @@ func testWindowsConcurrentUpdaters(t *testing.T) {
 	second := windowsReplacementTestCommand(target, secondStage)
 	second.Env = append(second.Env, windowsExpectedFailureEnv+"=another Windows executable update is active")
 	if output, err := second.CombinedOutput(); err != nil {
-		t.Fatalf("concurrent updater fixture failed: %v; output=%q", err, output)
+		failWindowsChild(t, "concurrent updater fixture failed", err, output)
 	}
 	if err := os.WriteFile(proceed, []byte("continue"), 0o600); err != nil { //nolint:gosec // test-owned synchronization fixture
 		t.Fatal(err)
@@ -2580,7 +2581,7 @@ func testWindowsConcurrentCleanup(t *testing.T) {
 		windowsExpectedFailureEnv+"=another Windows executable update is active",
 	)
 	if output, err := cleanup.CombinedOutput(); err != nil {
-		t.Fatalf("concurrent cleanup fixture failed: %v; output=%q", err, output)
+		failWindowsChild(t, "concurrent cleanup fixture failed", err, output)
 	}
 	if _, err := os.Stat(backup); err != nil {
 		t.Fatalf("concurrent cleanup deleted the live rollback image: %v", err)
@@ -2590,7 +2591,7 @@ func testWindowsConcurrentCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := updater.Wait(); err != nil {
-		t.Fatalf("updater failed after cleanup exclusion: %v; output=%q", err, updaterOutput.String())
+		failWindowsChild(t, "updater failed after cleanup exclusion", err, updaterOutput.String())
 	}
 }
 
@@ -2640,7 +2641,7 @@ func testWindowsUnexplainedRollbackIsPreserved(t *testing.T) {
 		windowsExpectedFailureEnv+"=rollback evidence has no ownership record",
 	)
 	if output, err := cleanup.CombinedOutput(); err != nil {
-		t.Fatalf("stale rollback fixture failed: %v; output=%q", err, output)
+		failWindowsChild(t, "stale rollback fixture failed", err, output)
 	}
 	if _, err := os.Stat(backup); err != nil {
 		t.Fatalf("unexplained rollback evidence was deleted: %v", err)
@@ -2649,7 +2650,7 @@ func testWindowsUnexplainedRollbackIsPreserved(t *testing.T) {
 	update := windowsReplacementTestCommand(target, stage)
 	update.Env = append(update.Env, windowsExpectedFailureEnv+"=rollback evidence has no ownership record")
 	if output, err := update.CombinedOutput(); err != nil {
-		t.Fatalf("new-update stale rollback fixture failed: %v; output=%q", err, output)
+		failWindowsChild(t, "new-update stale rollback fixture failed", err, output)
 	}
 	assertWindowsFileBytes(t, target, original)
 	if _, err := os.Stat(backup); err != nil {
@@ -2679,7 +2680,7 @@ func testWindowsStageSubstitutionFailsClosed(t *testing.T) {
 			expectedError: "rename inspected stage",
 		},
 	} {
-		t.Run(test.phase, func(t *testing.T) {
+		t.Run(test.phase, windowsSharingRetry(func(t *testing.T) {
 			directory := t.TempDir()
 			target := filepath.Join(directory, "ssm.exe")
 			stage := filepath.Join(directory, ".ssm.substituted-stage.exe")
@@ -2696,7 +2697,7 @@ func testWindowsStageSubstitutionFailsClosed(t *testing.T) {
 				windowsExpectedFailureEnv+"="+test.expectedError,
 			)
 			if output, err := command.CombinedOutput(); err != nil {
-				t.Fatalf("stage substitution fixture failed: %v; output=%q", err, output)
+				failWindowsChild(t, "stage substitution fixture failed", err, output)
 			}
 			assertWindowsFileBytes(t, target, original)
 			if _, err := os.Stat(windowsReplacementBackup(target)); !os.IsNotExist(err) {
@@ -2705,7 +2706,7 @@ func testWindowsStageSubstitutionFailsClosed(t *testing.T) {
 			if _, err := os.Stat(windowsReplacementRecord(target)); !os.IsNotExist(err) {
 				t.Fatalf("stage substitution retained rollback ownership state: %v", err)
 			}
-		})
+		}))
 	}
 }
 
@@ -2808,7 +2809,7 @@ func testWindowsStageContentMutationFailsClosed(t *testing.T) {
 		windowsExpectedFailureEnv+"=digest does not match authenticated bytes",
 	)
 	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("stage content-mutation fixture failed: %v; output=%q", err, output)
+		failWindowsChild(t, "stage content-mutation fixture failed", err, output)
 	}
 	assertWindowsFileBytes(t, target, original)
 	if _, err := os.Stat(windowsReplacementBackup(target)); !os.IsNotExist(err) {
@@ -2980,7 +2981,7 @@ func testWindowsCanonicalSubstitutionAtRenameGap(t *testing.T) {
 	}
 	if waitErr := updater.Wait(); waitErr != nil {
 		_ = windows.CloseHandle(attackerHandle)
-		t.Fatalf("canonical-substitute failure fixture failed: %v; output=%q", waitErr, updaterOutput.String())
+		failWindowsChild(t, "canonical-substitute failure fixture failed", waitErr, updaterOutput.String())
 	}
 	t.Run("while hostile no-delete-share lock remains", func(t *testing.T) {
 		assertWindowsFileBytes(t, target, attackerCanonical)
@@ -3099,7 +3100,7 @@ func testWindowsRollbackReplacesCanonicalSubstitute(t *testing.T) {
 	}
 	if waitErr := updater.Wait(); waitErr != nil {
 		_ = windows.CloseHandle(attackerHandle)
-		t.Fatalf("rollback substitute fixture failed: %v; output=%q", waitErr, updaterOutput.String())
+		failWindowsChild(t, "rollback substitute fixture failed", waitErr, updaterOutput.String())
 	}
 	t.Run("while hostile no-delete-share lock remains", func(t *testing.T) {
 		assertWindowsFileBytes(t, target, attackerCanonical)
@@ -3191,7 +3192,7 @@ func testWindowsRollbackRejectsLateHardLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	if waitErr := updater.Wait(); waitErr != nil {
-		t.Fatalf("late rollback hard-link fixture failed: %v; output=%q", waitErr, updaterOutput.String())
+		failWindowsChild(t, "late rollback hard-link fixture failed", waitErr, updaterOutput.String())
 	}
 
 	assertWindowsFileBytes(t, backup, original)
@@ -3231,7 +3232,7 @@ func testWindowsLateHardLinksCannotCompromiseTarget(t *testing.T) {
 			},
 		},
 	} {
-		t.Run(test.name, func(t *testing.T) {
+		t.Run(test.name, windowsSharingRetry(func(t *testing.T) {
 			directory := t.TempDir()
 			target := filepath.Join(directory, "ssm.exe")
 			stage := filepath.Join(directory, ".ssm.late-link-stage.exe")
@@ -3285,7 +3286,7 @@ func testWindowsLateHardLinksCannotCompromiseTarget(t *testing.T) {
 				t.Fatalf("late hard-link fixture could not create its adversarial link: %v; updater_error=%v output=%q", linkErr, waitErr, updaterOutput.String())
 			}
 			if waitErr != nil {
-				t.Fatalf("late hard-link failure fixture failed: %v; output=%q", waitErr, updaterOutput.String())
+				failWindowsChild(t, "late hard-link failure fixture failed", waitErr, updaterOutput.String())
 			}
 			if test.name == "target" {
 				if _, err := os.Stat(target); !os.IsNotExist(err) {
@@ -3357,7 +3358,7 @@ func testWindowsLateHardLinksCannotCompromiseTarget(t *testing.T) {
 					originalDescriptor,
 				)
 			})
-		})
+		}))
 	}
 }
 
@@ -3434,7 +3435,7 @@ func testWindowsPreparedRecoveryRejectsDescriptorMutation(t *testing.T) {
 		)
 	}
 	if waitErr != nil {
-		t.Fatalf("prepare descriptor-mutation recovery fixture: %v; output=%q", waitErr, updaterOutput.String())
+		failWindowsChild(t, "prepare descriptor-mutation recovery fixture", waitErr, updaterOutput.String())
 	}
 	assertWindowsPreparedRecoveryEvidence(
 		t,
@@ -3485,7 +3486,7 @@ func testWindowsPreparedRecoveryRejectsDescriptorMutation(t *testing.T) {
 		windowsExpectedFailureEnv+"=security descriptor contract changed",
 	)
 	if output, err := cleanup.CombinedOutput(); err != nil {
-		t.Fatalf("descriptor-mutation recovery fixture failed: %v; output=%q", err, output)
+		failWindowsChild(t, "descriptor-mutation recovery fixture failed", err, output)
 	}
 	assertWindowsFileBytes(t, backup, original)
 	assertWindowsFileBytes(t, target, verified)
@@ -3525,7 +3526,7 @@ func testWindowsRecoveryRejectsSameIdentityContentMutation(t *testing.T) {
 		if alreadyCanonical {
 			name = "already canonical rollback image"
 		}
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, windowsSharingRetry(func(t *testing.T) {
 			directory := t.TempDir()
 			target := filepath.Join(directory, "ssm.exe")
 			stage := filepath.Join(directory, ".ssm.content-mutation-stage.exe")
@@ -3552,7 +3553,7 @@ func testWindowsRecoveryRejectsSameIdentityContentMutation(t *testing.T) {
 				windowsExpectedFailureEnv+"=rollback failed",
 			)
 			if output, err := command.CombinedOutput(); err != nil {
-				t.Fatalf("prepare content-mutation recovery fixture: %v; output=%q", err, output)
+				failWindowsChild(t, "prepare content-mutation recovery fixture", err, output)
 			}
 
 			backup := windowsReplacementBackup(target)
@@ -3599,7 +3600,7 @@ func testWindowsRecoveryRejectsSameIdentityContentMutation(t *testing.T) {
 				windowsExpectedFailureEnv+"=digest does not match authenticated bytes",
 			)
 			if output, err := cleanup.CombinedOutput(); err != nil {
-				t.Fatalf("content-mutation recovery fixture failed: %v; output=%q", err, output)
+				failWindowsChild(t, "content-mutation recovery fixture failed", err, output)
 			}
 			assertWindowsFileBytes(t, mutatedPath, mutated)
 			if _, err := os.Stat(windowsReplacementRecord(target)); err != nil {
@@ -3627,7 +3628,7 @@ func testWindowsRecoveryRejectsSameIdentityContentMutation(t *testing.T) {
 				original,
 				originalDescriptor,
 			)
-		})
+		}))
 	}
 }
 
@@ -3652,7 +3653,7 @@ func testWindowsCompletedCleanupRejectsSameIdentityContentMutation(t *testing.T)
 
 	command := windowsReplacementTestCommand(target, stage)
 	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("prepare completed content-mutation fixture: %v; output=%q", err, output)
+		failWindowsChild(t, "prepare completed content-mutation fixture", err, output)
 	}
 	backup := windowsReplacementBackup(target)
 	backupIdentity, err := inspectWindowsReplacementPath(
@@ -3689,7 +3690,7 @@ func testWindowsCompletedCleanupRejectsSameIdentityContentMutation(t *testing.T)
 		windowsExpectedFailureEnv+"=digest does not match authenticated bytes",
 	)
 	if output, err := cleanup.CombinedOutput(); err != nil {
-		t.Fatalf("completed content-mutation cleanup fixture failed: %v; output=%q", err, output)
+		failWindowsChild(t, "completed content-mutation cleanup fixture failed", err, output)
 	}
 	assertWindowsFileBytes(t, backup, mutated)
 	assertWindowsFileBytes(t, target, installed)
@@ -3852,7 +3853,7 @@ func testWindowsPreparedFullRecoveryRejectsRMControlMutation(t *testing.T) {
 		)
 	}
 	if waitErr != nil {
-		t.Fatalf("prepare RM-control recovery fixture: %v; output=%q", waitErr, updaterOutput.String())
+		failWindowsChild(t, "prepare RM-control recovery fixture", waitErr, updaterOutput.String())
 	}
 	if err := os.Remove(stageAlias); err != nil {
 		t.Fatalf("release RM-control recovery hard link: %v", err)
@@ -3926,7 +3927,7 @@ func testWindowsPreparedFullRecoveryRejectsRMControlMutation(t *testing.T) {
 		windowsExpectedFailureEnv+"=security descriptor contract changed",
 	)
 	if output, err := cleanup.CombinedOutput(); err != nil {
-		t.Fatalf("RM-control mutation recovery fixture failed: %v; output=%q", err, output)
+		failWindowsChild(t, "RM-control mutation recovery fixture failed", err, output)
 	}
 	assertWindowsFileBytes(t, backup, original)
 	assertWindowsFileBytes(t, target, installed)
@@ -4139,7 +4140,7 @@ func testWindowsHardLinksFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Run("target", func(t *testing.T) {
+	t.Run("target", windowsSharingRetry(func(t *testing.T) {
 		directory := t.TempDir()
 		target := filepath.Join(directory, "ssm.exe")
 		targetAlias := filepath.Join(directory, "ssm-alias.exe")
@@ -4153,10 +4154,10 @@ func testWindowsHardLinksFailClosed(t *testing.T) {
 		command := windowsReplacementTestCommand(target, stage)
 		command.Env = append(command.Env, windowsExpectedFailureEnv+"=current Windows executable has 2 hard links")
 		if output, err := command.CombinedOutput(); err != nil {
-			t.Fatalf("target hard-link fixture failed: %v; output=%q", err, output)
+			failWindowsChild(t, "target hard-link fixture failed", err, output)
 		}
-	})
-	t.Run("stage", func(t *testing.T) {
+	}))
+	t.Run("stage", windowsSharingRetry(func(t *testing.T) {
 		directory := t.TempDir()
 		target := filepath.Join(directory, "ssm.exe")
 		stage := filepath.Join(directory, ".ssm.stage.exe")
@@ -4170,9 +4171,9 @@ func testWindowsHardLinksFailClosed(t *testing.T) {
 		command := windowsReplacementTestCommand(target, stage)
 		command.Env = append(command.Env, windowsExpectedFailureEnv+"=verified Windows replacement has 2 hard links")
 		if output, err := command.CombinedOutput(); err != nil {
-			t.Fatalf("stage hard-link fixture failed: %v; output=%q", err, output)
+			failWindowsChild(t, "stage hard-link fixture failed", err, output)
 		}
-	})
+	}))
 	t.Run("reparse points", func(t *testing.T) {
 		directory := t.TempDir()
 		target := filepath.Join(directory, "ssm.exe")
@@ -4234,7 +4235,7 @@ func testWindowsRollbackFailurePreservesEvidence(t *testing.T) {
 		windowsExpectedFailureEnv+"=rollback failed",
 	)
 	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("rollback-failure fixture failed: %v; output=%q", err, output)
+		failWindowsChild(t, "rollback-failure fixture failed", err, output)
 	}
 
 	assertWindowsPreparedRecoveryEvidence(
@@ -4885,7 +4886,7 @@ func assertWindowsPreparedRecoveryBlocksCleanupAndUpdate(
 		cleanup.Env = append(cleanup.Env, windowsRecoveryRequiredEnv+"=1")
 	}
 	if output, err := cleanup.CombinedOutput(); err != nil {
-		t.Fatalf("blocked Windows recovery cleanup fixture failed: %v; output=%q", err, output)
+		failWindowsChild(t, "blocked Windows recovery cleanup fixture failed", err, output)
 	}
 
 	wantStage, err := os.ReadFile(stage) //nolint:gosec // test-owned verified stage
@@ -4903,7 +4904,7 @@ func assertWindowsPreparedRecoveryBlocksCleanupAndUpdate(
 		update.Env = append(update.Env, windowsRecoveryRequiredEnv+"=1")
 	}
 	if output, err := update.CombinedOutput(); err != nil {
-		t.Fatalf("blocked Windows recovery update fixture failed: %v; output=%q", err, output)
+		failWindowsChild(t, "blocked Windows recovery update fixture failed", err, output)
 	}
 	assertWindowsFileBytes(t, stage, wantStage)
 }
@@ -4923,7 +4924,7 @@ func runWindowsRecoveryCleanup(t *testing.T, runner, target string) {
 			cleanup.Env = append(cleanup.Env, windowsRecoveryRequiredEnv+"=1")
 		}
 		if output, err := cleanup.CombinedOutput(); err != nil {
-			t.Fatalf("Windows recovery cleanup failed: %v; output=%q", err, output)
+			failWindowsChild(t, "Windows recovery cleanup failed", err, output)
 		}
 	}
 	mappedRunner := strings.EqualFold(filepath.Clean(runner), filepath.Clean(target))
@@ -5840,4 +5841,91 @@ func readWindowsTestSecurityDescriptor(t *testing.T, path string) windowsTestSec
 		control:   control,
 		rmControl: rmControl,
 	}
+}
+
+const (
+	windowsSharingRetryAttempts = 3
+	windowsSharingRetryStep     = 500 * time.Millisecond
+	windowsSharingRetryBudget   = 90 * time.Second
+)
+
+// windowsSharingViolationPanic aborts one fixture attempt when a child
+// process reports a Windows sharing violation. Only windowsSharingRetry
+// recovers it, and only in the goroutine that owns the registered *testing.T.
+type windowsSharingViolationPanic struct {
+	what   string
+	output string
+}
+
+var windowsSharingRetryScopes sync.Map
+
+// isWindowsSharingViolation reports whether a failed child process was stopped
+// by ERROR_SHARING_VIOLATION (32), typically an antivirus scanner that still
+// holds a freshly written executable.
+func isWindowsSharingViolation(err error, output string) bool {
+	if errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
+		return true
+	}
+	text := strings.ToLower(output)
+	return strings.Contains(text, "being used by another process") ||
+		strings.Contains(text, "error_sharing_violation")
+}
+
+// failWindowsChild fails the test for an unexpected child-process failure.
+// Inside a windowsSharingRetry scope, a sharing violation instead aborts the
+// current fixture attempt so the whole fixture is rebuilt in a fresh directory.
+// Every other failure stays an immediate t.Fatalf.
+func failWindowsChild[Output string | []byte](t *testing.T, what string, err error, output Output) {
+	t.Helper()
+	text := string(output)
+	if _, scoped := windowsSharingRetryScopes.Load(t); scoped && isWindowsSharingViolation(err, text) {
+		panic(windowsSharingViolationPanic{what: what, output: text})
+	}
+	t.Fatalf("%s: %v; output=%q", what, err, text)
+}
+
+// windowsSharingRetry runs a fixture-building test body and, when a child
+// process reports a Windows sharing violation, reruns the whole body (which
+// builds its fixture under a new t.TempDir) a bounded number of times with
+// increasing delays. Bodies must create every fixture path from t.TempDir.
+func windowsSharingRetry(body func(t *testing.T)) func(t *testing.T) {
+	return func(t *testing.T) {
+		t.Helper()
+		started := time.Now()
+		for attempt := 1; ; attempt++ {
+			violation := runWindowsSharingAttempt(t, body)
+			if violation == nil {
+				return
+			}
+			delay := time.Duration(attempt) * windowsSharingRetryStep
+			if attempt >= windowsSharingRetryAttempts || time.Since(started)+delay > windowsSharingRetryBudget {
+				t.Fatalf(
+					"%s: Windows sharing violation persisted after %d attempts: output=%q",
+					violation.what, attempt, violation.output,
+				)
+			}
+			t.Logf(
+				"%s: Windows sharing violation on attempt %d/%d, rebuilding fixture in a new temporary directory after %s: output=%q",
+				violation.what, attempt, windowsSharingRetryAttempts, delay, violation.output,
+			)
+			time.Sleep(delay)
+		}
+	}
+}
+
+func runWindowsSharingAttempt(t *testing.T, body func(t *testing.T)) (violation *windowsSharingViolationPanic) {
+	t.Helper()
+	windowsSharingRetryScopes.Store(t, struct{}{})
+	defer windowsSharingRetryScopes.Delete(t)
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			sharing, ok := recovered.(windowsSharingViolationPanic)
+			if !ok {
+				panic(recovered)
+			}
+			violation = &sharing
+		}
+	}()
+	body(t)
+	return nil
 }

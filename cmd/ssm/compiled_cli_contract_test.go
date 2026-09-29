@@ -191,12 +191,36 @@ func runCompiledCLITestMain(m *testing.M) (exitCode int) {
 	return m.Run()
 }
 
+// newCompiledCLIHarness returns an isolated harness whose ssm/sshctl paths are
+// per-test hard links to TestMain's shared binaries (copies when linking is
+// unavailable). Tests using it must never modify, replace, or chmod the
+// executables in place; tests that can (self-update, in-place replacement,
+// read-only directory, executable rename/unlink) must call
+// newCompiledCLIHarnessWithPrivateBinaries instead.
 func newCompiledCLIHarness(t *testing.T) *compiledCLIHarness {
+	t.Helper()
+	return newCompiledCLIHarnessWithBinaries(t, false)
+}
+
+// newCompiledCLIHarnessWithPrivateBinaries copies the shared binaries so the
+// test owns independent files that update or replacement flows may rewrite.
+func newCompiledCLIHarnessWithPrivateBinaries(t *testing.T) *compiledCLIHarness {
+	t.Helper()
+	return newCompiledCLIHarnessWithBinaries(t, true)
+}
+
+func newCompiledCLIHarnessWithBinaries(t *testing.T, private bool) *compiledCLIHarness {
 	t.Helper()
 	binDir := t.TempDir()
 	paths := make(map[string]string, len(compiledCLIPaths))
 	for executable, source := range compiledCLIPaths {
 		destination := filepath.Join(binDir, filepath.Base(source))
+		if !private {
+			if err := os.Link(source, destination); err == nil {
+				paths[executable] = destination
+				continue
+			}
+		}
 		data, err := os.ReadFile(source) //nolint:gosec // source is selected only from TestMain's test-owned compiled binary paths
 		if err != nil {
 			t.Fatalf("read test-built compiled CLI %s: %v", executable, err)
@@ -3326,7 +3350,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 	})
 
 	t.Run("BC-8 automatic replacement remains in the current major", func(t *testing.T) {
-		cli := newCompiledCLIHarness(t)
+		cli := newCompiledCLIHarnessWithPrivateBinaries(t)
 		cli.SaveVault(t, &config.Vault{})
 		replacement := []byte("ISSUE17_CROSS_MAJOR_REPLACEMENT_FIXTURE\n")
 		compiledUpdateServer.ConfigureRelease("v2.0.0", replacement)
@@ -3341,7 +3365,7 @@ func TestApprovedV2BreakingChangeBaselines(t *testing.T) {
 	})
 
 	t.Run("BC-9 an adjacent checksum alone cannot authorize replacement", func(t *testing.T) {
-		cli := newCompiledCLIHarness(t)
+		cli := newCompiledCLIHarnessWithPrivateBinaries(t)
 		cli.SaveVault(t, &config.Vault{})
 		replacement := []byte("ISSUE17_CHECKSUM_ONLY_REPLACEMENT_FIXTURE\n")
 		compiledUpdateServer.ConfigureRelease("v1.5.0", replacement)
@@ -4101,7 +4125,7 @@ func TestCompiledConfirmedSyncMetadataFailuresRemainSuccessful(t *testing.T) {
 }
 
 func TestMajorUpdateReviewIsNonInteractive(t *testing.T) {
-	cli := newCompiledCLIHarness(t)
+	cli := newCompiledCLIHarnessWithPrivateBinaries(t)
 	cli.SaveVault(t, &config.Vault{})
 	cli.writeConfigFile(t, "update_repo", []byte("fixture/repo\n"))
 	compiledUpdateServer.ConfigureRelease("v2.0.0", []byte("UNAUTHORIZED_REPLACEMENT_MUST_NOT_BE_READ\n"))
