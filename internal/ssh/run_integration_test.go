@@ -29,14 +29,13 @@ func startRunTestSSHServer(t *testing.T) (config.Connection, *config.Vault) {
 
 func startTrackedRunTestSSHServer(t *testing.T) (config.Connection, *config.Vault, *runTestServerStats) {
 	t.Helper()
-	_, hostPrivate, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	hostSigner, err := gossh.NewSignerFromKey(hostPrivate)
-	if err != nil {
-		t.Fatal(err)
-	}
+	return startRunTestSSHServerWithHostKeys(t, newTestSigner(t, "ed25519"))
+}
+
+// startRunTestSSHServerWithHostKeys serves the given host keys. The client
+// chooses among them by its HostKeyAlgorithms preference, like a real sshd.
+func startRunTestSSHServerWithHostKeys(t *testing.T, hostSigners ...gossh.Signer) (config.Connection, *config.Vault, *runTestServerStats) {
+	t.Helper()
 	_, clientPrivate, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +53,9 @@ func startTrackedRunTestSSHServer(t *testing.T) (config.Connection, *config.Vaul
 			return nil, nil
 		},
 	}
-	serverConfig.AddHostKey(hostSigner)
+	for _, hostSigner := range hostSigners {
+		serverConfig.AddHostKey(hostSigner)
+	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

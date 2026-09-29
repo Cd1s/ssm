@@ -164,7 +164,7 @@ inventory should survive. Never erase evidence to make v1 start.
 - `update_recovery_required` / `update_recovery`: stop command dispatch and
   retain authenticated `.old` and `.old.state` evidence until serialized
   recovery restores the exact original.
-- `host_key_unknown|host_key_mismatch`: inspect, verify out-of-band, then accept
+- `host_key_unknown|host_key_mismatch|host_key_type_changed`: inspect, verify out-of-band, then accept
   the exact observed fingerprint; never remove/rescan automatically.
 
 <!-- ssm-v2-migration: section=stream-cardinality-refresh -->

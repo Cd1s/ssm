@@ -114,11 +114,13 @@ path to local configuration, never a value to print or copy into a request.
 
 ## Host keys
 
-On `host_key_unknown` or `host_key_mismatch`:
+On `host_key_unknown`, `host_key_mismatch`, or `host_key_type_changed`:
 
 1. Run `sshctl host-key inspect <exact-alias> --json`.
 2. Verify the complete `observed_fingerprint` through a trusted channel.
 3. With authorization, accept that exact fingerprint using `--fingerprint ... --yes --json`.
+
+`host_key_mismatch` is a changed key of a recorded type; `host_key_type_changed` (inspect status `type_changed`) means the server no longer offers any recorded key type. Accept replaces only the same-type entry. Read `observed_fingerprint` from the top level of the inspect document, also on failure.
 
 Never delete/rescan automatically, accept a changed key blindly, or send
 credentials before verification.

@@ -138,7 +138,7 @@ Windows updater 恢复、且所有 pending ID 和远程状态都已确认或有�
   和精确范围。
 - `update_recovery_required` / `update_recovery`：停止命令分发，保留经过认证的 `.old`
   和 `.old.state` 证据，直到序列化恢复还原精确的原始内容。
-- `host_key_unknown|host_key_mismatch`：检查并进行带外验证，然后接受精确的已观察指纹；
+- `host_key_unknown|host_key_mismatch|host_key_type_changed`：检查并进行带外验证，然后接受精确的已观察指纹；
   绝不自动移除/重新扫描。
 
 <!-- ssm-v2-migration: section=stream-cardinality-refresh -->

@@ -12,6 +12,7 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 
 	"ssm/internal/config"
+	"ssm/internal/machinecontract"
 	"ssm/internal/privatepath"
 )
 
@@ -61,8 +62,10 @@ func buildHostKeyCallbackForPath(path string) gossh.HostKeyCallback {
 			return nil
 		}
 		var keyErr *knownhosts.KeyError
-		if errors.As(err, &keyErr) && len(keyErr.Want) > 0 {
-			return err
+		if errors.As(err, &keyErr) && len(keyErr.Want) > 0 && !wantHasKeyType(keyErr.Want, key) {
+			// known_hosts only has other key types for this endpoint: not a
+			// changed key of a known type, so report it distinctly.
+			return &machinecontract.HostKeyTypeChangedError{KeyError: keyErr, ObservedType: observedKeyType(key)}
 		}
 		return err
 	}

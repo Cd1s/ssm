@@ -62,7 +62,7 @@ sshctl --json run my-server --argv hostname
 
 这里的 `my-server` 是示例名；请换成上一步列出的 alias。`--argv hostname` 表示把 `hostname` 作为一个明确的远端参数传递，不经过本地 shell 拼接。
 
-如果这是第一次使用，还没有主机，可以先看下面“添加或修改主机”；如果出现 `host_key_unknown` 或 `host_key_mismatch`，先按“检查连接”中的 host key 流程核验指纹。
+如果这是第一次使用，还没有主机，可以先看下面“添加或修改主机”；如果出现 `host_key_unknown`、`host_key_mismatch` 或 `host_key_type_changed`，先按“检查连接”中的 host key 流程核验指纹。
 
 ## 先认识 6 个词
 
@@ -100,7 +100,7 @@ sshctl check my-server --json
 sshctl --json doctor my-server --deep
 ```
 
-遇到新 host key 或 key mismatch 时，先观察并核对完整指纹：
+遇到新 host key、key mismatch 或 key 类型变化时，先观察并核对完整指纹：
 
 ```bash
 sshctl host-key inspect my-server --json
@@ -108,6 +108,8 @@ sshctl host-key accept my-server --fingerprint SHA256:REPLACE_WITH_VERIFIED_FING
 ```
 
 第二条命令中的指纹只能替换成你通过可信渠道核验过的 `observed_fingerprint`；不要用自动 `ssh-keygen -R` 加 `ssh-keyscan` 代替核验。
+
+sshctl 会按 `known_hosts` 中该主机已有的密钥类型（如 ed25519）优先协商，所以先用 OpenSSH 连过的主机不会因服务器同时提供 ECDSA 而误报。`host_key_mismatch` 表示同一类型的密钥变了；`host_key_type_changed`（inspect 状态 `type_changed`）表示服务器不再提供 `known_hosts` 里记录过的任何类型。`accept` 只替换同一类型的条目，该主机的其它类型条目与其它主机的行保持不变。
 
 ### 运行命令
 

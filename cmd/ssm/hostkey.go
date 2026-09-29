@@ -17,10 +17,38 @@ type hostKeyCommandOptions struct {
 	asJSON      bool
 }
 
+// hostKeyFailure is the failure document of host-key inspect/accept. The
+// observation fields are repeated at the top level with the same names the
+// success document uses, so callers read one shape either way. The nested
+// inspection object is kept for compatibility. alias, message and hint stay
+// out of the top level: alias is not part of failure documents, and message
+// and hint belong to the failure metadata.
 type hostKeyFailure struct {
 	OK bool `json:"ok"`
 	machinecontract.Metadata
-	Report ssh.HostKeyInspection `json:"inspection"`
+	Host                string                `json:"host,omitempty"`
+	Port                int                   `json:"port,omitempty"`
+	Address             string                `json:"address,omitempty"`
+	Status              string                `json:"status,omitempty"`
+	Classification      string                `json:"classification,omitempty"`
+	Algorithm           string                `json:"algorithm,omitempty"`
+	Fingerprint         string                `json:"fingerprint,omitempty"`
+	ObservedFingerprint string                `json:"observed_fingerprint,omitempty"`
+	KnownFingerprints   []string              `json:"known_fingerprints,omitempty"`
+	KnownHostsPath      string                `json:"known_hosts_path,omitempty"`
+	Report              ssh.HostKeyInspection `json:"inspection"`
+}
+
+func newHostKeyFailure(failure machinecontract.Failure, report ssh.HostKeyInspection) hostKeyFailure {
+	return hostKeyFailure{
+		OK: false, Metadata: failure.Metadata(),
+		Host: report.Host, Port: report.Port, Address: report.Address,
+		Status: report.Status, Classification: report.Classification,
+		Algorithm: report.Algorithm, Fingerprint: report.Fingerprint,
+		ObservedFingerprint: report.ObservedFingerprint, KnownFingerprints: report.KnownFingerprints,
+		KnownHostsPath: report.KnownHostsPath,
+		Report:         report,
+	}
 }
 
 func runHostKeyCommand(args []string) {
@@ -54,9 +82,7 @@ func runHostKeyCommand(args []string) {
 	}
 	if err != nil {
 		failure := machinecontract.ClassifyHostKeyOperation(err)
-		os.Exit(machinecontract.WriteFailure(machineJSON, failure, hostKeyFailure{
-			OK: false, Metadata: failure.Metadata(), Report: report,
-		}))
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, newHostKeyFailure(failure, report)))
 	}
 	if machineJSON {
 		writeMachineValue(report)
