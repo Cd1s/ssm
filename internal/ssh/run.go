@@ -2,7 +2,6 @@ package ssh
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -177,10 +176,7 @@ func RedactSecrets(s string, secrets map[string]string) string {
 }
 
 func runSensitiveValues(opts RunOptions) []string {
-	values := make([]string, 0, len(opts.Secrets)+1)
-	for _, value := range opts.Secrets {
-		values = append(values, value)
-	}
+	values := secretValues(opts.Secrets)
 	if opts.Input == "" {
 		return values
 	}
@@ -290,40 +286,36 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 	defer session.Close()
 
 	var stdoutBuf, stderrBuf bytes.Buffer
-	var stdoutSpool, stderrSpool *machinecontract.DiagnosticSpool
+	var output humanRunOutput
 	if opts.Capture {
 		session.Stdout = &stdoutBuf
 		session.Stderr = &stderrBuf
 	} else {
-		stdoutSpool, err = machinecontract.NewDiagnosticSpool(os.Stdout, res.sensitiveValues...)
-		if err != nil {
-			failure := machinecontract.Classify(machinecontract.InternalFailure, machinecontract.Details{
-				Message: "failed to spool remote stdout",
-				Cause:   err,
-				Alias:   opts.RequestedAlias,
-			})
-			applyRunFailure(&res, failure)
-			res.LatencyMS = time.Since(start).Milliseconds()
-			_ = machinecontract.WriteHuman(failure)
-			return res
+		marker := ""
+		if opts.Input != "" {
+			marker = machinecontract.InterpreterNotFoundDiagnostic(opts.Interpreter)
 		}
-		defer func() { _ = stdoutSpool.Close() }()
-		stderrSpool, err = machinecontract.NewDiagnosticSpool(os.Stderr, res.sensitiveValues...)
-		if err != nil {
-			_ = stdoutSpool.Close()
-			failure := machinecontract.Classify(machinecontract.InternalFailure, machinecontract.Details{
-				Message: "failed to spool remote stderr",
-				Cause:   err,
-				Alias:   opts.RequestedAlias,
-			})
-			applyRunFailure(&res, failure)
-			res.LatencyMS = time.Since(start).Milliseconds()
-			_ = machinecontract.WriteHuman(failure)
-			return res
+		if bufferedRunOutputRequested() {
+			spool, message, err := newSpoolRunOutput(res.sensitiveValues, marker)
+			if err != nil {
+				failure := machinecontract.Classify(machinecontract.InternalFailure, machinecontract.Details{
+					Message: message,
+					Cause:   err,
+					Alias:   opts.RequestedAlias,
+				})
+				applyRunFailure(&res, failure)
+				res.LatencyMS = time.Since(start).Milliseconds()
+				_ = machinecontract.WriteHuman(failure)
+				return res
+			}
+			output = spool
+		} else {
+			machinecontract.SweepStaleDiagnosticSpools()
+			output = newStreamingRunOutput(os.Stdout, os.Stderr, secretValues(opts.Secrets), marker, func() { _ = session.Close() })
 		}
-		defer func() { _ = stderrSpool.Close() }()
-		session.Stdout = stdoutSpool
-		session.Stderr = stderrSpool
+		defer output.Close()
+		session.Stdout = output.Stdout()
+		session.Stderr = output.Stderr()
 	}
 	if opts.Input != "" {
 		session.Stdin = strings.NewReader(opts.Input)
@@ -349,17 +341,47 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 		}
 	}
 
+	var interrupt *runInterrupt
+	if !opts.Capture {
+		interrupt = watchRunInterrupt(session)
+	}
 	err = session.Run(full)
+	if interrupt != nil {
+		interrupt.stop()
+	}
 	res.LatencyMS = time.Since(start).Milliseconds()
 	if opts.Capture {
 		res.Stdout = stdoutBuf.String()
 		res.Stderr = stderrBuf.String()
 	}
+	if !opts.Capture {
+		if writeErr := output.WriteErr(); writeErr != nil {
+			failure := machinecontract.Classify(machinecontract.InternalFailure, machinecontract.Details{
+				Message: "failed to write remote output",
+				Cause:   writeErr,
+				Alias:   opts.RequestedAlias,
+			})
+			applyRunFailure(&res, failure)
+			_ = machinecontract.WriteHuman(failure)
+			return res
+		}
+		if signalExit, interrupted := interrupt.result(); interrupted {
+			_ = output.Finish(false)
+			failure := machinecontract.Classify(machinecontract.RunInterrupted, machinecontract.Details{
+				Message: fmt.Sprintf("interrupted by local signal; exit %d", signalExit),
+				Alias:   opts.RequestedAlias,
+				Exit:    signalExit,
+			})
+			applyRunFailure(&res, failure)
+			_ = machinecontract.WriteHuman(failure)
+			return res
+		}
+	}
 	if err != nil {
 		uncapturedInterpreterMarker := false
 		if !opts.Capture && opts.Input != "" {
 			var inspectErr error
-			uncapturedInterpreterMarker, inspectErr = stderrSpool.Contains(machinecontract.InterpreterNotFoundDiagnostic(opts.Interpreter))
+			uncapturedInterpreterMarker, inspectErr = output.InterpreterMarkerSeen()
 			if inspectErr != nil {
 				failure := machinecontract.Classify(machinecontract.InternalFailure, machinecontract.Details{
 					Message: "failed to inspect bounded remote diagnostics",
@@ -372,10 +394,10 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 			}
 		}
 		if !opts.Capture {
-			if replayErr := replayRunDiagnosticSpools(false, stdoutSpool, stderrSpool); replayErr != nil {
+			if finishErr := output.Finish(false); finishErr != nil {
 				failure := machinecontract.Classify(machinecontract.InternalFailure, machinecontract.Details{
-					Message: "failed to replay bounded remote diagnostics",
-					Cause:   replayErr,
+					Message: output.FinishFailure(false),
+					Cause:   finishErr,
 					Alias:   opts.RequestedAlias,
 				})
 				applyRunFailure(&res, failure)
@@ -419,10 +441,10 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 		return res
 	}
 	if !opts.Capture {
-		if replayErr := replayRunDiagnosticSpools(true, stdoutSpool, stderrSpool); replayErr != nil {
+		if finishErr := output.Finish(true); finishErr != nil {
 			failure := machinecontract.Classify(machinecontract.InternalFailure, machinecontract.Details{
-				Message: "failed to replay remote output",
-				Cause:   replayErr,
+				Message: output.FinishFailure(true),
+				Cause:   finishErr,
 				Alias:   opts.RequestedAlias,
 			})
 			applyRunFailure(&res, failure)
@@ -435,14 +457,14 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 	return res
 }
 
-func replayRunDiagnosticSpools(success bool, spools ...*machinecontract.DiagnosticSpool) error {
-	var result error
-	for _, spool := range spools {
-		if spool != nil {
-			result = errors.Join(result, spool.Replay(success))
-		}
+// secretValues lists the explicit --secret values, which streamed human
+// stderr masks and failure rendering redacts.
+func secretValues(secrets map[string]string) []string {
+	values := make([]string, 0, len(secrets)+1)
+	for _, value := range secrets {
+		values = append(values, value)
 	}
-	return result
+	return values
 }
 
 // RunScriptPreflight validates shell syntax remotely without executing the

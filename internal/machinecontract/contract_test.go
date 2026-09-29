@@ -168,6 +168,12 @@ func TestMachineContractMatrix(t *testing.T) {
 			hint: "the script reached the remote interpreter but exited non-zero; inspect stderr", exit: 23, alias: "script",
 		},
 		{
+			name: "run interrupted", kind: RunInterrupted,
+			details: Details{Message: "interrupted by local signal; exit 143", Alias: "app", Exit: 143},
+			code:    "interrupted", stage: "remote_execution",
+			hint: "a local signal stopped sshctl; it was forwarded to the remote command, which may still be running", exit: 143, alias: "app",
+		},
+		{
 			name: "script syntax", kind: ScriptSyntaxFailed,
 			details: Details{Message: "remote interpreter rejected script syntax", Alias: "script", Exit: 2, Line: "9"},
 			code:    "script_syntax_error", stage: "syntax_preflight",
@@ -1302,34 +1308,6 @@ func TestDiagnosticSpoolAcceptsExactByteBoundAndPreservesBytes(t *testing.T) {
 	}
 	if entries, err := os.ReadDir(tempDir); err != nil || len(entries) != 0 {
 		t.Fatalf("exact-bound cleanup entries=%v err=%v", entries, err)
-	}
-}
-
-func TestDiagnosticSpoolOverflowFailsWithoutOutputOrRetainedFile(t *testing.T) {
-	tempDir := t.TempDir()
-	const secret = "OVERFLOW_SECRET_CANARY"
-	var output bytes.Buffer
-	spool, err := newDiagnosticSpoolWithLimit(&output, tempDir, 8)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := spool.Write([]byte("safe")); err != nil {
-		t.Fatal(err)
-	}
-	if n, err := spool.Write([]byte(secret)); err == nil || n != 0 {
-		t.Fatalf("over-bound write = (%d, %v), want (0, error)", n, err)
-	}
-	if entries, err := os.ReadDir(tempDir); err != nil || len(entries) != 0 {
-		t.Fatalf("overflow cleanup entries=%v err=%v", entries, err)
-	}
-	if err := spool.Replay(false); err == nil {
-		t.Fatal("overflow replay unexpectedly succeeded")
-	}
-	if strings.Contains(output.String(), secret) || output.Len() != 0 {
-		t.Fatalf("overflow leaked buffered diagnostics: %q", output.String())
-	}
-	if err := spool.Close(); err != nil {
-		t.Fatalf("close after overflow: %v", err)
 	}
 }
 

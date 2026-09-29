@@ -413,6 +413,7 @@ func isolatedCompiledCLIEnvironmentWith(home, temp string, overrides map[string]
 		"SSM_DIAL_TIMEOUT":           true,
 		"SSM_REUSE":                  true,
 		"SSM_FORWARD_STDIN":          true,
+		"SSM_RUN_OUTPUT":             true,
 		"SSM_TEST_PUBLICATION_FAULT": true,
 	}
 	for key := range overrides {
@@ -1967,45 +1968,82 @@ func TestCompiledSuccessfulDirectoryFallbackPreservesOrderedDiagnostics(t *testi
 	}
 }
 
-func TestCompiledHumanRunDefersDiagnosticsUntilOutcome(t *testing.T) {
-	t.Run("failure redacts fragmented diagnostics and known script input", func(t *testing.T) {
-		const (
-			password    = "RUN_FAILURE_PASSWORD_CANARY"
-			scriptInput = "RUN_FAILURE_SCRIPT_INPUT_CANARY"
-		)
-		cli := newCompiledCLIHarness(t)
-		server := newCompiledSSHFixture(t, compiledSSHFixtureOptions{
-			Password:           password,
-			RunCommandContains: "command -v 'sh'",
-			RunDrainStdin:      true,
-			RunExitStatus:      23,
-			RunStdoutFragments: []string{
-				"safe stdout before\n",
-				`password=\"OUTER_ESCAPED_RUN_PASSWORD_CANARY WITH `,
-				`SPACES,AND,COMMAS\"` + "\n",
-				"master_pass=RUN_MASTER_PASS_CANARY\n",
-				"known short value: abc\n",
-				scriptInput + "\n",
-			},
-			RunStderrFragments: []string{
-				"token=RUN_TOKEN_CANARY\ncredential=RUN_CREDENTIAL_CANARY\n",
-				"-----BEGIN OPENSSH PRIVATE KEY-----\nRUN_PRIVATE_",
-				"KEY_CANARY\n-----END OPENSSH PRIVATE KEY-----\n",
-				"config={\n  \"token\": \"RUN_CONFIG_CANARY\"\n}\nrequest_body={\n",
-				"  \"argv\": [\"RUN_REQUEST_BODY_CANARY\"]\n}\n",
-				`decrypted_inventory=\"RUN_INVENTORY_CANARY WITH SPACES\"` + "\n",
-			},
-		})
-		cli.TrustSSHHost(t, server)
-		cli.SaveVault(t, &config.Vault{
-			Connections: []config.Connection{server.Connection("run-failure", password)},
-		})
-		secretPath := filepath.Join(cli.temp, "short-secret")
-		if err := os.WriteFile(secretPath, []byte("abc\n"), 0o600); err != nil {
-			t.Fatalf("write short run secret: %v", err)
-		}
+const (
+	runFailureScriptInput = "RUN_FAILURE_SCRIPT_INPUT_CANARY"
+	runFailureStdout      = "safe stdout before\n" +
+		`password=\"OUTER_ESCAPED_RUN_PASSWORD_CANARY WITH SPACES,AND,COMMAS\"` + "\n" +
+		"master_pass=RUN_MASTER_PASS_CANARY\n" +
+		"known short value: abc\n" +
+		runFailureScriptInput + "\n"
+)
 
-		result := cli.Run(t, "sshctl", []byte(scriptInput+"\n"), "--offline", "run", "run-failure", "-s", "--secret", "SHORT=@"+secretPath)
+// runCompiledHumanRunFailure runs a failing script whose remote output carries
+// credential-shaped diagnostics and an explicit three-byte secret.
+func runCompiledHumanRunFailure(t *testing.T, env map[string]string) compiledCLIResult {
+	t.Helper()
+	const password = "RUN_FAILURE_PASSWORD_CANARY"
+	cli := newCompiledCLIHarness(t)
+	server := newCompiledSSHFixture(t, compiledSSHFixtureOptions{
+		Password:           password,
+		RunCommandContains: "command -v 'sh'",
+		RunDrainStdin:      true,
+		RunExitStatus:      23,
+		RunStdoutFragments: []string{
+			"safe stdout before\n",
+			`password=\"OUTER_ESCAPED_RUN_PASSWORD_CANARY WITH `,
+			`SPACES,AND,COMMAS\"` + "\n",
+			"master_pass=RUN_MASTER_PASS_CANARY\n",
+			"known short value: abc\n",
+			runFailureScriptInput + "\n",
+		},
+		RunStderrFragments: []string{
+			"token=RUN_TOKEN_CANARY\ncredential=RUN_CREDENTIAL_CANARY\n",
+			"-----BEGIN OPENSSH PRIVATE KEY-----\nRUN_PRIVATE_",
+			"KEY_CANARY\n-----END OPENSSH PRIVATE KEY-----\n",
+			"config={\n  \"token\": \"RUN_CONFIG_CANARY\"\n}\nrequest_body={\n",
+			"  \"argv\": [\"RUN_REQUEST_BODY_CANARY\"]\n}\n",
+			`decrypted_inventory=\"RUN_INVENTORY_CANARY WITH SPACES\"` + "\n",
+		},
+	})
+	cli.TrustSSHHost(t, server)
+	cli.SaveVault(t, &config.Vault{
+		Connections: []config.Connection{server.Connection("run-failure", password)},
+	})
+	secretPath := filepath.Join(cli.temp, "short-secret")
+	if err := os.WriteFile(secretPath, []byte("abc\n"), 0o600); err != nil {
+		t.Fatalf("write short run secret: %v", err)
+	}
+	return cli.RunWithEnv(t, "sshctl", []byte(runFailureScriptInput+"\n"), env, "--offline", "run", "run-failure", "-s", "--secret", "SHORT=@"+secretPath)
+}
+
+var runFailureStderrCanaries = map[string]string{ //nolint:gosec // test-only fake credential canaries
+	"known_short":         "abc",
+	"token":               "RUN_TOKEN_CANARY",
+	"credential":          "RUN_CREDENTIAL_CANARY",
+	"private_key":         "RUN_PRIVATE_KEY_CANARY",
+	"config":              "RUN_CONFIG_CANARY",
+	"request_body":        "RUN_REQUEST_BODY_CANARY",
+	"decrypted_inventory": "RUN_INVENTORY_CANARY",
+}
+
+func TestCompiledStreamedHumanRunKeepsStdoutBytesAndSanitizesStderr(t *testing.T) {
+	result := runCompiledHumanRunFailure(t, nil)
+	if result.ProcessExit != 23 {
+		t.Fatalf("failed human run exit=%d, want 23; output=%s", result.ProcessExit, compiledOutputIdentity(result))
+	}
+	if result.Stdout != runFailureStdout {
+		t.Fatalf("streamed stdout = %q, want the remote bytes unchanged %q", result.Stdout, runFailureStdout)
+	}
+	assertNoCompiledCanaryLeak(t, compiledCLIResult{Stderr: result.Stderr}, runFailureStderrCanaries)
+	if !strings.Contains(result.Stderr, "ssm: error=remote_script_failed script=<stdin> exit=23\n") {
+		t.Fatalf("streamed failure lost its classification: %q", result.Stderr)
+	}
+}
+
+func TestCompiledHumanRunDefersDiagnosticsUntilOutcome(t *testing.T) {
+	t.Run("buffered failure redacts fragmented diagnostics and known script input", func(t *testing.T) {
+		const scriptInput = runFailureScriptInput
+		result := runCompiledHumanRunFailure(t, map[string]string{"SSM_RUN_OUTPUT": "buffered"})
 		if result.ProcessExit != 23 {
 			t.Fatalf("failed human run exit=%d, want 23; output=%s", result.ProcessExit, compiledOutputIdentity(result))
 		}
@@ -2026,32 +2064,34 @@ func TestCompiledHumanRunDefersDiagnosticsUntilOutcome(t *testing.T) {
 		})
 	})
 
-	t.Run("success replays both streams byte for byte", func(t *testing.T) {
-		const (
-			password = "RUN_SUCCESS_PASSWORD_CANARY"
-			stdout   = "success stdout byte 1\r\nsuccess stdout byte 2"
-			stderr   = "success stderr byte 1\r\nsuccess stderr byte 2"
-		)
-		cli := newCompiledCLIHarness(t)
-		server := newCompiledSSHFixture(t, compiledSSHFixtureOptions{
-			Password:           password,
-			RunCommandContains: "run-success",
-			RunStdoutFragments: []string{stdout[:11], stdout[11:]},
-			RunStderrFragments: []string{stderr[:9], stderr[9:]},
-		})
-		cli.TrustSSHHost(t, server)
-		cli.SaveVault(t, &config.Vault{
-			Connections: []config.Connection{server.Connection("run-success", password)},
-		})
-
-		result := cli.Run(t, "sshctl", nil, "--offline", "run", "run-success", "--raw", "run-success")
-		if result.ProcessExit != 0 || result.Stdout != stdout || result.Stderr != stderr {
-			t.Fatalf(
-				"successful human run changed bytes: exit=%d stdout=%q stderr=%q, want exit=0 stdout=%q stderr=%q",
-				result.ProcessExit, result.Stdout, result.Stderr, stdout, stderr,
+	for _, mode := range []string{"", "buffered"} {
+		t.Run("success keeps both streams byte for byte "+mode, func(t *testing.T) {
+			const (
+				password = "RUN_SUCCESS_PASSWORD_CANARY"
+				stdout   = "success stdout byte 1\r\nsuccess stdout byte 2"
+				stderr   = "success stderr byte 1\r\nsuccess stderr byte 2"
 			)
-		}
-	})
+			cli := newCompiledCLIHarness(t)
+			server := newCompiledSSHFixture(t, compiledSSHFixtureOptions{
+				Password:           password,
+				RunCommandContains: "run-success",
+				RunStdoutFragments: []string{stdout[:11], stdout[11:]},
+				RunStderrFragments: []string{stderr[:9], stderr[9:]},
+			})
+			cli.TrustSSHHost(t, server)
+			cli.SaveVault(t, &config.Vault{
+				Connections: []config.Connection{server.Connection("run-success", password)},
+			})
+
+			result := cli.RunWithEnv(t, "sshctl", nil, map[string]string{"SSM_RUN_OUTPUT": mode}, "--offline", "run", "run-success", "--raw", "run-success")
+			if result.ProcessExit != 0 || result.Stdout != stdout || result.Stderr != stderr {
+				t.Fatalf(
+					"successful human run changed bytes: exit=%d stdout=%q stderr=%q, want exit=0 stdout=%q stderr=%q",
+					result.ProcessExit, result.Stdout, result.Stderr, stdout, stderr,
+				)
+			}
+		})
+	}
 }
 
 func TestCompiledCLIScriptExit127ClassificationAndPlacement(t *testing.T) {
