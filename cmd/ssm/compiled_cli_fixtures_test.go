@@ -301,6 +301,9 @@ type compiledSSHFixtureOptions struct {
 	// SFTP makes the fixture answer the sftp subsystem with an in-process
 	// sftp.Server over the local filesystem (issue #87).
 	SFTP bool
+	// SFTPReadDelay slows every read the sftp server does, so a bounded
+	// transfer deadline expires mid-upload.
+	SFTPReadDelay time.Duration
 	// RejectExec refuses every exec request, like a server without a POSIX
 	// login shell that only offers the sftp subsystem.
 	RejectExec bool
@@ -549,7 +552,11 @@ func serveCompiledSSHSession(channel gossh.Channel, requests <-chan *gossh.Reque
 				continue
 			}
 			_ = request.Reply(true, nil)
-			if server, err := sftp.NewServer(channel); err == nil {
+			var transport io.ReadWriteCloser = channel
+			if options.SFTPReadDelay > 0 {
+				transport = compiledSlowReader{ReadWriteCloser: channel, delay: options.SFTPReadDelay}
+			}
+			if server, err := sftp.NewServer(transport); err == nil {
 				_ = server.Serve()
 			}
 			return
@@ -1117,3 +1124,14 @@ func executeCompiledSSHTransferFault(channel io.ReadWriter, stderr io.Writer, co
 // compiledNoDrainReader marks a tar source whose trailing padding must not be
 // drained after the archive end marker.
 type compiledNoDrainReader struct{ io.Reader }
+
+// compiledSlowReader delays every read of a transport.
+type compiledSlowReader struct {
+	io.ReadWriteCloser
+	delay time.Duration
+}
+
+func (r compiledSlowReader) Read(p []byte) (int, error) {
+	time.Sleep(r.delay)
+	return r.ReadWriteCloser.Read(p)
+}

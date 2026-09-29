@@ -132,6 +132,11 @@ func remoteIsDir(c config.Connection, v *config.Vault, remotePath string) (bool,
 
 // isExecRefused reports the client-side error x/crypto/ssh returns when the
 // server rejects an exec request (for example an SFTP-only account).
+// It relies on the exact text "ssh: command <cmd> failed" that
+// golang.org/x/crypto/ssh (session.go, Session.start, v0.56.0) produces; the
+// library exposes no typed error for it. TestCompiledExecRefusedIsAnUnsupportedRemoteShell
+// pins this, so a changed message fails that test instead of silently
+// degrading to a generic error.
 func isExecRefused(err error) bool {
 	message := err.Error()
 	return strings.HasPrefix(message, "ssh: command ") && strings.HasSuffix(message, " failed")

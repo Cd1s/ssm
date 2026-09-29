@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pkg/sftp"
 
@@ -93,7 +94,7 @@ func TestCompiledSFTPGetFile(t *testing.T) {
 				got["atomic"] != true || got["resume"] != "unsupported" || got["bytes_received"] != float64(len(data)) {
 				t.Fatalf("sftp get = %s", compiledOutputIdentity(result))
 			}
-			written, err := os.ReadFile(local)
+			written, err := os.ReadFile(local) //nolint:gosec // test-owned fixture path
 			if err != nil || !bytes.Equal(written, data) {
 				t.Fatalf("downloaded bytes differ: err=%v len=%d", err, len(written))
 			}
@@ -128,7 +129,7 @@ func TestCompiledSFTPGetFile(t *testing.T) {
 		issue80WriteFile(t, local, []byte("previous"))
 		result := env.cli.Run(t, "sshctl", nil, "--offline", "--json", "get", env.alias, filepath.Join(t.TempDir(), "nope"), local)
 		issue80RequireFailure(t, result, 1, "remote_read_failed", "remote_read")
-		if kept, _ := os.ReadFile(local); string(kept) != "previous" {
+		if kept, _ := os.ReadFile(local); string(kept) != "previous" { //nolint:gosec // test-owned fixture path
 			t.Fatalf("failed get replaced the local file: %q", kept)
 		}
 	})
@@ -193,7 +194,7 @@ func TestCompiledSFTPPutFile(t *testing.T) {
 			got["atomic"] != true || got["bytes_sent"] != float64(len(data)) {
 			t.Fatalf("sftp put = %s", compiledOutputIdentity(result))
 		}
-		written, err := os.ReadFile(remote)
+		written, err := os.ReadFile(remote) //nolint:gosec // test-owned fixture path
 		if err != nil || !bytes.Equal(written, data) {
 			t.Fatalf("uploaded bytes differ: err=%v len=%d", err, len(written))
 		}
@@ -219,7 +220,7 @@ func TestCompiledSFTPPutFile(t *testing.T) {
 		if result.ProcessExit != 0 || got["ok"] != true || got["atomic"] != true || got["integrity"] != "size_verified" {
 			t.Fatalf("sftp put = %s", compiledOutputIdentity(result))
 		}
-		if written, _ := os.ReadFile(remote); string(written) != "new contents" {
+		if written, _ := os.ReadFile(remote); string(written) != "new contents" { //nolint:gosec // test-owned fixture path
 			t.Fatalf("remote = %q", written)
 		}
 		sftpNoStagingLeft(t, filepath.Dir(remote))
@@ -244,7 +245,7 @@ func TestCompiledSFTPPutFile(t *testing.T) {
 		if result.ProcessExit != 0 || got["ok"] != true || got["atomic"] != false || got["integrity"] != "sha256_verified" {
 			t.Fatalf("sftp put without posix-rename = %s", compiledOutputIdentity(result))
 		}
-		if written, _ := os.ReadFile(remote); string(written) != "replacement" {
+		if written, _ := os.ReadFile(remote); string(written) != "replacement" { //nolint:gosec // test-owned fixture path
 			t.Fatalf("remote = %q", written)
 		}
 		sftpNoStagingLeft(t, filepath.Dir(remote))
@@ -265,7 +266,7 @@ func TestCompiledSFTPPutFile(t *testing.T) {
 		issue80WriteFile(t, blocker, []byte("not a directory"))
 		result := env.cli.Run(t, "sshctl", nil, "--offline", "--json", "put", env.alias, local, filepath.Join(blocker, "sub", "artifact.bin"))
 		issue80RequireFailure(t, result, 1, "remote_write_failed", "remote_write")
-		if kept, _ := os.ReadFile(blocker); string(kept) != "not a directory" {
+		if kept, _ := os.ReadFile(blocker); string(kept) != "not a directory" { //nolint:gosec // test-owned fixture path
 			t.Fatalf("blocker changed: %q", kept)
 		}
 	})
@@ -315,7 +316,9 @@ func TestCompiledAutoTransferReportsUnsupportedRemoteShell(t *testing.T) {
 		env := newIssue80Env(t, compiledSSHFixtureOptions{})
 		result := env.cli.Run(t, "sshctl", nil, "--offline", "--json", "get", env.alias, filepath.Join(t.TempDir(), "absent"), filepath.Join(env.cli.temp, "out"))
 		got := issue80JSON(t, result)
-		if result.ProcessExit == 0 || got["error"] == "remote_shell_unsupported" {
+		message, _ := got["message"].(string)
+		if result.ProcessExit == 0 || got["ok"] != false || got["error"] != "internal" || got["stage"] != "discovery" ||
+			!strings.Contains(message, "remote path") || !strings.Contains(message, "not found") {
 			t.Fatalf("missing path = %s", compiledOutputIdentity(result))
 		}
 	})
@@ -350,7 +353,7 @@ func TestCompiledRequestV1AcceptsTransferField(t *testing.T) {
 	if got := issue80JSON(t, result); result.ProcessExit != 0 || got["ok"] != true || got["local_sha256"] != digest {
 		t.Fatalf("request get = %s", compiledOutputIdentity(result))
 	}
-	if written, _ := os.ReadFile(fetched); !bytes.Equal(written, data) {
+	if written, _ := os.ReadFile(fetched); !bytes.Equal(written, data) { //nolint:gosec // test-owned fixture path
 		t.Fatal("request get bytes differ")
 	}
 	for _, op := range []string{"put", "get"} {
@@ -451,4 +454,80 @@ func TestCompiledExecRefusedIsAnUnsupportedRemoteShell(t *testing.T) {
 	}
 	result = pinned.cli.Run(t, "sshctl", body, "request", "-")
 	issue80RequireFailure(t, result, 1, "remote_shell_unsupported", "discovery")
+}
+
+func TestCompiledSFTPPutRejectsDirectoryDestination(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		posixRename bool
+	}{
+		{name: "posix-rename", posixRename: true},
+		{name: "fallback without posix-rename"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !tc.posixRename {
+				if err := sftp.SetSFTPExtensions(); err != nil {
+					t.Fatal(err)
+				}
+				// pkg/sftp exposes no getter for the active extension list, so
+				// restore the documented defaults.
+				t.Cleanup(func() {
+					if err := sftp.SetSFTPExtensions("hardlink@openssh.com", "posix-rename@openssh.com", "statvfs@openssh.com"); err != nil {
+						t.Error(err)
+					}
+				})
+			}
+			env := newSFTPEnv(t, "sftp")
+			local := filepath.Join(env.cli.temp, "artifact.bin")
+			issue80WriteFile(t, local, []byte("data"))
+			dest := t.TempDir()
+			issue80WriteFile(t, filepath.Join(dest, "keep.txt"), []byte("keep"))
+			result := env.cli.Run(t, "sshctl", nil, "--offline", "--json", "put", env.alias, local, dest)
+			got := issue80RequireFailure(t, result, 1, "remote_write_failed", "remote_write")
+			if message, _ := got["message"].(string); !strings.Contains(message, "is a directory") {
+				t.Fatalf("message = %v", got["message"])
+			}
+			if kept, err := os.ReadFile(filepath.Join(dest, "keep.txt")); err != nil || string(kept) != "keep" { //nolint:gosec // test-owned fixture path
+				t.Fatalf("destination directory was displaced: %v %q", err, kept)
+			}
+			entries, _ := os.ReadDir(filepath.Dir(dest))
+			for _, entry := range entries {
+				if strings.Contains(entry.Name(), ".ssm-") {
+					t.Fatalf("leftover %s", entry.Name())
+				}
+			}
+		})
+	}
+}
+
+// A deadline that expires mid-upload closes the transfer's sftp client; the
+// temporary file must still be cleaned up (over a fresh sftp session).
+func TestCompiledSFTPPutTimeoutCleansTemporaryFile(t *testing.T) {
+	cli := newCompiledCLIHarness(t)
+	server := newCompiledSSHFixture(t, compiledSSHFixtureOptions{
+		Password: issue80Password, SFTP: true, RejectExec: true, SFTPReadDelay: 40 * time.Millisecond,
+	})
+	cli.TrustSSHHost(t, server)
+	connection := server.Connection("slow", issue80Password)
+	connection.Transfer = "sftp"
+	cli.SaveVault(t, &config.Vault{Connections: []config.Connection{connection}})
+	data, _ := sftpPayload(6 << 20)
+	local := filepath.Join(cli.temp, "big.bin")
+	issue80WriteFile(t, local, data)
+	remoteDir := t.TempDir()
+	remote := filepath.Join(remoteDir, "big.bin")
+	result := cli.Run(t, "sshctl", nil, "--offline", "--json", "put", "slow", local, remote, "--timeout", "1s")
+	issue80RequireFailure(t, result, 1, "transfer_timeout", "timeout")
+	if _, err := os.Stat(remote); err == nil {
+		t.Fatal("a timed-out put published the destination")
+	}
+	entries, err := os.ReadDir(remoteDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".ssm-upload.") {
+			t.Fatalf("temporary file left behind: %s", entry.Name())
+		}
+	}
 }

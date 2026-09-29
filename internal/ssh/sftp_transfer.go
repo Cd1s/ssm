@@ -9,10 +9,12 @@ import (
 	"io"
 	"os"
 	"path"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/pkg/sftp"
+	gossh "golang.org/x/crypto/ssh"
 
 	"ssm/internal/config"
 	"ssm/internal/machinecontract"
@@ -80,6 +82,29 @@ func sftpUnsupported(message string) *TransferError {
 	return transferKindError(machinecontract.TransferSFTPUnsupported, 0, errors.New(message))
 }
 
+// sftpSession is the sftp client of one transfer plus its deadline.
+type sftpSession struct {
+	*sftp.Client
+	ssh      *gossh.Client
+	deadline *sftpDeadline
+}
+
+// openSFTPSession starts the sftp subsystem on an established SSH connection
+// and arms the transfer deadline. A failure means the server offers no usable
+// sftp subsystem.
+func openSFTPSession(client *gossh.Client, timeout time.Duration) (*sftpSession, error) {
+	sc, err := sftp.NewClient(client, sftp.UseConcurrentWrites(true))
+	if err != nil {
+		return nil, transferKindError(machinecontract.TransferSFTPUnavailable, 0, err)
+	}
+	return &sftpSession{Client: sc, ssh: client, deadline: startSFTPDeadline(sc, timeout)}, nil
+}
+
+func (s *sftpSession) close() {
+	s.deadline.stop()
+	_ = s.Close()
+}
+
 // hashingWriter feeds a digest while forwarding bytes and remembers the first
 // write error, so a local write failure is not mistaken for a remote one.
 type hashingWriter struct {
@@ -103,6 +128,8 @@ func (w *hashingWriter) Write(p []byte) (int, error) {
 // downloadFileSFTP downloads one regular file over SFTP.
 func downloadFileSFTP(c config.Connection, v *config.Vault, remotePath, localPath string, opts DownloadOptions) (result TransferResult, resultErr error) {
 	result = TransferResult{Direction: "get", Kind: "unknown", Stage: "dial", Integrity: "not_checked", Atomic: true, Resume: "unsupported"}
+	// Like the shell get path, dial errors are already classified by dialSSH
+	// and are returned as they are; the cmd layer classifies them for get.
 	client, err := dialSSH(c, v)
 	if err != nil {
 		return result, err
@@ -110,13 +137,12 @@ func downloadFileSFTP(c config.Connection, v *config.Vault, remotePath, localPat
 	defer releaseClient(client, false)
 
 	result.Stage = "capability"
-	sc, err := sftp.NewClient(client, sftp.UseConcurrentWrites(true))
+	sc, err := openSFTPSession(client, opts.Timeout)
 	if err != nil {
-		return result, transferKindError(machinecontract.TransferSFTPUnavailable, 0, err)
+		return result, err
 	}
-	defer func() { _ = sc.Close() }()
-	deadline := startSFTPDeadline(sc, opts.Timeout)
-	defer deadline.stop()
+	defer sc.close()
+	deadline := sc.deadline
 
 	result.Stage = "remote_read"
 	info, err := sc.Stat(remotePath)
@@ -212,8 +238,8 @@ func uploadPathSFTP(c config.Connection, v *config.Vault, localPath, remotePath 
 	return result, err
 }
 
-func uploadFileSFTP(c config.Connection, v *config.Vault, localPath, remotePath string, opts UploadOptions) (TransferResult, error) {
-	result := TransferResult{Stage: "validate", Integrity: "not_checked", Atomic: true, Resume: "unsupported"}
+func uploadFileSFTP(c config.Connection, v *config.Vault, localPath, remotePath string, opts UploadOptions) (result TransferResult, resultErr error) {
+	result = TransferResult{Stage: "validate", Integrity: "not_checked", Atomic: true, Resume: "unsupported"}
 	if opts.ResumeVersion != "" {
 		return result, sftpUnsupported("SFTP transfer does not support --resume")
 	}
@@ -252,21 +278,24 @@ func uploadFileSFTP(c config.Connection, v *config.Vault, localPath, remotePath 
 	defer releaseClient(client, false)
 
 	result.Stage = "capability"
-	sc, err := sftp.NewClient(client, sftp.UseConcurrentWrites(true))
+	sc, err := openSFTPSession(client, opts.Timeout)
 	if err != nil {
-		return result, transferKindError(machinecontract.TransferSFTPUnavailable, 0, err)
+		return result, err
 	}
-	defer func() { _ = sc.Close() }()
-	deadline := startSFTPDeadline(sc, opts.Timeout)
-	defer deadline.stop()
-	atomicReplace := sftpReplacesAtomically(sc)
+	defer sc.close()
+	deadline := sc.deadline
+	atomicReplace := sftpReplacesAtomically(sc.Client)
 	result.Atomic = atomicReplace
 
 	result.Stage = "remote_write"
 	if parent := RemoteParentDir(remotePath); parent != "" {
-		if err := sftpMkdirParents(sc, parent, opts.dirMode()); err != nil {
+		if err := sftpMkdirParents(sc.Client, parent, opts.dirMode()); err != nil {
 			return result, deadline.fail(&result, machinecontract.TransferRemoteWriteFailed, 0, err)
 		}
+	}
+	// Never let the rename (or the move-aside fallback) displace a directory.
+	if existing, err := sc.Lstat(remotePath); err == nil && existing.IsDir() {
+		return result, transferError(machinecontract.TransferRemoteWriteFailed, 0, fmt.Errorf("remote destination %s is a directory", remotePath))
 	}
 	tmpPath, err := sftpSiblingName(remotePath, "ssm-upload")
 	if err != nil {
@@ -278,9 +307,12 @@ func uploadFileSFTP(c config.Connection, v *config.Vault, localPath, remotePath 
 	}
 	published := false
 	defer func() {
-		if !published {
-			_ = remote.Close()
-			_ = sc.Remove(tmpPath)
+		if published {
+			return
+		}
+		_ = remote.Close()
+		if !sftpRemoveTemp(sc, tmpPath) {
+			resultErr = annotateLeftoverTemp(resultErr, tmpPath)
 		}
 	}()
 	// Keep the temporary file private until the payload is complete, like the
@@ -310,14 +342,14 @@ func uploadFileSFTP(c config.Connection, v *config.Vault, localPath, remotePath 
 	if opts.VerifySHA256 {
 		readBack, err := sc.Open(tmpPath)
 		if err != nil {
-			result.Integrity = "not_available"
+			result.Stage, result.Integrity = "capability", "not_available"
 			return result, deadline.fail(&result, machinecontract.TransferSFTPReadbackUnavailable, written, err)
 		}
 		h := sha256.New()
 		_, copyErr := io.Copy(h, readBack)
 		_ = readBack.Close()
 		if copyErr != nil {
-			result.Integrity = "not_available"
+			result.Stage, result.Integrity = "capability", "not_available"
 			return result, deadline.fail(&result, machinecontract.TransferSFTPReadbackUnavailable, written, copyErr)
 		}
 		result.RemoteSHA256 = hex.EncodeToString(h.Sum(nil))
@@ -331,7 +363,7 @@ func uploadFileSFTP(c config.Connection, v *config.Vault, localPath, remotePath 
 	if atomicReplace {
 		err = sc.PosixRename(tmpPath, remotePath)
 	} else {
-		err = sftpReplaceWithoutPosixRename(sc, tmpPath, remotePath)
+		err = sftpReplaceWithoutPosixRename(sc.Client, tmpPath, remotePath)
 	}
 	if err != nil {
 		return result, deadline.fail(&result, machinecontract.TransferRemoteWriteFailed, written, err)
@@ -402,4 +434,33 @@ func sftpSiblingName(remotePath, label string) (string, error) {
 		return "", err
 	}
 	return remotePath + "." + label + "." + hex.EncodeToString(random[:]), nil
+}
+
+// sftpRemoveTemp removes the temporary upload file. After a timeout the
+// transfer's sftp client is already closed, so it retries once on a fresh sftp
+// session over the same SSH connection. It reports whether the file is gone.
+func sftpRemoveTemp(sc *sftpSession, tmpPath string) bool {
+	if err := sc.Remove(tmpPath); err == nil || errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	fresh, err := sftp.NewClient(sc.ssh)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = fresh.Close() }()
+	err = fresh.Remove(tmpPath)
+	return err == nil || errors.Is(err, os.ErrNotExist)
+}
+
+// annotateLeftoverTemp adds the path of a temporary file that could not be
+// removed to a transfer failure, so the operator can clean it up.
+func annotateLeftoverTemp(err error, tmpPath string) error {
+	var transferErr *TransferError
+	if !errors.As(err, &transferErr) {
+		return err
+	}
+	note := fmt.Sprintf("the temporary file %s could not be removed and may remain on the remote host", tmpPath)
+	transferErr.failure.Message = strings.TrimSpace(transferErr.failure.Message + "; " + note)
+	transferErr.Cause = fmt.Errorf("%w; %s", transferErr.Cause, note)
+	return transferErr
 }
