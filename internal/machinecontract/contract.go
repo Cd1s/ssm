@@ -261,6 +261,8 @@ const (
 	rendererHumanOnly
 )
 
+// failurePolicy.HintFromDetails lets Details.Hint replace the static hint with
+// a context-specific one, such as a command suggestion.
 type failurePolicy struct {
 	Code            string
 	Stage           string
@@ -271,6 +273,7 @@ type failurePolicy struct {
 	Human           humanStyle
 	Renderer        rendererPolicy
 	HintFromCause   bool
+	HintFromDetails bool
 	SuppressMessage bool
 }
 
@@ -279,10 +282,10 @@ var failurePolicies = map[Kind]failurePolicy{
 		Code: CodeInternal, Exit: 1,
 	},
 	UnknownSSHCTLCommand: {
-		Code: "unknown_command", Hint: "use sshctl run <alias> --argv <command> or sshctl --help", Exit: 2,
+		Code: "unknown_command", Hint: "use sshctl run <alias> --argv <command> or sshctl --help", Exit: 2, HintFromDetails: true,
 	},
 	UnknownSSMCommand: {
-		Code: "unknown_command", Hint: "use ssm --help for available commands", Exit: 2,
+		Code: "unknown_command", Hint: "use ssm --help for available commands", Exit: 2, HintFromDetails: true,
 	},
 	InvalidRequestDocument: {
 		Code: CodeInvalidRequest, Hint: "use schema version 1 and exactly one typed operation", Exit: 2,
@@ -828,6 +831,7 @@ type Details struct {
 	Alias             string
 	Address           string
 	Candidates        []string
+	Hint              string
 	Exit              int
 	Script            string
 	Interpreter       string
@@ -935,6 +939,9 @@ func Classify(kind Kind, details Details) Failure {
 		if details.Cause != nil {
 			policy.Hint = details.Cause.Error()
 		}
+	}
+	if policy.HintFromDetails && details.Hint != "" {
+		policy.Hint = details.Hint
 	}
 	candidates := append([]string(nil), details.Candidates...)
 	for i := range candidates {

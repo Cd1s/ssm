@@ -220,6 +220,8 @@ PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
 
 普通 `--json` 调用输出一个 JSON 值；显式 `run --stream` 输出逐行 NDJSON。Agent 应按 `ok`、`error`、`stage`、`exit` 和 `hint` 分类；远端程序本身也可能退出 255，不能只看退出码判断 SSH 是否失败。
 
+写错命令时 sshctl 会给出提示而不是当作别名：第一个词不是已知子命令时仍按 `sshctl <alias> <command>` 简写处理，别名不存在才判断它是不是命令。`ssm` 独有的命令（如 `keys`、`login`）、与子命令只差一两个字符的拼写（如 `stauts`、`hostkey`）返回 `unknown_command`（退出码 2），`hint` 给出正确的入口或命令，相近的命令名放在 `candidates`；`ssm` 入口对 sshctl 独有命令和拼写错误同样提示（human 模式下有建议时返回 `unknown_command` 和退出码 2；没有建议时保持旧的 `Unknown command` 输出，退出码不变）。别名与命令同样接近（平局）或更近，包括 redirect 的旧名，则按别名处理，返回 `alias_not_found`。其余情况仍是 `alias_not_found`（退出码 255），`candidates` 是编辑距离最近的别名，只是候选，绝不会自动选择或执行。`run`/`exec`/`plan`/`map` 的未知选项返回 `invalid_arguments`（退出码 2），`hint` 会给出建议，例如 `--script-file` 提示 `-f`、`--fetch` 提示 `get`，其余按真实选项表的编辑距离匹配。
+
 动态或不可信参数、脚本、secret 文件路径、传输和主机变更使用 schema version 1 的[request-v1 schema](skills/agent-ssm/references/request-v1.schema.json)：
 
 ```json

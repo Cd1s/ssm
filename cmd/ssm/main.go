@@ -358,6 +358,9 @@ Cloud (optional):
 	case "remote-hash":
 		runRemoteHash()
 	default:
+		if suggestion, ok := suggestCommand(false, args[0]); ok {
+			exitUnknownCommandSuggestion(false, args[0], suggestion)
+		}
 		if machineJSON {
 			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.UnknownSSMCommand, machinecontract.Details{Message: fmt.Sprintf("unknown command %q", args[0])}))
 		}

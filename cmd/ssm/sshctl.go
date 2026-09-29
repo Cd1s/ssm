@@ -164,8 +164,12 @@ func runSSHCTLParsed(args []string) {
 		sshctlUsage()
 	default:
 		if len(args) == 1 {
-			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.UnknownSSHCTLCommand, machinecontract.Details{Message: fmt.Sprintf("unknown command %q", args[0])}))
+			exitUnknownCommand(true, args[0])
 		}
+		// The first word is treated as a host alias (shorthand). Only once the
+		// alias lookup misses does connectionNotFound decide whether the word
+		// was really a mistyped command.
+		aliasShorthand = true
 		runSSHCTLRunInvocation(args[0], args[1:])
 	}
 }
