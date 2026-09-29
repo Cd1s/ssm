@@ -38,6 +38,7 @@ type agentRequest struct {
 	Resume       string                     `json:"resume,omitempty"`
 	SHA256       bool                       `json:"sha256,omitempty"`
 	DirMode      string                     `json:"dir_mode,omitempty"`
+	Transfer     string                     `json:"transfer,omitempty"`
 	Fields       map[string]json.RawMessage `json:"-"`
 	// FromStdin marks a request read from stdin, which the request itself has
 	// already consumed, so run must not also try to forward it.
@@ -49,6 +50,7 @@ type agentHostRequest struct {
 	Port         *int    `json:"port,omitempty"`
 	User         *string `json:"user,omitempty"`
 	Group        *string `json:"group,omitempty"`
+	Transfer     *string `json:"transfer,omitempty"`
 	SavedKey     *string `json:"saved_key,omitempty"`
 	KeyFile      *string `json:"key_file,omitempty"`
 	KeyName      *string `json:"key_name,omitempty"`
@@ -113,7 +115,7 @@ func runAgentRequest(args []string) {
 		}
 		if req.Host != nil || req.Deep || req.Argv != nil || req.ShellCommand != nil || req.ScriptFile != "" || len(req.ScriptArgs) > 0 || req.Shell != "" || req.Interpreter != "" || len(req.SecretFiles) > 0 || req.NoReuse || req.Preflight != nil || req.StdinFile != "" {
 			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestPutFields, machinecontract.Details{
-				Message: "put accepts only alias, local_path, remote_path, resume, sha256, timeout, and dir_mode", Alias: req.Alias,
+				Message: "put accepts only alias, local_path, remote_path, resume, sha256, timeout, dir_mode, and transfer", Alias: req.Alias,
 			}))
 		}
 		if strings.TrimSpace(req.LocalPath) == "" || strings.TrimSpace(req.RemotePath) == "" || (req.Resume != "" && req.Resume != "v1") {
@@ -137,15 +139,19 @@ func runAgentRequest(args []string) {
 				os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestPutFields, machinecontract.Details{Cause: err, Alias: req.Alias}))
 			}
 		}
+		transfer, err := parseRequestTransfer(req.Transfer)
+		if err != nil {
+			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestPutFields, machinecontract.Details{Cause: err, Alias: req.Alias}))
+		}
 		unlock()
-		runPutWithOptions(putOptions{name: req.Alias, localPath: req.LocalPath, remotePath: req.RemotePath, resumeVersion: req.Resume, verifySHA256: req.SHA256, timeout: timeout, dirMode: dirMode})
+		runPutWithOptions(putOptions{name: req.Alias, localPath: req.LocalPath, remotePath: req.RemotePath, resumeVersion: req.Resume, verifySHA256: req.SHA256, timeout: timeout, dirMode: dirMode, transfer: transfer})
 	case "get":
 		if err := validateRequestAlias(req); err != nil {
 			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestAlias, machinecontract.Details{Cause: err, Alias: req.Alias}))
 		}
-		if field := firstUnsupportedRequestField(req.Fields, "version", "op", "alias", "local_path", "remote_path", "sha256", "timeout"); field != "" {
+		if field := firstUnsupportedRequestField(req.Fields, "version", "op", "alias", "local_path", "remote_path", "sha256", "timeout", "transfer"); field != "" {
 			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestPutFields, machinecontract.Details{
-				Message: fmt.Sprintf("get does not accept field %q; only alias, local_path, remote_path, sha256, and timeout are allowed", field), Alias: req.Alias,
+				Message: fmt.Sprintf("get does not accept field %q; only alias, local_path, remote_path, sha256, timeout, and transfer are allowed", field), Alias: req.Alias,
 			}))
 		}
 		if strings.TrimSpace(req.LocalPath) == "" || strings.TrimSpace(req.RemotePath) == "" {
@@ -161,8 +167,12 @@ func runAgentRequest(args []string) {
 				os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestTimeout, machinecontract.Details{Cause: err, Alias: req.Alias}))
 			}
 		}
+		getTransfer, err := parseRequestTransfer(req.Transfer)
+		if err != nil {
+			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestPutFields, machinecontract.Details{Cause: err, Alias: req.Alias}))
+		}
 		unlock()
-		runGet(getOptions{name: req.Alias, remotePath: req.RemotePath, localPath: req.LocalPath, verifySHA256: req.SHA256, timeout: getTimeout})
+		runGet(getOptions{name: req.Alias, remotePath: req.RemotePath, localPath: req.LocalPath, verifySHA256: req.SHA256, timeout: getTimeout, transfer: getTransfer})
 	default:
 		os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestOperation, machinecontract.Details{
 			Message: fmt.Sprintf("unsupported request op %q", req.Op), Alias: req.Alias,
@@ -270,7 +280,7 @@ func requestRunSpec(req agentRequest) (remoteRunSpec, error) {
 	if err := validateRequestAlias(req); err != nil {
 		return remoteRunSpec{}, err
 	}
-	if req.Host != nil || req.Deep || req.LocalPath != "" || req.RemotePath != "" || req.Resume != "" || req.SHA256 {
+	if req.Host != nil || req.Deep || req.LocalPath != "" || req.RemotePath != "" || req.Resume != "" || req.SHA256 || req.Transfer != "" {
 		return remoteRunSpec{}, fmt.Errorf("run requests do not accept host or deep fields")
 	}
 	sources := 0
@@ -392,6 +402,7 @@ func requestHostArgs(req agentRequest) ([]string, error) {
 	}
 	appendString("--user", host.User)
 	appendString("--group", host.Group)
+	appendString("--transfer", host.Transfer)
 	appendString("--key", host.SavedKey)
 	appendString("--key-file", host.KeyFile)
 	appendString("--key-name", host.KeyName)
@@ -429,7 +440,7 @@ func validateRequestAlias(req agentRequest) error {
 func hasRunRequestFields(req agentRequest) bool {
 	return req.Argv != nil || req.ShellCommand != nil || req.ScriptFile != "" || len(req.ScriptArgs) > 0 ||
 		req.Shell != "" || req.Interpreter != "" || len(req.SecretFiles) > 0 || req.Timeout != "" || req.NoReuse || req.Preflight != nil || req.StdinFile != "" ||
-		req.LocalPath != "" || req.RemotePath != "" || req.Resume != "" || req.SHA256
+		req.LocalPath != "" || req.RemotePath != "" || req.Resume != "" || req.SHA256 || req.Transfer != ""
 }
 
 func rejectRunRequestFields(req agentRequest) error {

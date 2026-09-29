@@ -75,7 +75,8 @@ not prove SSH transport failure.
 - Secrets: use `secret_files` or credential file options. Values are paths, never secret contents.
 - Host changes: use typed `host.add|host.update|host.upsert|host.remove`; verify first, then publish only a changed result's exact `transaction_id`.
 - Regular-file upload: use typed `put`; add `resume:"v1"` only when requested and `sha256:true` when integrity verification is required. Auto-created parent directories default to 0755; use `dir_mode` (or `--dir-mode`) to override.
-- Download: v1 uses direct `sshctl get`; v2 may use direct get or request schema v1 `op:"get"` (`sha256`, `timeout` allowed; no `resume`). Direct get accepts `--json`, `--timeout`, `--sha256` in any position.
+- Download: v1 uses direct `sshctl get`; v2 may use direct get or request schema v1 `op:"get"` (`sha256`, `timeout`, `transfer` allowed; no `resume`). Direct get accepts `--json`, `--timeout`, `--sha256`, `--sftp` in any position.
+- Target without a POSIX shell (Windows OpenSSH, appliances, SFTP-only accounts): when `put`/`get` return `remote_shell_unsupported`, retry the single file with `--sftp` (or `transfer:"sftp"` in the request), or set the host once with `host update <alias> --transfer sftp` (`host.transfer` in a host request). Never switch protocol silently; never send directories or `resume` over SFTP.
 - Fleet work: use `sshctl map` with explicit argv or scripts and inspect every result.
 - Large or long-running output (byte pipes, logs, archives): use human-mode `sshctl run <exact-alias> --argv ...`, which streams without a size limit and exits with the remote exit status; `--json` holds the whole output in memory. Streamed stdout is byte-exact; streamed stderr masks explicit `--secret` values as `***`; a local SIGINT/SIGTERM is forwarded to the remote command and exits with `error:interrupted`.
 - If a field or flag is uncertain, run the relevant command help or read the selected schema. Never guess.
@@ -177,6 +178,20 @@ remote message; the destination may be partially written and no per-file retry
 happens (the per-file fallback runs only when local `tar` is missing).
 Directory get rejects `--sha256` and never hangs when the local extractor
 exits early.
+
+SFTP mode (`--sftp`, request `transfer:"sftp"`, or a host with `transfer: sftp`;
+`auto|shell|sftp`, default `auto`) covers single regular files only and runs no
+remote command. Directories and `resume` fail with `unsupported_transfer_option`;
+a server without the subsystem fails with `sftp_unavailable`. Its guarantees
+differ from the shell path, so read the result fields: get is staged locally and
+published atomically, and `--sha256` hashes the received stream against the
+server-reported size and the staged file (there is no remote digest command);
+put writes a temporary sibling and renames it, reports `atomic:true` only when
+the server has `posix-rename@openssh.com` (otherwise `atomic:false`), and with
+`--sha256` reads the temporary file back over SFTP (`integrity_tool_unavailable`
+with `integrity:not_available` when the server refuses; nothing is published).
+In the default shell mode a target whose shell cannot answer the path probe
+returns `remote_shell_unsupported` (stage `discovery`), not a missing-path error.
 
 Resume is regular-file-only and must be explicitly enabled with `--resume=v1`.
 Incompatible, corrupt, or ambiguous state returns a classified partial-state

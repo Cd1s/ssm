@@ -52,6 +52,7 @@ type HostChange struct {
 	Port         *int
 	User         *string
 	Group        *string
+	Transfer     *string
 	PasswordFile *string
 	SavedKey     *string
 	KeyFile      *string
@@ -69,6 +70,9 @@ type HostView struct {
 	Group   string `json:"group,omitempty"`
 	Auth    string `json:"auth"`
 	KeyName string `json:"key_name,omitempty"`
+	// Transfer is present only when the host opted into an explicit put/get
+	// protocol ("shell" or "sftp"); the default "auto" is omitted.
+	Transfer string `json:"transfer,omitempty"`
 }
 
 // MutationReceipt is the stable secret-free result of a modern host mutation.
@@ -535,6 +539,13 @@ func buildHostCandidate(v *config.Vault, change HostChange) (*config.Vault, Muta
 	if change.Group != nil {
 		connection.Group = strings.TrimSpace(*change.Group)
 	}
+	if change.Transfer != nil {
+		mode, ok := config.NormalizeTransfer(*change.Transfer)
+		if !ok {
+			return nil, MutationReceipt{}, hostError(machinecontract.HostApplyInvalidArguments, "transfer must be auto, shell, or sftp")
+		}
+		connection.Transfer = mode
+	}
 
 	keyAdded := ""
 	switch {
@@ -778,7 +789,7 @@ func View(connection config.Connection) HostView {
 	}
 	return HostView{
 		Name: connection.Name, Host: connection.Host, Port: port, User: connection.User,
-		Group: connection.Group, Auth: auth, KeyName: connection.KeyName,
+		Group: connection.Group, Auth: auth, KeyName: connection.KeyName, Transfer: connection.Transfer,
 	}
 }
 

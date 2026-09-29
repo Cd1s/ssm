@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pkg/sftp"
 	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 
@@ -297,6 +298,16 @@ type compiledSSHFixtureOptions struct {
 	// as it reads the archive end marker, without draining trailing padding.
 	UploadTarStopAtEndMarker bool
 
+	// SFTP makes the fixture answer the sftp subsystem with an in-process
+	// sftp.Server over the local filesystem (issue #87).
+	SFTP bool
+	// RejectExec refuses every exec request, like a server without a POSIX
+	// login shell that only offers the sftp subsystem.
+	RejectExec bool
+	// PathProbe, when set, replaces the answer to the POSIX DIR/FILE/MISSING
+	// path probe that get runs in the default shell mode.
+	PathProbe *compiledPathProbe
+
 	record func(string)
 
 	// DropDuringHandshake closes each accepted TCP connection before the SSH
@@ -312,6 +323,14 @@ type compiledSSHFixtureOptions struct {
 	HangAfterExec bool
 
 	dropConnection func()
+}
+
+// compiledPathProbe is the canned reply of a remote whose shell does not
+// understand the POSIX path probe.
+type compiledPathProbe struct {
+	Stdout string
+	Stderr string
+	Exit   uint32
 }
 
 type compiledSSHFixture struct {
@@ -523,7 +542,19 @@ func (f *compiledSSHFixture) serveConnection(raw net.Conn, serverConfig *gossh.S
 func serveCompiledSSHSession(channel gossh.Channel, requests <-chan *gossh.Request, options compiledSSHFixtureOptions) {
 	defer func() { _ = channel.Close() }()
 	for request := range requests {
-		if request.Type != "exec" {
+		if request.Type == "subsystem" && options.SFTP {
+			var subsystem struct{ Name string }
+			if err := gossh.Unmarshal(request.Payload, &subsystem); err != nil || subsystem.Name != "sftp" {
+				_ = request.Reply(false, nil)
+				continue
+			}
+			_ = request.Reply(true, nil)
+			if server, err := sftp.NewServer(channel); err == nil {
+				_ = server.Serve()
+			}
+			return
+		}
+		if request.Type != "exec" || options.RejectExec {
 			_ = request.Reply(false, nil)
 			continue
 		}
@@ -1059,6 +1090,10 @@ func compiledRemoteHasDigestTool(options compiledSSHFixtureOptions) bool {
 // remote tar extractor that fails without reading its input.
 func executeCompiledSSHTransferFault(channel io.ReadWriter, stderr io.Writer, command string, options compiledSSHFixtureOptions) (uint32, bool) {
 	switch {
+	case options.PathProbe != nil && strings.HasPrefix(command, "if [ -d "):
+		_, _ = io.WriteString(channel, options.PathProbe.Stdout)
+		_, _ = io.WriteString(stderr, options.PathProbe.Stderr)
+		return options.PathProbe.Exit, true
 	case strings.Contains(command, "ssm_sha256_tool >/dev/null") && !compiledRemoteHasDigestTool(options):
 		_, _ = io.WriteString(channel, "SSM_INTEGRITY_TOOL_MISSING\n")
 		return 69, true

@@ -129,6 +129,10 @@ func UploadFileWithOptions(c config.Connection, v *config.Vault, localPath, remo
 
 	cmd := uploadCommandWithIntegrity(remotePath, info.Mode(), info.Size(), localDigest, opts.dirMode())
 	if err := session.Start(cmd); err != nil {
+		if isExecRefused(err) {
+			// No exec at all (for example an SFTP-only account).
+			return result, remoteShellUnsupportedError("", err)
+		}
 		return result, transferError(machinecontract.TransferStartFailed, 0, err)
 	}
 	var timedOut atomic.Bool

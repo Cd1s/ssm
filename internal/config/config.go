@@ -10,7 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+<<<<<<< HEAD
 	"sync"
+=======
+	"strings"
+>>>>>>> 6e25821 (feat(transfer): SFTP transfer for non-POSIX targets and remote_shell_unsupported (#87))
 	"time"
 
 	"ssm/internal/vault"
@@ -29,7 +33,36 @@ type Connection struct {
 	Password string `json:"password,omitempty"`
 	KeyName  string `json:"key_name,omitempty"`
 	Group    string `json:"group,omitempty"`
+	// Transfer selects the put/get protocol: "" or "auto" and "shell" use the
+	// POSIX shell path, "sftp" uses the sftp subsystem. Additive vault field.
+	Transfer string `json:"transfer,omitempty"`
 }
+
+// Transfer modes stored in Connection.Transfer.
+const (
+	TransferAuto  = "auto"
+	TransferShell = "shell"
+	TransferSFTP  = "sftp"
+)
+
+// NormalizeTransfer validates a user-supplied transfer mode. It returns the
+// value to store: the default "auto" is stored as the empty string so that
+// vaults of hosts that never opted in stay byte-identical.
+func NormalizeTransfer(value string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", TransferAuto:
+		return "", true
+	case TransferShell:
+		return TransferShell, true
+	case TransferSFTP:
+		return TransferSFTP, true
+	default:
+		return "", false
+	}
+}
+
+// UsesSFTP reports whether put and get must use the sftp subsystem.
+func (c Connection) UsesSFTP() bool { return c.Transfer == TransferSFTP }
 
 type Vault struct {
 	Connections      []Connection       `json:"connections"`

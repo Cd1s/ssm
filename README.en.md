@@ -173,6 +173,20 @@ sshctl get my-server /tmp/notes.txt ./notes.txt --sha256 --timeout 30s --json
 
 `--sha256` is for regular-file integrity verification. Directory transfers provide different guarantees; see [Advanced / for agents and automation](#advanced--for-agents-and-automation). The remote host is probed for `sha256sum`, then `shasum -a 256`, then `openssl dgst -sha256`; if none exists the result is `error:integrity_tool_unavailable` (retry without `--sha256`). Parent directories that `put` creates default to mode `0755`; override with `--dir-mode <octal>` (for example `--dir-mode 0750`). The file itself is still written through a private temporary file and renamed, so file permission semantics are unchanged. `get` accepts the same position-independent `--json`, `--timeout`, and `--sha256` as `put` (the download is hashed locally and compared with the remote digest; a mismatch fails and does not replace the destination). `get` does not support `--resume`.
 
+#### Targets without a POSIX shell (SFTP)
+
+By default (host `transfer: auto`) transfers go through the remote POSIX shell. When the target's shell cannot answer the path probe (the output is not `DIR`/`FILE`/`MISSING`, the shell reports an error, or exec is refused altogether), `get`/`put` return `error:remote_shell_unsupported` (`stage:discovery`) instead of misreporting the path as missing. Use the SFTP subsystem instead (same SSH connection, no remote command is run): add `--sftp` for one transfer, or set the host to `sftp`:
+
+```bash
+sshctl put win-box ./notes.txt C:/temp/notes.txt --sftp --sha256 --json
+sshctl host update win-box --transfer sftp --offline --json   # auto|shell|sftp, default auto
+```
+
+Request v1 sets the host field with `host.transfer`; `put`/`get` requests accept a top-level `transfer` (`auto|shell|sftp`) that overrides the host setting for that one operation. SFTP currently supports single regular files only: directories and `put --resume` return `error:unsupported_transfer_option`, and a server without the sftp subsystem returns `error:sftp_unavailable`. SFTP guarantees differ from the shell path, and the result fields report exactly what was provided:
+
+- `get`: `Stat` decides the type, then the file streams into a local staging file that is published atomically (`atomic:true`). SFTP has no remote digest command, so `--sha256` hashes the received stream, checks it against the size the server reported and against the staged file, and `remote_sha256` is that stream digest; without `--sha256` the result is `integrity:not_checked`.
+- `put`: the file is written to a private temporary sibling and renamed. A server with `posix-rename@openssh.com` replaces the destination atomically (`atomic:true`); otherwise the previous destination is moved aside and restored if the rename fails, but the result says `atomic:false`. `--sha256` reads the temporary file back over SFTP and compares digests locally (`integrity:sha256_verified`); if the server does not allow reading it back the result is `integrity_tool_unavailable` (`integrity:not_available`) and nothing is published. Without `--sha256` only the size is checked (`size_verified`). `--dir-mode` applies to newly created parent directories as well.
+
 ### Add or change a host
 
 Use this to add a host or change only selected fields. `--verify` checks the candidate before saving it:
@@ -184,6 +198,8 @@ sshctl host upsert my-server \
 
 sshctl host update my-server --port 2222 --verify --json
 ```
+
+`--transfer auto|shell|sftp` (`host.transfer` in request v1) sets the protocol `put`/`get` use for that host; the default `auto` is not stored in the vault. See [Upload or download files](#upload-or-download-files).
 
 Private keys and passwords may only be referenced with `--key-file`, `--password-file`, or a saved `--key` name; they are never inline values. A changed result is saved locally as a pending mutation and returns a reviewable `transaction_id`. An idempotent no-op returns `changed:false`, `action:"unchanged"`, and no ID; do not publish it.
 

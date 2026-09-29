@@ -34,6 +34,25 @@ func TestParseHostUpsertArgs(t *testing.T) {
 	}
 }
 
+func TestParseHostTransferFlag(t *testing.T) {
+	opts, err := parseHostCommandArgs([]string{"update", "win", "--transfer", "sftp", "--json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.transfer.set || opts.transfer.value != "sftp" {
+		t.Fatalf("transfer option = %+v", opts.transfer)
+	}
+	if !opts.hasMutationOptions() {
+		t.Fatal("--transfer alone must count as a host mutation")
+	}
+	if change := hostChangeFromOptions(opts); change.Transfer == nil || *change.Transfer != "sftp" {
+		t.Fatalf("host change transfer = %v", change.Transfer)
+	}
+	if _, err := parseHostCommandArgs([]string{"update", "win", "--transfer"}); err == nil {
+		t.Fatal("--transfer without a value was accepted")
+	}
+}
+
 func TestParseHostOfflineFlag(t *testing.T) {
 	opts, err := parseHostCommandArgs([]string{"list", "--json", "--offline"})
 	if err != nil {

@@ -46,3 +46,26 @@ func TestParseDirModeRequiresOwnerWriteAndExecute(t *testing.T) {
 		}
 	}
 }
+
+func TestParsePutAndGetAcceptSFTPFlag(t *testing.T) {
+	previousJSON := machineJSON
+	t.Cleanup(func() { machineJSON = previousJSON })
+	put, err := parsePutArgs([]string{"prod", "local.bin", "/srv/remote.bin", "--sftp", "--sha256"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !put.sftp || !put.verifySHA256 {
+		t.Fatalf("put options = %+v", put)
+	}
+	get, err := parseGetArgs([]string{"--sftp", "prod", "/srv/remote.bin", "local.bin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !get.sftp || get.name != "prod" {
+		t.Fatalf("get options = %+v", get)
+	}
+	plain, err := parsePutArgs([]string{"prod", "local.bin", "/srv/remote.bin"})
+	if err != nil || plain.sftp {
+		t.Fatalf("--sftp must be opt-in: %+v %v", plain, err)
+	}
+}

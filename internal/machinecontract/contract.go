@@ -200,6 +200,18 @@ const (
 	TransferDirModeInvalid              Kind = "transfer_dir_mode_invalid"
 	IntegrityToolUnavailable            Kind = "integrity_tool_unavailable"
 	GetArgumentsInvalid                 Kind = "get_arguments_invalid"
+
+	// RemoteShellUnsupported: the remote login shell did not answer the POSIX
+	// path probe (issue #87).
+	RemoteShellUnsupported Kind = "remote_shell_unsupported"
+	// TransferSFTPUnavailable: the server did not start the sftp subsystem.
+	TransferSFTPUnavailable Kind = "transfer_sftp_unavailable"
+	// TransferSFTPUnsupported: an option or path kind that SFTP transfer does
+	// not cover (directories, resume).
+	TransferSFTPUnsupported Kind = "transfer_sftp_unsupported"
+	// TransferSFTPReadbackUnavailable: put --sha256 could not read the uploaded
+	// file back over SFTP.
+	TransferSFTPReadbackUnavailable Kind = "transfer_sftp_readback_unavailable"
 )
 
 const ExitConnectionFailed = 255
@@ -863,6 +875,22 @@ var failurePolicies = map[Kind]failurePolicy{
 		Code: "publish_failed", Stage: "publish",
 		Hint: "automatic restore failed; recover the prior directory from the retained backup path reported in the error", Exit: 1,
 	},
+	RemoteShellUnsupported: {
+		Code: "remote_shell_unsupported", Stage: "discovery",
+		Hint: "the remote login shell did not answer the POSIX path probe; retry with --sftp or set the host to transfer: sftp (sshctl host update <alias> --transfer sftp)", Exit: 1,
+	},
+	TransferSFTPUnavailable: {
+		Code: "sftp_unavailable", Stage: "capability",
+		Hint: "the server did not start the sftp subsystem; enable SFTP on the server or use the shell transfer (transfer: auto or shell)", Exit: 1,
+	},
+	TransferSFTPUnsupported: {
+		Code: "unsupported_transfer_option", Stage: "validate",
+		Hint: "SFTP transfer supports single regular files only (no directories or --resume); use the shell transfer for those", Exit: 1,
+	},
+	TransferSFTPReadbackUnavailable: {
+		Code: "integrity_tool_unavailable", Stage: "capability",
+		Hint: "the SFTP server did not allow reading the uploaded file back for verification, so nothing was published; retry without --sha256 (size is still verified)", Exit: 1,
+	},
 }
 
 // Details carries contextual, non-policy inputs used to construct a Failure.
@@ -1513,7 +1541,7 @@ func ClassifyDownload(err error, context SSHContext) Failure {
 
 func isDownloadOutcomeFailure(failure Failure) bool {
 	switch failure.Error {
-	case "remote_read_failed", "local_write_failed", "publish_failed", "integrity_failed", "integrity_tool_unavailable", "transfer_timeout", "unsupported_transfer_option":
+	case "remote_read_failed", "local_write_failed", "publish_failed", "integrity_failed", "integrity_tool_unavailable", "transfer_timeout", "unsupported_transfer_option", "remote_shell_unsupported", "sftp_unavailable":
 		return true
 	default:
 		return false
