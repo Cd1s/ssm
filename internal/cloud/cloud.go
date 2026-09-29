@@ -136,7 +136,7 @@ func PushBlobObserved(cfg *CloudConfig, data []byte) (string, bool, error) {
 	req, err := http.NewRequest("PUT", server+"/sync", bytes.NewReader(data))
 	if err != nil {
 		config.Debug("push: request error: %v", err)
-		return "", false, &pushFailure{err: err}
+		return "", false, &pushFailure{err: &RequestError{}}
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	req.Header.Set("Content-Type", "application/octet-stream")
@@ -171,7 +171,7 @@ func Pull(cfg *CloudConfig) (string, error) {
 	req, err := http.NewRequest("GET", server+"/sync", nil)
 	if err != nil {
 		config.Debug("pull: request error: %v", err)
-		return "", err
+		return "", &RequestError{}
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 
@@ -194,7 +194,7 @@ func Pull(cfg *CloudConfig) (string, error) {
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxPullBlobBytes+1))
 	if err != nil {
 		config.Debug("pull: read body error: %v", err)
-		return "", err
+		return "", &TransportError{Err: err}
 	}
 	if int64(len(data)) > maxPullBlobBytes {
 		config.Debug("pull: sync blob too large")
@@ -227,7 +227,7 @@ func PullExpected(cfg *CloudConfig, expected string) (string, error) {
 	server := strings.TrimRight(cfg.Server, "/")
 	req, err := http.NewRequest("GET", server+"/sync", nil)
 	if err != nil {
-		return "", err
+		return "", &RequestError{}
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	resp, err := httpClient.Do(req)
@@ -240,7 +240,7 @@ func PullExpected(cfg *CloudConfig, expected string) (string, error) {
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxPullBlobBytes+1))
 	if err != nil {
-		return "", err
+		return "", &TransportError{Err: err}
 	}
 	if int64(len(data)) > maxPullBlobBytes || len(data) == 0 {
 		return "", fmt.Errorf("sync blob is invalid")
@@ -279,7 +279,7 @@ func InspectRemoteBlob(cfg *CloudConfig) (RemoteBlobIdentity, error) {
 	server := strings.TrimRight(cfg.Server, "/")
 	req, err := http.NewRequest("HEAD", server+"/sync", nil)
 	if err != nil {
-		return RemoteBlobIdentity{}, err
+		return RemoteBlobIdentity{}, &RequestError{}
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 
@@ -377,7 +377,8 @@ func (e *TransportError) Error() string { return transportDetail(e.Err) }
 func (e *TransportError) Unwrap() error { return e.Err }
 
 // transportDetail describes a transport error without URLs, hosts, ports or
-// resolver addresses.
+// resolver addresses. Its TLS branches must cover the same types as
+// IsTLSFailure.
 func transportDetail(err error) string {
 	for err != nil {
 		var urlErr *url.Error
@@ -430,6 +431,30 @@ func transportDetail(err error) string {
 		return "request timed out"
 	}
 	return err.Error()
+}
+
+// RequestError is returned when an HTTP request cannot be constructed, which
+// happens only for an unusable configured server address. Its text is fixed
+// because the underlying url.Error would echo that address; it has no
+// classifiable cause, so it deliberately does not unwrap.
+type RequestError struct{}
+
+func (*RequestError) Error() string { return "could not build the sync request" }
+
+// IsTLSFailure reports whether err is a TLS or certificate verification
+// failure. It is the single owner of that classification; machinecontract
+// reuses it through synctransaction.
+func IsTLSFailure(err error) bool {
+	var verification *tls.CertificateVerificationError
+	var authority x509.UnknownAuthorityError
+	var hostname x509.HostnameError
+	var invalid x509.CertificateInvalidError
+	var record tls.RecordHeaderError
+	return errors.As(err, &verification) ||
+		errors.As(err, &authority) ||
+		errors.As(err, &hostname) ||
+		errors.As(err, &invalid) ||
+		errors.As(err, &record)
 }
 
 // MissingTokenError is returned when cloud.json has no usable sync token.

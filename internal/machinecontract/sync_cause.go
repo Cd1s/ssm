@@ -2,8 +2,6 @@ package machinecontract
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"net"
 	"net/http"
@@ -37,7 +35,9 @@ const wsaeconnrefused = 10061
 // SyncFailureCause classifies the underlying reason a sync operation failed
 // into one stable enumeration value. It inspects typed errors only, never
 // error text, and is safe to reuse by any caller that needs the same
-// classification (for example status reporting).
+// classification (for example status reporting). A DNS failure is reported as
+// dns even when the resolver timed out, because the resolver name is the more
+// actionable fact than the timeout.
 func SyncFailureCause(err error) string {
 	if err == nil {
 		return ""
@@ -57,7 +57,7 @@ func SyncFailureCause(err error) string {
 			return SyncCauseUnknown
 		}
 	}
-	if isTLSFailure(err) {
+	if synctransaction.IsTLSFailure(err) {
 		return SyncCauseTLS
 	}
 	var dns *net.DNSError
@@ -79,23 +79,11 @@ func SyncFailureCause(err error) string {
 		return SyncCauseNetwork
 	}
 	var urlErr *url.Error
-	if errors.As(err, &urlErr) {
+	var transport *synctransaction.TransportError
+	if errors.As(err, &urlErr) || errors.As(err, &transport) {
 		return SyncCauseNetwork
 	}
 	return SyncCauseUnknown
-}
-
-func isTLSFailure(err error) bool {
-	var verification *tls.CertificateVerificationError
-	var unknownAuthority x509.UnknownAuthorityError
-	var hostname x509.HostnameError
-	var invalid x509.CertificateInvalidError
-	var record tls.RecordHeaderError
-	return errors.As(err, &verification) ||
-		errors.As(err, &unknownAuthority) ||
-		errors.As(err, &hostname) ||
-		errors.As(err, &invalid) ||
-		errors.As(err, &record)
 }
 
 const syncConnectivityHint = "fix sync connectivity or retry explicitly with --offline"

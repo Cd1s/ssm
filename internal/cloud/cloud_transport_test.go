@@ -114,3 +114,86 @@ func TestRemoteETagFailuresNeverExposeServerAddress(t *testing.T) {
 		})
 	}
 }
+
+func assertNoAddress(t *testing.T, err error, server string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("cloud call succeeded, want failure")
+	}
+	parsed, parseErr := url.Parse(server)
+	fragments := []string{"sync-unique-host", "48213", "/sync"}
+	if parseErr == nil {
+		fragments = append(fragments, parsed.Host, parsed.Hostname(), parsed.Port())
+	}
+	for _, fragment := range fragments {
+		if fragment != "" && strings.Contains(err.Error(), fragment) {
+			t.Fatalf("error %q exposes %q", err.Error(), fragment)
+		}
+	}
+}
+
+func TestRequestConstructionFailuresNeverExposeServerAddress(t *testing.T) {
+	setTestHome(t, t.TempDir())
+	// A control character makes http.NewRequest fail, bypassing the CLI's
+	// configuration validation, which the cloud package does not repeat.
+	server := "http://sync-unique-host.invalid:48213/\x7f"
+	cfg := &CloudConfig{Server: server, Token: "REQUEST_TOKEN_CANARY"}
+
+	_, remoteErr := RemoteETag(cfg)
+	_, inspectErr := InspectRemoteBlob(cfg)
+	_, pullErr := Pull(cfg)
+	_, expectedErr := PullExpected(cfg, "identity")
+	_, pushErr := PushBlob(cfg, []byte("blob"))
+	for name, err := range map[string]error{
+		"RemoteETag": remoteErr, "InspectRemoteBlob": inspectErr, "Pull": pullErr,
+		"PullExpected": expectedErr, "PushBlob": pushErr,
+	} {
+		t.Run(name, func(t *testing.T) {
+			assertNoAddress(t, err, "http://sync-unique-host.invalid:48213")
+			if strings.Contains(err.Error(), "REQUEST_TOKEN_CANARY") {
+				t.Fatalf("error %q exposes the token", err.Error())
+			}
+		})
+	}
+}
+
+// truncatingServer answers 200 with a Content-Length it never fulfils, then
+// drops the connection, optionally with a TCP reset.
+func truncatingServer(t *testing.T, reset bool) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		conn, buffer, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		_, _ = buffer.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 4096\r\nETag: \"partial\"\r\n\r\npartial")
+		_ = buffer.Flush()
+		if tcp, ok := conn.(*net.TCPConn); ok && reset {
+			_ = tcp.SetLinger(0)
+		}
+		_ = conn.Close()
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestTruncatedResponseBodyNeverExposesServerAddress(t *testing.T) {
+	for _, reset := range []bool{false, true} {
+		server := truncatingServer(t, reset)
+		t.Run("reset="+strconv.FormatBool(reset), func(t *testing.T) {
+			setTestHome(t, t.TempDir())
+			cfg := &CloudConfig{Server: server.URL, Token: "TRUNCATED_TOKEN_CANARY"} //nolint:gosec // test-only fake credential canary
+			_, pullErr := Pull(cfg)
+			_, expectedErr := PullExpected(cfg, "identity")
+			for name, err := range map[string]error{"Pull": pullErr, "PullExpected": expectedErr} {
+				t.Run(name, func(t *testing.T) {
+					assertNoAddress(t, err, server.URL)
+					var transport *TransportError
+					if !errors.As(err, &transport) {
+						t.Fatalf("error %T is not a TransportError", err)
+					}
+				})
+			}
+		})
+	}
+}

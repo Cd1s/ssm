@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -79,6 +80,7 @@ func TestSyncFailureCauseClassifiesTypedErrors(t *testing.T) {
 		{name: "hostname mismatch", err: x509.HostnameError{Host: "sync.invalid"}, want: SyncCauseTLS},
 		{name: "expired certificate", err: x509.CertificateInvalidError{Reason: x509.Expired}, want: SyncCauseTLS},
 		{name: "plain http on tls port", err: tls.RecordHeaderError{Msg: "first record does not look like a TLS handshake"}, want: SyncCauseTLS},
+		{name: "truncated response body", err: &synctransaction.TransportError{Err: io.ErrUnexpectedEOF}, want: SyncCauseNetwork},
 		{name: "local failure", err: errors.New("disk full"), want: SyncCauseUnknown},
 	}
 	for _, test := range tests {
