@@ -131,11 +131,9 @@ func runSSHCTLParsed(args []string) {
 		unlock()
 		runPutArgs(args[1:])
 	case "get":
-		if len(args) != 4 {
-			sshctlUsageExit()
-		}
+		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
 		unlock()
-		runGet(args[1], args[2], args[3])
+		runGetArgs(args[1:])
 	case "redirect", "alias-link":
 		machineJSON = machineJSON || commandHasJSONFlag(true, args[0], args[1:])
 		unlock()
@@ -453,8 +451,8 @@ func sshctlUsage() {
   sshctl map host1,host2 --scripts s1.sh,s2.sh   # host×script jobs in parallel
   sshctl map host --plan -j 4 'uname -s'
 
-  sshctl put <alias> <local> <remote> [--resume=v1] [--sha256] [--timeout 2m] [--json]
-  sshctl get <alias> <remote> <local>
+  sshctl put <alias> <local> <remote> [--resume=v1] [--sha256] [--timeout 2m] [--dir-mode 0755] [--json]
+  sshctl get <alias> <remote> <local> [--sha256] [--timeout 2m] [--json]
   sshctl redirect list|set <old> <new>|rm <old>
   # Remote argv boundary: after the alias, "--argv", "--", or the first non-option
   # word starts the remote command; everything after it (-h, --help, --json, ...)

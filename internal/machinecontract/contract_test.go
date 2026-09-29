@@ -515,7 +515,7 @@ func TestMachineContractMatrix(t *testing.T) {
 			name: "transfer arguments", kind: TransferArgumentsInvalid,
 			details: Details{Message: "bad transfer option"},
 			code:    "invalid_arguments", stage: "validate",
-			hint: "use sshctl put <alias> <local> <remote> [--resume=v1] [--sha256] [--timeout <duration>] [--json]", exit: 2,
+			hint: "use sshctl put <alias> <local> <remote> [--resume=v1] [--sha256] [--timeout <duration>] [--dir-mode <octal>] [--json]", exit: 2,
 		},
 		{
 			name: "map targets", kind: MapNoTargets,
@@ -836,7 +836,7 @@ func TestMachineContractMatrix(t *testing.T) {
 			name: "directory options", kind: TransferDirectoryOptionsUnsupported,
 			details: Details{Message: "unsupported options"},
 			code:    "unsupported_transfer_option", stage: "validate",
-			hint: "SHA-256, timeout, and resume v1 options support regular-file put only", exit: 1,
+			hint: "SHA-256 and resume v1 options support regular files only; directory put also does not support timeout", exit: 1,
 		},
 		{
 			name: "download remote read", kind: TransferDownloadRemoteRead,
@@ -861,6 +861,36 @@ func TestMachineContractMatrix(t *testing.T) {
 			details: Details{Message: "publish and restore failed"},
 			code:    "publish_failed", stage: "publish",
 			hint: "automatic restore failed; recover the prior directory from the retained backup path reported in the error", exit: 1,
+		},
+		{
+			name: "download integrity mismatch", kind: TransferDownloadIntegrityMismatch,
+			details: Details{Message: "digest differs"},
+			code:    "integrity_failed", stage: "integrity",
+			hint: "downloaded bytes differ from the remote SHA-256; the final local path was not replaced", exit: 1,
+		},
+		{
+			name: "remote extract", kind: TransferRemoteExtractFailed,
+			details: Details{Message: "tar: Cannot open: Permission denied"},
+			code:    "remote_write_failed", stage: "remote_extract",
+			hint: "remote tar extraction failed and the destination may contain partially extracted files; fix the remote error (permissions, space, target type) and retry", exit: 1,
+		},
+		{
+			name: "dir mode invalid", kind: TransferDirModeInvalid,
+			details: Details{Message: "bad mode"},
+			code:    "invalid_arguments", stage: "validate",
+			hint: "--dir-mode must be an octal permission such as 0755 (at most 0777)", exit: 2,
+		},
+		{
+			name: "integrity tool unavailable", kind: IntegrityToolUnavailable,
+			details: Details{Message: "no digest tool"},
+			code:    "integrity_tool_unavailable", stage: "capability",
+			hint: "the remote host has none of sha256sum, shasum, or openssl; retry without --sha256 or install one of them", exit: 1,
+		},
+		{
+			name: "get arguments invalid", kind: GetArgumentsInvalid,
+			details: Details{Message: "bad get"},
+			code:    "invalid_arguments", stage: "validate",
+			hint: "use sshctl get <alias> <remote> <local> [--sha256] [--timeout <duration>] [--json]", exit: 2,
 		},
 	}
 

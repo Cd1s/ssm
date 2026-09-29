@@ -1935,7 +1935,7 @@ func TestCompiledSuccessfulTransferDiagnosticsRemainByteExact(t *testing.T) {
 	}
 }
 
-func TestCompiledSuccessfulDirectoryFallbackSuppressesFailedTarDiagnostics(t *testing.T) {
+func TestCompiledSuccessfulDirectoryFallbackWithoutLocalTarIsSilent(t *testing.T) {
 	const (
 		alias    = "fallback-diagnostics"
 		password = "FALLBACK_DIAGNOSTICS_PASSWORD_CANARY" //nolint:gosec // test-only fake credential canary
@@ -1955,9 +1955,10 @@ func TestCompiledSuccessfulDirectoryFallbackSuppressesFailedTarDiagnostics(t *te
 		t.Fatalf("write fallback source: %v", err)
 	}
 	remote := filepath.Join(t.TempDir(), "fallback-destination")
+	// Only a missing local tar selects the per-file fallback (a failing tar is
+	// reported, see TestCompiledDirectoryPutLocalTarFailureIsNotMaskedByFallback).
 	result := cli.RunWithEnv(t, "sshctl", nil, map[string]string{
-		"PATH":                cli.TarFailureHelperDir(t),
-		"SSM_TEST_TAR_HELPER": "1",
+		"PATH": t.TempDir(),
 	}, "--offline", "put", alias, local, remote)
 	wantStderr := ""
 	if result.ProcessExit != 0 || result.Stdout != "" || result.Stderr != wantStderr {

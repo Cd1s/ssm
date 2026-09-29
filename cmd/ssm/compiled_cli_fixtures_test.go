@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -274,6 +275,19 @@ type compiledSSHFixtureOptions struct {
 	// RecordCommand, when set, receives every exec request command line the
 	// fixture serves, so tests can assert the exact remote argv.
 	RecordCommand func(string)
+
+	// RemoteDigestTools lists the SHA-256 tools the fake remote host has
+	// (sha256sum, shasum, openssl). Nil means all; an empty non-nil slice means
+	// none, so put/get --sha256 receive the tool-missing marker.
+	RemoteDigestTools []string
+	// DownloadDigestOverride replaces the digest printed for a remote digest
+	// probe, to exercise get --sha256 mismatches.
+	DownloadDigestOverride string
+	// UploadTarFailStderr makes the remote tar extractor fail immediately with
+	// this message, without reading stdin.
+	UploadTarFailStderr string
+
+	record func(string)
 }
 
 type compiledSSHFixture struct {
@@ -284,6 +298,9 @@ type compiledSSHFixture struct {
 
 	connections atomic.Int64
 	sessions    atomic.Int64
+
+	commandsMu sync.Mutex
+	commands   []string
 
 	serveDone chan struct{}
 	activeMu  sync.Mutex
@@ -352,9 +369,23 @@ func newCompiledSSHFixture(t *testing.T, options compiledSSHFixtureOptions) *com
 		serveDone: make(chan struct{}),
 		active:    map[net.Conn]struct{}{},
 	}
+	fixture.options.record = fixture.recordCommand
 	t.Cleanup(func() { fixture.Close(t) })
 	go fixture.serve(serverConfig)
 	return fixture
+}
+
+func (f *compiledSSHFixture) recordCommand(command string) {
+	f.commandsMu.Lock()
+	defer f.commandsMu.Unlock()
+	f.commands = append(f.commands, command)
+}
+
+// Commands returns the exec commands received so far.
+func (f *compiledSSHFixture) Commands() []string {
+	f.commandsMu.Lock()
+	defer f.commandsMu.Unlock()
+	return append([]string(nil), f.commands...)
 }
 
 func (f *compiledSSHFixture) Connection(alias, password string) config.Connection {
@@ -475,7 +506,13 @@ func serveCompiledSSHSession(channel gossh.Channel, requests <-chan *gossh.Reque
 		if options.RecordCommand != nil {
 			options.RecordCommand(payload.Command)
 		}
+		if options.record != nil {
+			options.record(payload.Command)
+		}
 		status, configured := executeConfiguredCompiledSSHRun(channel, channel.Stderr(), payload.Command, options)
+		if !configured {
+			status, configured = executeCompiledSSHTransferFault(channel, channel.Stderr(), payload.Command, options)
+		}
 		if !configured {
 			status = executeCompiledSSHCommand(channel, channel.Stderr(), payload.Command)
 		}
@@ -531,18 +568,21 @@ func executeCompiledSSHCommand(stdinStdout io.ReadWriter, stderr io.Writer, comm
 		_, _ = fmt.Fprintf(stdinStdout, "SSM_RESUME 0 %x\n", emptyDigest)
 		return 0
 	case strings.Contains(command, "cat >>") && strings.Contains(command, "printf 'SSM_TRANSFER %s %s\\n'"):
+		applyCompiledSSHMkdir(command)
 		paths := compiledShellQuotedWords(command[strings.LastIndex(command, "mv -f -- "):])
 		if len(paths) < 2 {
 			return compiledSSHFixtureCommandError(stderr)
 		}
 		return receiveCompiledSSHFile(stdinStdout, stderr, paths[1])
 	case strings.Contains(command, "cat > \"$tmp\"") && strings.Contains(command, "printf 'SSM_TRANSFER %s %s\\n'"):
+		applyCompiledSSHMkdir(command)
 		paths := compiledShellQuotedWords(command[strings.LastIndex(command, "mv -f -- "):])
 		if len(paths) < 1 {
 			return compiledSSHFixtureCommandError(stderr)
 		}
 		return receiveCompiledSSHFile(stdinStdout, stderr, paths[0])
 	case strings.Contains(command, "tar -C ") && strings.Contains(command, " -xf -"):
+		applyCompiledSSHMkdir(command)
 		path, ok := compiledShellQuotedWordAfter(command, "tar -C ")
 		if !ok {
 			return compiledSSHFixtureCommandError(stderr)
@@ -554,6 +594,22 @@ func executeCompiledSSHCommand(stdinStdout io.ReadWriter, stderr io.Writer, comm
 			return compiledSSHFixtureCommandError(stderr)
 		}
 		return sendCompiledSSHTar(stdinStdout, stderr, path)
+	case strings.Contains(command, "ssm_sha256 ") && strings.Contains(command, "[ -f "):
+		path, ok := compiledShellQuotedWordAfter(command[strings.LastIndex(command, "ssm_sha256 "):], "ssm_sha256 ")
+		if !ok {
+			return compiledSSHFixtureCommandError(stderr)
+		}
+		data, err := os.ReadFile(path) //nolint:gosec // path is parsed from a compiled CLI command using only test-owned remote fixture paths
+		if err != nil {
+			_, _ = io.WriteString(stderr, "compiled fixture remote file unavailable\n")
+			return 1
+		}
+		sum := sha256.Sum256(data)
+		_, _ = fmt.Fprintf(stdinStdout, "%x\n", sum)
+		return 0
+	case strings.HasPrefix(command, "mkdir -p ") || strings.HasPrefix(command, "(umask "):
+		applyCompiledSSHMkdir(command)
+		return 0
 	case strings.HasPrefix(command, "if [ -d "):
 		path, ok := compiledShellQuotedWordAfter(command, "if [ -d ")
 		if !ok {
@@ -905,4 +961,64 @@ func compiledUpdateAssetName() string {
 		name += ".exe"
 	}
 	return name
+}
+
+var compiledMkdirPattern = regexp.MustCompile(`\(umask ([0-7]+); mkdir -p '([^']*)'\)`)
+
+// applyCompiledSSHMkdir emulates the umask-wrapped `mkdir -p` that put emits,
+// so tests can observe the mode the CLI requested for created directories.
+func applyCompiledSSHMkdir(command string) {
+	match := compiledMkdirPattern.FindStringSubmatch(command)
+	if match == nil {
+		if word, ok := compiledShellQuotedWordAfter(command, "mkdir -p "); ok && !strings.Contains(command, "(umask ") {
+			_ = os.MkdirAll(word, 0o755) //nolint:gosec // emulates remote default-umask mkdir beneath a test-owned root
+		}
+		return
+	}
+	umask, err := strconv.ParseUint(match[1], 8, 32)
+	if err != nil {
+		return
+	}
+	mode := os.FileMode(0o777) &^ os.FileMode(umask&0o777)
+	var missing []string
+	for path := filepath.Clean(match[2]); ; path = filepath.Dir(path) {
+		if _, statErr := os.Stat(path); statErr == nil {
+			break
+		}
+		missing = append(missing, path)
+		if filepath.Dir(path) == path {
+			break
+		}
+	}
+	for index := len(missing) - 1; index >= 0; index-- {
+		created := mode
+		if index > 0 {
+			created |= 0o300 // mkdir -p adds u+wx to intermediate directories
+		}
+		if os.Mkdir(missing[index], created) == nil { //nolint:gosec // emulates remote mkdir beneath a test-owned root
+			_ = os.Chmod(missing[index], created) //nolint:gosec // defeats the test process umask to record the requested mode
+		}
+	}
+}
+
+func compiledRemoteHasDigestTool(options compiledSSHFixtureOptions) bool {
+	return options.RemoteDigestTools == nil || len(options.RemoteDigestTools) > 0
+}
+
+// executeCompiledSSHTransferFault emulates remote conditions selected through
+// fixture options: a missing SHA-256 tool, a forged download digest, and a
+// remote tar extractor that fails without reading its input.
+func executeCompiledSSHTransferFault(channel io.Writer, stderr io.Writer, command string, options compiledSSHFixtureOptions) (uint32, bool) {
+	switch {
+	case strings.Contains(command, "ssm_sha256_tool >/dev/null") && !compiledRemoteHasDigestTool(options):
+		_, _ = io.WriteString(channel, "SSM_INTEGRITY_TOOL_MISSING\n")
+		return 69, true
+	case strings.Contains(command, "ssm_sha256 ") && strings.Contains(command, "[ -f ") && options.DownloadDigestOverride != "":
+		_, _ = io.WriteString(channel, options.DownloadDigestOverride+"\n")
+		return 0, true
+	case options.UploadTarFailStderr != "" && strings.Contains(command, "tar -C ") && strings.Contains(command, " -xf -"):
+		_, _ = io.WriteString(stderr, options.UploadTarFailStderr+"\n")
+		return 2, true
+	}
+	return 0, false
 }

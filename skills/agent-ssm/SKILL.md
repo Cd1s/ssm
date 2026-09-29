@@ -72,8 +72,8 @@ not prove SSH transport failure.
 - Shell syntax or a generated script: use `script_file` with optional `script_args` and `shell`; use preflight where supported.
 - Secrets: use `secret_files` or credential file options. Values are paths, never secret contents.
 - Host changes: use typed `host.add|host.update|host.upsert|host.remove`; verify first, then publish only a changed result's exact `transaction_id`.
-- Regular-file upload: use typed `put`; add `resume:"v1"` only when requested and `sha256:true` when integrity verification is required.
-- Download: v1 uses direct `sshctl get`; v2 may use direct get or request schema v1 `op:"get"`.
+- Regular-file upload: use typed `put`; add `resume:"v1"` only when requested and `sha256:true` when integrity verification is required. Auto-created parent directories default to 0755; use `dir_mode` (or `--dir-mode`) to override.
+- Download: v1 uses direct `sshctl get`; v2 may use direct get or request schema v1 `op:"get"` (`sha256`, `timeout` allowed; no `resume`). Direct get accepts `--json`, `--timeout`, `--sha256` in any position.
 - Fleet work: use `sshctl map` with explicit argv or scripts and inspect every result.
 - Large or long-running output (byte pipes, logs, archives): use human-mode `sshctl run <exact-alias> --argv ...`, which streams without a size limit and exits with the remote exit status; `--json` holds the whole output in memory. Streamed stdout is byte-exact; streamed stderr masks explicit `--secret` values as `***`; a local SIGINT/SIGTERM is forwarded to the remote command and exits with `error:interrupted`.
 - If a field or flag is uncertain, run the relevant command help or read the selected schema. Never guess.
@@ -142,6 +142,15 @@ get omits `bytes_received`. File get reports `bytes_received`,
 `atomic:true`, `integrity:not_checked`, and `resume:unsupported`. Do not infer
 guarantees from `action` or an omitted field. The v1 branch must not assume
 these v2 fields or request `op:get`.
+
+`--sha256` needs `sha256sum`, `shasum`, or `openssl` on the remote host; when
+none exists the error is `integrity_tool_unavailable` (stage `capability`), so
+retry without `--sha256` rather than treating it as a permission failure. A
+directory put whose remote tar fails reports `stage:remote_extract` with the
+remote message; the destination may be partially written and no per-file retry
+happens (the per-file fallback runs only when local `tar` is missing).
+Directory get rejects `--sha256` and never hangs when the local extractor
+exits early.
 
 Resume is regular-file-only and must be explicitly enabled with `--resume=v1`.
 Incompatible, corrupt, or ambiguous state returns a classified partial-state

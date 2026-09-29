@@ -328,13 +328,15 @@ Cloud (optional):
 		unlock()
 		runPutArgs(args[1:])
 	case "get":
-		if len(args) != 4 {
+		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
+		getOpts, getErr := parseGetArgs(args[1:])
+		if getErr != nil {
 			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{
 				Message: "invalid get arguments", Tool: "legacy_usage", Script: "get",
 			}))
 		}
 		unlock()
-		runGet(args[1], args[2], args[3])
+		runGet(getOpts)
 	case "import-json":
 		machineJSON = machineJSON || commandHasJSONFlag(false, args[0], args[1:])
 		unlock()

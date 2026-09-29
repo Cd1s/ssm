@@ -19,7 +19,7 @@ func TestUploadCommandCleansPartialAndPreservesDestination(t *testing.T) {
 	if err := os.WriteFile(destination, []byte("original"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("sh", "-c", uploadCommandWithIntegrity(destination, 0o600, 100, "")) //nolint:gosec // test executes a command generated from a test-owned path
+	cmd := exec.Command("sh", "-c", uploadCommandWithIntegrity(destination, 0o600, 100, "", DefaultUploadDirMode)) //nolint:gosec // test executes a command generated from a test-owned path
 	cmd.Stdin = strings.NewReader("partial")
 	if output, err := cmd.CombinedOutput(); err == nil {
 		t.Fatalf("partial upload succeeded: %s", output)
@@ -42,7 +42,7 @@ func TestUploadCommandRejectsChecksumMismatchAndCleansTemp(t *testing.T) {
 	destination := filepath.Join(dir, "target")
 	payload := []byte("complete payload")
 	wrong := sha256.Sum256([]byte("different payload"))
-	cmd := exec.Command("sh", "-c", uploadCommandWithIntegrity(destination, 0o600, int64(len(payload)), hex.EncodeToString(wrong[:]))) //nolint:gosec // test executes a command generated from a test-owned path
+	cmd := exec.Command("sh", "-c", uploadCommandWithIntegrity(destination, 0o600, int64(len(payload)), hex.EncodeToString(wrong[:]), DefaultUploadDirMode)) //nolint:gosec // test executes a command generated from a test-owned path
 	cmd.Stdin = bytes.NewReader(payload)
 	output, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "SSM_INTEGRITY_MISMATCH") {

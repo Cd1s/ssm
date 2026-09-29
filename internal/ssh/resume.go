@@ -127,7 +127,7 @@ func uploadFileResumable(c config.Connection, v *config.Vault, localPath, remote
 		marker := stdout.String()
 		switch {
 		case strings.Contains(marker, "SSM_RESUME_ERROR tool_missing"):
-			return result, transferError(machinecontract.ResumeVerificationToolMissing, written, errors.New("remote sha256sum is unavailable"))
+			return result, transferError(machinecontract.ResumeVerificationToolMissing, written, errors.New(remoteSHA256UnavailableMessage))
 		case strings.Contains(marker, "SSM_RESUME_ERROR state_changed"):
 			return result, transferError(machinecontract.ResumeStateChanged, written, errors.New("remote partial state changed"))
 		case strings.Contains(marker, "SSM_RESUME_ERROR digest_mismatch"):
@@ -177,13 +177,13 @@ func probeResumeState(client *gossh.Client, partial, metadata, cleanupPattern st
 	}
 	metaTemp := metadata + ".new.$$"
 	command := fmt.Sprintf(
-		"command -v sha256sum >/dev/null 2>&1 || { echo 'SSM_RESUME_ERROR tool_missing'; exit 69; }; "+
+		remoteSHA256Helpers+"ssm_sha256_tool >/dev/null || { echo 'SSM_RESUME_ERROR tool_missing'; exit 69; }; "+
 			"umask 077; mkdir -p %s || exit 73; find %s -maxdepth 1 -type f -name %s -mtime +7 -delete 2>/dev/null || true; "+
 			"if [ -e %s ] || [ -e %s ]; then "+
 			"[ -f %s ] && [ -f %s ] || { echo 'SSM_RESUME_ERROR incompatible'; exit 65; }; "+
 			"set -- $(cat -- %s); [ \"$#\" = 3 ] && [ \"$1\" = v1 ] && [ \"$2\" = %d ] && [ \"$3\" = %s ] || { echo 'SSM_RESUME_ERROR incompatible'; exit 65; }; "+
-			"offset=$(wc -c < %s | tr -d ' ') || exit 74; [ \"$offset\" -le %d ] || { echo 'SSM_RESUME_ERROR incompatible'; exit 65; }; prefix_sha=$(sha256sum -- %s | awk '{print $1}') || exit 74; "+
-			"else : > %s && chmod 0600 %s || exit 73; printf 'v1 %%s %%s\\n' %d %s > %s && chmod 0600 %s && mv -f -- %s %s || exit 73; offset=0; prefix_sha=$(sha256sum -- %s | awk '{print $1}') || exit 74; fi; "+
+			"offset=$(wc -c < %s | tr -d ' ') || exit 74; [ \"$offset\" -le %d ] || { echo 'SSM_RESUME_ERROR incompatible'; exit 65; }; prefix_sha=$(ssm_sha256 %s) || exit 74; "+
+			"else : > %s && chmod 0600 %s || exit 73; printf 'v1 %%s %%s\\n' %d %s > %s && chmod 0600 %s && mv -f -- %s %s || exit 73; offset=0; prefix_sha=$(ssm_sha256 %s) || exit 74; fi; "+
 			"printf 'SSM_RESUME %%s %%s\\n' \"$offset\" \"$prefix_sha\"",
 		ShellQuote(parent), ShellQuote(parent), ShellQuote(cleanupPattern),
 		ShellQuote(partial), ShellQuote(metadata), ShellQuote(partial), ShellQuote(metadata), ShellQuote(metadata), size, ShellQuote(digest),
@@ -196,7 +196,7 @@ func probeResumeState(client *gossh.Client, partial, metadata, cleanupPattern st
 		marker := stdout.String()
 		switch {
 		case strings.Contains(marker, "SSM_RESUME_ERROR tool_missing"):
-			return resumeState{}, transferError(machinecontract.ResumeVerificationToolMissing, 0, errors.New("remote sha256sum is unavailable"))
+			return resumeState{}, transferError(machinecontract.ResumeVerificationToolMissing, 0, errors.New(remoteSHA256UnavailableMessage))
 		case strings.Contains(marker, "SSM_RESUME_ERROR incompatible"):
 			return resumeState{}, transferError(machinecontract.ResumeStateIncompatible, 0, errors.New("incompatible remote partial state"))
 		default:
@@ -231,12 +231,12 @@ func localPrefixDigest(f *os.File, size int64) (string, error) {
 
 func resumeAppendCommand(remotePath, partial, metadata string, mode os.FileMode, size int64, digest string, offset int64, prefixDigest string) string {
 	return fmt.Sprintf(
-		"command -v sha256sum >/dev/null 2>&1 || { echo 'SSM_RESUME_ERROR tool_missing'; exit 69; }; "+
+		remoteSHA256Helpers+"ssm_sha256_tool >/dev/null || { echo 'SSM_RESUME_ERROR tool_missing'; exit 69; }; "+
 			"[ -f %s ] && [ -f %s ] || { echo 'SSM_RESUME_ERROR state_changed'; exit 65; }; "+
 			"set -- $(cat -- %s); [ \"$#\" = 3 ] && [ \"$1\" = v1 ] && [ \"$2\" = %d ] && [ \"$3\" = %s ] || { echo 'SSM_RESUME_ERROR state_changed'; exit 65; }; "+
 			"actual_size=$(wc -c < %s | tr -d ' ') || exit 74; [ \"$actual_size\" = %d ] || { echo 'SSM_RESUME_ERROR state_changed'; exit 65; }; "+
-			"prefix_sha=$(sha256sum -- %s | awk '{print $1}') || exit 74; [ \"$prefix_sha\" = %s ] || { echo 'SSM_RESUME_ERROR state_changed'; exit 65; }; "+
-			"cat >> %s || exit 74; chmod %04o %s || exit 73; actual_size=$(wc -c < %s | tr -d ' ') || exit 74; actual_sha=$(sha256sum -- %s | awk '{print $1}') || exit 74; "+
+			"prefix_sha=$(ssm_sha256 %s) || exit 74; [ \"$prefix_sha\" = %s ] || { echo 'SSM_RESUME_ERROR state_changed'; exit 65; }; "+
+			"cat >> %s || exit 74; chmod %04o %s || exit 73; actual_size=$(wc -c < %s | tr -d ' ') || exit 74; actual_sha=$(ssm_sha256 %s) || exit 74; "+
 			"[ \"$actual_size\" = %d ] && [ \"$actual_sha\" = %s ] || { echo 'SSM_RESUME_ERROR digest_mismatch'; exit 65; }; "+
 			"mv -f -- %s %s || { echo 'SSM_RESUME_ERROR publish_failed'; exit 73; }; rm -f -- %s; printf 'SSM_TRANSFER %%s %%s\\n' \"$actual_size\" \"$actual_sha\"",
 		ShellQuote(partial), ShellQuote(metadata), ShellQuote(metadata), size, ShellQuote(digest),

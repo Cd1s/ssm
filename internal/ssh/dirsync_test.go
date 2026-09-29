@@ -1,10 +1,15 @@
 package ssh
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"ssm/internal/machinecontract"
 )
 
 func TestValidateUploadDirWalkRejectsEmptyDirectory(t *testing.T) {
@@ -45,5 +50,87 @@ func TestLocalTreeFiles(t *testing.T) {
 func TestRemoteParentDirStillWorks(t *testing.T) {
 	if RemoteParentDir("/a/b/c") != "/a/b" {
 		t.Fatal(RemoteParentDir("/a/b/c"))
+	}
+}
+
+func TestSuperviseDirectoryDownloadLocalFailureReleasesRemote(t *testing.T) {
+	release := make(chan struct{})
+	var once sync.Once
+	localErr := errors.New("local disk full")
+	done := make(chan struct{})
+	var remoteErr, gotLocal error
+	var first downloadEnd
+	go func() {
+		defer close(done)
+		first, remoteErr, gotLocal = superviseDirectoryDownload(
+			func() error { <-release; return errors.New("channel closed") },
+			func() error { return localErr },
+			func() { once.Do(func() { close(release) }) },
+			func() { t.Error("local end must not be killed when it failed first") },
+		)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("download supervision hung after the local end failed")
+	}
+	if first != downloadEndLocal || !errors.Is(gotLocal, localErr) || remoteErr == nil {
+		t.Fatalf("first=%v local=%v remote=%v", first, gotLocal, remoteErr)
+	}
+}
+
+func TestSuperviseDirectoryDownloadRemoteFailureKillsLocal(t *testing.T) {
+	kill := make(chan struct{})
+	var once sync.Once
+	remoteFailure := errors.New("remote tar failed")
+	done := make(chan struct{})
+	var first downloadEnd
+	var gotRemote error
+	go func() {
+		defer close(done)
+		first, gotRemote, _ = superviseDirectoryDownload(
+			func() error { return remoteFailure },
+			func() error { <-kill; return errors.New("killed") },
+			func() { t.Error("remote end must not be closed when it failed first") },
+			func() { once.Do(func() { close(kill) }) },
+		)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("download supervision hung after the remote end failed")
+	}
+	if first != downloadEndRemote || !errors.Is(gotRemote, remoteFailure) {
+		t.Fatalf("first=%v remote=%v", first, gotRemote)
+	}
+}
+
+func TestSuperviseDirectoryDownloadSuccess(t *testing.T) {
+	first, remoteErr, localErr := superviseDirectoryDownload(
+		func() error { return nil }, func() error { return nil },
+		func() { t.Error("unexpected close") }, func() { t.Error("unexpected kill") },
+	)
+	if remoteErr != nil || localErr != nil || first != downloadEndNone {
+		t.Fatalf("remote=%v local=%v first=%v", remoteErr, localErr, first)
+	}
+}
+
+func TestRemoteDirCreateCommandModes(t *testing.T) {
+	if got := remoteDirCreateCommand("/srv/x y", 0); got != "mkdir -p '/srv/x y'" {
+		t.Fatalf("default command = %q", got)
+	}
+	if got := remoteDirCreateCommand("/srv/x", 0o750); got != "(umask 027; mkdir -p '/srv/x')" {
+		t.Fatalf("dir-mode command = %q", got)
+	}
+}
+
+func TestRemoteExtractErrorUsesRemoteMessageAndContractStage(t *testing.T) {
+	err := remoteExtractError("tar: ./a: Cannot open: Permission denied", errors.New("Process exited with status 2"))
+	failure, ok := machinecontract.FailureFromError(err)
+	if !ok || failure.Stage != "remote_extract" || failure.Error != "remote_write_failed" {
+		t.Fatalf("failure = %+v ok=%v", failure, ok)
+	}
+	if !strings.Contains(err.Error(), "Permission denied") {
+		t.Fatalf("message = %q", err)
 	}
 }
