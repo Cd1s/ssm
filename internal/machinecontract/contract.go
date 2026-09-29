@@ -1472,13 +1472,14 @@ func ClassifyDownload(err error, context SSHContext) Failure {
 	classifyContext.Stage = ""
 	classifyContext.ExecPhase = true
 	failure := ClassifySSH(err, classifyContext)
-	if carried, ok := FailureFromError(err); ok && carried.Error == "transfer_timeout" {
+	carried, hasCarried := FailureFromError(err)
+	if hasCarried && carried.Error == "transfer_timeout" {
 		carried.Alias = RedactString(context.Alias)
 		carried.humanAlias = RedactString(context.ResolvedAlias)
 		return carried
 	}
 	if policyOwnsStage(failure.Error) {
-		if carried, ok := FailureFromError(err); ok && !carried.transportWrapper {
+		if hasCarried && !carried.transportWrapper {
 			carried.Alias = RedactString(context.Alias)
 			carried.humanAlias = RedactString(context.ResolvedAlias)
 			return carried
@@ -1489,7 +1490,7 @@ func ClassifyDownload(err error, context SSHContext) Failure {
 	}
 	human := failure
 	human.Stage = ""
-	if carried, ok := FailureFromError(err); ok && isDownloadOutcomeFailure(carried) {
+	if hasCarried && isDownloadOutcomeFailure(carried) {
 		carried.Exit = ExitForError(err)
 		carried.processExit = carried.Exit
 		carried.Alias = RedactString(context.Alias)

@@ -145,12 +145,12 @@ func UploadFileWithOptions(c config.Connection, v *config.Vault, localPath, remo
 	result.BytesSent = written
 	if copyErr != nil {
 		_ = stdin.Close()
-		return result, collectRemoteFirst(session, &result, written, timedOut.Load(), &stdout, copyErr, machinecontract.TransferRemoteWriteFailed)
+		return result, collectRemoteFirst(session, remoteExitGrace, &result, written, &timedOut, &stdout, copyErr, machinecontract.TransferRemoteWriteFailed)
 	}
 	if err := stdin.Close(); err != nil {
 		// The remote may already have exited (for example because it has no
 		// SHA-256 tool), so Close can fail after every byte was written.
-		return result, collectRemoteFirst(session, &result, written, timedOut.Load(), &stdout, err, machinecontract.TransferRemoteCloseFailed)
+		return result, collectRemoteFirst(session, remoteExitGrace, &result, written, &timedOut, &stdout, err, machinecontract.TransferRemoteCloseFailed)
 	}
 	if err := session.Wait(); err != nil {
 		if timedOut.Load() {
@@ -200,10 +200,11 @@ func UploadFileWithOptions(c config.Connection, v *config.Vault, localPath, remo
 // under the writer, so its exit status and marker output are the first-hand
 // reason and win over the local write or close error. Only when the remote
 // reported nothing does the generic fallback kind apply.
-func collectRemoteFirst(session sessionWaiter, result *TransferResult, written int64, timedOut bool, stdout *bytes.Buffer, cause error, fallback machinecontract.Kind) *TransferError {
-	waitErr := waitSessionBounded(session, remoteExitGrace)
+func collectRemoteFirst(session sessionWaiter, grace time.Duration, result *TransferResult, written int64, timedOut *atomic.Bool, stdout *bytes.Buffer, cause error, fallback machinecontract.Kind) *TransferError {
+	waitErr := waitSessionBounded(session, grace)
 	_ = session.Close()
-	if timedOut {
+	// Read after the wait: the --timeout timer may fire during the grace.
+	if timedOut.Load() {
 		return transferError(machinecontract.TransferTimedOut, written, cause)
 	}
 	if waitErr != nil {

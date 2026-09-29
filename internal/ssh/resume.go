@@ -110,10 +110,10 @@ func uploadFileResumable(c config.Connection, v *config.Vault, localPath, remote
 	result.BytesSent = written
 	if copyErr != nil {
 		_ = stdin.Close()
-		return result, collectResumeRemoteFirst(session, &result, written, timedOut.Load(), &stdout, copyErr, machinecontract.ResumeRemoteWriteFailed)
+		return result, collectResumeRemoteFirst(session, remoteExitGrace, &result, written, &timedOut, &stdout, copyErr, machinecontract.ResumeRemoteWriteFailed)
 	}
 	if err := stdin.Close(); err != nil {
-		return result, collectResumeRemoteFirst(session, &result, written, timedOut.Load(), &stdout, err, machinecontract.ResumeRetryFailed)
+		return result, collectResumeRemoteFirst(session, remoteExitGrace, &result, written, &timedOut, &stdout, err, machinecontract.ResumeRetryFailed)
 	}
 	if err := session.Wait(); err != nil {
 		if timedOut.Load() {
@@ -152,10 +152,11 @@ func uploadFileResumable(c config.Connection, v *config.Vault, localPath, remote
 
 // collectResumeRemoteFirst mirrors collectRemoteFirst for the resume script:
 // when the remote exited first, its marker output is the first-hand reason.
-func collectResumeRemoteFirst(session sessionWaiter, result *TransferResult, written int64, timedOut bool, stdout *bytes.Buffer, cause error, fallback machinecontract.Kind) *TransferError {
-	waitErr := waitSessionBounded(session, remoteExitGrace)
+func collectResumeRemoteFirst(session sessionWaiter, grace time.Duration, result *TransferResult, written int64, timedOut *atomic.Bool, stdout *bytes.Buffer, cause error, fallback machinecontract.Kind) *TransferError {
+	waitErr := waitSessionBounded(session, grace)
 	_ = session.Close()
-	if timedOut {
+	// Read after the wait: the --timeout timer may fire during the grace.
+	if timedOut.Load() {
 		return transferError(machinecontract.ResumeTimedOut, written, cause)
 	}
 	if waitErr != nil {
