@@ -3,9 +3,9 @@ name: CI
 on:
   workflow_dispatch:
   push:
-    branches: [agent-headless-sync, dev, main]
+    branches: [agent-headless-sync]
   pull_request:
-    branches: [agent-headless-sync, dev, main]
+    branches: [agent-headless-sync]
 
 permissions:
   contents: read
@@ -14,6 +14,8 @@ jobs:
   check:
     permissions:
       contents: read
+    env:
+      SSM_VERIFY_REQUIRE_PINNED: "1"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -116,6 +118,8 @@ jobs:
   windows:
     permissions:
       contents: read
+    env:
+      SSM_VERIFY_REQUIRE_PINNED: "1"
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7

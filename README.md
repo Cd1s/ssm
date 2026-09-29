@@ -197,6 +197,21 @@ ssm update --major --yes
 
 `--major --yes` 不会跳过 SHA-256、精确 tag、keyless provenance 或失败恢复检查；失败时保留旧可执行文件和恢复证据。详见[迁移指南](docs/migration-v1-to-v2.zh-CN.md)与[来源凭证运行手册](docs/update-provenance-runbook.zh-CN.md)。
 
+## 开发与验证
+
+日常开发直接运行 `go test ./...`，任何较新的 Go 都可以；宿主机不是固定工具链时，`cmd/verify` 里检查“宿主机就是固定版本”的子测试会显示 SKIP 并写明原因，而不是失败。设置 `SSM_VERIFY_REQUIRE_PINNED=1`（官方 CI 已设置）会强制执行这些检查。
+
+正式 gate 是 `go run ./cmd/verify ci`，需要精确的固定工具：Go 1.26.8 和 golangci-lint 2.11.4。缺少或版本不符时，verify 会在提示里给出获取命令：
+
+```bash
+# 固定 Go 工具链（由 Go 自动下载）
+GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
+
+# 固定 golangci-lint
+GOBIN=<dir> go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
+PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
+```
+
 ## 进阶 / 给 Agent 与自动化
 
 先读[官方 Agent Skill](skills/agent-ssm/SKILL.md)和[版本兼容矩阵](skills/agent-ssm/references/version-compatibility.md)。它们定义了 v1.4.3/v1.4.4 兼容分支，以及受支持的 v2.0.0 与当前 v2.0.2 共用的 v2 兼容分支各自可以使用的 schema 和字段。

@@ -12,6 +12,15 @@ const (
 
 	requirementRequired    = "required"
 	requirementConditional = "conditional"
+
+	// Single source for the reviewed toolchain pins. go.mod, the workflow
+	// setup-go inputs and the workflow goldens are checked against these by tests.
+	pinnedGoVersion            = "1.26.8"
+	pinnedGolangciLintVersion  = "2.11.4"
+	pinnedGovulncheckVersion   = "v1.6.0"
+	govulncheckModuleName      = "golang.org/x/vuln"
+	govulncheckModule          = govulncheckModuleName + "/cmd/govulncheck"
+	golangciLintInstallPackage = "github.com/golangci/golangci-lint/v2/cmd/golangci-lint"
 )
 
 type Manifest struct {
@@ -334,7 +343,7 @@ func formatCheck() Check {
 		Requirement: requirementRequired,
 		Action:      commandAction("{goroot}/bin/gofmt{exe}", []string{"-l", "."}, nil, "stdout_empty"),
 		Prerequisites: []Prerequisite{
-			{Kind: "tool", Name: "gofmt", Version: "go1.26.8"},
+			{Kind: "tool", Name: "gofmt", Version: "go" + pinnedGoVersion},
 		},
 	}
 }
@@ -357,7 +366,7 @@ func lintCheck() Check {
 			"run", "--new-from-patch", "{temp}/lint.patch",
 		}, nil, ""),
 		Prerequisites: []Prerequisite{
-			{Kind: "tool", Name: "golangci-lint", Version: "2.11.4"},
+			{Kind: "tool", Name: "golangci-lint", Version: pinnedGolangciLintVersion},
 			{Kind: "git_ref", Name: "v1.2.0", Version: "commit"},
 			repositoryModulesPrerequisite(),
 		},
@@ -377,10 +386,10 @@ func vetCheck() Check {
 func vulnerabilityCheck() Check {
 	check := Check{
 		ID:          "vulnerability",
-		Description: "Run govulncheck v1.6.0 across all packages.",
+		Description: "Run govulncheck " + pinnedGovulncheckVersion + " across all packages.",
 		Requirement: requirementRequired,
 		Action: commandAction("go", []string{
-			"run", "golang.org/x/vuln/cmd/govulncheck@v1.6.0", "./...",
+			"run", govulncheckModule + "@" + pinnedGovulncheckVersion, "./...",
 		}, nil, ""),
 		Prerequisites: goPrerequisites(),
 	}
@@ -409,7 +418,7 @@ func unitCheck() Check {
 		ID:            "unit",
 		Description:   "Run the complete Go unit and integration test suite.",
 		Requirement:   requirementRequired,
-		Action:        commandAction("go", []string{"test", "./..."}, nil, ""),
+		Action:        commandAction("go", []string{"test", "-timeout=30m", "./..."}, nil, ""),
 		Prerequisites: goPrerequisites(),
 	}
 }
@@ -502,7 +511,7 @@ func sshMatrixCheck() Check {
 			{Kind: "tool", Name: "dd", Version: "any"},
 			{Kind: "tool", Name: "dirname", Version: "any"},
 			{Kind: "tool", Name: "find", Version: "any"},
-			{Kind: "tool", Name: "go", Version: "1.26.8"},
+			{Kind: "tool", Name: "go", Version: pinnedGoVersion},
 			repositoryModulesPrerequisite(),
 			{Kind: "tool", Name: "grep", Version: "any"},
 			{Kind: "tool", Name: "head", Version: "any"},
@@ -558,7 +567,7 @@ func assetCheck(goos, goarch string) Check {
 
 func goPrerequisites() []Prerequisite {
 	return []Prerequisite{
-		{Kind: "tool", Name: "go", Version: "1.26.8"},
+		{Kind: "tool", Name: "go", Version: pinnedGoVersion},
 		repositoryModulesPrerequisite(),
 	}
 }

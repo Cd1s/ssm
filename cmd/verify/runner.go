@@ -793,10 +793,32 @@ func unavailablePrerequisites(
 			if state.detail != "" {
 				detail += " (" + state.detail + ")"
 			}
+			if hint := prerequisiteAcquisitionHint(prerequisite); hint != "" {
+				detail += "; to get it: " + hint
+			}
 			unavailable = append(unavailable, detail)
 		}
 	}
 	return unavailable
+}
+
+// prerequisiteAcquisitionHint returns a copyable command that obtains the exact
+// pinned tool. The version comes from the manifest prerequisite itself so the
+// hint cannot drift from the enforced pin.
+func prerequisiteAcquisitionHint(prerequisite Prerequisite) string {
+	if prerequisite.Kind != "tool" || prerequisite.Version == "" || prerequisite.Version == "any" {
+		return ""
+	}
+	switch prerequisite.Name {
+	case "go":
+		return "GOTOOLCHAIN=go" + prerequisite.Version + " go run ./cmd/verify <profile>"
+	case "gofmt":
+		return "GOTOOLCHAIN=" + prerequisite.Version + " go run ./cmd/verify <profile>"
+	case "golangci-lint":
+		return "GOBIN=<dir> go install " + golangciLintInstallPackage + "@v" + prerequisite.Version +
+			" && PATH=<dir>:$PATH go run ./cmd/verify <profile>"
+	}
+	return ""
 }
 
 func checkPrerequisite(
@@ -1104,7 +1126,7 @@ func govulncheckModuleCapability(
 	repoRoot string,
 	environment []string,
 ) prerequisiteState {
-	command := exec.Command("go", "mod", "download", "golang.org/x/vuln@v1.6.0") //nolint:gosec // fixed reviewed public module and version
+	command := exec.Command("go", "mod", "download", govulncheckModuleName+"@"+pinnedGovulncheckVersion) //nolint:gosec // fixed reviewed public module and version
 	command.Dir = repoRoot
 	command.Env = environment
 	output, err := ownedCommandCombinedOutput(ctx, command)
@@ -1115,7 +1137,7 @@ func govulncheckModuleCapability(
 		}
 		return prerequisiteState{detail: "govulncheck module download failed: " + detail}
 	}
-	return prerequisiteState{available: true, detail: "govulncheck v1.6.0 is available in the verifier cache"}
+	return prerequisiteState{available: true, detail: "govulncheck " + pinnedGovulncheckVersion + " is available in the verifier cache"}
 }
 
 func raceSupportedHost(goos, goarch string) bool {

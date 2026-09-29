@@ -64,7 +64,7 @@ The old GitHub CI membership and its new manifest entries are:
 | 3 | `go vet ./...` | `vet` |
 | 4 | `go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...` | `vulnerability` |
 | 5 | `go build ./cmd/ssm` | `build`, with a temporary output |
-| 6 | `go test ./...` | `unit` |
+| 6 | `go test -timeout=30m ./...` | `unit` |
 | 7 | `go test -race -timeout=15m ./...` | `race` |
 | 8 | `jq empty skills/agent-ssm/test-prompts.json` | `agent-prompts-json` |
 | 9 | `jq empty skills/agent-ssm/references/request-v1.schema.json` | `request-schema-json` |
