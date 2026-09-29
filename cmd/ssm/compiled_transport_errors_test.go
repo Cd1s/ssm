@@ -216,6 +216,47 @@ func TestCompiledPutTimeoutStaysTransferTimeout(t *testing.T) {
 	}
 }
 
+func TestCompiledGetTimeoutStaysTransferTimeout(t *testing.T) {
+	cli := newCompiledCLIHarness(t)
+	server := newCompiledSSHFixture(t, compiledSSHFixtureOptions{Password: transportErrorsPassword, HangAfterExec: true})
+	cli.TrustSSHHost(t, server)
+	cli.SaveVault(t, &config.Vault{Connections: []config.Connection{server.Connection("hang", transportErrorsPassword)}})
+	remoteFile := filepath.Join(t.TempDir(), "remote-file")
+	if err := os.WriteFile(remoteFile, []byte("payload\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	remoteDir := filepath.Join(t.TempDir(), "remote-tree")
+	if err := os.MkdirAll(remoteDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remoteDir, "a.txt"), []byte("a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, remote := range map[string]string{"file": remoteFile, "directory": remoteDir} {
+		remote := remote
+		t.Run(name, func(t *testing.T) {
+			destination := filepath.Join(cli.temp, "get-"+name)
+			machine := cli.Run(t, "sshctl", nil, "--offline", "--json", "get", "hang", remote, destination, "--timeout", "1s")
+			if machine.ProcessExit != 1 || machine.Stderr != "" {
+				t.Fatalf("json get exit=%d stderr=%q stdout=%q, want exit 1", machine.ProcessExit, machine.Stderr, machine.Stdout)
+			}
+			document := decodeExactlyOneJSONObject(t, machine.Stdout)
+			if document["error"] != "transfer_timeout" || document["exit"] != float64(1) || document["direction"] != "get" {
+				t.Fatalf("json get document = %s", machine.Stdout)
+			}
+			if _, present := document["outcome"]; present {
+				t.Fatalf("transfer_timeout must not carry outcome: %s", machine.Stdout)
+			}
+
+			human := cli.Run(t, "sshctl", nil, "--offline", "get", "hang", remote, destination+"-human", "--timeout", "1s")
+			if human.ProcessExit != 1 || !strings.Contains(human.Stderr, "error=transfer_timeout") || strings.Contains(human.Stderr, "connection_lost") {
+				t.Fatalf("human get exit=%d stdout=%q stderr=%q, want exit 1 transfer_timeout", human.ProcessExit, human.Stdout, human.Stderr)
+			}
+		})
+	}
+}
+
 func TestCompiledPutClassifiesHandshakeFailure(t *testing.T) {
 	h := newTransportErrorsHarness(t)
 	source := filepath.Join(h.cli.temp, "put-source")

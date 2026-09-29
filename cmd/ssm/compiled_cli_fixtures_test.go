@@ -299,8 +299,10 @@ type compiledSSHFixtureOptions struct {
 	// DropAfterExec closes the TCP connection right after accepting an exec
 	// request, as a host that reboots while the command runs.
 	DropAfterExec bool
-	// HangAfterExec accepts the exec request, drains stdin, and then never
-	// reports an exit status, so only a client-side timeout can end it.
+	// HangAfterExec accepts an exec request, drains stdin, and then never
+	// reports an exit status, so only a client-side timeout can end it. The
+	// remote file/directory probe is still answered so get reaches its
+	// download command.
 	HangAfterExec bool
 
 	dropConnection func()
@@ -535,7 +537,7 @@ func serveCompiledSSHSession(channel gossh.Channel, requests <-chan *gossh.Reque
 			options.dropConnection()
 			return
 		}
-		if options.HangAfterExec {
+		if options.HangAfterExec && !strings.HasPrefix(payload.Command, "if [ -d ") {
 			_, _ = io.Copy(io.Discard, channel)
 			for range requests {
 			}

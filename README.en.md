@@ -266,7 +266,7 @@ In `--json` mode, decide by the `error` field, not the process exit code: a remo
 
 `map` exits with the first failed result's exit code; each result in the array carries its own `error`. A `put`/`get` whose connection breaks midway is `connection_lost` with exit 255, like `run`, because it is a transport failure rather than a transfer-specific error.
 
-**Contract change.** A `put`/`get` whose connection breaks midway used to report `remote_write_failed` (or `remote_read_failed` for a download) with exit 1. It now reports `connection_lost` with exit 255 and `outcome:"unknown"`. sshctl's own `--timeout` abort of a file `put` is unchanged: `transfer_timeout`, exit 1, no `outcome`. The `host` subcommands' `alias_not_found` has JSON `exit` 255 but process exit 1; decide by `error`.
+**Contract change.** A `put`/`get` whose connection breaks midway used to report `remote_write_failed` (or `remote_read_failed` for a download) with exit 1. It now reports `connection_lost` with exit 255 and `outcome:"unknown"`. sshctl's own `--timeout` abort of a file or directory `get`, or of a file `put`, is unchanged: `transfer_timeout`, exit 1, no `outcome`. The `host` subcommands' `alias_not_found` has JSON `exit` 255 but process exit 1; decide by `error`.
 
 Whether a retry is safe depends on whether the command was sent:
 
