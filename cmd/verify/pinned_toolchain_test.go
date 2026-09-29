@@ -204,7 +204,7 @@ func TestEveryRepositoryWorkflowIsReviewedWithAGolden(t *testing.T) {
 		t.Fatalf("workflows = %v, want exactly the reviewed set %v; add a testdata golden and tests for any new workflow", workflows, want)
 	}
 	for _, name := range workflows {
-		golden, err := os.ReadFile(filepath.Join("testdata", name))
+		golden, err := os.ReadFile(filepath.Join("testdata", name)) //nolint:gosec // name comes from the reviewed workflow directory listing under testdata
 		if err != nil {
 			t.Errorf("workflow %s has no reviewed golden: %v", name, err)
 			continue
@@ -228,5 +228,17 @@ func TestPinnedGoVersionMatchesGoModAndWorkflows(t *testing.T) {
 		if strings.Count(text, "go-version: \"") != strings.Count(text, "go-version: \""+pinnedGoVersion+"\"") {
 			t.Errorf("%s has a setup-go version that is not the manifest pin %s", name, pinnedGoVersion)
 		}
+	}
+}
+
+func TestReleaseVerifierJobEnforcesPinnedHost(t *testing.T) {
+	text := readWorkflowFile(t, "release.yml")
+	if got := strings.Count(text, "SSM_VERIFY_REQUIRE_PINNED"); got != 1 {
+		t.Fatalf("SSM_VERIFY_REQUIRE_PINNED appears %d times in release.yml, want 1", got)
+	}
+	block := workflowJobBlock(t, text, "preflight")
+	if !strings.Contains(block, "    env:\n      SSM_VERIFY_REQUIRE_PINNED: \"1\"\n") ||
+		!strings.Contains(block, "run: go run ./cmd/verify release\n") {
+		t.Fatal("the release verifier job does not set SSM_VERIFY_REQUIRE_PINNED=1")
 	}
 }
