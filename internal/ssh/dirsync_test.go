@@ -2,12 +2,15 @@ package ssh
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	gossh "golang.org/x/crypto/ssh"
 
 	"ssm/internal/machinecontract"
 )
@@ -67,6 +70,7 @@ func TestSuperviseDirectoryDownloadLocalFailureReleasesRemote(t *testing.T) {
 			func() error { return localErr },
 			func() { once.Do(func() { close(release) }) },
 			func() { t.Error("local end must not be killed when it failed first") },
+			20*time.Millisecond,
 		)
 	}()
 	select {
@@ -93,6 +97,7 @@ func TestSuperviseDirectoryDownloadRemoteFailureKillsLocal(t *testing.T) {
 			func() error { <-kill; return errors.New("killed") },
 			func() { t.Error("remote end must not be closed when it failed first") },
 			func() { once.Do(func() { close(kill) }) },
+			time.Second,
 		)
 	}()
 	select {
@@ -109,6 +114,7 @@ func TestSuperviseDirectoryDownloadSuccess(t *testing.T) {
 	first, remoteErr, localErr := superviseDirectoryDownload(
 		func() error { return nil }, func() error { return nil },
 		func() { t.Error("unexpected close") }, func() { t.Error("unexpected kill") },
+		time.Second,
 	)
 	if remoteErr != nil || localErr != nil || first != downloadEndNone {
 		t.Fatalf("remote=%v local=%v first=%v", remoteErr, localErr, first)
@@ -116,21 +122,47 @@ func TestSuperviseDirectoryDownloadSuccess(t *testing.T) {
 }
 
 func TestRemoteDirCreateCommandModes(t *testing.T) {
-	if got := remoteDirCreateCommand("/srv/x y", 0); got != "mkdir -p '/srv/x y'" {
+	if got := remoteDirCreateCommand("/srv/x y", 0); got != "(umask 022; mkdir -p -- '/srv/x y')" {
 		t.Fatalf("default command = %q", got)
 	}
-	if got := remoteDirCreateCommand("/srv/x", 0o750); got != "(umask 027; mkdir -p '/srv/x')" {
+	if got := remoteDirCreateCommand("/srv/x", 0o750); got != "(umask 027; mkdir -p -- '/srv/x')" {
 		t.Fatalf("dir-mode command = %q", got)
 	}
 }
 
 func TestRemoteExtractErrorUsesRemoteMessageAndContractStage(t *testing.T) {
-	err := remoteExtractError("tar: ./a: Cannot open: Permission denied", errors.New("Process exited with status 2"))
+	err := remoteExtractError("tar: ./a: Cannot open: Permission denied", errors.New("Process exited with status 2"), "")
 	failure, ok := machinecontract.FailureFromError(err)
 	if !ok || failure.Stage != "remote_extract" || failure.Error != "remote_write_failed" {
 		t.Fatalf("failure = %+v ok=%v", failure, ok)
 	}
 	if !strings.Contains(err.Error(), "Permission denied") {
 		t.Fatalf("message = %q", err)
+	}
+}
+
+func TestSuperviseDirectoryDownloadRemoteExitFailureWinsOverLocalEOF(t *testing.T) {
+	remoteFailure := &gossh.ExitError{}
+	localEOF := errors.New("tar: Unexpected EOF in archive")
+	first, remoteErr, localErr := superviseDirectoryDownload(
+		func() error { time.Sleep(50 * time.Millisecond); return remoteFailure },
+		func() error { return localEOF },
+		func() { t.Error("remote must not be closed while it is still reporting its exit status") },
+		func() {},
+		2*time.Second,
+	)
+	if first != downloadEndRemote || !errors.Is(remoteErr, remoteFailure) || !errors.Is(localErr, localEOF) {
+		t.Fatalf("first=%v remote=%v local=%v; the remote failure must be the root cause", first, remoteErr, localErr)
+	}
+}
+
+func TestSuperviseDirectoryDownloadNonExitRemoteErrorDoesNotOverrideLocal(t *testing.T) {
+	first, _, _ := superviseDirectoryDownload(
+		func() error { return io.EOF },
+		func() error { return errors.New("disk full") },
+		func() {}, func() {}, time.Second,
+	)
+	if first != downloadEndLocal {
+		t.Fatalf("first=%v, want local when the remote only saw a closed channel", first)
 	}
 }

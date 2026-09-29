@@ -112,7 +112,7 @@ func TestCompiledDirectoryPutReportsRemoteExtractFailureWithoutFallback(t *testi
 	}
 }
 
-func TestCompiledDirectoryPutLocalTarFailureIsNotMaskedByFallback(t *testing.T) {
+func TestCompiledDirectoryPutFailingLocalTarDoesNotFallBack(t *testing.T) {
 	env := newIssue80Env(t, compiledSSHFixtureOptions{})
 	local := filepath.Join(env.cli.temp, "src")
 	issue80WriteFile(t, filepath.Join(local, "item.txt"), []byte("body"))
@@ -121,7 +121,12 @@ func TestCompiledDirectoryPutLocalTarFailureIsNotMaskedByFallback(t *testing.T) 
 		"PATH":                env.cli.TarFailureHelperDir(t),
 		"SSM_TEST_TAR_HELPER": "1",
 	}, "--offline", "--json", "put", env.alias, local, remote)
-	issue80RequireFailure(t, result, 1, "local_read_failed", "local_read")
+	// The helper tar emits garbage, so the remote extractor exits non-zero too;
+	// the remote exit decides, and the local diagnostics are appended.
+	got := issue80RequireFailure(t, result, 1, "remote_write_failed", "remote_extract")
+	if message, _ := got["message"].(string); !strings.Contains(message, "local tar also reported") {
+		t.Fatalf("local tar failure not mentioned: %v", got)
+	}
 	if _, err := os.Stat(filepath.Join(remote, "item.txt")); err == nil {
 		t.Fatal("a failing local tar fell back to per-file upload")
 	}
@@ -276,7 +281,7 @@ func TestCompiledPutParentDirectoryMode(t *testing.T) {
 				t.Fatalf("%s mode = %o, want 755", dir, mode)
 			}
 		}
-		if !strings.Contains(strings.Join(env.server.Commands(), "\n"), "umask 022; mkdir -p") {
+		if !strings.Contains(strings.Join(env.server.Commands(), "\n"), "umask 022; mkdir -p --") {
 			t.Fatalf("command did not request 0755 parents: %v", env.server.Commands())
 		}
 	})
@@ -317,7 +322,7 @@ func TestCompiledPutParentDirectoryMode(t *testing.T) {
 		env := newIssue80Env(t, compiledSSHFixtureOptions{})
 		local := filepath.Join(env.cli.temp, "site.conf")
 		issue80WriteFile(t, local, []byte("conf"))
-		for _, bad := range []string{"0999", "1777", "rwx", "0"} {
+		for _, bad := range []string{"0999", "1777", "rwx", "0", "0500", "0644"} {
 			result := env.cli.Run(t, "sshctl", nil, "--offline", "--json", "put", env.alias, local, "/remote/x", "--dir-mode", bad)
 			issue80RequireFailure(t, result, 2, "invalid_arguments", "validate")
 		}

@@ -963,7 +963,7 @@ func compiledUpdateAssetName() string {
 	return name
 }
 
-var compiledMkdirPattern = regexp.MustCompile(`\(umask ([0-7]+); mkdir -p '([^']*)'\)`)
+var compiledMkdirPattern = regexp.MustCompile(`\(umask ([0-7]+); mkdir -p -- '([^']*)'\)`)
 
 // applyCompiledSSHMkdir emulates the umask-wrapped `mkdir -p` that put emits,
 // so tests can observe the mode the CLI requested for created directories.

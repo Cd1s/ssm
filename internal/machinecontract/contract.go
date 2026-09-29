@@ -805,7 +805,7 @@ var failurePolicies = map[Kind]failurePolicy{
 	},
 	TransferDirModeInvalid: {
 		Code: CodeInvalidArgs, Stage: "validate",
-		Hint: "--dir-mode must be an octal permission such as 0755 (at most 0777)", Exit: 2,
+		Hint: "--dir-mode must be an octal permission such as 0755 (at most 0777) that includes owner write and execute (0300)", Exit: 2,
 	},
 	IntegrityToolUnavailable: {
 		Code: "integrity_tool_unavailable", Stage: "capability",

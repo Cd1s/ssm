@@ -412,10 +412,15 @@ const remoteSHA256Helpers = "ssm_sha256_tool() { if command -v sha256sum >/dev/n
 // remoteMkdirParents creates dir (and missing ancestors) with permission mode
 // regardless of the remote login umask. Existing directories are untouched.
 func remoteMkdirParents(dir string, mode os.FileMode) string {
-	return fmt.Sprintf("(umask %03o; mkdir -p %s)", uint32(0o777&^mode.Perm()), ShellQuote(dir))
+	return fmt.Sprintf("(umask %03o; mkdir -p -- %s)", uint32(0o777&^mode.Perm()), ShellQuote(dir))
 }
 
 func uploadCommandWithIntegrity(remotePath string, mode os.FileMode, size int64, digest string, dirMode os.FileMode) string {
+	if strings.HasPrefix(remotePath, "-") {
+		// A relative path beginning with '-' must not be parsed as an option
+		// by mkdir, chmod, or mv.
+		remotePath = "./" + remotePath
+	}
 	quotedPath := ShellQuote(remotePath)
 	parent := RemoteParentDir(remotePath)
 	prefix := "umask 077; "

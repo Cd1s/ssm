@@ -158,9 +158,12 @@ func uploadDirTar(c config.Connection, v *config.Vault, localDir, remoteDir stri
 	return uploadDirFallback(c, v, localDir, remoteDir, dirMode)
 }
 
+// remoteDirCreateCommand creates the destination directory. A zero dirMode
+// selects DefaultUploadDirMode, so the result never depends on the remote
+// login umask.
 func remoteDirCreateCommand(remoteDir string, dirMode os.FileMode) string {
 	if dirMode == 0 {
-		return "mkdir -p " + ShellQuote(remoteDir)
+		dirMode = DefaultUploadDirMode
 	}
 	return remoteMkdirParents(remoteDir, dirMode)
 }
@@ -236,9 +239,17 @@ func uploadDirTarStream(c config.Connection, v *config.Vault, tarPath, localDir,
 		var exitErr *gossh.ExitError
 		localMessage := strings.TrimSpace(tarDiagnostics.String())
 		switch {
-		case errors.As(remoteErr, &exitErr) && (localMessage == "" || looksLikeBrokenPipe(localMessage)):
+		case errors.As(remoteErr, &exitErr):
+			// The remote session's own non-zero exit is the deciding fact; the
+			// local tar's wording (locale, bsdtar, tar.exe) is not. Local
+			// diagnostics that do not look like a pipe failure are appended
+			// for context only.
 			_ = stderrSpool.Close()
-			return remoteExtractError(remoteStderr.String(), remoteErr)
+			note := ""
+			if localMessage != "" && !looksLikeBrokenPipe(localMessage) {
+				note = fmt.Sprintf("; local tar also reported: %v: %s", tarErr, localMessage)
+			}
+			return remoteExtractError(remoteStderr.String(), remoteErr, note)
 		case remoteErr != nil && !errors.As(remoteErr, &exitErr):
 			return remoteErr
 		default:
@@ -260,7 +271,7 @@ func uploadDirTarStream(c config.Connection, v *config.Vault, tarPath, localDir,
 		var exitErr *gossh.ExitError
 		if errors.As(remoteErr, &exitErr) {
 			_ = stderrSpool.Close()
-			return remoteExtractError(remoteStderr.String(), remoteErr)
+			return remoteExtractError(remoteStderr.String(), remoteErr, "")
 		}
 		return remoteErr
 	}
@@ -286,20 +297,22 @@ func waitSessionBounded(session *gossh.Session, grace time.Duration) error {
 	}
 }
 
+// looksLikeBrokenPipe is an auxiliary hint only: message wording varies by tar
+// implementation and locale, so it never decides which end failed.
 func looksLikeBrokenPipe(message string) bool {
 	lower := strings.ToLower(message)
 	return strings.Contains(lower, "broken pipe") || strings.Contains(lower, "write error") ||
 		strings.Contains(lower, "cannot write") || strings.Contains(lower, "not recoverable")
 }
 
-func remoteExtractError(stderr string, remoteErr error) error {
+func remoteExtractError(stderr string, remoteErr error, note string) error {
 	message := stderr
 	if message == "" {
 		message = remoteErr.Error()
 	}
 	// A plain error (not *gossh.ExitError) keeps the process exit code at the
 	// contract's value instead of the remote's status.
-	return transferKindError(machinecontract.TransferRemoteExtractFailed, 0, fmt.Errorf("remote tar extraction failed: %s", message))
+	return transferKindError(machinecontract.TransferRemoteExtractFailed, 0, fmt.Errorf("remote tar extraction failed: %s%s", message, note))
 }
 
 // uploadDirFallback uploads a tree file by file. It is used only when the
@@ -350,33 +363,54 @@ const (
 	downloadEndLocal
 )
 
+// downloadRemoteGrace is how long a failed local extractor waits for the
+// remote tar to report its own exit status before the remote is closed.
+const downloadRemoteGrace = 2 * time.Second
+
 // superviseDirectoryDownload waits for both ends of a directory download
-// concurrently. As soon as one end fails, the other is closed or killed so the
-// call returns in bounded time instead of hanging on a peer that no longer
-// reads or writes. It reports which end failed first, because the other end's
-// error is then only a consequence.
-func superviseDirectoryDownload(waitRemote, waitLocal func() error, closeRemote, killLocal func()) (first downloadEnd, remoteErr, localErr error) {
-	type outcome struct {
-		end downloadEnd
-		err error
-	}
-	results := make(chan outcome, 2)
-	go func() { results <- outcome{end: downloadEndRemote, err: waitRemote()} }()
-	go func() { results <- outcome{end: downloadEndLocal, err: waitLocal()} }()
-	for received := 0; received < 2; received++ {
-		res := <-results
-		if res.err != nil && first == downloadEndNone {
-			first = res.end
-			if res.end == downloadEndRemote {
-				killLocal()
-			} else {
-				closeRemote()
-			}
+// concurrently and returns in bounded time. When one end fails, the other is
+// closed or killed. It reports which end is the root cause:
+//   - a remote session that exits non-zero (an *ssh.ExitError) always wins,
+//     because the local tar then only sees a truncated stream (unexpected EOF);
+//     a failed local end therefore waits up to grace for the remote's exit
+//     status before closing the remote;
+//   - otherwise whichever end failed first.
+func superviseDirectoryDownload(waitRemote, waitLocal func() error, closeRemote, killLocal func(), grace time.Duration) (first downloadEnd, remoteErr, localErr error) {
+	remoteCh := make(chan error, 1)
+	localCh := make(chan error, 1)
+	go func() { remoteCh <- waitRemote() }()
+	go func() { localCh <- waitLocal() }()
+	select {
+	case remoteErr = <-remoteCh:
+		if remoteErr != nil {
+			first = downloadEndRemote
+			killLocal()
 		}
-		if res.end == downloadEndRemote {
-			remoteErr = res.err
+		localErr = <-localCh
+		if first == downloadEndNone && localErr != nil {
+			first = downloadEndLocal
+		}
+	case localErr = <-localCh:
+		if localErr == nil {
+			remoteErr = <-remoteCh
+			if remoteErr != nil {
+				first = downloadEndRemote
+			}
+			break
+		}
+		timer := time.NewTimer(grace)
+		select {
+		case remoteErr = <-remoteCh:
+			timer.Stop()
+		case <-timer.C:
+			closeRemote()
+			remoteErr = <-remoteCh
+		}
+		var exitErr *gossh.ExitError
+		if errors.As(remoteErr, &exitErr) {
+			first = downloadEndRemote
 		} else {
-			localErr = res.err
+			first = downloadEndLocal
 		}
 	}
 	return first, remoteErr, localErr
@@ -452,9 +486,12 @@ func downloadDirTar(c config.Connection, v *config.Vault, remoteDir, localDir st
 		tarLocal.Wait,
 		func() { _ = session.Close() },
 		func() { _ = tarLocal.Process.Kill() },
+		downloadRemoteGrace,
 	)
 	switch {
-	case timedOut.Load():
+	case first != downloadEndNone && timedOut.Load():
+		// A deadline that fires after both ends already finished cleanly is
+		// ignored: only a failure that coincides with it is a timeout.
 		return transferError(machinecontract.TransferTimedOut, 0, fmt.Errorf("directory download exceeded %s", timeout))
 	case first == downloadEndLocal:
 		return transferError(machinecontract.TransferDownloadLocalWrite, 0, localErr)

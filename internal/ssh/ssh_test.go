@@ -35,7 +35,7 @@ func TestUploadCommandRequiresSuccessfulWriteBeforeChmod(t *testing.T) {
 	if !strings.Contains(got, "'/tmp/remote file'\"'\"'s name'") {
 		t.Fatalf("upload command = %q, remote path was not shell-quoted", got)
 	}
-	if !strings.Contains(got, "mkdir -p '/tmp'") {
+	if !strings.Contains(got, "mkdir -p -- '/tmp'") {
 		t.Fatalf("upload command = %q, want mkdir -p parent", got)
 	}
 	if !strings.Contains(got, ".ssm-upload.$$") || !strings.Contains(got, "mv -f -- \"$tmp\"") {
@@ -48,7 +48,7 @@ func TestUploadCommandRequiresSuccessfulWriteBeforeChmod(t *testing.T) {
 
 func TestUploadCommandNestedParent(t *testing.T) {
 	got := uploadCommand("/var/tmp/a/b/c.txt", 0600)
-	if !strings.Contains(got, "mkdir -p '/var/tmp/a/b'") {
+	if !strings.Contains(got, "mkdir -p -- '/var/tmp/a/b'") {
 		t.Fatalf("upload command = %q", got)
 	}
 }

@@ -275,8 +275,11 @@ var errInvalidDirMode = errors.New("invalid --dir-mode")
 // parseDirMode parses an octal directory permission such as 0755 or 750.
 func parseDirMode(value string) (os.FileMode, error) {
 	mode, err := strconv.ParseUint(strings.TrimSpace(value), 8, 32)
-	if err != nil || mode == 0 || mode > 0o777 {
-		return 0, fmt.Errorf("%w: %q must be an octal permission between 0001 and 0777", errInvalidDirMode, value)
+	if err != nil || mode > 0o777 {
+		return 0, fmt.Errorf("%w: %q must be an octal permission such as 0755 (at most 0777)", errInvalidDirMode, value)
+	}
+	if mode&0o300 != 0o300 {
+		return 0, fmt.Errorf("%w: %q lacks owner write and execute (0300), so creating nested directories would fail", errInvalidDirMode, value)
 	}
 	return os.FileMode(mode), nil
 }

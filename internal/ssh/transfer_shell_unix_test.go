@@ -161,3 +161,47 @@ func TestResumeProbeSharesDigestToolDetection(t *testing.T) {
 		t.Fatalf("resume with shasum only should reach state validation: err=%v output=%s", err, output)
 	}
 }
+
+func runShell(t *testing.T, dir, script string) (string, error) {
+	t.Helper()
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh unavailable")
+	}
+	cmd := exec.Command(shell, "-c", script) //nolint:gosec // test executes a command generated from test-owned paths
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func TestDirectoryDestinationDefaultsTo0755UnderRestrictiveRemoteUmask(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "new", "tree")
+	// The remote login umask is 077; the destination must still be 0755.
+	if out, err := runShell(t, root, "umask 077; "+remoteDirCreateCommand(target, 0)); err != nil {
+		t.Fatalf("mkdir: %v: %s", err, out)
+	}
+	for _, dir := range []string{filepath.Join(root, "new"), target} {
+		if info, err := os.Stat(dir); err != nil || info.Mode().Perm() != 0o755 {
+			t.Fatalf("%s mode = %v err=%v, want 0755", dir, info, err)
+		}
+	}
+}
+
+func TestUploadHandlesRelativePathsStartingWithDash(t *testing.T) {
+	root := t.TempDir()
+	script := "printf payload | (" + uploadCommandWithIntegrity("-x/f.txt", 0o640, -1, "", DefaultUploadDirMode) + ")"
+	if out, err := runShell(t, root, script); err != nil {
+		t.Fatalf("upload to -x/f.txt: %v: %s", err, out)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "-x", "f.txt")); err != nil || string(data) != "payload" { //nolint:gosec // beneath t.TempDir
+		t.Fatalf("data=%q err=%v", data, err)
+	}
+	dir := filepath.Join(root, "-d")
+	if out, err := runShell(t, root, remoteDirCreateCommand("-d", 0)); err != nil {
+		t.Fatalf("mkdir -d: %v: %s", err, out)
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		t.Fatalf("dash-prefixed directory not created: %v", err)
+	}
+}

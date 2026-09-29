@@ -878,7 +878,7 @@ func TestMachineContractMatrix(t *testing.T) {
 			name: "dir mode invalid", kind: TransferDirModeInvalid,
 			details: Details{Message: "bad mode"},
 			code:    "invalid_arguments", stage: "validate",
-			hint: "--dir-mode must be an octal permission such as 0755 (at most 0777)", exit: 2,
+			hint: "--dir-mode must be an octal permission such as 0755 (at most 0777) that includes owner write and execute (0300)", exit: 2,
 		},
 		{
 			name: "integrity tool unavailable", kind: IntegrityToolUnavailable,
