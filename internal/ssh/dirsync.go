@@ -216,8 +216,11 @@ func uploadDirTarStream(c config.Connection, v *config.Vault, tarPath, localDir,
 	// Keep local tar diagnostics separate from remote extractor diagnostics.
 	var tarDiagnostics bytes.Buffer
 	tarCmd := exec.Command(tarPath, "-C", localDir, "-cf", "-", ".") //nolint:gosec // tarPath comes from exec.LookPath("tar"); remaining argv is fixed
-	tarCmd.Stdout = stdin
 	tarCmd.Stderr = &tarDiagnostics
+	tarOut, err := tarCmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
 	if err := tarCmd.Start(); err != nil {
 		// The local tar could not be executed: the only fallback trigger. Drain
 		// the idle remote extractor and discard its diagnostics.
@@ -229,13 +232,24 @@ func uploadDirTarStream(c config.Connection, v *config.Vault, tarPath, localDir,
 		}
 		return errLocalTarUnavailable
 	}
+	// Copy the archive ourselves so the tar process's own failure (an
+	// *exec.ExitError) stays distinct from a failure to write into the SSH
+	// channel. The remote extractor may legitimately stop reading at the
+	// archive end marker and exit 0 while tar is still writing record padding.
+	_, copyErr := io.Copy(stdin, tarOut)
+	if copyErr != nil {
+		// Let tar finish writing bounded trailing bytes; beyond that the
+		// reader is closed so tar cannot block on a full pipe.
+		_, _ = io.Copy(io.Discard, io.LimitReader(tarOut, 1<<20))
+		_ = tarOut.Close()
+	}
 	tarErr := tarCmd.Wait()
 	_ = stdin.Close()
-	if tarErr != nil {
-		// A remote failure (permissions, disk full, target not a directory)
-		// makes the local tar die with EPIPE. Report the remote first-hand
-		// error instead of masking it with a fallback.
-		remoteErr := waitSessionBounded(session, remoteExitGrace)
+	remoteWaited := false
+	var remoteErr error
+	if tarErr != nil || copyErr != nil {
+		remoteErr = waitSessionBounded(session, remoteExitGrace)
+		remoteWaited = true
 		var exitErr *gossh.ExitError
 		localMessage := strings.TrimSpace(tarDiagnostics.String())
 		switch {
@@ -246,13 +260,13 @@ func uploadDirTarStream(c config.Connection, v *config.Vault, tarPath, localDir,
 			// for context only.
 			_ = stderrSpool.Close()
 			note := ""
-			if localMessage != "" && !looksLikeBrokenPipe(localMessage) {
+			if tarErr != nil && localMessage != "" && !looksLikeBrokenPipe(localMessage) {
 				note = fmt.Sprintf("; local tar also reported: %v: %s", tarErr, localMessage)
 			}
 			return remoteExtractError(remoteStderr.String(), remoteErr, note)
-		case remoteErr != nil && !errors.As(remoteErr, &exitErr):
+		case remoteErr != nil:
 			return remoteErr
-		default:
+		case tarErr != nil:
 			message := fmt.Sprintf("local tar failed: %v", tarErr)
 			if localMessage != "" {
 				message += ": " + localMessage
@@ -260,14 +274,16 @@ func uploadDirTarStream(c config.Connection, v *config.Vault, tarPath, localDir,
 			message += "; the remote destination may contain partially extracted files"
 			return transferKindError(machinecontract.TransferLocalRead, 0, errors.New(message))
 		}
+		// tar exited 0 and the remote extractor exited 0: the write error was
+		// only trailing padding sent after the extractor finished.
 	}
 	if _, err := stderrSpool.Write(tarDiagnostics.Bytes()); err != nil {
 		return err
 	}
-	if err := stdin.Close(); err != nil {
-		return err
+	if !remoteWaited {
+		remoteErr = session.Wait()
 	}
-	if remoteErr := session.Wait(); remoteErr != nil {
+	if remoteErr != nil {
 		var exitErr *gossh.ExitError
 		if errors.As(remoteErr, &exitErr) {
 			_ = stderrSpool.Close()
@@ -483,7 +499,16 @@ func downloadDirTar(c config.Connection, v *config.Vault, remoteDir, localDir st
 	}
 	first, remoteErr, localErr := superviseDirectoryDownload(
 		session.Wait,
-		tarLocal.Wait,
+		func() error {
+			err := tarLocal.Wait()
+			// tar may exit 0 at the archive end marker while the stdin copy
+			// still holds unread trailing padding from the remote; that is
+			// not a failure.
+			if errors.Is(err, exec.ErrWaitDelay) && tarLocal.ProcessState != nil && tarLocal.ProcessState.Success() {
+				return nil
+			}
+			return err
+		},
 		func() { _ = session.Close() },
 		func() { _ = tarLocal.Process.Kill() },
 		downloadRemoteGrace,

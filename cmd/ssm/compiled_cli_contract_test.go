@@ -69,6 +69,14 @@ type compiledCLIHarness struct {
 }
 
 func TestMain(m *testing.M) {
+	if os.Getenv("SSM_TEST_TAR_HELPER") == "late-padding" {
+		// A valid empty archive (end marker) followed, after the receiver has
+		// stopped reading, by trailing record padding; exits 0.
+		_, _ = os.Stdout.Write(make([]byte, 1024))
+		time.Sleep(400 * time.Millisecond)
+		_, _ = os.Stdout.Write(make([]byte, 8192))
+		os.Exit(0)
+	}
 	if os.Getenv("SSM_TEST_TAR_HELPER") == "1" {
 		_, _ = io.WriteString(os.Stdout, "compiled fixture invalid tar payload\n")
 		_, _ = io.WriteString(os.Stderr, "config=\"{\\\"token\\\":\\\"FALLBACK_LOCAL_TAR_DIAGNOSTIC\\\"}\"\n")

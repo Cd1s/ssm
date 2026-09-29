@@ -491,3 +491,29 @@ func TestCompiledGetAcceptsPutFlagSet(t *testing.T) {
 		}
 	})
 }
+
+// The remote extractor stops at the archive end marker and exits 0 while the
+// local tar is still writing record padding. That trailing write failure must
+// not turn a complete, successful transfer into an error, and the remote's
+// diagnostics must survive byte for byte.
+func TestCompiledDirectoryPutSucceedsWhenRemoteStopsBeforeTrailingPadding(t *testing.T) {
+	const stdoutDiag, stderrDiag = "token=remote-stdout\n", "config=remote-stderr\n"
+	env := newIssue80Env(t, compiledSSHFixtureOptions{
+		UploadTarStopAtEndMarker: true,
+		UploadTarSuccessStdout:   stdoutDiag,
+		UploadTarSuccessStderr:   stderrDiag,
+	})
+	local := filepath.Join(env.cli.temp, "src")
+	issue80WriteFile(t, filepath.Join(local, "item.txt"), []byte("body"))
+	remote := filepath.Join(t.TempDir(), "dest")
+	result := env.cli.RunWithEnv(t, "sshctl", nil, map[string]string{
+		"PATH":                env.cli.TarFailureHelperDir(t),
+		"SSM_TEST_TAR_HELPER": "late-padding",
+	}, "--offline", "put", env.alias, local, remote)
+	if result.ProcessExit != 0 || result.Stdout != stdoutDiag || result.Stderr != stderrDiag {
+		t.Fatalf("exit=%d stdout=%q stderr=%q, want exit 0 with byte-exact remote diagnostics", result.ProcessExit, result.Stdout, result.Stderr)
+	}
+	if sessions := env.server.SessionCount(); sessions != 1 {
+		t.Fatalf("SSH sessions = %d, want 1 (no fallback)", sessions)
+	}
+}

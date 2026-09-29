@@ -287,6 +287,10 @@ type compiledSSHFixtureOptions struct {
 	// this message, without reading stdin.
 	UploadTarFailStderr string
 
+	// UploadTarStopAtEndMarker makes the remote tar extractor return 0 as soon
+	// as it reads the archive end marker, without draining trailing padding.
+	UploadTarStopAtEndMarker bool
+
 	record func(string)
 }
 
@@ -696,7 +700,9 @@ func receiveCompiledSSHTar(source io.Reader, stderr io.Writer, root string) uint
 			// Native tar writers may pad the archive beyond the two zero
 			// blocks that archive/tar treats as EOF. Drain through SSH EOF so
 			// the producer never sees a premature channel close.
-			_, _ = io.Copy(io.Discard, source)
+			if _, skip := source.(compiledNoDrainReader); !skip {
+				_, _ = io.Copy(io.Discard, source)
+			}
 			return 0
 		}
 		if err != nil {
@@ -1008,7 +1014,7 @@ func compiledRemoteHasDigestTool(options compiledSSHFixtureOptions) bool {
 // executeCompiledSSHTransferFault emulates remote conditions selected through
 // fixture options: a missing SHA-256 tool, a forged download digest, and a
 // remote tar extractor that fails without reading its input.
-func executeCompiledSSHTransferFault(channel io.Writer, stderr io.Writer, command string, options compiledSSHFixtureOptions) (uint32, bool) {
+func executeCompiledSSHTransferFault(channel io.ReadWriter, stderr io.Writer, command string, options compiledSSHFixtureOptions) (uint32, bool) {
 	switch {
 	case strings.Contains(command, "ssm_sha256_tool >/dev/null") && !compiledRemoteHasDigestTool(options):
 		_, _ = io.WriteString(channel, "SSM_INTEGRITY_TOOL_MISSING\n")
@@ -1016,9 +1022,20 @@ func executeCompiledSSHTransferFault(channel io.Writer, stderr io.Writer, comman
 	case strings.Contains(command, "ssm_sha256 ") && strings.Contains(command, "[ -f ") && options.DownloadDigestOverride != "":
 		_, _ = io.WriteString(channel, options.DownloadDigestOverride+"\n")
 		return 0, true
+	case options.UploadTarStopAtEndMarker && strings.Contains(command, "tar -C ") && strings.Contains(command, " -xf -"):
+		applyCompiledSSHMkdir(command)
+		path, ok := compiledShellQuotedWordAfter(command, "tar -C ")
+		if !ok {
+			return compiledSSHFixtureCommandError(stderr), true
+		}
+		return receiveCompiledSSHTar(compiledNoDrainReader{channel}, stderr, path), true
 	case options.UploadTarFailStderr != "" && strings.Contains(command, "tar -C ") && strings.Contains(command, " -xf -"):
 		_, _ = io.WriteString(stderr, options.UploadTarFailStderr+"\n")
 		return 2, true
 	}
 	return 0, false
 }
+
+// compiledNoDrainReader marks a tar source whose trailing padding must not be
+// drained after the archive end marker.
+type compiledNoDrainReader struct{ io.Reader }
