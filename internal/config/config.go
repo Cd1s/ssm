@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -311,3 +312,27 @@ func LoadMergeReport() MergeReport {
 // ValidVaultBlob reports whether data has the shape of an encrypted vault, so a
 // malformed download never replaces the only local copy.
 func ValidVaultBlob(data []byte) bool { return vault.ValidBlob(data) }
+
+var vaultCreateLockWait = 5 * time.Second
+
+// CreateVaultIfAbsent writes an initial vault only if none exists, under the
+// vault write lock shared with every other vault writer, and reports whether it
+// created one. An existing vault (for example one just pulled) is never
+// replaced.
+func CreateVaultIfAbsent(v *Vault, masterPass string) (bool, error) {
+	lock, err := AcquireFileLock(VaultWriteLockName, vaultCreateLockWait)
+	if err != nil {
+		if errors.Is(err, ErrLockBusy) {
+			return false, errors.New("vault write lock is busy; retry the command")
+		}
+		return false, err
+	}
+	defer func() { _ = lock.Close() }()
+	if _, statErr := os.Stat(Path()); statErr == nil {
+		return false, nil
+	}
+	if err := Save(v, masterPass); err != nil {
+		return false, err
+	}
+	return true, nil
+}

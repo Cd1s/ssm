@@ -66,7 +66,13 @@ inventory; it moved the silence into a flag.
 - **Additional safeguards.** The background process refuses a download
   without a valid encrypted-vault header, is reaped by its parent, runs from
   the filesystem root, and truncates recorded messages on UTF-8 boundaries. The
-  state-file lock is a kernel lock that a crash cannot leave stale.
+  state-file lock is a kernel lock that a crash cannot leave stale. Each
+  claim carries a token handed to its background process; login, register and
+  logout reset the state (and warn if they cannot), after which a process from
+  the previous service records and installs nothing. The unattended sync also
+  refuses to replace a differing local vault when no remote identity was ever
+  confirmed (that first pull is an explicit `sync`), and stored failure
+  messages are fixed phrases, never raw error text.
 - **Visibility.** `status` never fails because of sync and reports
   `remote_state`, `last_successful_sync`, `last_sync_error`, `next_sync_attempt`,
   `cache_age_seconds`, and `inventory_stale`. Staleness (`stale_after`, default

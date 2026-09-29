@@ -121,8 +121,15 @@ from a command failure: `remote_state` (`checked`, `unreachable`, `not_checked`,
 `cache_age_seconds`, and `inventory_stale`. `run` JSON results carry
 `inventory_stale:true` when the cache is older than `stale_after` (7 days by
 default). Do not add `--offline` to work around an unreachable service; local
-reads already work, and `--offline` only suppresses background sync (as does
-`SSM_OFFLINE=1`). When `remote_state` is `unreachable` or `inventory_stale` is
+reads already work. `--offline` is deprecated for reads (accepted for
+compatibility) and now only suppresses background sync, as does
+`SSM_OFFLINE=1`. `run` JSON results add `inventory_unsynced:true` (sync configured
+but never confirmed) and `inventory_sync_error:"<cause>"` (the most recent sync
+attempt failed) so an agent can see it without calling `status`; human mode does
+not warn about a failed attempt. In `strict` mode and for explicit `sync`/`pull`
+a concurrent local writer can cause a "vault is busy" failure (retry), and
+`pull --adopt-remote <sha256> --yes` is refused if the local vault changed after
+the conflict evidence was recorded (re-check the conflict). When `remote_state` is `unreachable` or `inventory_stale` is
 true, tell the caller before relying on host details that may have changed;
 run `sshctl --json sync` to force a strict pull. Explicit `sync`, `pull`, and
 `push` stay strict, and setting `sync_mode: strict` (or `SSM_SYNC_MODE=strict`)

@@ -520,6 +520,7 @@ Auth (choose one when required):
 
 Use upsert for retry-safe agent automation. Secrets are never accepted inline.
 Mutations are saved locally; verify the host, then publish its returned transaction with sshctl --json push --only <transaction-id>.
-With configured auto-sync, remote refresh errors stop the command; --offline is an explicit stale-state override.
+In the default local_first sync mode host commands use the local inventory and never wait for the sync service; with sync_mode strict, remote refresh errors stop the command and --offline is an explicit stale-state override.
+--offline is deprecated for reads: accepted for compatibility; it now only suppresses background sync.
 `)
 }

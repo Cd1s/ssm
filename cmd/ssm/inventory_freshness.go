@@ -14,9 +14,13 @@ import (
 // it as the additive inventory_stale field.
 var (
 	inventoryStale bool
-	staleWarned    bool
-	modeWarned     bool
-	unsyncedWarned bool
+	// inventoryUnsynced and inventorySyncError feed the additive run-result
+	// fields; they never produce human output (offline use stays quiet).
+	inventoryUnsynced  bool
+	inventorySyncError string
+	staleWarned        bool
+	modeWarned         bool
+	unsyncedWarned     bool
 	// statusCommand makes the invalid-mode notice appear for `status --json`
 	// too; other JSON commands keep stderr empty.
 	statusCommand bool
@@ -28,6 +32,11 @@ var (
 func noteInventoryFreshness(facts synctransaction.Facts) {
 	warnInvalidSyncMode()
 	inventoryStale = facts.Stale
+	inventoryUnsynced = facts.Unsynced
+	inventorySyncError = ""
+	if facts.LastError != nil {
+		inventorySyncError = facts.LastError.Cause
+	}
 	warnUnsynced(facts)
 	if !facts.Stale || machineJSON || streamMachine || staleWarned {
 		return

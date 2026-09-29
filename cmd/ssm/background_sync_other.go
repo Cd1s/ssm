@@ -6,6 +6,6 @@ import "errors"
 
 var errBackgroundUnsupported = errors.New("background sync is unsupported on this platform")
 
-func startDetachedBackgroundSync(string) error {
+func startDetachedBackgroundSync(string, string) error {
 	return errBackgroundUnsupported
 }

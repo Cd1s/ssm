@@ -17,7 +17,7 @@ const (
 // startDetachedBackgroundSync starts `sshctl sync --background` detached from
 // the parent's console and process group, with every standard stream on the
 // null device, then releases it without waiting.
-func startDetachedBackgroundSync(executable string) error {
+func startDetachedBackgroundSync(executable, claimToken string) error {
 	null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
 		return fmt.Errorf("open null device: %w", err)
@@ -27,7 +27,7 @@ func startDetachedBackgroundSync(executable string) error {
 		Path:   executable,
 		Dir:    os.TempDir(),
 		Args:   []string{"sshctl", "sync", backgroundSyncFlag},
-		Env:    backgroundEnvironment(),
+		Env:    backgroundEnvironment(claimToken),
 		Stdin:  null,
 		Stdout: null,
 		Stderr: null,

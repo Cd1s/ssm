@@ -35,7 +35,7 @@ func runRegister(args []string) {
 		if err := cloud.SaveCloud(cfg); err != nil {
 			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 		}
-		synctransaction.ResetSyncState()
+		resetSyncState()
 		fmt.Println("Account registered.")
 		return
 	}
@@ -61,7 +61,7 @@ func runLogin(args []string) {
 		if err := cloud.SaveCloud(cfg); err != nil {
 			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 		}
-		synctransaction.ResetSyncState()
+		resetSyncState()
 		fmt.Println("Logged in.")
 		return
 	}
@@ -133,7 +133,7 @@ func runLogout() {
 			Cause: err, Tool: "legacy_message", Script: "logout",
 		}))
 	}
-	synctransaction.ResetSyncState()
+	resetSyncState()
 	fmt.Println("Logged out.")
 }
 
@@ -421,4 +421,13 @@ func syncTransaction(commandOffline bool) *synctransaction.Transaction {
 func invalidateInventory() {
 	ssh.ClosePool()
 	invalidateVaultCache()
+}
+
+// resetSyncState clears the recorded sync outcome after login, register or
+// logout and says so if it could not, because a stale schedule or claim would
+// then describe the previous service.
+func resetSyncState() {
+	if err := synctransaction.ResetSyncState(); err != nil {
+		fmt.Fprintf(os.Stderr, "ssm: warning: %v; run again if sync status looks stale\n", err)
+	}
 }

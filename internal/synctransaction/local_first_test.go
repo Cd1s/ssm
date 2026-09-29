@@ -32,7 +32,7 @@ func localFirstSetup(t *testing.T) (requests *atomic.Int64, opts Options, spawne
 	}
 	opts = Options{
 		Now:             func() time.Time { return localFirstTestNow },
-		SpawnBackground: func() error { spawned.Add(1); return nil },
+		SpawnBackground: func(string) error { spawned.Add(1); return nil },
 	}
 	return requests, opts, spawned
 }
@@ -111,7 +111,7 @@ func TestLocalFirstDoesNotSpawnWhenOfflineDisabledOrNotConfigured(t *testing.T) 
 
 func TestLocalFirstSpawnFailureReleasesTheClaim(t *testing.T) {
 	_, opts, spawned := localFirstSetup(t)
-	opts.SpawnBackground = func() error { spawned.Add(1); return errors.New("spawn refused") }
+	opts.SpawnBackground = func(string) error { spawned.Add(1); return errors.New("spawn refused") }
 	tx := New(opts)
 	if _, err := tx.Refresh(); err != nil {
 		t.Fatalf("spawn failure must not fail the command: %v", err)
@@ -132,7 +132,7 @@ func TestBackgroundSyncRecordsFailureCauseAndExponentialBackoff(t *testing.T) {
 	}
 	tx := New(opts)
 	for failures, want := range []time.Duration{30 * time.Second, time.Minute, 2 * time.Minute, 4 * time.Minute} {
-		if err := tx.BackgroundSync(); err == nil {
+		if err := tx.BackgroundSync(""); err == nil {
 			t.Fatal("background sync against a 503 endpoint returned no error")
 		}
 		state := LoadSyncState()
@@ -169,7 +169,7 @@ func TestBackgroundSyncSuccessSchedulesTheNextAttemptAndClearsFailures(t *testin
 	if err := config.WritePrivateFile(remoteIdentityPath(), []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n")); err != nil {
 		t.Fatal(err)
 	}
-	if err := New(opts).BackgroundSync(); err != nil {
+	if err := New(opts).BackgroundSync(""); err != nil {
 		t.Fatalf("background sync failed: %v", err)
 	}
 	state := LoadSyncState()

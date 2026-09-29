@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"syscall"
 
 	"ssm/internal/synctransaction"
@@ -121,13 +122,42 @@ func isRemoteSyncFailure(err error) bool {
 }
 
 // DescribeSyncFailure gives the recorded sync state its stable cause and a
-// redacted, address-free message, using the same classification as command
-// failures. Divergence and configuration causes are assigned by the sync
-// transaction itself.
+// short message. The message is a fixed phrase per cause (plus the numeric HTTP
+// status), never error text: server-supplied bodies and local paths must not be
+// persisted verbatim. Divergence and configuration causes are assigned by the
+// sync transaction itself.
 func DescribeSyncFailure(err error) (cause, message string) {
 	cause = SyncFailureCause(err)
 	if cause == "" {
 		cause = SyncCauseUnknown
 	}
-	return cause, RedactError(err)
+	message = syncCauseSummary(cause)
+	var status *synctransaction.HTTPStatusError
+	if errors.As(err, &status) && status.StatusCode > 0 {
+		message += " (HTTP " + strconv.Itoa(status.StatusCode) + ")"
+	}
+	return cause, message
+}
+
+func syncCauseSummary(cause string) string {
+	switch cause {
+	case SyncCauseDNS:
+		return "sync server name did not resolve"
+	case SyncCauseConnectRefused:
+		return "sync server refused the connection"
+	case SyncCauseTimeout:
+		return "sync server request timed out"
+	case SyncCauseTLS:
+		return "sync server certificate verification failed"
+	case SyncCauseAuth:
+		return "sync server rejected the token"
+	case SyncCauseHTTP5xx:
+		return "sync server returned an error"
+	case SyncCauseMissingToken:
+		return "sync token is not configured"
+	case SyncCauseNetwork:
+		return "sync server connection failed"
+	default:
+		return "sync failed"
+	}
 }

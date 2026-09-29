@@ -123,7 +123,7 @@ func TestPullsNeverHoldTheVaultLockAcrossNetworkIO(t *testing.T) {
 		f := newPullRace(t, mode, nil)
 		var err error
 		if mode == config.SyncModeLocalFirst {
-			err = f.tx().BackgroundSync()
+			err = f.tx().BackgroundSync("")
 		} else {
 			_, err = f.tx().Refresh()
 		}
@@ -201,7 +201,7 @@ func TestBackgroundSyncDivergedLocalIsNotDownloaded(t *testing.T) {
 		t.Fatal(err)
 	}
 	tx := f.tx()
-	assertLocalMutationSurvived(t, f, mutated, tx, tx.BackgroundSync())
+	assertLocalMutationSurvived(t, f, mutated, tx, tx.BackgroundSync(""))
 	if f.gets.Load() != 0 {
 		t.Fatal("a diverged vault must not be downloaded")
 	}
@@ -212,7 +212,7 @@ func TestBackgroundSyncMutationSavedDuringDownloadIsDivergence(t *testing.T) {
 	mutated := fakeVaultBlob("local C plus pending mutation")
 	injectAt(t, "install", mutated)
 	tx := f.tx()
-	assertLocalMutationSurvived(t, f, mutated, tx, tx.BackgroundSync())
+	assertLocalMutationSurvived(t, f, mutated, tx, tx.BackgroundSync(""))
 	if state := LoadSyncState(); state.LastError == nil || state.LastError.Cause != CauseConflict {
 		t.Fatalf("state = %+v, want a recorded conflict", state)
 	}
@@ -225,7 +225,7 @@ func TestBackgroundSyncRefusesAMalformedDownload(t *testing.T) {
 			_, _ = w.Write([]byte("short"))
 		}
 	})
-	if err := f.tx().BackgroundSync(); !errors.Is(err, ErrRefresh) {
+	if err := f.tx().BackgroundSync(""); !errors.Is(err, ErrRefresh) {
 		t.Fatalf("malformed download error = %v", err)
 	}
 	if !bytes.Equal(readVault(t), f.local) {
@@ -242,7 +242,7 @@ func TestBackgroundSyncLeavesLocalStateAloneForAPendingPublicationOrABusyLock(t 
 		if err := config.WritePrivateFile(config.PublishingIntentPath(), []byte("{}")); err != nil {
 			t.Fatal(err)
 		}
-		if err := f.tx().BackgroundSync(); err != nil {
+		if err := f.tx().BackgroundSync(""); err != nil {
 			t.Fatalf("skipped attempt returned %v", err)
 		}
 		state := LoadSyncState()
@@ -262,7 +262,7 @@ func TestBackgroundSyncLeavesLocalStateAloneForAPendingPublicationOrABusyLock(t 
 		vaultLockWait = 50 * time.Millisecond
 		// The probe in the fake server also sees the lock as held; only the
 		// outcome of the attempt matters here.
-		if err := f.tx().BackgroundSync(); err != nil {
+		if err := f.tx().BackgroundSync(""); err != nil {
 			t.Fatalf("busy attempt returned %v", err)
 		}
 		if state := LoadSyncState(); state.ConsecutiveFailures != 0 || !bytes.Equal(readVault(t), f.local) {
@@ -313,7 +313,7 @@ func TestUnsyncedFactsAreReportedUntilAConfirmedSync(t *testing.T) {
 	if facts := f.tx().Facts(); !facts.Unsynced {
 		t.Fatalf("a configured but never synced inventory must be unsynced: %+v", facts)
 	}
-	if err := f.tx().BackgroundSync(); err != nil {
+	if err := f.tx().BackgroundSync(""); err != nil {
 		t.Fatal(err)
 	}
 	if facts := f.tx().Facts(); facts.Unsynced {
@@ -348,5 +348,145 @@ func TestAdoptRemoteRefusesWhenTheLocalVaultChangedAfterTheConflictWasRecorded(t
 	}
 	if loadConflict() == nil {
 		t.Fatal("the conflict evidence must remain for a new review")
+	}
+}
+
+// capturedClaim runs a foreground Refresh that claims the background attempt
+// and returns the claim token handed to the (fake) spawn.
+func capturedClaim(t *testing.T) string {
+	t.Helper()
+	var token string
+	tx := New(Options{
+		Now:             func() time.Time { return localFirstTestNow },
+		SpawnBackground: func(claim string) error { token = claim; return nil },
+	})
+	if _, err := tx.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if token == "" {
+		t.Fatal("no claim token was handed to the background process")
+	}
+	return token
+}
+
+// A background process started before login/logout/register reset the state
+// must not record an outcome or replace the vault afterwards.
+func TestStaleBackgroundProcessChangesNothingAfterTheStateWasReset(t *testing.T) {
+	t.Run("reset before it starts working", func(t *testing.T) {
+		f := newPullRace(t, config.SyncModeLocalFirst, nil)
+		token := capturedClaim(t)
+		if err := ResetSyncState(); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.tx().BackgroundSync(token); err != nil {
+			t.Fatal(err)
+		}
+		if f.requests.Load() != 0 || !bytes.Equal(readVault(t), f.local) {
+			t.Fatal("a stale background process contacted the service or replaced the vault")
+		}
+		if _, err := os.Stat(syncStatePath()); !os.IsNotExist(err) {
+			t.Fatalf("a stale background process wrote the state: %v", err)
+		}
+	})
+	t.Run("reset between the download and the install", func(t *testing.T) {
+		f := newPullRace(t, config.SyncModeLocalFirst, nil)
+		token := capturedClaim(t)
+		beforeVaultLock = func(stage string) {
+			if stage == "install" {
+				if err := ResetSyncState(); err != nil {
+					t.Error(err)
+				}
+			}
+		}
+		t.Cleanup(func() { beforeVaultLock = nil })
+		if err := f.tx().BackgroundSync(token); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(readVault(t), f.local) {
+			t.Fatal("a stale background process installed a vault after the reset")
+		}
+		if _, err := os.Stat(syncStatePath()); !os.IsNotExist(err) {
+			t.Fatalf("a stale background process wrote the state: %v", err)
+		}
+	})
+	t.Run("superseded by a newer claim", func(t *testing.T) {
+		f := newPullRace(t, config.SyncModeLocalFirst, nil)
+		old := capturedClaim(t)
+		if err := ResetSyncState(); err != nil {
+			t.Fatal(err)
+		}
+		fresh := capturedClaim(t)
+		if err := f.tx().BackgroundSync(old); err != nil {
+			t.Fatal(err)
+		}
+		if LoadSyncState().ClaimToken != fresh {
+			t.Fatal("the old process disturbed the newer claim")
+		}
+	})
+}
+
+func TestResetSyncStateReportsAFailureToTakeTheLock(t *testing.T) {
+	isolateTestUserConfig(t)
+	if err := saveSyncState(SyncState{ConsecutiveFailures: 2}); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := config.AcquireFileLock(syncStateLockName, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Close() }()
+	defer func(old time.Duration) { resetLockWait = old }(resetLockWait)
+	resetLockWait = 50 * time.Millisecond
+	if err := ResetSyncState(); err == nil {
+		t.Fatal("a reset that could not take the lock must not be silent")
+	}
+	if LoadSyncState().ConsecutiveFailures != 2 {
+		t.Fatal("state changed although the reset failed")
+	}
+}
+
+// With no confirmed remote identity, a different local vault is never replaced
+// by the unattended sync; an explicit sync keeps its established behavior.
+func TestBackgroundSyncNeverReplacesAVaultThatWasNeverSeededWithARemoteIdentity(t *testing.T) {
+	f := newPullRace(t, config.SyncModeLocalFirst, nil)
+	if err := os.Remove(remoteIdentityPath()); err != nil {
+		t.Fatal(err)
+	}
+	tx := f.tx()
+	err := tx.BackgroundSync("")
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("unseeded background sync error = %v, want %v", err, ErrConflict)
+	}
+	if !bytes.Equal(readVault(t), f.local) || f.gets.Load() != 0 {
+		t.Fatal("the unattended sync replaced or downloaded over an unpublished local vault")
+	}
+	if loadConflict() == nil {
+		t.Fatal("no evidence was preserved")
+	}
+	if state := LoadSyncState(); state.LastError == nil || state.LastError.Cause != CauseConflict {
+		t.Fatalf("state = %+v, want a conflict", state)
+	}
+
+	t.Run("explicit sync still pulls the first time", func(t *testing.T) {
+		f := newPullRace(t, config.SyncModeStrict, nil)
+		if err := os.Remove(remoteIdentityPath()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.tx().Sync(); err != nil {
+			t.Fatalf("explicit first sync: %v", err)
+		}
+		if !bytes.Equal(readVault(t), f.remote) || cachedRemoteIdentity() != f.remoteID {
+			t.Fatal("explicit sync did not seed the remote identity and vault")
+		}
+	})
+}
+
+func TestFailureMessagesAreNeverRawErrorText(t *testing.T) {
+	isolateTestUserConfig(t)
+	tx := New(Options{Now: func() time.Time { return localFirstTestNow }})
+	tx.recordFailure(errors.New("open /home/someone/private/vault: server said <script>secret</script>"))
+	failure := LoadSyncState().LastError
+	if failure == nil || failure.Message != "sync failed" || failure.Cause != CauseUnknown {
+		t.Fatalf("last_error = %+v, want a fixed phrase without raw error text", failure)
 	}
 }

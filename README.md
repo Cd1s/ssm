@@ -316,6 +316,8 @@ strict 模式下，`status` 的在线刷新失败会返回 `error:sync_pull_fail
 
 显式 `sync`、`pull`、`push` 在两种模式下都保持严格语义（出错即失败），并把结果写入 `sync-state.json`。写操作与发布不变：修改先记为 pending，由 `push --only <transaction-id>` 或 `push --all` 发布，分叉检测仍然 fail-closed。`run --stream --refresh` 在 local_first 下到期时会在 vault 已被后台更新时重新加载快照，同步失败不会中止流。新机器 `login` 之后先运行一次 `sshctl sync` 拉取 vault。
 
+`--offline` 对读命令已弃用：仅为兼容而接受；读默认就是本地的，它现在只用来抑制后台同步（`strict` 模式下仍跳过在线刷新）。`run` 的 JSON 结果还会在“已配置同步但从未确认过清单”时带 `inventory_unsynced:true`，在最近一次同步尝试失败时带 `inventory_sync_error:"<cause>"`（`cause` 取值同上，例如 `http_5xx`；加性字段，human 模式不为此打警告，离线使用保持安静）。在 `strict` 模式以及显式 `sync`/`pull` 下，若另一个 ssm 进程正持有短暂的 vault 写锁（例如并发的本地修改），命令会以 “vault is busy” 失败，重试即可；`pull --adopt-remote <sha256> --yes` 只在冲突证据记录之后本地 vault 没有再变化时才会执行，否则被拒绝并保留本地修改，请重新检查冲突。
+
 需要 v2.0.2 的行为（每次读之前在线刷新、刷新失败即命令失败）时，在 `settings.json` 设置 `"sync_mode": "strict"`，或对单个进程设置 `SSM_SYNC_MODE=strict`。相对 v2.0.2，默认行为的变化是：读命令不再因同步端点不可达而失败，也不再为每条命令多花一次 `HEAD` 请求。
 
 ### 可选同步服务器

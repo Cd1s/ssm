@@ -687,13 +687,17 @@ func unlockVault() (machinecontract.Failure, bool) {
 		}
 
 		if !config.Exists() {
-			masterPass = pass
-			unlockedVault = &config.Vault{}
-			if err := config.Save(unlockedVault, masterPass); err != nil {
-				unlockedVault = nil
+			// Creation takes the vault write lock and never replaces an
+			// existing file, so a pull that lands first is kept and loaded.
+			created, err := config.CreateVaultIfAbsent(&config.Vault{}, pass)
+			if err != nil {
 				return machinecontract.Classify(machinecontract.VaultCreateFailed, machinecontract.Details{Cause: err}), true
 			}
-			return machinecontract.Failure{}, false
+			if created {
+				masterPass = pass
+				unlockedVault = &config.Vault{}
+				return machinecontract.Failure{}, false
+			}
 		}
 
 		v, err := config.Load(pass)

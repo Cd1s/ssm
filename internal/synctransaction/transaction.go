@@ -186,7 +186,7 @@ type Options struct {
 	// SpawnBackground starts the detached background sync process. It is
 	// called only in local-first mode, only when an automatic attempt is due
 	// and this process won the atomic claim. Nil disables background sync.
-	SpawnBackground func() error
+	SpawnBackground func(claimToken string) error
 	// DescribeFailure classifies a sync failure into a stable cause and a
 	// redacted, address-free message for the recorded last_error.
 	DescribeFailure func(error) (cause, message string)
@@ -198,9 +198,12 @@ type Transaction struct {
 	offline    bool
 	invalidate func()
 	now        func() time.Time
-	spawn      func() error
+	spawn      func(claimToken string) error
 	describe   func(error) (string, string)
 	observe    func(Facts)
+	// claim is the background claim token this process acts for ("" in the
+	// foreground).
+	claim string
 }
 
 // Stream owns synchronization policy for one run --stream process lifetime.
@@ -412,8 +415,11 @@ func (t *Transaction) refresh(explicit bool) (Facts, error) {
 func (t *Transaction) refreshLocalFirst(facts Facts, settings *config.Settings) Facts {
 	now := t.now()
 	state := LoadSyncState()
-	if t.spawn != nil && state.due(now) && t.claimBackground(now) {
-		if err := t.spawn(); err != nil {
+	if t.spawn == nil || !state.due(now) {
+		return t.decorateLocalFirst(facts, settings, state)
+	}
+	if token, claimed := t.claimBackground(now); claimed {
+		if err := t.spawn(token); err != nil {
 			config.Debug("background sync: spawn failed")
 			t.releaseClaim()
 		}
@@ -481,7 +487,7 @@ func (t *Transaction) lockVault(stage string, mode pullMode) (*config.FileLock, 
 		}
 		return nil, fmt.Errorf("%w: vault write lock unavailable: %w", ErrRefresh, err)
 	}
-	if mode == pullBackground && publishingIntentPending() {
+	if mode == pullBackground && (publishingIntentPending() || !t.claimStillValid()) {
 		_ = lock.Close()
 		return nil, errBackgroundSkipped
 	}
@@ -516,7 +522,7 @@ func (t *Transaction) applyRemoteIdentity(cfg *cloud.CloudConfig, facts Facts, r
 	if !forcePull && remote != "" && remote == facts.RemoteETag {
 		return facts, nil
 	}
-	if diverged(facts, remote) {
+	if divergedFor(mode, facts, remote) {
 		// Decide divergence before downloading, under the lock so the
 		// evidence reflects the vault as it is now.
 		lock, err := t.lockVault("decision", mode)
@@ -525,7 +531,7 @@ func (t *Transaction) applyRemoteIdentity(cfg *cloud.CloudConfig, facts Facts, r
 		}
 		current := identityFacts()
 		current.Configuration = facts.Configuration
-		if diverged(current, remote) {
+		if divergedFor(mode, current, remote) {
 			result, err := t.conflictError(current, remote)
 			_ = lock.Close()
 			return result, err
@@ -560,7 +566,7 @@ func (t *Transaction) installFetched(data []byte, etag string, mode pullMode) (F
 		if facts.Conflict == nil || facts.LocalETag != facts.Conflict.LocalETag {
 			return facts, fmt.Errorf("%w: local vault changed after the conflict was recorded; nothing was replaced, re-check with sshctl --offline --json doctor before adopting", ErrConflict)
 		}
-	} else if diverged(facts, etag) {
+	} else if divergedFor(mode, facts, etag) {
 		return t.conflictError(facts, etag)
 	}
 	if err := config.WritePrivateFile(config.Path(), data); err != nil {
@@ -585,6 +591,19 @@ func identityFacts() Facts {
 		facts.LocalETag = local
 	}
 	return facts
+}
+
+// divergedFor is diverged plus, for the unattended background sync only, the
+// case where no remote identity was ever confirmed (sync was configured after
+// the local vault existed, or the state was reset) yet a different local vault
+// exists: replacing it would silently discard hosts nobody has published. That
+// first pull is left to an explicit sync.
+func divergedFor(mode pullMode, facts Facts, remote string) bool {
+	if diverged(facts, remote) {
+		return true
+	}
+	return mode == pullBackground && facts.RemoteETag == "" && remote != "" &&
+		facts.LocalETag != "" && facts.LocalETag != remote
 }
 
 // diverged reports that both the remote and the local vault moved away from the
@@ -618,9 +637,11 @@ func (t *Transaction) pull() (Facts, error) {
 	return t.refreshConfigured(cfg, facts, true)
 }
 
-// AdoptRemote performs the explicit reviewed recovery path for an empty-ledger
-// divergence. Ordinary Pull never calls this method and therefore retains its
-// no-silent-overwrite behavior.
+// AdoptRemote performs the explicit reviewed recovery path for a preserved
+// divergence (typically an empty-ledger one). It replaces the local vault only
+// if, under the vault write lock, the local vault is still the one the conflict
+// evidence was recorded for; a later local change makes it fail closed. Ordinary Pull never calls this
+// method and therefore retains its no-silent-overwrite behavior.
 func (t *Transaction) AdoptRemote(expected BlobIdentity) (Facts, error) {
 	facts := t.localFacts()
 	cfg, state, err := t.configuration()

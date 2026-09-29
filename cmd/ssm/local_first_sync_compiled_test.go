@@ -728,3 +728,32 @@ func TestLocalFirstReportsAnInventoryThatWasNeverSynced(t *testing.T) {
 		t.Fatalf("status still reports inventory_unsynced: %v", status)
 	}
 }
+
+// Run results carry the never-synced and last-failure facts as additive JSON
+// fields; human mode stays quiet about a failed attempt (offline use).
+func TestLocalFirstRunResultsCarryUnsyncedAndLastSyncFailure(t *testing.T) {
+	s := newLocalFirstScenario(t)
+	s.writeSyncState(t, map[string]any{
+		"consecutive_failures": 2,
+		"next_attempt_at":      rfc3339(localFirstClock.Add(time.Hour)),
+		"last_error":           map[string]any{"cause": "http_5xx", "message": "sync server returned an error (HTTP 503)", "at": rfc3339(localFirstClock)},
+	})
+	run := s.runTrue(t)
+	if run["inventory_unsynced"] != true || run["inventory_sync_error"] != "http_5xx" {
+		t.Fatalf("run result lacks the additive sync visibility fields: %v", run)
+	}
+	human := s.run(t, "run", s.alias, "--argv", "true")
+	if human.ProcessExit != 0 || strings.Contains(human.Stderr, "http_5xx") || strings.Contains(human.Stderr, "sync failed") ||
+		strings.Contains(human.Stderr, "unreachable") {
+		t.Fatalf("human run must stay quiet about a failed sync attempt; stderr=%q", human.Stderr)
+	}
+
+	s.writeSyncState(t, map[string]any{
+		"last_success_at": rfc3339(localFirstClock.Add(-time.Minute)),
+		"next_attempt_at": rfc3339(localFirstClock.Add(time.Hour)),
+	})
+	clean := s.runTrue(t)
+	if clean["inventory_unsynced"] != nil || clean["inventory_sync_error"] != nil {
+		t.Fatalf("a confirmed sync must clear the fields: %v", clean)
+	}
+}

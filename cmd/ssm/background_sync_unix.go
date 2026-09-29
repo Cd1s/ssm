@@ -15,7 +15,7 @@ import (
 // the filesystem root so the child never pins the caller's directory. The
 // parent never blocks on the child: a goroutine reaps it, so a long-running
 // parent (for example run --stream) does not accumulate zombies.
-func startDetachedBackgroundSync(executable string) error {
+func startDetachedBackgroundSync(executable, claimToken string) error {
 	null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
 		return fmt.Errorf("open null device: %w", err)
@@ -25,7 +25,7 @@ func startDetachedBackgroundSync(executable string) error {
 		Path:        executable,
 		Args:        []string{"sshctl", "sync", backgroundSyncFlag},
 		Dir:         string(os.PathSeparator),
-		Env:         backgroundEnvironment(),
+		Env:         backgroundEnvironment(claimToken),
 		Stdin:       null,
 		Stdout:      null,
 		Stderr:      null,

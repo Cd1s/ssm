@@ -1,6 +1,8 @@
 package synctransaction
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -57,6 +59,11 @@ type SyncState struct {
 	// InFlightUntil is the atomic claim that keeps concurrent commands from
 	// each spawning a background sync.
 	InFlightUntil string `json:"in_flight_until,omitempty"`
+	// ClaimToken identifies the claim a background process was started for. A
+	// process whose token no longer matches (login, logout or register reset
+	// the state, or a newer claim replaced it) records nothing and installs
+	// nothing.
+	ClaimToken string `json:"claim_token,omitempty"`
 }
 
 func syncStatePath() string { return filepath.Join(config.Dir(), "sync-state.json") }
@@ -135,33 +142,58 @@ func backoffDelay(failures int) time.Duration {
 	return delay
 }
 
-// claimBackground atomically reserves the next automatic attempt. It returns
-// false when another process holds a live claim, the schedule is not due, or
-// the state cannot be locked; a foreground command then simply does not spawn.
-func (t *Transaction) claimBackground(now time.Time) bool {
-	claimed := false
+// claimBackground atomically reserves the next automatic attempt and returns
+// the claim token to hand to the background process. ok is false when another
+// process holds a live claim, the schedule is not due, or the state cannot be
+// locked; a foreground command then simply does not spawn.
+func (t *Transaction) claimBackground(now time.Time) (token string, ok bool) {
 	err := withStateLock(func() error {
 		state := LoadSyncState()
 		if !state.due(now) {
 			return nil
 		}
+		raw := make([]byte, 16)
+		if _, err := rand.Read(raw); err != nil {
+			return err
+		}
 		state.InFlightUntil = now.Add(claimTTL).UTC().Format(time.RFC3339)
+		state.ClaimToken = hex.EncodeToString(raw)
 		if err := saveSyncState(state); err != nil {
 			return err
 		}
-		claimed = true
+		token, ok = state.ClaimToken, true
 		return nil
 	})
-	return err == nil && claimed
+	if err != nil {
+		return "", false
+	}
+	return token, ok
+}
+
+// claimStillValid reports whether this transaction may still act for its
+// background claim. Foreground transactions carry no claim and always may.
+func (t *Transaction) claimStillValid() bool {
+	return t.claim == "" || LoadSyncState().ClaimToken == t.claim
+}
+
+// mutateState applies fn to the state under the state lock, unless this is a
+// background process whose claim was invalidated in the meantime.
+func (t *Transaction) mutateState(fn func(*SyncState)) {
+	_ = withStateLock(func() error {
+		state := LoadSyncState()
+		if t.claim != "" && state.ClaimToken != t.claim {
+			return nil
+		}
+		fn(&state)
+		return saveSyncState(state)
+	})
 }
 
 // releaseClaim clears an unused claim after a failed spawn so the next command
 // may try again.
 func (t *Transaction) releaseClaim() {
-	_ = withStateLock(func() error {
-		state := LoadSyncState()
-		state.InFlightUntil = ""
-		return saveSyncState(state)
+	t.mutateState(func(state *SyncState) {
+		state.InFlightUntil, state.ClaimToken = "", ""
 	})
 }
 
@@ -170,16 +202,14 @@ func (t *Transaction) releaseClaim() {
 func (t *Transaction) recordSuccess() {
 	now := t.now()
 	interval := config.LoadSettings().EffectiveSyncInterval()
-	_ = withStateLock(func() error {
-		state := LoadSyncState()
+	t.mutateState(func(state *SyncState) {
 		stamp := now.UTC().Format(time.RFC3339)
 		state.LastAttemptAt = stamp
 		state.LastSuccessAt = stamp
 		state.NextAttemptAt = now.Add(interval).UTC().Format(time.RFC3339)
 		state.ConsecutiveFailures = 0
 		state.LastError = nil
-		state.InFlightUntil = ""
-		return saveSyncState(state)
+		state.InFlightUntil, state.ClaimToken = "", ""
 	})
 }
 
@@ -190,15 +220,13 @@ func (t *Transaction) recordFailure(err error) {
 	}
 	now := t.now()
 	cause, message := t.describeFailure(err)
-	_ = withStateLock(func() error {
-		state := LoadSyncState()
+	t.mutateState(func(state *SyncState) {
 		stamp := now.UTC().Format(time.RFC3339)
 		state.LastAttemptAt = stamp
 		state.ConsecutiveFailures++
 		state.NextAttemptAt = now.Add(backoffDelay(state.ConsecutiveFailures)).UTC().Format(time.RFC3339)
 		state.LastError = &SyncError{Cause: cause, Message: message, At: stamp}
-		state.InFlightUntil = ""
-		return saveSyncState(state)
+		state.InFlightUntil, state.ClaimToken = "", ""
 	})
 }
 
@@ -207,16 +235,18 @@ func (t *Transaction) recordFailure(err error) {
 // counted, but the next attempt is delayed so commands do not respawn at once.
 func (t *Transaction) RecordSkipped() {
 	now := t.now()
-	_ = withStateLock(func() error {
-		state := LoadSyncState()
+	t.mutateState(func(state *SyncState) {
 		state.NextAttemptAt = now.Add(skippedRetryDelay).UTC().Format(time.RFC3339)
-		state.InFlightUntil = ""
-		return saveSyncState(state)
+		state.InFlightUntil, state.ClaimToken = "", ""
 	})
 }
 
+// describeFailure returns the stored cause and a short message. The message is
+// never raw error text: server-supplied bodies and local paths must not be
+// persisted verbatim, so it comes from the injected sanitizing classifier or,
+// failing that, a fixed phrase.
 func (t *Transaction) describeFailure(err error) (cause, message string) {
-	cause, message = CauseUnknown, err.Error()
+	cause, message = CauseUnknown, "sync failed"
 	if t.describe != nil {
 		if described, text := t.describe(err); described != "" {
 			cause, message = described, text
@@ -224,9 +254,9 @@ func (t *Transaction) describeFailure(err error) (cause, message string) {
 	}
 	switch {
 	case errors.Is(err, ErrConflict), errors.Is(err, ErrEmptyLedgerDivergence):
-		cause = CauseConflict
+		cause, message = CauseConflict, "local and remote vaults diverged"
 	case errors.Is(err, ErrConfiguration):
-		cause = CauseConfiguration
+		cause, message = CauseConfiguration, "sync configuration is invalid"
 	}
 	return cause, truncateUTF8(message, maxErrorMessageBytes)
 }
@@ -274,9 +304,15 @@ var errBackgroundSkipped = errors.New("background sync skipped")
 // leaves local state alone while a publication awaits reconciliation. The
 // download happens outside any lock; the vault write lock is held only to
 // re-read local identity and replace the file (see applyRemoteIdentity). The
-// outcome, success or failure, is recorded in the sync state.
-func (t *Transaction) BackgroundSync() error {
+// outcome, success or failure, is recorded in the sync state, but only while
+// claim (the token the parent stored when it started this process) is still the
+// live claim; after a reset or a newer claim the process changes nothing.
+func (t *Transaction) BackgroundSync(claim string) error {
 	if t.offline {
+		return nil
+	}
+	t.claim = claim
+	if !t.claimStillValid() {
 		return nil
 	}
 	cfg, state, err := t.configuration()
@@ -311,25 +347,32 @@ func (t *Transaction) BackgroundSync() error {
 // recordSkippedNotConfigured clears a claim when sync stopped being applicable
 // between the claim and the attempt (for example logout).
 func (t *Transaction) recordSkippedNotConfigured() {
-	_ = withStateLock(func() error {
-		state := LoadSyncState()
-		state.InFlightUntil = ""
-		return saveSyncState(state)
+	t.mutateState(func(state *SyncState) {
+		state.InFlightUntil, state.ClaimToken = "", ""
 	})
 }
 
-// ResetSyncState forgets the recorded outcome and schedule. Login, register
-// and logout call it because the state described the previous service.
-func ResetSyncState() {
+// resetLockWait bounds the wait for the state lock when resetting.
+var resetLockWait = 5 * time.Second
+
+// ResetSyncState forgets the recorded outcome, schedule and claim. Login,
+// register and logout call it because the state described the previous
+// service; removing the claim also stops any background process still running
+// for that service from recording or installing anything. A failure to reset
+// is returned so the caller can tell the user.
+func ResetSyncState() error {
 	if _, err := os.Lstat(syncStatePath()); err != nil {
-		return
-	}
-	_ = withStateLock(func() error {
-		if err := os.Remove(syncStatePath()); err != nil && !os.IsNotExist(err) {
-			return err
-		}
 		return nil
-	})
+	}
+	lock, err := config.AcquireFileLock(syncStateLockName, resetLockWait)
+	if err != nil {
+		return fmt.Errorf("reset sync state: %w", err)
+	}
+	defer func() { _ = lock.Close() }()
+	if err := os.Remove(syncStatePath()); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("reset sync state: %w", err)
+	}
+	return nil
 }
 
 // truncateUTF8 shortens s to at most max bytes without splitting a character.
