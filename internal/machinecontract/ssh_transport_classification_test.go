@@ -170,6 +170,70 @@ func TestClassifySSHKeepsPolicyStageForClassifiedErrors(t *testing.T) {
 	}
 }
 
+// Specific diagnoses reached from the remote result or from sshctl itself must
+// survive a transport error that accompanies them (for example the abort or
+// reset a closing channel produces on Windows), while generic wrapper codes
+// yield to connection_lost.
+func TestClassifyTransferCarriedDiagnosisBeatsTransportError(t *testing.T) {
+	t.Parallel()
+	context := SSHContext{Alias: "prod", Host: "192.0.2.1", Port: 22}
+	causes := map[string]error{
+		"forcibly closed text": errors.New("wsarecv: An existing connection was forcibly closed by the remote host."),
+		"aborted text":         errors.New("wsarecv: An established connection was aborted by the software in your host machine."),
+		"ECONNRESET":           os.NewSyscallError("write", syscall.ECONNRESET),
+		"EOF":                  io.EOF,
+		"exit missing":         &gossh.ExitMissingError{},
+	}
+	specific := []struct {
+		kind Kind
+		code string
+		exit int
+	}{
+		{IntegrityToolUnavailable, "integrity_tool_unavailable", 1},
+		{TransferRemoteExtractFailed, "remote_write_failed", 1},
+		{TransferRemotePermissionsFailed, "remote_write_failed", 1},
+		{TransferIntegrityMismatch, "integrity_failed", 1},
+		{TransferReceiptInvalid, "integrity_failed", 1},
+		{TransferTimedOut, "transfer_timeout", 1},
+		{ResumeTimedOut, "transfer_timeout", 1},
+		{TransferDownloadLocalWrite, "local_write_failed", 1},
+		{TransferDownloadIntegrityMismatch, "integrity_failed", 1},
+		{TransferLocalRead, "local_read_failed", 1},
+		{TransferDirectoryOptionsUnsupported, "unsupported_transfer_option", 1},
+	}
+	wrappers := []Kind{
+		TransferSessionOpenFailed, TransferStdinOpenFailed, TransferStartFailed, TransferRemoteWriteFailed,
+		TransferRemoteCloseFailed, ResumeStdinOpenFailed, ResumeStartFailed, ResumeRemoteWriteFailed,
+		ResumeRetryFailed, ResumeProbeSessionFailed, TransferDownloadRemoteRead,
+	}
+	for name, cause := range causes {
+		for _, test := range specific {
+			carried := Classify(test.kind, Details{Cause: cause})
+			carrier := &testTransferFailureCarrier{failure: carried, cause: cause}
+			for direction, got := range map[string]Failure{
+				"put": ClassifyTransferOperation(carrier, context, carried),
+				"get": ClassifyDownload(carrier, context),
+			} {
+				if got.Error != test.code || got.Outcome != "" || got.Exit != test.exit || ProcessExit(got) != test.exit {
+					t.Errorf("%s %s with %s = %+v, want %s exit %d", direction, test.kind, name, got, test.code, test.exit)
+				}
+			}
+		}
+		for _, kind := range wrappers {
+			carried := Classify(kind, Details{Cause: cause})
+			carrier := &testTransferFailureCarrier{failure: carried, cause: cause}
+			for direction, got := range map[string]Failure{
+				"put": ClassifyTransferOperation(carrier, context, carried),
+				"get": ClassifyDownload(carrier, context),
+			} {
+				if got.Error != CodeConnectionLost || got.Outcome != "unknown" || got.Exit != ExitConnectionFailed {
+					t.Errorf("%s wrapper %s with %s = %+v, want connection_lost/255", direction, kind, name, got)
+				}
+			}
+		}
+	}
+}
+
 func TestClassifySSHTransportOutcomeSerialization(t *testing.T) {
 	t.Parallel()
 	context := SSHContext{Alias: "prod", Host: "192.0.2.1", Port: 22, Stage: "session"}

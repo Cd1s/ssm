@@ -292,6 +292,9 @@ type failurePolicy struct {
 	HintFromDetails bool
 	SuppressMessage bool
 	Outcome         string
+	// TransportWrapper marks a generic transport-wrapping code whose cause is
+	// the SSH error itself, so a transport-loss classification may replace it.
+	TransportWrapper bool
 }
 
 var failurePolicies = map[Kind]failurePolicy{
@@ -706,12 +709,15 @@ var failurePolicies = map[Kind]failurePolicy{
 	},
 	TransferSessionOpenFailed: {
 		Code: "session_failed", Stage: "dial", Hint: "retry after checking SSH session limits", Exit: 1,
+		TransportWrapper: true,
 	},
 	TransferStdinOpenFailed: {
 		Code: "remote_write_failed", Stage: "remote_write", Hint: "retry the upload; the final destination was not replaced", Exit: 1,
+		TransportWrapper: true,
 	},
 	TransferStartFailed: {
 		Code: "remote_write_failed", Stage: "remote_write", Hint: "remote temporary file was not published", Exit: 1,
+		TransportWrapper: true,
 	},
 	TransferTimedOut: {
 		Code: "transfer_timeout", Stage: "timeout",
@@ -720,9 +726,11 @@ var failurePolicies = map[Kind]failurePolicy{
 	TransferRemoteWriteFailed: {
 		Code: "remote_write_failed", Stage: "remote_write",
 		Hint: "retry; the remote temporary file is cleaned and the final path is unchanged", Exit: 1,
+		TransportWrapper: true,
 	},
 	TransferRemoteCloseFailed: {
 		Code: "remote_write_failed", Stage: "remote_write", Hint: "retry; the final path was not replaced", Exit: 1,
+		TransportWrapper: true,
 	},
 	TransferIntegrityMismatch: {
 		Code: "integrity_failed", Stage: "integrity",
@@ -758,9 +766,11 @@ var failurePolicies = map[Kind]failurePolicy{
 	ResumeStdinOpenFailed: {
 		Code: "remote_write_failed", Stage: "remote_write",
 		Hint: "retry resume; existing verified prefix remains available", Exit: 1,
+		TransportWrapper: true,
 	},
 	ResumeStartFailed: {
 		Code: "remote_write_failed", Stage: "remote_write", Hint: "retry resume; final destination was not replaced", Exit: 1,
+		TransportWrapper: true,
 	},
 	ResumeTimedOut: {
 		Code: "transfer_timeout", Stage: "timeout",
@@ -769,9 +779,11 @@ var failurePolicies = map[Kind]failurePolicy{
 	ResumeRemoteWriteFailed: {
 		Code: "remote_write_failed", Stage: "remote_write",
 		Hint: "retry with --resume=v1; the destination was not replaced", Exit: 1,
+		TransportWrapper: true,
 	},
 	ResumeRetryFailed: {
 		Code: "remote_write_failed", Stage: "remote_write", Hint: "retry with --resume=v1", Exit: 1,
+		TransportWrapper: true,
 	},
 	ResumeVerificationToolMissing: {
 		Code: "verification_tool_missing", Stage: "capability",
@@ -794,6 +806,7 @@ var failurePolicies = map[Kind]failurePolicy{
 	},
 	ResumeProbeSessionFailed: {
 		Code: "session_failed", Stage: "resume_probe", Hint: "retry after checking SSH session limits", Exit: 1,
+		TransportWrapper: true,
 	},
 	ResumeStateIncompatible: {
 		Code: "partial_state_incompatible", Stage: "resume_validate",
@@ -816,6 +829,7 @@ var failurePolicies = map[Kind]failurePolicy{
 	TransferDownloadRemoteRead: {
 		Code: "remote_read_failed", Stage: "remote_read",
 		Hint: "check the remote path and read permissions; the final local path was not replaced", Exit: 1,
+		TransportWrapper: true,
 	},
 	TransferDownloadLocalWrite: {
 		Code: "local_write_failed", Stage: "local_write",
@@ -898,6 +912,7 @@ type Failure struct {
 	humanAlias        string
 	renderer          rendererPolicy
 	humanProjection   *Failure
+	transportWrapper  bool
 }
 
 func (f Failure) ErrorMessage() string {
@@ -1001,6 +1016,7 @@ func Classify(kind Kind, details Details) Failure {
 		cause:             details.Cause,
 		processExit:       processExit,
 		renderer:          policy.Renderer,
+		transportWrapper:  policy.TransportWrapper,
 	}
 }
 
@@ -1405,16 +1421,24 @@ func ClassifyTransferOperation(err error, context SSHContext, carried Failure) F
 	if err == nil {
 		return Failure{}
 	}
-	if isSelfAbortedTransfer(carried) {
-		// sshctl closed the session itself when --timeout expired, so the EOF
-		// or missing exit status that follows is a consequence, not a lost
-		// connection. The carried tuple (transfer_timeout, exit 1) is final.
+	if carried.Error == "transfer_timeout" {
+		// sshctl closed the session itself when --timeout expired, so any EOF
+		// or missing exit status that follows is a consequence. The carried
+		// tuple (transfer_timeout, exit 1) is final and renders as itself.
 		return carried
 	}
 	transportContext := context
 	transportContext.ExecPhase = true
 	human := ClassifySSH(err, transportContext)
 	if policyOwnsStage(human.Error) {
+		if carried.Error != "" && !carried.transportWrapper {
+			// A specific diagnosis from the remote result or from sshctl
+			// itself (transfer_timeout, integrity_*, remote_extract, local_*,
+			// capability errors) wins over the transport error that may
+			// accompany it, such as the EOF after sshctl closed its own
+			// session. Its contract exit is kept.
+			return carried
+		}
 		// handshake_failed and connection_lost keep their own stage and
 		// outcome, and the 255 transport exit, so a transfer that never
 		// started or one that broke midway is not reported as remote_write.
@@ -1441,13 +1465,6 @@ func ClassifyTransferOperation(err error, context SSHContext, carried Failure) F
 	return failure
 }
 
-// isSelfAbortedTransfer reports a carried failure produced by sshctl closing
-// its own session (the --timeout timer), whose classification must never be
-// replaced by a transport-loss code derived from the resulting EOF.
-func isSelfAbortedTransfer(carried Failure) bool {
-	return carried.Error == "transfer_timeout"
-}
-
 // ClassifyDownload preserves the generic pre-BC-7 download failure envelope,
 // which omits stage even when its SSH classification has one.
 func ClassifyDownload(err error, context SSHContext) Failure {
@@ -1455,12 +1472,17 @@ func ClassifyDownload(err error, context SSHContext) Failure {
 	classifyContext.Stage = ""
 	classifyContext.ExecPhase = true
 	failure := ClassifySSH(err, classifyContext)
-	if carried, ok := FailureFromError(err); ok && isSelfAbortedTransfer(carried) {
+	if carried, ok := FailureFromError(err); ok && carried.Error == "transfer_timeout" {
 		carried.Alias = RedactString(context.Alias)
 		carried.humanAlias = RedactString(context.ResolvedAlias)
 		return carried
 	}
 	if policyOwnsStage(failure.Error) {
+		if carried, ok := FailureFromError(err); ok && !carried.transportWrapper {
+			carried.Alias = RedactString(context.Alias)
+			carried.humanAlias = RedactString(context.ResolvedAlias)
+			return carried
+		}
 		failure.Alias = RedactString(context.Alias)
 		failure.humanAlias = RedactString(context.ResolvedAlias)
 		return failure

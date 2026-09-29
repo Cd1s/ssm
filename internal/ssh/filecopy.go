@@ -177,6 +177,13 @@ func UploadFileWithOptions(c config.Connection, v *config.Vault, localPath, remo
 			return result, transferError(machinecontract.TransferIntegrityMismatch, written, errors.New("remote integrity verification failed"))
 		}
 		message := strings.TrimSpace(stderr.String())
+		var remoteExit *gossh.ExitError
+		if message == "" && !errors.As(err, &remoteExit) {
+			// No exit status and no remote diagnostic: the session ended
+			// without the remote command reporting anything, which is a
+			// transport failure, not a remote permissions problem.
+			return result, transferError(machinecontract.TransferRemoteWriteFailed, written, err)
+		}
 		if message == "" {
 			message = err.Error()
 		}
