@@ -10,8 +10,11 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
+
+	gossh "golang.org/x/crypto/ssh"
 
 	"ssm/internal/config"
 	"ssm/internal/machinecontract"
@@ -21,6 +24,21 @@ type UploadOptions struct {
 	VerifySHA256  bool
 	Timeout       time.Duration
 	ResumeVersion string
+	// DirMode is the permission for parent directories created by a put.
+	// Zero selects DefaultUploadDirMode.
+	DirMode os.FileMode
+}
+
+// DefaultUploadDirMode is the permission of parent directories that put
+// creates automatically. Uploaded files keep their private temp-file + rename
+// flow and their own mode.
+const DefaultUploadDirMode os.FileMode = 0o755
+
+func (o UploadOptions) dirMode() os.FileMode {
+	if o.DirMode == 0 {
+		return DefaultUploadDirMode
+	}
+	return o.DirMode.Perm()
 }
 
 type TransferResult struct {
@@ -109,7 +127,7 @@ func UploadFileWithOptions(c config.Connection, v *config.Vault, localPath, remo
 	session.Stdout = &stdout
 	session.Stderr = &stderr
 
-	cmd := uploadCommandWithIntegrity(remotePath, info.Mode(), info.Size(), localDigest)
+	cmd := uploadCommandWithIntegrity(remotePath, info.Mode(), info.Size(), localDigest, opts.dirMode())
 	if err := session.Start(cmd); err != nil {
 		return result, transferError(machinecontract.TransferStartFailed, 0, err)
 	}
@@ -127,9 +145,17 @@ func UploadFileWithOptions(c config.Connection, v *config.Vault, localPath, remo
 	result.BytesSent = written
 	if copyErr != nil {
 		_ = stdin.Close()
+		// A remote that exits before reading (for example because it has no
+		// SHA-256 tool) closes the channel under the writer. Collect its exit
+		// so that first-hand reason is reported instead of a write error.
+		waitErr := waitSessionBounded(session, remoteExitGrace)
 		_ = session.Close()
 		if timedOut.Load() {
 			return result, transferError(machinecontract.TransferTimedOut, written, copyErr)
+		}
+		if waitErr != nil && strings.Contains(stdout.String(), integrityToolMissingMarker) {
+			result.Stage = "capability"
+			return result, transferKindError(machinecontract.IntegrityToolUnavailable, written, errors.New(remoteSHA256UnavailableMessage))
 		}
 		return result, transferError(machinecontract.TransferRemoteWriteFailed, written, copyErr)
 	}
@@ -140,6 +166,10 @@ func UploadFileWithOptions(c config.Connection, v *config.Vault, localPath, remo
 	if err := session.Wait(); err != nil {
 		if timedOut.Load() {
 			return result, transferError(machinecontract.TransferTimedOut, written, err)
+		}
+		if strings.Contains(stdout.String(), integrityToolMissingMarker) {
+			result.Stage = "capability"
+			return result, transferKindError(machinecontract.IntegrityToolUnavailable, written, errors.New(remoteSHA256UnavailableMessage))
 		}
 		if strings.Contains(stdout.String(), "SSM_INTEGRITY_MISMATCH") {
 			result.Stage = "integrity"
@@ -173,13 +203,25 @@ func transferError(kind machinecontract.Kind, bytesSent int64, cause error) *Tra
 	return transferClassifiedError(machinecontract.Classify(kind, machinecontract.Details{Cause: cause}), bytesSent, cause)
 }
 
+// transferKindError is transferError for failures whose free-form message must
+// not influence the process exit code: the exit comes from the contract, not
+// from keywords (such as "permission denied") in remote text.
+func transferKindError(kind machinecontract.Kind, bytesSent int64, cause error) *TransferError {
+	failure := machinecontract.Classify(kind, machinecontract.Details{Cause: cause})
+	return transferClassifiedError(failure, bytesSent, machinecontract.NewClassifiedError(failure))
+}
+
 func transferClassifiedError(failure machinecontract.Failure, bytesSent int64, cause error) *TransferError {
 	return &TransferError{failure: failure, BytesSent: bytesSent, Cause: cause}
 }
 
 // DownloadFile copies remotePath from the server to localPath.
 // Parent directories of localPath are created as needed.
-func DownloadFile(c config.Connection, v *config.Vault, remotePath, localPath string) (result TransferResult, resultErr error) {
+func DownloadFile(c config.Connection, v *config.Vault, remotePath, localPath string) (TransferResult, error) {
+	return downloadFileWithOptions(c, v, remotePath, localPath, DownloadOptions{})
+}
+
+func downloadFileWithOptions(c config.Connection, v *config.Vault, remotePath, localPath string, opts DownloadOptions) (result TransferResult, resultErr error) {
 	result = TransferResult{Direction: "get", Kind: "file", Stage: "local_write", Integrity: "not_checked", Atomic: true, Resume: "unsupported"}
 	staging, err := newFileDownloadStaging(localPath)
 	if err != nil {
@@ -194,12 +236,36 @@ func DownloadFile(c config.Connection, v *config.Vault, remotePath, localPath st
 	}
 	defer releaseClient(client, false)
 
+	var timedOut atomic.Bool
+	var active sessionSet
+	if opts.Timeout > 0 {
+		// One deadline covers the digest probe and the download.
+		deadline := time.AfterFunc(opts.Timeout, func() {
+			timedOut.Store(true)
+			active.closeAll()
+		})
+		defer deadline.Stop()
+	}
+	remoteDigest := ""
+	if opts.VerifySHA256 {
+		result.Stage = "integrity"
+		remoteDigest, err = remoteFileSHA256(client, remotePath, &active)
+		if err != nil {
+			if timedOut.Load() {
+				return result, transferError(machinecontract.TransferTimedOut, 0, err)
+			}
+			return result, err
+		}
+		result.RemoteSHA256 = remoteDigest
+	}
+
 	session, err := client.NewSession()
 	if err != nil {
 		result.Stage = "session"
 		return result, ClassifyError(err, c)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
+	active.add(session)
 
 	session.Stdout = staging.file
 	sessionStderr, err := machinecontract.NewDiagnosticSpool(os.Stderr)
@@ -218,7 +284,23 @@ func DownloadFile(c config.Connection, v *config.Vault, remotePath, localPath st
 	cmd := downloadCommand(remotePath)
 	result.Stage = "remote_read"
 	if err := session.Run(cmd); err != nil {
+		if timedOut.Load() {
+			result.Stage = "timeout"
+			return result, transferError(machinecontract.TransferTimedOut, 0, err)
+		}
 		return result, transferError(machinecontract.TransferDownloadRemoteRead, 0, err)
+	}
+	if opts.VerifySHA256 {
+		localDigest, err := fileSHA256(staging.path)
+		if err != nil {
+			return result, transferError(machinecontract.TransferDownloadLocalWrite, 0, err)
+		}
+		result.LocalSHA256 = localDigest
+		if localDigest != remoteDigest {
+			result.Stage = "integrity"
+			result.Integrity = "mismatch"
+			return result, transferError(machinecontract.TransferDownloadIntegrityMismatch, 0, errors.New("downloaded file SHA-256 does not match the remote digest"))
+		}
 	}
 	result.BytesReceived, err = staging.publish(localPath, systemFileDownloadPublishOperations())
 	if err != nil {
@@ -230,19 +312,123 @@ func DownloadFile(c config.Connection, v *config.Vault, remotePath, localPath st
 	diagnosticsSucceeded = true
 	result.OK = true
 	result.Stage = "complete"
+	if opts.VerifySHA256 {
+		result.Integrity = "sha256_verified"
+	}
 	return result, nil
 }
 
-func uploadCommand(remotePath string, mode os.FileMode) string {
-	return uploadCommandWithIntegrity(remotePath, mode, -1, "")
+// sessionSet lets one timer close every SSH session of a multi-step transfer.
+type sessionSet struct {
+	mu       sync.Mutex
+	sessions []*gossh.Session
+	closed   bool
 }
 
-func uploadCommandWithIntegrity(remotePath string, mode os.FileMode, size int64, digest string) string {
+func (s *sessionSet) add(session *gossh.Session) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		_ = session.Close()
+		return
+	}
+	s.sessions = append(s.sessions, session)
+}
+
+func (s *sessionSet) closeAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	for _, session := range s.sessions {
+		_ = session.Close()
+	}
+}
+
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path) //nolint:gosec // path is the internally created download staging file
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// remoteFileSHA256 asks the remote host for the SHA-256 of a regular file using
+// the shared sha256sum -> shasum -> openssl probe.
+func remoteFileSHA256(client *gossh.Client, remotePath string, active *sessionSet) (string, error) {
+	session, err := client.NewSession()
+	if err != nil {
+		return "", transferError(machinecontract.TransferSessionOpenFailed, 0, err)
+	}
+	active.add(session)
+	defer func() { _ = session.Close() }()
+	var stdout, stderr bytes.Buffer
+	session.Stdout, session.Stderr = &stdout, &stderr
+	command := remoteSHA256Helpers + "ssm_sha256_tool >/dev/null || { echo " + integrityToolMissingMarker + "; exit 69; }; " +
+		"[ -f " + ShellQuote(remotePath) + " ] || { echo 'not a regular file' >&2; exit 66; }; ssm_sha256 " + ShellQuote(remotePath)
+	if err := session.Run(command); err != nil {
+		if strings.Contains(stdout.String(), integrityToolMissingMarker) {
+			return "", transferKindError(machinecontract.IntegrityToolUnavailable, 0, errors.New(remoteSHA256UnavailableMessage))
+		}
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return "", transferError(machinecontract.TransferDownloadRemoteRead, 0, errors.New(message))
+	}
+	digest := strings.ToLower(strings.TrimSpace(stdout.String()))
+	if len(digest) != 64 {
+		return "", transferError(machinecontract.TransferDownloadRemoteRead, 0, errors.New("remote returned an invalid SHA-256 digest"))
+	}
+	return digest, nil
+}
+
+func uploadCommand(remotePath string, mode os.FileMode) string {
+	return uploadCommandWithIntegrity(remotePath, mode, -1, "", DefaultUploadDirMode)
+}
+
+// integrityToolMissingMarker is printed on stdout when the remote host has no
+// SHA-256 tool, before any payload is consumed.
+const integrityToolMissingMarker = "SSM_INTEGRITY_TOOL_MISSING"
+
+const remoteSHA256UnavailableMessage = "remote host has none of sha256sum, shasum, or openssl"
+
+// remoteSHA256Helpers defines POSIX sh functions shared by put --sha256 and
+// resume. The probe order is sha256sum, shasum -a 256, openssl dgst -sha256.
+// Input is read from stdin so file names never reach the tool's option parser.
+const remoteSHA256Helpers = "ssm_sha256_tool() { if command -v sha256sum >/dev/null 2>&1; then echo sha256sum; " +
+	"elif command -v shasum >/dev/null 2>&1; then echo shasum; " +
+	"elif command -v openssl >/dev/null 2>&1; then echo openssl; else return 1; fi; }; " +
+	"ssm_sha256() { case \"$(ssm_sha256_tool)\" in " +
+	"sha256sum) sha256sum < \"$1\" | awk '{print $1}';; " +
+	"shasum) shasum -a 256 < \"$1\" | awk '{print $1}';; " +
+	"openssl) openssl dgst -sha256 < \"$1\" | awk '{print $NF}';; " +
+	"*) return 127;; esac; }; "
+
+// remoteMkdirParents creates dir (and missing ancestors) with permission mode
+// regardless of the remote login umask. Existing directories are untouched.
+func remoteMkdirParents(dir string, mode os.FileMode) string {
+	return fmt.Sprintf("(umask %03o; mkdir -p -- %s)", uint32(0o777&^mode.Perm()), ShellQuote(dir))
+}
+
+func uploadCommandWithIntegrity(remotePath string, mode os.FileMode, size int64, digest string, dirMode os.FileMode) string {
+	if strings.HasPrefix(remotePath, "-") {
+		// A relative path beginning with '-' must not be parsed as an option
+		// by mkdir, chmod, or mv.
+		remotePath = "./" + remotePath
+	}
 	quotedPath := ShellQuote(remotePath)
 	parent := RemoteParentDir(remotePath)
 	prefix := "umask 077; "
+	if digest != "" {
+		prefix += remoteSHA256Helpers + "ssm_sha256_tool >/dev/null || { echo " + integrityToolMissingMarker + "; exit 69; }; "
+	}
 	if parent != "" {
-		prefix += "mkdir -p " + ShellQuote(parent) + " && "
+		prefix += remoteMkdirParents(parent, dirMode) + " && "
 	}
 	// Stream into a sibling temporary file and rename only after the complete
 	// payload and mode have been written. A failed transfer leaves the previous
@@ -252,7 +438,7 @@ func uploadCommandWithIntegrity(remotePath string, mode os.FileMode, size int64,
 		checks += fmt.Sprintf("[ \"$actual_size\" = %d ] || { echo SSM_INTEGRITY_MISMATCH; exit 65; }; ", size)
 	}
 	if digest != "" {
-		checks += fmt.Sprintf("actual_sha=$(sha256sum -- \"$tmp\" | awk '{print $1}') || exit 74; [ \"$actual_sha\" = %s ] || { echo SSM_INTEGRITY_MISMATCH; exit 65; }; ", ShellQuote(digest))
+		checks += fmt.Sprintf("actual_sha=$(ssm_sha256 \"$tmp\") || exit 74; [ \"$actual_sha\" = %s ] || { echo SSM_INTEGRITY_MISMATCH; exit 65; }; ", ShellQuote(digest))
 	} else {
 		checks += "actual_sha=-; "
 	}

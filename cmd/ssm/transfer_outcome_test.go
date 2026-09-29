@@ -87,7 +87,7 @@ func TestCompiledTransferOutcomeMatrix(t *testing.T) {
 
 func TestRequestV1GetRejectsExplicitFalseUnsupportedFields(t *testing.T) {
 	f := newCompiledTransferFixture(t)
-	for _, field := range []string{"deep", "no_reuse", "sha256"} {
+	for _, field := range []string{"deep", "no_reuse", "preflight"} {
 		t.Run(field, func(t *testing.T) {
 			request := map[string]any{
 				"version": 1, "op": "get", "alias": f.alias,

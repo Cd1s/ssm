@@ -267,6 +267,21 @@ type putOptions struct {
 	verifySHA256                bool
 	timeout                     time.Duration
 	resumeVersion               string
+	dirMode                     os.FileMode
+}
+
+var errInvalidDirMode = errors.New("invalid --dir-mode")
+
+// parseDirMode parses an octal directory permission such as 0755 or 750.
+func parseDirMode(value string) (os.FileMode, error) {
+	mode, err := strconv.ParseUint(strings.TrimSpace(value), 8, 32)
+	if err != nil || mode > 0o777 {
+		return 0, fmt.Errorf("%w: %q must be an octal permission such as 0755 (at most 0777)", errInvalidDirMode, value)
+	}
+	if mode&0o300 != 0o300 {
+		return 0, fmt.Errorf("%w: %q lacks owner write and execute (0300), so creating nested directories would fail", errInvalidDirMode, value)
+	}
+	return os.FileMode(mode), nil
 }
 
 func parsePutArgs(args []string) (putOptions, error) {
@@ -296,6 +311,19 @@ func parsePutArgs(args []string) (putOptions, error) {
 				return opts, fmt.Errorf("--timeout requires a positive duration")
 			}
 			opts.timeout = duration
+		case args[i] == "--dir-mode" && i+1 < len(args):
+			i++
+			mode, err := parseDirMode(args[i])
+			if err != nil {
+				return opts, err
+			}
+			opts.dirMode = mode
+		case strings.HasPrefix(args[i], "--dir-mode="):
+			mode, err := parseDirMode(strings.TrimPrefix(args[i], "--dir-mode="))
+			if err != nil {
+				return opts, err
+			}
+			opts.dirMode = mode
 		case strings.HasPrefix(args[i], "-"):
 			return opts, fmt.Errorf("unknown put option %q", args[i])
 		default:
@@ -315,7 +343,11 @@ func parsePutArgs(args []string) (putOptions, error) {
 func runPutArgs(args []string) {
 	opts, err := parsePutArgs(args)
 	if err != nil {
-		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.TransferArgumentsInvalid, machinecontract.Details{Cause: err}))
+		kind := machinecontract.TransferArgumentsInvalid
+		if errors.Is(err, errInvalidDirMode) {
+			kind = machinecontract.TransferDirModeInvalid
+		}
+		os.Exit(machinecontract.WriteClassified(machineJSON, kind, machinecontract.Details{Cause: err}))
 	}
 	runPutWithOptions(opts)
 }
@@ -334,7 +366,7 @@ func runPutWithOptions(opts putOptions) {
 	if !ok {
 		connectionNotFound(opts.name, v)
 	}
-	result, err := ssh.UploadPathWithOptions(c, v, opts.localPath, opts.remotePath, ssh.UploadOptions{VerifySHA256: opts.verifySHA256, Timeout: opts.timeout, ResumeVersion: opts.resumeVersion})
+	result, err := ssh.UploadPathWithOptions(c, v, opts.localPath, opts.remotePath, ssh.UploadOptions{VerifySHA256: opts.verifySHA256, Timeout: opts.timeout, ResumeVersion: opts.resumeVersion, DirMode: opts.dirMode})
 	if err != nil {
 		context := machinecontract.SSHContext{Alias: c.Name, Host: c.Host, Port: c.Port}
 		bytesSent := result.BytesSent
@@ -368,7 +400,61 @@ func runPutWithOptions(opts putOptions) {
 	}
 }
 
-func runGet(name, remotePath, localPath string) {
+type getOptions struct {
+	name, remotePath, localPath string
+	verifySHA256                bool
+	timeout                     time.Duration
+}
+
+// parseGetArgs accepts the flag set shared with put (except --resume and
+// --dir-mode) in any position around the three positional arguments.
+func parseGetArgs(args []string) (getOptions, error) {
+	var opts getOptions
+	positionals := make([]string, 0, 3)
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--json":
+			machineJSON = true
+		case args[i] == "--sha256":
+			opts.verifySHA256 = true
+		case args[i] == "--timeout" && i+1 < len(args):
+			i++
+			duration, err := time.ParseDuration(args[i])
+			if err != nil || duration <= 0 {
+				return opts, fmt.Errorf("--timeout requires a positive duration")
+			}
+			opts.timeout = duration
+		case strings.HasPrefix(args[i], "--timeout="):
+			duration, err := time.ParseDuration(strings.TrimPrefix(args[i], "--timeout="))
+			if err != nil || duration <= 0 {
+				return opts, fmt.Errorf("--timeout requires a positive duration")
+			}
+			opts.timeout = duration
+		case args[i] == "--resume" || strings.HasPrefix(args[i], "--resume="):
+			return opts, fmt.Errorf("get does not support --resume")
+		case strings.HasPrefix(args[i], "-"):
+			return opts, fmt.Errorf("unknown get option %q", args[i])
+		default:
+			positionals = append(positionals, args[i])
+		}
+	}
+	if len(positionals) != 3 {
+		return opts, fmt.Errorf("get requires alias, remote path, and local path")
+	}
+	opts.name, opts.remotePath, opts.localPath = positionals[0], positionals[1], positionals[2]
+	return opts, nil
+}
+
+func runGetArgs(args []string) {
+	opts, err := parseGetArgs(args)
+	if err != nil {
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GetArgumentsInvalid, machinecontract.Details{Cause: err}))
+	}
+	runGet(opts)
+}
+
+func runGet(opts getOptions) {
+	name, remotePath, localPath := opts.name, opts.remotePath, opts.localPath
 	if _, err := syncTransaction(false).Refresh(); err != nil {
 		failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullFailed)
 		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
@@ -382,7 +468,7 @@ func runGet(name, remotePath, localPath string) {
 	if !ok {
 		connectionNotFound(name, v)
 	}
-	result, err := ssh.DownloadPath(c, v, remotePath, localPath)
+	result, err := ssh.DownloadPathWithOptions(c, v, remotePath, localPath, ssh.DownloadOptions{VerifySHA256: opts.verifySHA256, Timeout: opts.timeout})
 	if err != nil {
 		context := machinecontract.SSHContext{
 			Alias: name, ResolvedAlias: c.Name, Host: c.Host, Port: c.Port, Stage: result.Stage,
@@ -401,6 +487,7 @@ func runGet(name, remotePath, localPath string) {
 				Direction: result.Direction, Kind: result.Kind, Alias: name,
 				Remote: remotePath, Local: localPath, BytesReceived: received,
 				Integrity: result.Integrity, Atomic: atomic, Resume: result.Resume,
+				LocalSHA256: result.LocalSHA256, RemoteSHA256: result.RemoteSHA256,
 			})
 			os.Exit(machinecontract.WriteFailure(true, failure, document))
 		}
@@ -417,6 +504,7 @@ func runGet(name, remotePath, localPath string) {
 			OK: true, Action: "get", Direction: result.Direction, Kind: result.Kind,
 			Alias: name, Remote: remotePath, Local: localPath, Stage: result.Stage,
 			BytesReceived: received, Integrity: result.Integrity, Atomic: &atomic, Resume: result.Resume,
+			LocalSHA256: result.LocalSHA256, RemoteSHA256: result.RemoteSHA256,
 		})
 	}
 }

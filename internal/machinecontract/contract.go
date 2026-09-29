@@ -191,6 +191,11 @@ const (
 	TransferDownloadLocalWrite          Kind = "transfer_download_local_write"
 	TransferDownloadPublish             Kind = "transfer_download_publish"
 	TransferDownloadRestoreFailed       Kind = "transfer_download_restore_failed"
+	TransferDownloadIntegrityMismatch   Kind = "transfer_download_integrity_mismatch"
+	TransferRemoteExtractFailed         Kind = "transfer_remote_extract_failed"
+	TransferDirModeInvalid              Kind = "transfer_dir_mode_invalid"
+	IntegrityToolUnavailable            Kind = "integrity_tool_unavailable"
+	GetArgumentsInvalid                 Kind = "get_arguments_invalid"
 )
 
 const ExitConnectionFailed = 255
@@ -558,7 +563,7 @@ var failurePolicies = map[Kind]failurePolicy{
 	},
 	TransferArgumentsInvalid: {
 		Code: CodeInvalidArgs, Stage: "validate",
-		Hint: "use sshctl put <alias> <local> <remote> [--resume=v1] [--sha256] [--timeout <duration>] [--json]", Exit: 2,
+		Hint: "use sshctl put <alias> <local> <remote> [--resume=v1] [--sha256] [--timeout <duration>] [--dir-mode <octal>] [--json]", Exit: 2,
 	},
 	MapNoTargets: {
 		Code: "no_targets", Hint: "refresh sshctl host list and use exact aliases or reviewed patterns", Exit: 2, Human: humanMapNoTargets,
@@ -776,7 +781,7 @@ var failurePolicies = map[Kind]failurePolicy{
 	},
 	TransferDirectoryOptionsUnsupported: {
 		Code: "unsupported_transfer_option", Stage: "validate",
-		Hint: "SHA-256, timeout, and resume v1 options support regular-file put only", Exit: 1,
+		Hint: "SHA-256 and resume v1 options support regular files only; directory put also does not support timeout", Exit: 1,
 	},
 	TransferDownloadRemoteRead: {
 		Code: "remote_read_failed", Stage: "remote_read",
@@ -789,6 +794,26 @@ var failurePolicies = map[Kind]failurePolicy{
 	TransferDownloadPublish: {
 		Code: "publish_failed", Stage: "publish",
 		Hint: "check local destination permissions; the previous final path was preserved", Exit: 1,
+	},
+	TransferDownloadIntegrityMismatch: {
+		Code: "integrity_failed", Stage: "integrity",
+		Hint: "downloaded bytes differ from the remote SHA-256; the final local path was not replaced", Exit: 1,
+	},
+	TransferRemoteExtractFailed: {
+		Code: "remote_write_failed", Stage: "remote_extract",
+		Hint: "remote tar extraction failed and the destination may contain partially extracted files; fix the remote error (permissions, space, target type) and retry", Exit: 1,
+	},
+	TransferDirModeInvalid: {
+		Code: CodeInvalidArgs, Stage: "validate",
+		Hint: "--dir-mode must be an octal permission such as 0755 (at most 0777) that includes owner write and execute (0300)", Exit: 2,
+	},
+	IntegrityToolUnavailable: {
+		Code: "integrity_tool_unavailable", Stage: "capability",
+		Hint: "the remote host has none of sha256sum, shasum, or openssl; retry without --sha256 or install one of them", Exit: 1,
+	},
+	GetArgumentsInvalid: {
+		Code: CodeInvalidArgs, Stage: "validate",
+		Hint: "use sshctl get <alias> <remote> <local> [--sha256] [--timeout <duration>] [--json]", Exit: 2,
 	},
 	TransferDownloadRestoreFailed: {
 		Code: "publish_failed", Stage: "publish",
@@ -1317,7 +1342,7 @@ func ClassifyDownload(err error, context SSHContext) Failure {
 
 func isDownloadOutcomeFailure(failure Failure) bool {
 	switch failure.Error {
-	case "remote_read_failed", "local_write_failed", "publish_failed":
+	case "remote_read_failed", "local_write_failed", "publish_failed", "integrity_failed", "integrity_tool_unavailable", "transfer_timeout", "unsupported_transfer_option":
 		return true
 	default:
 		return false

@@ -662,6 +662,7 @@ var reviewedCommandPolicyBoundaries = map[string]bool{
 	"runExecSpec":       true,
 	"exitRunArgvStream": true,
 	"runGet":            true,
+	"runGetArgs":        true,
 	"runHostCommand":    true,
 	"runHostKeyCommand": true,
 	"runKeysList":       true,

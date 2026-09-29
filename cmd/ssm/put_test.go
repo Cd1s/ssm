@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -26,6 +27,22 @@ func TestParsePutRejectsInvalidTimeoutAndUnknownOptions(t *testing.T) {
 	} {
 		if _, err := parsePutArgs(args); err == nil {
 			t.Fatalf("accepted invalid put args: %v", args)
+		}
+	}
+}
+
+func TestParseDirModeRequiresOwnerWriteAndExecute(t *testing.T) {
+	for _, bad := range []string{"0500", "0644", "0", "0999", "1777", "abc"} {
+		if _, err := parseDirMode(bad); err == nil {
+			t.Errorf("parseDirMode(%q) accepted an unusable mode", bad)
+		}
+	}
+	if err := func() error { _, err := parseDirMode("0500"); return err }(); err == nil || !strings.Contains(err.Error(), "0300") {
+		t.Errorf("error should explain the owner write/execute requirement: %v", err)
+	}
+	for _, good := range []string{"0755", "755", "0700", "0750", "0300"} {
+		if _, err := parseDirMode(good); err != nil {
+			t.Errorf("parseDirMode(%q): %v", good, err)
 		}
 	}
 }

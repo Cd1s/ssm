@@ -138,10 +138,10 @@ sshctl run my-server --stream
 
 ```bash
 sshctl put my-server ./notes.txt /tmp/notes.txt --sha256 --json
-sshctl get my-server /tmp/notes.txt ./notes.txt
+sshctl get my-server /tmp/notes.txt ./notes.txt --sha256 --timeout 30s --json
 ```
 
-`--sha256` 只适用于需要完整性核验的普通文件上传；目录传输的保证与普通文件不同，详见[进阶契约](#进阶--给-agent-与自动化)。
+`--sha256` 只适用于需要完整性核验的普通文件；目录传输的保证与普通文件不同，详见[进阶契约](#进阶--给-agent-与自动化)。远端依次探测 `sha256sum`、`shasum -a 256`、`openssl dgst -sha256`，三者都没有时返回 `error:integrity_tool_unavailable`（去掉 `--sha256` 即可）。`put` 自动创建的父目录默认权限为 `0755`，可用 `--dir-mode <八进制>`（如 `--dir-mode 0750`）覆盖；文件本身仍通过私有临时文件加 rename 写入，权限语义不变。`get` 与 `put` 接受同样位置无关的 `--json`、`--timeout`、`--sha256`（下载后在本地计算并与远端摘要比对，不一致则失败且不替换目标）；`get` 不支持 `--resume`。
 
 ### 添加或修改主机
 
@@ -239,7 +239,7 @@ v2 的 request schema 支持 `op:get`；v1.4.3/v1.4.4 必须使用[兼容桥接 
 
 ### 传输、resume 和公开字段
 
-v2 transfer result 按 `direction`（`put`/`get`）和 `kind`（`file`/`directory`）分支。普通文件只报告实际提供的 `atomic`、`integrity`、`resume` 和 byte 字段；目录传输明确报告 `atomic:false`、`integrity:not_available`、`resume:unsupported`，目录 get 不虚构 `bytes_received`。只有明确使用 `--resume=v1` 才启用普通文件续传，续传状态和完整性校验失败时不会替换目标文件。
+v2 transfer result 按 `direction`（`put`/`get`）和 `kind`（`file`/`directory`）分支。普通文件只报告实际提供的 `atomic`、`integrity`、`resume` 和 byte 字段；目录传输明确报告 `atomic:false`、`integrity:not_available`、`resume:unsupported`，目录 get 不虚构 `bytes_received`。只有明确使用 `--resume=v1` 才启用普通文件续传，续传状态和完整性校验失败时不会替换目标文件。目录上传遇到远端 tar 失败（权限、磁盘满、目标不是目录）会直接返回远端错误 `stage:remote_extract`，目标目录可能已部分写入，不会再逐文件重试；只有本机没有可执行的 `tar` 时才使用逐文件 fallback。目录下载在任一端失败时立即关闭另一端并有界退出。request v1 的 `op:put` 增加 `dir_mode`，`op:get` 增加 `sha256`/`timeout`（均为加性字段）。
 
 `status` 的在线刷新失败会返回 `error:sync_pull_failed` 与 `stage:sync_pull`；存在但格式错误的 `cloud.json` 会返回 `error:sync_config_error`。只有显式 `--offline` 才读取缓存。非 capture 的 human run 默认流式输出：stdout 逐字节透传（包括远端回显的值，与成功输出契约一致），stderr 中的显式 `--secret` 值替换为 `***`，并按行脱敏凭据形态的内容；没有大小上限，也不写临时文件，适合 `tar -czf - dir | tar -xzf -` 这类字节管道和长时间运行的命令。收到 SIGINT/SIGTERM/SIGHUP 时，sshctl 把信号转发给远端命令，输出 flush 后以 `error:interrupted` 和 128+信号编号退出。`--json` 会把完整 stdout/stderr 缓存在内存里再输出一个 JSON 值，失败结果整体脱敏；大输出请用 human 模式或 `get`。设置 `SSM_RUN_OUTPUT=buffered` 可恢复 v2.0.2 的回放模式：结果确定后再输出、失败时整体脱敏、每个流 8 MiB 上限，超限返回 `error:internal`。流式模式不再按行屏蔽 `-s`/`-f` 脚本正文（否则 `set -x` 轨迹会被抹掉），也不再事后脱敏失败时的 stdout，凭据请用 `--secret` 传入；启动时已被忽略的信号（如 `nohup`）保持忽略；`--json` 运行不转发信号。buffered 模式和目录/文件传输的诊断缓冲仍以 0600 私有临时文件保存原始字节，回放后删除，进程被杀留下的文件会在 24 小时后由下一次运行清理。
 

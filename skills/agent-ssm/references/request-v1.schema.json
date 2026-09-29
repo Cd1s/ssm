@@ -50,6 +50,7 @@
     "remote_path": {"type": "string", "minLength": 1},
     "resume": {"enum": ["v1"]},
     "sha256": {"type": "boolean"},
+    "dir_mode": {"type": "string", "pattern": "^0?[0-7]{1,3}$"},
     "host": {"$ref": "#/$defs/host"}
   },
   "$defs": {
@@ -78,7 +79,7 @@
       "if": {"properties": {"op": {"enum": ["run", "plan"]}}},
       "then": {
         "required": ["alias"],
-        "not": {"anyOf": [{"required": ["local_path"]}, {"required": ["remote_path"]}, {"required": ["resume"]}, {"required": ["sha256"]}]},
+        "not": {"anyOf": [{"required": ["local_path"]}, {"required": ["remote_path"]}, {"required": ["resume"]}, {"required": ["sha256"]}, {"required": ["dir_mode"]}]},
         "oneOf": [
           {"required": ["argv"], "not": {"anyOf": [{"required": ["shell_command"]}, {"required": ["script_file"]}]}},
           {"required": ["shell_command"], "not": {"anyOf": [{"required": ["argv"]}, {"required": ["script_file"]}]}},
@@ -101,7 +102,7 @@
       "if": {"properties": {"op": {"const": "get"}}},
       "then": {
         "required": ["alias", "local_path", "remote_path"],
-        "not": {"anyOf": [{"required": ["argv"]}, {"required": ["shell_command"]}, {"required": ["script_file"]}, {"required": ["script_args"]}, {"required": ["shell"]}, {"required": ["secret_files"]}, {"required": ["timeout"]}, {"required": ["no_reuse"]}, {"required": ["preflight"]}, {"required": ["deep"]}, {"required": ["resume"]}, {"required": ["sha256"]}, {"required": ["host"]}]}
+        "not": {"anyOf": [{"required": ["argv"]}, {"required": ["shell_command"]}, {"required": ["script_file"]}, {"required": ["script_args"]}, {"required": ["shell"]}, {"required": ["secret_files"]}, {"required": ["no_reuse"]}, {"required": ["preflight"]}, {"required": ["deep"]}, {"required": ["resume"]}, {"required": ["dir_mode"]}, {"required": ["host"]}]}
       }
     }
   ]

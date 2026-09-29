@@ -69,6 +69,14 @@ type compiledCLIHarness struct {
 }
 
 func TestMain(m *testing.M) {
+	if os.Getenv("SSM_TEST_TAR_HELPER") == "late-padding" {
+		// A valid empty archive (end marker) followed, after the receiver has
+		// stopped reading, by trailing record padding; exits 0.
+		_, _ = os.Stdout.Write(make([]byte, 1024))
+		time.Sleep(400 * time.Millisecond)
+		_, _ = os.Stdout.Write(make([]byte, 8192))
+		os.Exit(0)
+	}
 	if os.Getenv("SSM_TEST_TAR_HELPER") == "1" {
 		_, _ = io.WriteString(os.Stdout, "compiled fixture invalid tar payload\n")
 		_, _ = io.WriteString(os.Stderr, "config=\"{\\\"token\\\":\\\"FALLBACK_LOCAL_TAR_DIAGNOSTIC\\\"}\"\n")
@@ -1935,7 +1943,7 @@ func TestCompiledSuccessfulTransferDiagnosticsRemainByteExact(t *testing.T) {
 	}
 }
 
-func TestCompiledSuccessfulDirectoryFallbackPreservesOrderedDiagnostics(t *testing.T) {
+func TestCompiledSuccessfulDirectoryFallbackWithoutLocalTarIsSilent(t *testing.T) {
 	const (
 		alias    = "fallback-diagnostics"
 		password = "FALLBACK_DIAGNOSTICS_PASSWORD_CANARY" //nolint:gosec // test-only fake credential canary
@@ -1955,12 +1963,12 @@ func TestCompiledSuccessfulDirectoryFallbackPreservesOrderedDiagnostics(t *testi
 		t.Fatalf("write fallback source: %v", err)
 	}
 	remote := filepath.Join(t.TempDir(), "fallback-destination")
+	// Only a missing local tar selects the per-file fallback (a failing tar is
+	// reported, see TestCompiledDirectoryPutLocalTarFailureIsNotMaskedByFallback).
 	result := cli.RunWithEnv(t, "sshctl", nil, map[string]string{
-		"PATH":                cli.TarFailureHelperDir(t),
-		"SSM_TEST_TAR_HELPER": "1",
+		"PATH": t.TempDir(),
 	}, "--offline", "put", alias, local, remote)
-	wantStderr := "config=\"{\\\"token\\\":\\\"FALLBACK_LOCAL_TAR_DIAGNOSTIC\\\"}\"\n" +
-		"compiled fixture tar stream invalid\n"
+	wantStderr := ""
 	if result.ProcessExit != 0 || result.Stdout != "" || result.Stderr != wantStderr {
 		t.Fatalf(
 			"successful fallback diagnostics changed: exit=%d stdout=%q stderr=%q, want exit=0 stdout empty stderr=%q",

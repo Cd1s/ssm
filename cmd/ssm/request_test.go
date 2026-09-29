@@ -23,9 +23,8 @@ func TestRequestV1PublishedSchemaIncludesStrictGet(t *testing.T) {
 	for _, fragment := range []string{
 		`"get"`,
 		`"required": ["alias", "local_path", "remote_path"]`,
-		`"required": ["timeout"]`,
 		`"required": ["resume"]`,
-		`"required": ["sha256"]`,
+		`"required": ["dir_mode"]`,
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Errorf("published request schema missing get contract fragment %s", fragment)
