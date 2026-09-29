@@ -17,6 +17,20 @@ import (
 	"ssm/internal/synctransaction"
 )
 
+// HostKeyTypeChangedError is returned by the host-key callback when known_hosts
+// has entries for the endpoint but none of the same key type as the observed
+// key. It unwraps to the underlying *knownhosts.KeyError.
+type HostKeyTypeChangedError struct {
+	KeyError     *knownhosts.KeyError
+	ObservedType string
+}
+
+func (e *HostKeyTypeChangedError) Error() string {
+	return "knownhosts: no known_hosts entry of key type " + e.ObservedType
+}
+
+func (e *HostKeyTypeChangedError) Unwrap() error { return e.KeyError }
+
 // Kind identifies a failure context without exposing its serialized policy to
 // callers.
 type Kind string
@@ -38,6 +52,7 @@ const (
 	DialNetwork                         Kind = "dial_network"
 	HostKeyUnknown                      Kind = "host_key_unknown"
 	HostKeyMismatch                     Kind = "host_key_mismatch"
+	HostKeyTypeChanged                  Kind = "host_key_type_changed"
 	AuthenticationFailed                Kind = "authentication_failed"
 	NoAuthenticationConfigured          Kind = "no_authentication_configured"
 	SessionFailed                       Kind = "session_failed"
@@ -206,6 +221,10 @@ const (
 	CodeInternal       = "internal"
 )
 
+// CodeHostKeyTypeChanged means known_hosts has entries for the endpoint but
+// none of the observed key's type.
+const CodeHostKeyTypeChanged = "host_key_type_changed"
+
 type humanStyle uint8
 
 const (
@@ -302,6 +321,11 @@ var failurePolicies = map[Kind]failurePolicy{
 	HostKeyMismatch: {
 		Code: CodeHostKey, Stage: "dial",
 		Hint: "do not remove or rescan automatically; run sshctl host-key inspect <alias> --json, verify out-of-band, then accept the exact observed fingerprint",
+		Exit: ExitConnectionFailed,
+	},
+	HostKeyTypeChanged: {
+		Code: CodeHostKeyTypeChanged, Stage: "dial",
+		Hint: "the server no longer presents any host key type recorded in known_hosts; do not remove or rescan automatically; run sshctl host-key inspect <alias> --json, verify out-of-band, then accept the exact observed fingerprint (accept adds the new key type and keeps the other recorded types)",
 		Exit: ExitConnectionFailed,
 	},
 	AuthenticationFailed: {
@@ -1102,7 +1126,11 @@ func ClassifySSH(err error, context SSHContext) Failure {
 	kind := InternalFailure
 
 	var keyErr *knownhosts.KeyError
+	var typeChanged *HostKeyTypeChangedError
 	switch {
+	case errors.As(err, &typeChanged):
+		kind = HostKeyTypeChanged
+		details.Message = "remote host key type is not recorded in known_hosts (server key type changed, reinstalled, or MITM)"
 	case errors.As(err, &keyErr) && len(keyErr.Want) == 0:
 		kind = HostKeyUnknown
 		details.Message = "remote host key is not trusted yet"

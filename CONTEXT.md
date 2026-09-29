@@ -71,6 +71,11 @@ plans and speculative APIs live elsewhere.
 - First-use and changed SSH host keys are rejected by normal operations.
 - Acceptance requires inspecting the observed key, verifying it through a
   trusted channel, and explicitly accepting the exact fingerprint.
+- Host-key algorithms are negotiated in the order of the key types already
+  recorded in known_hosts for the endpoint. A changed key of a recorded type is
+  a mismatch; an endpoint that only offers other key types is a distinct
+  key-type change. Acceptance replaces only the entry of the accepted key type
+  and leaves other key types and other hosts untouched.
 - Alias suggestions and search results are candidates only; callers choose an
   exact alias before connecting.
 

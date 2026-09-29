@@ -2,7 +2,9 @@ package main
 
 import (
 	"archive/tar"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
@@ -255,7 +257,10 @@ func (h *compiledCLIHarness) writeConfigFile(t *testing.T, name string, data []b
 }
 
 type compiledSSHFixtureOptions struct {
-	Password                  string
+	Password string
+	// HostKeyTypes selects the host keys the fixture offers ("ed25519",
+	// "ecdsa"). Empty means a single ed25519 key.
+	HostKeyTypes              []string
 	RejectSessions            bool
 	UploadTarSuccessStdout    string
 	UploadTarSuccessStderr    string
@@ -271,6 +276,7 @@ type compiledSSHFixtureOptions struct {
 type compiledSSHFixture struct {
 	listener net.Listener
 	signer   gossh.Signer
+	signers  map[string]gossh.Signer
 	options  compiledSSHFixtureOptions
 
 	connections atomic.Int64
@@ -285,13 +291,40 @@ type compiledSSHFixture struct {
 
 func newCompiledSSHFixture(t *testing.T, options compiledSSHFixtureOptions) *compiledSSHFixture {
 	t.Helper()
-	_, private, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate compiled CLI fixture host key: %v", err)
+	kinds := options.HostKeyTypes
+	if len(kinds) == 0 {
+		kinds = []string{"ed25519"}
 	}
-	signer, err := gossh.NewSignerFromKey(private)
-	if err != nil {
-		t.Fatalf("create compiled CLI fixture host signer: %v", err)
+	signers := map[string]gossh.Signer{}
+	var ordered []gossh.Signer
+	for _, kind := range kinds {
+		var private any
+		switch kind {
+		case "ed25519":
+			_, key, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatalf("generate compiled CLI fixture host key: %v", err)
+			}
+			private = key
+		case "ecdsa":
+			key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			if err != nil {
+				t.Fatalf("generate compiled CLI fixture ECDSA host key: %v", err)
+			}
+			private = key
+		default:
+			t.Fatalf("unknown compiled CLI fixture host key type %q", kind)
+		}
+		hostSigner, err := gossh.NewSignerFromKey(private)
+		if err != nil {
+			t.Fatalf("create compiled CLI fixture host signer: %v", err)
+		}
+		signers[kind] = hostSigner
+		ordered = append(ordered, hostSigner)
+	}
+	signer := ordered[0]
+	if ed, ok := signers["ed25519"]; ok {
+		signer = ed
 	}
 	serverConfig := &gossh.ServerConfig{
 		PasswordCallback: func(_ gossh.ConnMetadata, password []byte) (*gossh.Permissions, error) {
@@ -301,7 +334,9 @@ func newCompiledSSHFixture(t *testing.T, options compiledSSHFixtureOptions) *com
 			return nil, nil
 		},
 	}
-	serverConfig.AddHostKey(signer)
+	for _, hostSigner := range ordered {
+		serverConfig.AddHostKey(hostSigner)
+	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen for compiled CLI SSH fixture: %v", err)
@@ -309,6 +344,7 @@ func newCompiledSSHFixture(t *testing.T, options compiledSSHFixtureOptions) *com
 	fixture := &compiledSSHFixture{
 		listener:  listener,
 		signer:    signer,
+		signers:   signers,
 		options:   options,
 		serveDone: make(chan struct{}),
 		active:    map[net.Conn]struct{}{},

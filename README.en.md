@@ -62,7 +62,7 @@ sshctl --json run my-server --argv hostname
 
 `my-server` is an example name; replace it with an alias from the previous step. `--argv hostname` passes `hostname` as one explicit remote argument instead of assembling a local shell string.
 
-If this is your first use and no host exists yet, follow “Add or change a host” below. If you see `host_key_unknown` or `host_key_mismatch`, verify the fingerprint through the host-key flow under “Check a connection” first.
+If this is your first use and no host exists yet, follow “Add or change a host” below. If you see `host_key_unknown`, `host_key_mismatch`, or `host_key_type_changed`, verify the fingerprint through the host-key flow under “Check a connection” first.
 
 ## Six words to know
 
@@ -100,7 +100,7 @@ sshctl check my-server --json
 sshctl --json doctor my-server --deep
 ```
 
-For a new or changed host key, inspect and verify the full fingerprint first:
+For a new or changed host key, or a changed key type, inspect and verify the full fingerprint first:
 
 ```bash
 sshctl host-key inspect my-server --json
@@ -108,6 +108,8 @@ sshctl host-key accept my-server --fingerprint SHA256:REPLACE_WITH_VERIFIED_FING
 ```
 
 Replace the fingerprint only with the `observed_fingerprint` you verified through a trusted channel. Do not replace this process with automatic `ssh-keygen -R` plus `ssh-keyscan`.
+
+sshctl negotiates the key type already recorded in `known_hosts` for the host first (for example ed25519), so a host you connected to with OpenSSH is not reported as changed just because the server also offers ECDSA. `host_key_mismatch` means the key of a recorded type changed; `host_key_type_changed` (inspect status `type_changed`) means the server no longer presents any recorded key type. `accept` replaces only the entry of the same key type: other key types of that host and lines of other hosts are left untouched.
 
 ### Run a command
 

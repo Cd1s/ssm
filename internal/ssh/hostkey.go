@@ -1,12 +1,16 @@
 package ssh
 
 import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/sha1" //nolint:gosec // required by the known_hosts hashed host name format
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,6 +21,7 @@ import (
 
 	"ssm/internal/config"
 	"ssm/internal/machinecontract"
+	"ssm/internal/privatepath"
 )
 
 type HostKeyInspection struct {
@@ -26,7 +31,7 @@ type HostKeyInspection struct {
 	Host                string   `json:"host"`
 	Port                int      `json:"port"`
 	Address             string   `json:"address"`
-	Status              string   `json:"status"` // trusted|new|mismatch
+	Status              string   `json:"status"` // trusted|new|mismatch|type_changed
 	Classification      string   `json:"classification"`
 	Algorithm           string   `json:"algorithm"`
 	Fingerprint         string   `json:"fingerprint"`
@@ -78,7 +83,8 @@ func InspectHostKey(c config.Connection) (HostKeyInspection, error) {
 			observed = key
 			return stop
 		},
-		Timeout: DialTimeout(),
+		HostKeyAlgorithms: hostKeyAlgorithmsFor(report.KnownHostsPath, address),
+		Timeout:           DialTimeout(),
 	}
 	_, _, _, handshakeErr := gossh.NewClientConn(conn, address, cfg)
 	if observed == nil {
@@ -108,6 +114,9 @@ func InspectHostKey(c config.Connection) (HostKeyInspection, error) {
 	case "mismatch":
 		report.Message = "observed host key differs from known_hosts"
 		report.Hint = "treat as a possible interception until rebuild or reassignment is confirmed out-of-band; never remove and rescan automatically"
+	case "type_changed":
+		report.Message = "observed host key type is not among the key types recorded in known_hosts"
+		report.Hint = "the server no longer presents a recorded key type; verify observed_fingerprint out-of-band before host-key accept, which adds this key type and keeps the other recorded types; never remove and rescan automatically"
 	}
 	report.OK = true
 	return report, nil
@@ -145,6 +154,9 @@ func inspectKnownHost(path, address string, remote net.Addr, observed gossh.Publ
 		}
 	}
 	sort.Strings(fingerprints)
+	if plain, hasAuthority := splitCertAuthorities(path, keyErr.Want); !hasAuthority && !wantHasKeyType(plain, observed) {
+		return "type_changed", fingerprints, nil
+	}
 	return "mismatch", fingerprints, nil
 }
 
@@ -218,7 +230,8 @@ func scanObservedKey(c config.Connection) (gossh.PublicKey, error) {
 			observed = key
 			return stop
 		},
-		Timeout: DialTimeout(),
+		HostKeyAlgorithms: hostKeyAlgorithmsFor(KnownHostsPath(), address),
+		Timeout:           DialTimeout(),
 	})
 	if observed == nil {
 		message := "SSH handshake ended before a host key was received"
@@ -230,52 +243,140 @@ func scanObservedKey(c config.Connection) (gossh.PublicKey, error) {
 	return observed, nil
 }
 
+// replaceKnownHost records key for token in the known_hosts file at path. It
+// removes only the entries for that endpoint that have the same key type as
+// key and appends the new entry. Every other line (other hosts, other key
+// types, comments, blank lines, @cert-authority and @revoked markers) is kept
+// byte for byte. The file is replaced atomically and keeps its permissions.
 func replaceKnownHost(path, token string, key gossh.PublicKey) error {
-	original, err := os.ReadFile(path) //nolint:gosec // fixed ~/.ssh/known_hosts path
+	target := path
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		target = resolved
+	}
+	info, err := os.Stat(target)
 	if err != nil {
 		return hostKeyError(machinecontract.KnownHostsPermissionsFailed, err.Error(), err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".known_hosts.ssm.*")
+	original, err := os.ReadFile(target) //nolint:gosec // fixed ~/.ssh/known_hosts path
+	if err != nil {
+		return hostKeyError(machinecontract.KnownHostsPermissionsFailed, err.Error(), err)
+	}
+
+	updated := make([]byte, 0, len(original)+256)
+	for rest := original; len(rest) > 0; {
+		line := rest
+		if i := bytes.IndexByte(rest, '\n'); i >= 0 {
+			line, rest = rest[:i+1], rest[i+1:]
+		} else {
+			rest = nil
+		}
+		updated = append(updated, dropKnownHostEntry(line, token, key.Type())...)
+	}
+	if len(updated) > 0 && updated[len(updated)-1] != '\n' {
+		updated = append(updated, '\n')
+	}
+	updated = append(updated, knownhosts.Line([]string{token}, key)...)
+	updated = append(updated, '\n')
+
+	tmp, err := os.CreateTemp(filepath.Dir(target), ".known_hosts.ssm.*")
 	if err != nil {
 		return hostKeyError(machinecontract.SSHDirectoryPermissionsFailed, err.Error(), err)
 	}
 	tmpPath := tmp.Name()
+	committed := false
 	defer func() {
-		_ = os.Remove(tmpPath)
-		_ = os.Remove(tmpPath + ".old")
+		if !committed {
+			_ = os.Remove(tmpPath)
+		}
 	}()
-	if err := tmp.Chmod(0600); err != nil {
+	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
 		_ = tmp.Close()
 		return hostKeyError(machinecontract.SSHDirectoryPermissionsFailed, err.Error(), err)
 	}
-	if _, err := tmp.Write(original); err != nil {
+	if runtime.GOOS == "windows" {
+		// Windows has no mode bits to preserve; keep the private-ACL policy.
+		if err := privatepath.RestrictFile(tmpPath); err != nil {
+			_ = tmp.Close()
+			return hostKeyError(machinecontract.SSHDirectoryPermissionsFailed, err.Error(), err)
+		}
+	}
+	if _, err := tmp.Write(updated); err != nil {
+		_ = tmp.Close()
+		return hostKeyError(machinecontract.KnownHostsUnchanged, err.Error(), err)
+	}
+	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		return hostKeyError(machinecontract.KnownHostsUnchanged, err.Error(), err)
 	}
 	if err := tmp.Close(); err != nil {
 		return hostKeyError(machinecontract.KnownHostsUnchanged, err.Error(), err)
 	}
-
-	cmd := exec.Command("ssh-keygen", "-R", token, "-f", tmpPath) //nolint:gosec // fixed executable and argument vector
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		message := strings.TrimSpace(string(output))
-		if message == "" {
-			message = err.Error()
-		}
-		return hostKeyError(machinecontract.KnownHostsUpdateFailed, message, err)
-	}
-	if err := saveHostKey(tmpPath, token, key); err != nil {
+	if err := os.Rename(tmpPath, target); err != nil {
 		return hostKeyError(machinecontract.KnownHostsUnchanged, err.Error(), err)
 	}
-	updated, err := os.ReadFile(tmpPath) //nolint:gosec // private temporary known_hosts path
-	if err != nil {
-		return hostKeyError(machinecontract.KnownHostsUnchanged, err.Error(), err)
-	}
-	if err := config.WritePrivateFile(path, updated); err != nil {
-		return hostKeyError(machinecontract.KnownHostsUnchanged, err.Error(), err)
-	}
+	committed = true
 	return nil
+}
+
+// dropKnownHostEntry returns line without the token entry of the given key
+// type, or unchanged when it does not carry one. Marker lines (@cert-authority,
+// @revoked), comments, blank lines and lines of other key types are returned
+// unchanged. When the line also lists other host patterns, only the token
+// pattern is removed from its host field and the rest of the line is kept.
+func dropKnownHostEntry(line []byte, token, keyType string) []byte {
+	text := string(line)
+	trimmed := strings.TrimLeft(text, " \t")
+	if trimmed == "" || trimmed[0] == '#' || trimmed[0] == '@' || trimmed[0] == '\n' || trimmed[0] == '\r' {
+		return line
+	}
+	fields := strings.Fields(trimmed)
+	if len(fields) < 3 || fields[1] != keyType {
+		return line
+	}
+	patterns := strings.Split(fields[0], ",")
+	kept := make([]string, 0, len(patterns))
+	matched := false
+	for _, pattern := range patterns {
+		if knownHostPatternIs(pattern, token) {
+			matched = true
+			continue
+		}
+		kept = append(kept, pattern)
+	}
+	if !matched {
+		return line
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	leading := text[:len(text)-len(trimmed)]
+	return []byte(leading + strings.Join(kept, ",") + trimmed[len(fields[0]):])
+}
+
+// knownHostPatternIs reports whether one known_hosts host pattern, plain or
+// hashed, names exactly the normalized host token.
+func knownHostPatternIs(pattern, token string) bool {
+	if strings.HasPrefix(pattern, "|") {
+		parts := strings.Split(pattern, "|")
+		if len(parts) != 4 || parts[1] != "1" {
+			return false
+		}
+		salt, err := base64.StdEncoding.DecodeString(parts[2])
+		if err != nil {
+			return false
+		}
+		want, err := base64.StdEncoding.DecodeString(parts[3])
+		if err != nil {
+			return false
+		}
+		mac := hmac.New(sha1.New, salt) //nolint:gosec // known_hosts hashed host names are HMAC-SHA1 by definition
+		_, _ = mac.Write([]byte(token))
+		return hmac.Equal(mac.Sum(nil), want)
+	}
+	if strings.HasPrefix(pattern, "!") || strings.ContainsAny(pattern, "*?") {
+		return false
+	}
+	return knownhosts.Normalize(pattern) == token
 }
 
 func knownHostToken(c config.Connection) string {

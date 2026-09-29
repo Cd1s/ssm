@@ -117,7 +117,7 @@ The agent must stop and ask before:
 - replacing the vault with an unreviewed bulk import;
 - exposing or reading secret material.
 
-On `host_key_unknown` or `host_key_mismatch`, inspect the exact alias, verify
+On `host_key_unknown`, `host_key_mismatch`, or `host_key_type_changed`, inspect the exact alias, verify
 the full observed fingerprint through a trusted channel, and accept only that
 fingerprint with `--yes`. Never use a blind key scan or remove known hosts
 automatically.

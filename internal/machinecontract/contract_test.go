@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/ssh/knownhosts"
 
 	"ssm/internal/privatepath"
 	"ssm/internal/synctransaction"
@@ -99,6 +102,13 @@ func TestMachineContractMatrix(t *testing.T) {
 			details: Details{Message: "host key mismatch", Alias: "host-key"},
 			code:    "host_key_mismatch", stage: "dial",
 			hint: "do not remove or rescan automatically; run sshctl host-key inspect <alias> --json, verify out-of-band, then accept the exact observed fingerprint",
+			exit: 255, alias: "host-key",
+		},
+		{
+			name: "host key type changed", kind: HostKeyTypeChanged,
+			details: Details{Message: "host key type changed", Alias: "host-key"},
+			code:    "host_key_type_changed", stage: "dial",
+			hint: "the server no longer presents any host key type recorded in known_hosts; do not remove or rescan automatically; run sshctl host-key inspect <alias> --json, verify out-of-band, then accept the exact observed fingerprint (accept adds the new key type and keeps the other recorded types)",
 			exit: 255, alias: "host-key",
 		},
 		{
@@ -2457,5 +2467,17 @@ func TestMachineContractHasExclusiveFailurePolicyOwnership(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("scan stable interpreter marker ownership: %v", err)
+	}
+}
+
+func TestClassifySSHSeparatesHostKeyTypeChangeFromMismatch(t *testing.T) {
+	keyErr := &knownhosts.KeyError{Want: []knownhosts.KnownKey{{}}}
+	changed := fmt.Errorf("ssh: handshake failed: %w", &HostKeyTypeChangedError{KeyError: keyErr, ObservedType: "ssh-ed25519"})
+	if got := ClassifySSH(changed, SSHContext{Alias: "a", Host: "h", Port: 22}); got.Error != "host_key_type_changed" || got.Exit != 255 || got.Stage != "dial" {
+		t.Fatalf("type change classified as %+v", got)
+	}
+	mismatch := fmt.Errorf("ssh: handshake failed: %w", keyErr)
+	if got := ClassifySSH(mismatch, SSHContext{Alias: "a", Host: "h", Port: 22}); got.Error != "host_key_mismatch" {
+		t.Fatalf("same-type mismatch classified as %+v", got)
 	}
 }

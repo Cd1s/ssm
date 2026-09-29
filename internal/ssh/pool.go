@@ -89,11 +89,13 @@ func dialSSHFresh(c config.Connection, v *config.Vault) (*gossh.Client, error) {
 		port = 22
 	}
 
-	client, err := gossh.Dial("tcp", net.JoinHostPort(c.Host, strconv.Itoa(port)), &gossh.ClientConfig{
-		User:            c.User,
-		Auth:            auth,
-		HostKeyCallback: buildHostKeyCallback(),
-		Timeout:         DialTimeout(),
+	address := net.JoinHostPort(c.Host, strconv.Itoa(port))
+	client, err := gossh.Dial("tcp", address, &gossh.ClientConfig{
+		User:              c.User,
+		Auth:              auth,
+		HostKeyCallback:   buildHostKeyCallback(),
+		HostKeyAlgorithms: hostKeyAlgorithmsFor(KnownHostsPath(), address),
+		Timeout:           DialTimeout(),
 	})
 	if err != nil {
 		return nil, ClassifyError(err, c)
