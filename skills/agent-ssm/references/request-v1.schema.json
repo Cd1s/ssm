@@ -44,6 +44,7 @@
       "additionalProperties": {"type": "string", "minLength": 1}
     },
     "timeout": {"type": "string", "minLength": 1},
+    "exec_timeout": {"type": "string", "minLength": 1},
     "no_reuse": {"type": "boolean"},
     "preflight": {"type": "boolean"},
     "stdin_file": {"type": "string", "minLength": 1},

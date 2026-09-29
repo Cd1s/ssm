@@ -418,6 +418,7 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 	}
 	execDeadline := watchExecTimeout(session, opts.ExecTimeout)
 	err = session.Run(full)
+	execDeadline.complete()
 	execDeadline.stop()
 	if interrupt != nil {
 		interrupt.stop()

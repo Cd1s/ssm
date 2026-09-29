@@ -30,10 +30,12 @@ type remoteRunSpec struct {
 	Preflight bool
 	// Stdin and StdinFile carry the stdin forwarding choice. Only run/exec
 	// honor them; the zero value never forwards (map jobs, argv streams).
-	Stdin        ssh.StdinMode
-	StdinFile    string
-	RetryDial    int
-	RetryBackoff time.Duration
+	Stdin          ssh.StdinMode
+	StdinFile      string
+	RetryDial      int
+	RetryBackoff   time.Duration
+	ConnectTimeout time.Duration
+	ExecTimeout    time.Duration
 }
 
 // runValueOptions are the sshctl run/exec/plan/map options that consume the
@@ -44,7 +46,7 @@ type remoteRunSpec struct {
 var (
 	runValueOptions = []string{
 		"--jobs", "-j", "--parallel", "--timeout", "--secret", "-e",
-		"--shell", "--interpreter", "-f", "--file", "--scripts", "--refresh", "--retry-dial",
+		"--shell", "--interpreter", "-f", "--file", "--scripts", "--refresh", "--retry-dial", "--connect-timeout", "--exec-timeout",
 		"--stdin-file",
 	}
 	runFlagOptions = []string{
@@ -147,6 +149,8 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		retryDial    int
 		retryBackoff time.Duration
 		retryErr     error
+		connectTo    time.Duration
+		execTo       time.Duration
 	)
 
 	for i := 0; i < len(args); i++ {
@@ -213,6 +217,32 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 				return remoteRunSpec{}, err
 			}
 			timeout = d
+		case arg == "--connect-timeout", arg == "--exec-timeout":
+			if i+1 >= len(args) {
+				return remoteRunSpec{}, fmt.Errorf("%s requires a duration", arg)
+			}
+			i++
+			d, err := parseCLIDuration(arg, args[i]) //nolint:gosec // i+1 was bounds-checked immediately above
+			if err != nil {
+				return remoteRunSpec{}, err
+			}
+			if arg == "--connect-timeout" {
+				connectTo = d
+			} else {
+				execTo = d
+			}
+		case strings.HasPrefix(arg, "--connect-timeout="):
+			d, err := parseCLIDuration("--connect-timeout", strings.TrimPrefix(arg, "--connect-timeout="))
+			if err != nil {
+				return remoteRunSpec{}, err
+			}
+			connectTo = d
+		case strings.HasPrefix(arg, "--exec-timeout="):
+			d, err := parseCLIDuration("--exec-timeout", strings.TrimPrefix(arg, "--exec-timeout="))
+			if err != nil {
+				return remoteRunSpec{}, err
+			}
+			execTo = d
 		case arg == "--retry-dial":
 			if i+1 >= len(args) {
 				return remoteRunSpec{}, fmt.Errorf("--retry-dial requires N[:backoff]")
@@ -418,7 +448,19 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		Stdin:     stdinMode,
 		StdinFile: stdinFile,
 		RetryDial: retryDial, RetryBackoff: retryBackoff,
+		ConnectTimeout: connectTo, ExecTimeout: execTo,
 	}, nil
+}
+
+func parseCLIDuration(flag, value string) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if d, err := time.ParseDuration(value); err == nil && d > 0 {
+		return d, nil
+	}
+	if sec, err := strconv.Atoi(value); err == nil && sec > 0 {
+		return time.Duration(sec) * time.Second, nil
+	}
+	return 0, fmt.Errorf("invalid %s %q", flag, value)
 }
 
 func parseRetryDial(value string) (int, time.Duration, error) {
@@ -543,6 +585,9 @@ func applyRunSpecEnv(spec remoteRunSpec) {
 	}
 	if spec.Timeout > 0 {
 		_ = os.Setenv("SSM_TIMEOUT", spec.Timeout.String())
+	}
+	if spec.ConnectTimeout > 0 {
+		_ = os.Setenv("SSM_CONNECT_TIMEOUT", spec.ConnectTimeout.String())
 	}
 	if spec.NoReuse {
 		_ = os.Setenv("SSM_REUSE", "0")

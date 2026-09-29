@@ -22,9 +22,11 @@ const execTimeoutGrace = 5 * time.Second
 type execWatch struct {
 	done     chan struct{}
 	finished chan struct{}
+	stopOnce sync.Once
 
-	mu       sync.Mutex
-	timedOut bool
+	mu        sync.Mutex
+	completed bool
+	timedOut  bool
 }
 
 func watchExecTimeout(session *gossh.Session, timeout time.Duration) *execWatch {
@@ -46,6 +48,10 @@ func (w *execWatch) enforce(session *gossh.Session, timeout time.Duration) {
 	case <-deadline.C:
 	}
 	w.mu.Lock()
+	if w.completed {
+		w.mu.Unlock()
+		return
+	}
 	w.timedOut = true
 	w.mu.Unlock()
 	_ = session.Signal(gossh.SIGTERM)
@@ -59,12 +65,24 @@ func (w *execWatch) enforce(session *gossh.Session, timeout time.Duration) {
 	}
 }
 
+// complete records that session.Run returned before stopping the watcher.
+// Keeping this transition separate from stop closes the deadline race where a
+// command completed just as the timer goroutine was being scheduled.
+func (w *execWatch) complete() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	w.completed = true
+	w.mu.Unlock()
+}
+
 // stop ends the watch once the remote command has returned.
 func (w *execWatch) stop() {
 	if w == nil {
 		return
 	}
-	close(w.done)
+	w.stopOnce.Do(func() { close(w.done) })
 	<-w.finished
 }
 

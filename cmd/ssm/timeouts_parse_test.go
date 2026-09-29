@@ -95,6 +95,14 @@ func TestParseRunStreamArgsTimeouts(t *testing.T) {
 	if _, _, err := parseRunStreamArgs([]string{"--stream", "--exec-timeout", "0"}); err == nil {
 		t.Fatal("zero --exec-timeout must be rejected")
 	}
+	options, stream, err = parseRunStreamArgs([]string{"--stream", "--timeout", "6s"})
+	if err != nil || !stream || options.connectTimeout != 6*time.Second {
+		t.Fatalf("legacy stream --timeout: stream=%v options=%+v err=%v", stream, options, err)
+	}
+	options, stream, err = parseRunStreamArgs([]string{"--stream", "--timeout=7s"})
+	if err != nil || !stream || options.connectTimeout != 7*time.Second {
+		t.Fatalf("legacy stream --timeout=: stream=%v options=%+v err=%v", stream, options, err)
+	}
 }
 
 func TestRequestRunSpecExecTimeout(t *testing.T) {

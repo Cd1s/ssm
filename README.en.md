@@ -314,7 +314,7 @@ Each timeout governs a different phase; do not mix them up:
 | Option | What it bounds | Default |
 |---|---|---|
 | `--connect-timeout <duration>` | TCP connect **plus** the SSH handshake (including authentication), as one budget. Expiry is `handshake_failed` (`stage:handshake`; no command was sent, so retrying is safe; the hint suggests raising `--connect-timeout`). A TCP connect that never completes is still `dial_timeout`. | 15s |
-| `--timeout <duration>` (`run`/`exec`/`plan`/`map`) | Compatible alias of `--connect-timeout`. It is a connection timeout, not an execution timeout. | 15s |
+| `--timeout <duration>` (`run`/`exec`/`plan`/`map`, deprecated) | Compatible alias of `--connect-timeout`. It is a connection timeout, not an execution timeout. | 15s |
 | `--exec-timeout <duration>` | How long the remote command may run (`run`/`exec`/`plan`, `map`, and every line of `run --stream`; `exec_timeout` in a request). At the deadline sshctl sends `SIGTERM`, closes the session after a 5s grace period, and returns `exec_timeout` with exit 124, `timed_out:true`, and the `stdout`/`stderr` received so far. Human mode keeps what was already streamed and prints a classification line last. | none |
 | `--timeout` of `put`/`get` | The file-transfer timeout (`transfer_timeout`). Unchanged. | none |
 

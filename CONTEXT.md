@@ -171,6 +171,21 @@ plans and speculative APIs live elsewhere.
   underlying protocol supplies the guarantee or explicitly reports it as
   unavailable or false.
 
+### Remote execution and connection bounds
+
+- `--connect-timeout` bounds TCP connect plus the SSH handshake as one budget;
+  the deprecated `--timeout` alias keeps that connection-only meaning for
+  `run`/`exec`/`plan`/`map` and `run --stream`. A stalled handshake fails as
+  `handshake_failed` before any command is sent.
+- `--exec-timeout` bounds each remote command. At expiry sshctl sends SIGTERM,
+  allows a five-second grace period, then closes the session and reports
+  `exec_timeout` with `timed_out:true` and exit 124. The bound applies to
+  `run`, `exec`, `plan`, `map`, and every line of `run --stream`.
+- `put`/`get` retain their separate transfer `--timeout` meaning. SSH
+  keepalive probes use `keepalive@openssh.com` every 15 seconds by default;
+  three unanswered probes close the connection and classify an in-flight
+  command as `connection_lost`. `SSM_KEEPALIVE=0` disables the probes.
+
 ### Update authorization and trust
 
 - Ordinary automatic replacement is limited to the current major version.

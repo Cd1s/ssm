@@ -313,7 +313,7 @@ PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
 | 选项 | 管什么 | 默认 |
 |---|---|---|
 | `--connect-timeout <时长>` | TCP 建连 **加上** SSH 握手（含认证）的总时限。到期报 `handshake_failed`（`stage:handshake`，命令没有发出，可以安全重试，提示可调大 `--connect-timeout`）；TCP 都没连上仍报 `dial_timeout`。 | 15s |
-| `--timeout <时长>`（`run`/`exec`/`plan`/`map`） | `--connect-timeout` 的兼容别名。它是连接超时，**不是执行超时**。 | 15s |
+| `--timeout <时长>`（`run`/`exec`/`plan`/`map`，已弃用） | `--connect-timeout` 的兼容别名。它是连接超时，**不是执行超时**。 | 15s |
 | `--exec-timeout <时长>` | 远端命令最长运行多久（`run`/`exec`/`plan`、`map`、`run --stream` 的每一行；request 用 `exec_timeout`）。到期先发 `SIGTERM`，5 秒宽限期后关闭 session，返回 `exec_timeout`，退出码 124，JSON 带 `timed_out:true` 与已收到的 `stdout`/`stderr`；human 模式已流式输出的内容保留，最后打印分类行。 | 不限制 |
 | `put`/`get` 的 `--timeout` | 文件传输超时（`transfer_timeout`）。语义不变。 | 不限制 |
 
