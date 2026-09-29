@@ -174,6 +174,9 @@ type Facts struct {
 	NextAttempt string
 	LastError   *SyncError
 	Stale       bool
+	// Unsynced is set when sync is configured but no pull, push or background
+	// check has ever confirmed the local inventory.
+	Unsynced bool
 }
 
 type Options struct {
@@ -426,6 +429,7 @@ func (t *Transaction) decorateLocalFirst(facts Facts, settings *config.Settings,
 	facts.NextAttempt = state.NextAttemptAt
 	facts.LastError = state.LastError
 	facts.LastSync, facts.CacheAge = cacheAge(settings, t.now(), state.LastSuccessAt)
+	facts.Unsynced = facts.LastSync == ""
 	facts.Stale = facts.LastSync != "" &&
 		time.Duration(facts.CacheAge)*time.Second > settings.EffectiveStaleAfter()
 	return facts
@@ -436,52 +440,144 @@ func (t *Transaction) refreshConfigured(cfg *cloud.CloudConfig, facts Facts, for
 	if err != nil {
 		return facts, fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err)
 	}
-	return t.applyRemoteIdentity(cfg, facts, remote, forcePull, nil)
+	return t.applyRemoteIdentity(cfg, facts, remote, forcePull, pullRefresh)
+}
+
+// pullMode selects how a downloaded vault is installed.
+type pullMode int
+
+const (
+	// pullRefresh is ordinary refresh, sync and pull: divergence fails closed.
+	pullRefresh pullMode = iota
+	// pullBackground is the detached background sync: additionally it leaves
+	// local state alone while a publication awaits reconciliation, waits for
+	// no one, and refuses a malformed download.
+	pullBackground
+	// pullAdopt is reviewed recovery: the caller already verified the exact
+	// identity and deliberately replaces divergent local state.
+	pullAdopt
+)
+
+// vaultLockWait bounds every wait for the vault write lock. Holders keep it
+// only for identity comparison and file replacement.
+var vaultLockWait = 5 * time.Second
+
+// beforeVaultLock is a test hook invoked just before a vault write lock
+// acquisition, with the stage ("decision" or "install"), to inject a
+// concurrent local change at exactly that point.
+var beforeVaultLock func(stage string)
+
+func (t *Transaction) lockVault(stage string, mode pullMode) (*config.FileLock, error) {
+	if beforeVaultLock != nil {
+		beforeVaultLock(stage)
+	}
+	lock, err := config.AcquireFileLock(config.VaultWriteLockName, vaultLockWait)
+	if err != nil {
+		if mode == pullBackground {
+			return nil, errBackgroundSkipped
+		}
+		if errors.Is(err, config.ErrLockBusy) {
+			return nil, fmt.Errorf("%w: vault is busy: another ssm process holds the vault write lock; retry", ErrRefresh)
+		}
+		return nil, fmt.Errorf("%w: vault write lock unavailable: %w", ErrRefresh, err)
+	}
+	if mode == pullBackground && publishingIntentPending() {
+		_ = lock.Close()
+		return nil, errBackgroundSkipped
+	}
+	return lock, nil
+}
+
+func publishingIntentPending() bool {
+	_, err := os.Lstat(config.PublishingIntentPath())
+	return err == nil
+}
+
+// conflictError records divergence evidence and returns the conflict error.
+func (t *Transaction) conflictError(facts Facts, remote string) (Facts, error) {
+	conflict := SyncConflict{
+		DetectedAt: t.now().UTC().Format(time.RFC3339),
+		LocalETag:  facts.LocalETag, RemoteETag: remote, CachedETag: facts.RemoteETag,
+	}
+	if err := preserveConflict(conflict); err != nil {
+		return facts, fmt.Errorf("%w: conflict evidence could not be preserved", ErrRefresh)
+	}
+	facts.Conflict = &conflict
+	return facts, fmt.Errorf("%w: local and remote opaque blobs diverged", ErrConflict)
 }
 
 // applyRemoteIdentity decides between no-op, conflict and pull for an already
-// observed remote identity.
-//
-// pull replaces the local vault; nil uses a direct download. The background
-// sync passes a function that writes an already downloaded blob so the vault
-// write lock is held only for this decision and the file replacement.
-func (t *Transaction) applyRemoteIdentity(cfg *cloud.CloudConfig, facts Facts, remote string, forcePull bool, pull func() (string, error)) (Facts, error) {
+// observed remote identity. Every path that replaces the local vault shares one
+// shape: download outside any lock, then take the vault write lock, re-read
+// local identity, fail closed on divergence, and only then write the vault and
+// the cached remote identity.
+func (t *Transaction) applyRemoteIdentity(cfg *cloud.CloudConfig, facts Facts, remote string, forcePull bool, mode pullMode) (Facts, error) {
 	facts.Remote = RemoteChecked
 	if !forcePull && remote != "" && remote == facts.RemoteETag {
-		facts.Remote = RemoteChecked
 		return facts, nil
 	}
 	if diverged(facts, remote) {
-		conflict := SyncConflict{
-			DetectedAt: t.now().UTC().Format(time.RFC3339),
-			LocalETag:  facts.LocalETag, RemoteETag: remote, CachedETag: facts.RemoteETag,
+		// Decide divergence before downloading, under the lock so the
+		// evidence reflects the vault as it is now.
+		lock, err := t.lockVault("decision", mode)
+		if err != nil {
+			return facts, err
 		}
-		if err := preserveConflict(conflict); err != nil {
-			return facts, fmt.Errorf("%w: conflict evidence could not be preserved", ErrRefresh)
+		current := identityFacts()
+		current.Configuration = facts.Configuration
+		if diverged(current, remote) {
+			result, err := t.conflictError(current, remote)
+			_ = lock.Close()
+			return result, err
 		}
-		facts.Conflict = &conflict
-		return facts, fmt.Errorf("%w: local and remote opaque blobs diverged", ErrConflict)
+		_ = lock.Close()
 	}
-	var committedIdentity string
-	var err error
-	if pull == nil {
-		committedIdentity, err = cloud.Pull(cfg)
-	} else {
-		committedIdentity, err = pull()
-	}
+	data, etag, err := cloud.Fetch(cfg)
 	if err != nil {
 		return facts, fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err)
 	}
-	facts.Changed = true
+	return t.installFetched(data, etag, mode)
+}
+
+// installFetched replaces the local vault with an already downloaded blob under
+// the vault write lock. Local facts are re-read after acquiring the lock, so a
+// local mutation saved at any earlier moment is seen as divergence and kept.
+func (t *Transaction) installFetched(data []byte, etag string, mode pullMode) (Facts, error) {
+	lock, err := t.lockVault("install", mode)
+	if err != nil {
+		return Facts{}, err
+	}
+	defer func() { _ = lock.Close() }()
+	facts := identityFacts()
+	facts.Configuration = ConfigurationConfigured
+	if mode == pullBackground && !config.ValidVaultBlob(data) {
+		return facts, fmt.Errorf("%w: downloaded vault has an invalid format and was not installed", ErrRefresh)
+	}
+	if mode != pullAdopt && diverged(facts, etag) {
+		return t.conflictError(facts, etag)
+	}
+	if err := config.WritePrivateFile(config.Path(), data); err != nil {
+		return facts, fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err)
+	}
 	if t.invalidate != nil {
 		t.invalidate()
 	}
-	t.commitSuccess("pull", committedIdentity)
+	t.commitSuccess("pull", etag)
 	facts = t.localFacts()
 	facts.Configuration = ConfigurationConfigured
 	facts.Changed = true
 	facts.Remote = RemoteChecked
 	return facts, nil
+}
+
+// identityFacts reads only the local and cached remote identities, without the
+// clock or settings, for decisions taken under the vault write lock.
+func identityFacts() Facts {
+	facts := Facts{RemoteETag: cachedRemoteIdentity(), Conflict: loadConflict()}
+	if local, err := localOpaqueIdentity(); err == nil {
+		facts.LocalETag = local
+	}
+	return facts
 }
 
 // diverged reports that both the remote and the local vault moved away from the
@@ -540,19 +636,11 @@ func (t *Transaction) AdoptRemote(expected BlobIdentity) (Facts, error) {
 	if !observed.equal(expected) {
 		return facts, fmt.Errorf("%w: reviewed remote identity changed", ErrConflict)
 	}
-	committed, err := cloud.PullExpected(cfg, expected.Value)
+	data, committed, err := cloud.FetchExpected(cfg, expected.Value)
 	if err != nil {
 		return facts, fmt.Errorf("%w: reviewed remote identity changed during pull", ErrConflict)
 	}
-	if t.invalidate != nil {
-		t.invalidate()
-	}
-	t.commitSuccess("pull", committed)
-	facts = t.localFacts()
-	facts.Configuration = ConfigurationConfigured
-	facts.Remote = RemoteChecked
-	facts.Changed = true
-	return facts, nil
+	return t.installFetched(data, committed, pullAdopt)
 }
 
 func (t *Transaction) RemoteIdentity() (string, error) {

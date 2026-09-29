@@ -169,8 +169,9 @@ func PushBlobObserved(cfg *CloudConfig, data []byte) (string, bool, error) {
 }
 
 // Pull atomically replaces the local encrypted vault with opaque response
-// bytes and returns the identity confirmed by that GET. Sync policy and
-// metadata commits belong to internal/synctransaction.
+// bytes and returns the identity confirmed by that GET. It does not take the
+// vault write lock and does not check for local changes, so production callers
+// use Fetch and install through the sync transaction instead.
 func Pull(cfg *CloudConfig) (string, error) {
 	data, etag, err := Fetch(cfg)
 	if err != nil {
@@ -237,32 +238,47 @@ func Fetch(cfg *CloudConfig) ([]byte, string, error) {
 }
 
 // PullExpected atomically replaces the local encrypted vault only after the
-// GET body and returned identity both match the expected opaque identity. It is
-// used by explicit reviewed recovery, never by ordinary pull.
+// GET body and returned identity both match the expected opaque identity. It
+// does not take the vault write lock; the sync transaction uses FetchExpected
+// and installs under that lock.
 func PullExpected(cfg *CloudConfig, expected string) (string, error) {
-	if err := requireToken(cfg); err != nil {
+	data, identity, err := FetchExpected(cfg, expected)
+	if err != nil {
 		return "", err
+	}
+	if err := config.WritePrivateFile(config.Path(), data); err != nil {
+		return "", err
+	}
+	return identity, nil
+}
+
+// FetchExpected downloads the vault and verifies that both the response
+// identity and the body match expected, without touching local state. It is
+// used by explicit reviewed recovery, never by ordinary pull.
+func FetchExpected(cfg *CloudConfig, expected string) ([]byte, string, error) {
+	if err := requireToken(cfg); err != nil {
+		return nil, "", err
 	}
 	server := strings.TrimRight(cfg.Server, "/")
 	req, err := http.NewRequest("GET", server+"/sync", nil)
 	if err != nil {
-		return "", &RequestError{}
+		return nil, "", &RequestError{}
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return "", &TransportError{Err: err}
+		return nil, "", &TransportError{Err: err}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", parseError(resp)
+		return nil, "", parseError(resp)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxPullBlobBytes+1))
 	if err != nil {
-		return "", &TransportError{Err: err}
+		return nil, "", &TransportError{Err: err}
 	}
 	if int64(len(data)) > maxPullBlobBytes || len(data) == 0 {
-		return "", fmt.Errorf("sync blob is invalid")
+		return nil, "", fmt.Errorf("sync blob is invalid")
 	}
 	bodyIdentity := hashBytes(data)
 	responseIdentity := strings.Trim(resp.Header.Get("ETag"), `"`)
@@ -270,12 +286,9 @@ func PullExpected(cfg *CloudConfig, expected string) (string, error) {
 		responseIdentity = bodyIdentity
 	}
 	if responseIdentity != expected || bodyIdentity != expected {
-		return "", fmt.Errorf("remote identity changed during reviewed pull")
+		return nil, "", fmt.Errorf("remote identity changed during reviewed pull")
 	}
-	if err := config.WritePrivateFile(config.Path(), data); err != nil {
-		return "", err
-	}
-	return expected, nil
+	return data, expected, nil
 }
 
 func RemoteETag(cfg *CloudConfig) (string, error) {

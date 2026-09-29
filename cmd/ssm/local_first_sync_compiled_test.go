@@ -699,3 +699,32 @@ func TestInvalidSyncModeIsReportedOnceAndRunsAsLocalFirst(t *testing.T) {
 		t.Fatalf("invalid mode did not run as local_first: %d sync requests", got)
 	}
 }
+
+func TestLocalFirstReportsAnInventoryThatWasNeverSynced(t *testing.T) {
+	s := newLocalFirstScenario(t)
+	s.writeSyncState(t, map[string]any{"next_attempt_at": rfc3339(localFirstClock.Add(time.Hour))})
+	const want = "ssm: warning: inventory has not been synced yet; run sshctl sync to pull the remote vault"
+
+	human := s.run(t, "list")
+	if human.ProcessExit != 0 || strings.Count(human.Stderr, want) != 1 || strings.Contains(human.Stdout, "warning") {
+		t.Fatalf("human read did not report the unsynced inventory once on stderr; stderr=%q", human.Stderr)
+	}
+	if jsonRead := s.run(t, "--json", "list"); jsonRead.Stderr != "" {
+		t.Fatalf("--json read wrote to stderr: %q", jsonRead.Stderr)
+	}
+	status := decodeExactlyOneJSONObject(t, s.run(t, "--json", "status").Stdout)
+	if status["inventory_unsynced"] != true {
+		t.Fatalf("status lacks inventory_unsynced=true: %v", status)
+	}
+
+	s.writeSyncState(t, map[string]any{
+		"last_success_at": rfc3339(localFirstClock.Add(-time.Minute)),
+		"next_attempt_at": rfc3339(localFirstClock.Add(time.Hour)),
+	})
+	if again := s.run(t, "list"); strings.Contains(again.Stderr, "has not been synced") {
+		t.Fatalf("a confirmed sync must clear the warning; stderr=%q", again.Stderr)
+	}
+	if status := decodeExactlyOneJSONObject(t, s.run(t, "--json", "status").Stdout); status["inventory_unsynced"] != nil {
+		t.Fatalf("status still reports inventory_unsynced: %v", status)
+	}
+}

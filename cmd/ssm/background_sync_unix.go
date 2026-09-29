@@ -11,8 +11,10 @@ import (
 
 // startDetachedBackgroundSync starts `sshctl sync --background` in its own
 // session so it survives the parent and the terminal. All standard streams are
-// the null device, the environment is inherited, and the parent releases the
-// child without waiting.
+// the null device, the environment is inherited, and the working directory is
+// the filesystem root so the child never pins the caller's directory. The
+// parent never blocks on the child: a goroutine reaps it, so a long-running
+// parent (for example run --stream) does not accumulate zombies.
 func startDetachedBackgroundSync(executable string) error {
 	null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
@@ -22,7 +24,8 @@ func startDetachedBackgroundSync(executable string) error {
 	command := &exec.Cmd{
 		Path:        executable,
 		Args:        []string{"sshctl", "sync", backgroundSyncFlag},
-		Env:         os.Environ(),
+		Dir:         string(os.PathSeparator),
+		Env:         backgroundEnvironment(),
 		Stdin:       null,
 		Stdout:      null,
 		Stderr:      null,
@@ -31,5 +34,6 @@ func startDetachedBackgroundSync(executable string) error {
 	if err := command.Start(); err != nil {
 		return err
 	}
-	return command.Process.Release()
+	go func() { _ = command.Wait() }()
+	return nil
 }

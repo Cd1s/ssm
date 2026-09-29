@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -209,11 +208,8 @@ var mutationLockWait = publicationLockTimeout
 // the version this process loaded. This closes the window in which a
 // background pull could be overwritten by a mutation's load-then-save.
 func saveLoadedVault(after *config.Vault, masterPass string) error {
-	session, err := beginVaultWriteWithin(mutationLockWait)
+	session, err := lockVaultWrite(mutationLockWait)
 	if err != nil {
-		if errors.Is(err, ErrPublicationBusy) {
-			return ErrVaultBusy
-		}
 		return err
 	}
 	defer func() { _ = session.Close() }()
@@ -1103,11 +1099,8 @@ func (t *Transaction) reconcilePublishingIntent() (PublicationReceipt, *Publicat
 func (t *Transaction) finalizePublishingIntent(intent publishingIntent) (PublicationReceipt, error) {
 	// Local finalization reloads and rewrites the vault, so it must not
 	// interleave with a mutation's identity check and save.
-	vaultLock, err := beginVaultWriteWithin(mutationLockWait)
+	vaultLock, err := lockVaultWrite(mutationLockWait)
 	if err != nil {
-		if errors.Is(err, ErrPublicationBusy) {
-			return PublicationReceipt{}, ErrVaultBusy
-		}
 		return PublicationReceipt{}, err
 	}
 	defer func() { _ = vaultLock.Close() }()
@@ -1163,15 +1156,7 @@ func equalBlobIdentity(left, right synctransaction.BlobIdentity) bool {
 }
 
 func publishingIntentPath() string {
-	return filepath.Join(config.Dir(), "publishing-intent.json")
-}
-
-// HasPublishingIntent reports whether a publishing-intent recovery record
-// exists. The background sync uses it to leave an unreconciled publication
-// alone; the record itself is never read.
-func HasPublishingIntent() bool {
-	_, err := os.Lstat(publishingIntentPath())
-	return err == nil
+	return config.PublishingIntentPath()
 }
 
 func savePublishingIntent(intent publishingIntent) error {

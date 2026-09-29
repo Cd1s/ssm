@@ -310,7 +310,7 @@ strict 模式下，`status` 的在线刷新失败会返回 `error:sync_pull_fail
 
 中心服务器只负责同步，不会挡在每条命令前，离线也能用。默认的 `sync_mode: local_first` 下，读命令（`run`、`map`、`get`、`put`、`check`、`doctor`、`list`、`host list|show`、`host-key`、`keys`、`status`）只读本地 vault，前台不发任何同步请求。自动同步到期时，命令在 `sync-state.json` 里原子占位，派生一个分离的后台进程 `sshctl sync --background`（隐藏选项）：它先做短超时的“有变化才拉取”检查，只在远端变化时拉取，绝不自动 push，也不覆盖有分叉的本地 vault；只在短暂的 vault 写锁下替换 vault（本地修改共用同一把锁），不会覆盖本地修改。成功后至少间隔 `sync_interval`（默认 `10m`）才再检查；失败按 30 秒起、每次翻倍、封顶 1 小时的指数退避记录，退避期内的命令不再尝试。同步失败绝不会让读命令失败。
 
-可见而非阻断：`status` 在 local_first 下永不因同步失败而失败，并报告 `remote_state`（`checked`、`unreachable`、`not_checked`、`not_configured`、`auto_sync_disabled`）、`last_successful_sync`、`last_sync_error`（`cause`、脱敏的 `message`、`at`；分叉时 `cause` 为 `conflict`）、`next_sync_attempt`、`cache_age_seconds` 和 `inventory_stale`（这些字段都是加性的）。缓存年龄超过 `stale_after`（默认 `7d`，从最近一次确认的 pull、push 或成功的后台检查算起）时，`run` 的 JSON 结果带 `inventory_stale:true`，human 读命令在 stderr 打一行警告，stdout 不受影响。
+可见而非阻断：`status` 在 local_first 下永不因同步失败而失败，并报告 `remote_state`（`checked`、`unreachable`、`not_checked`、`not_configured`、`auto_sync_disabled`）、`last_successful_sync`、`last_sync_error`（`cause`、脱敏的 `message`、`at`；分叉时 `cause` 为 `conflict`）、`next_sync_attempt`、`cache_age_seconds` `inventory_stale` 和 `inventory_unsynced`（已配置同步但从未确认过清单时为 true，human 读命令也会在 stderr 提示一次；这些字段都是加性的）。缓存年龄超过 `stale_after`（默认 `7d`，从最近一次确认的 pull、push 或成功的后台检查算起）时，`run` 的 JSON 结果带 `inventory_stale:true`，human 读命令在 stderr 打一行警告，stdout 不受影响。
 
 `settings.json` 配置项：`sync_mode`（`local_first` 或 `strict`）、`sync_interval`、`stale_after`（Go 时长，或整数加 `d` 表示天）；环境变量 `SSM_SYNC_MODE` 可对单个进程覆盖 `sync_mode`。`auto_sync:false` 在两种模式下都关闭自动同步。`--offline` 与 `SSM_OFFLINE=1` 等价：不解析同步配置、不联网，也不派生后台同步。
 

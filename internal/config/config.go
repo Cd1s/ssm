@@ -307,3 +307,7 @@ func LoadMergeReport() MergeReport {
 	}
 	return report
 }
+
+// ValidVaultBlob reports whether data has the shape of an encrypted vault, so a
+// malformed download never replaces the only local copy.
+func ValidVaultBlob(data []byte) bool { return vault.ValidBlob(data) }

@@ -3,9 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"ssm/internal/cloud"
-	"ssm/internal/inventorytransaction"
 	"ssm/internal/synctransaction"
 )
 
@@ -34,27 +34,24 @@ func spawnBackgroundSync() error {
 // output and always exits 0: its result belongs to sync-state.json, and no
 // terminal is waiting for it.
 //
-// Mutual exclusion: the process observes the remote identity and downloads a
-// changed vault without any lock (bounded by a short HTTP timeout), then takes
-// the vault write lock only to re-read local identity and replace the file, so
-// a hung service can never make a command wait. Local mutations and
-// publication finalization use the same lock, so none can overwrite another.
-// While the lock is held, an unreconciled publishing intent (a publication in
-// flight or awaiting recovery) leaves local state alone. The process never
-// publishes and never overwrites divergent state.
+// The sync transaction owns the policy: it downloads outside any lock, takes
+// the shared vault write lock only to compare identity and replace the file,
+// and leaves local state alone while a publication awaits reconciliation.
 func runBackgroundSync() {
 	cloud.SetRequestTimeout(synctransaction.BackgroundRequestTimeout)
-	transaction := syncTransaction(false)
-	_ = transaction.BackgroundSync(func() (func(), error) {
-		session, err := inventorytransaction.BeginVaultWrite()
-		if err != nil {
-			return nil, synctransaction.ErrBackgroundSkipped
-		}
-		if inventorytransaction.HasPublishingIntent() {
-			_ = session.Close()
-			return nil, synctransaction.ErrBackgroundSkipped
-		}
-		return func() { _ = session.Close() }, nil
-	})
+	_ = syncTransaction(false).BackgroundSync()
 	os.Exit(0)
+}
+
+// backgroundEnvironment is the inherited environment with a relative
+// SSM_CONFIG_DIR made absolute, because the child does not share the caller's
+// working directory.
+func backgroundEnvironment() []string {
+	env := os.Environ()
+	if configured := os.Getenv("SSM_CONFIG_DIR"); configured != "" {
+		if absolute, err := filepath.Abs(configured); err == nil {
+			env = append(env, "SSM_CONFIG_DIR="+absolute)
+		}
+	}
+	return env
 }

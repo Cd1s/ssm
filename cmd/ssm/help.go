@@ -57,7 +57,8 @@ func isKnownCommand(sshctl bool, command string) bool {
 func optionRegion(sshctl bool, command string, rest []string) []string {
 	switch command {
 	case "run", "exec", "plan":
-		return rest[:runOptionEnd(rest)]
+		fmt.Print("Usage: sshctl ", command, " <alias> [--argv] <command> [args...]\nOptions: --json, --timeout <duration>, --no-reuse, --secret NAME=@file, -f <script>, -s, --shell <sh|bash|...>, --interpreter <program>, --preflight, --stdin, --no-stdin, --stdin-file <path>.\nNon-shell scripts: -f report.py --interpreter python3 -- a b runs \"python3 - a b\" with the script on stdin (one program name, absolute path, or env <name>; the program must read a script from stdin for -). Without --interpreter the script shebang picks a shell; --preflight is shell-only.\nStdin: --stdin forwards local stdin in every mode including --json; --no-stdin never forwards (like ssh -n; use it inside \"while read\" loops); --stdin-file <path> is \"< path\". Default: human mode forwards a non-terminal stdin, --json does not and reports stdin_forwarded:false when a pipe was left unread. SSM_FORWARD_STDIN=1|0 sets the default; flags win. A never-ending stdin pipe (CI/agent) makes a remote command that reads stdin wait forever: add --no-stdin or </dev/null. Not valid with -s/-f/--scripts, map, or --stream.\nFast repeated argv mode: sshctl run <alias> --stream [--refresh 30s]; send one JSON string array per line and receive compact NDJSON results. Online --refresh must be positive; --refresh=0 requires explicit global --offline. In strict sync mode a refresh failure stops the stream; in the default local_first mode sync failures never stop it.\nPrefer --argv for literals and -f for shell semantics; one-string shell commands are compatibility-only.\nExample: sshctl ", command, " app --argv hostname\n")
+
 	case "map":
 		return rest[:mapOptionEnd(rest)]
 	}

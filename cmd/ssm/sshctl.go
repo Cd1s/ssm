@@ -353,6 +353,7 @@ type statusResult struct {
 	LastSyncError      *synctransaction.SyncError `json:"last_sync_error,omitempty"`
 	NextSyncAttempt    string                     `json:"next_sync_attempt,omitempty"`
 	InventoryStale     bool                       `json:"inventory_stale,omitempty"`
+	InventoryUnsynced  bool                       `json:"inventory_unsynced,omitempty"`
 }
 
 func runSSHCTLStatus() {
@@ -417,6 +418,7 @@ func runSSHCTLStatus() {
 
 			LastSuccessfulSync: syncFacts.LastSuccess, LastSyncError: syncFacts.LastError,
 			NextSyncAttempt: syncFacts.NextAttempt, InventoryStale: syncFacts.Stale,
+			InventoryUnsynced: syncFacts.Unsynced,
 		}
 		if recoveryErr != nil {
 			failure := machinecontract.ClassifySyncFailure(recoveryErr, machinecontract.SyncPushFailed)
@@ -446,6 +448,9 @@ func runSSHCTLStatus() {
 	}
 	if syncFacts.Stale {
 		fmt.Println("inventory_stale=true")
+	}
+	if syncFacts.Unsynced {
+		fmt.Println("inventory_unsynced=true")
 	}
 }
 

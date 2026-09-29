@@ -1,7 +1,6 @@
 package synctransaction
 
 import (
-	"bytes"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -134,9 +133,8 @@ func TestBackgroundSyncRecordsFailureCauseAndExponentialBackoff(t *testing.T) {
 		return "", ""
 	}
 	tx := New(opts)
-	lock := func() (func(), error) { return func() {}, nil }
 	for failures, want := range []time.Duration{30 * time.Second, time.Minute, 2 * time.Minute, 4 * time.Minute} {
-		if err := tx.BackgroundSync(lock); err == nil {
+		if err := tx.BackgroundSync(); err == nil {
 			t.Fatal("background sync against a 503 endpoint returned no error")
 		}
 		state := LoadSyncState()
@@ -173,7 +171,7 @@ func TestBackgroundSyncSuccessSchedulesTheNextAttemptAndClearsFailures(t *testin
 	if err := config.WritePrivateFile(remoteIdentityPath(), []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n")); err != nil {
 		t.Fatal(err)
 	}
-	if err := New(opts).BackgroundSync(func() (func(), error) { return func() {}, nil }); err != nil {
+	if err := New(opts).BackgroundSync(); err != nil {
 		t.Fatalf("background sync failed: %v", err)
 	}
 	state := LoadSyncState()
@@ -184,24 +182,6 @@ func TestBackgroundSyncSuccessSchedulesTheNextAttemptAndClearsFailures(t *testin
 	}
 	if requests.Load() != 1 {
 		t.Fatalf("unchanged remote took %d requests, want a single HEAD", requests.Load())
-	}
-}
-
-func TestBackgroundSyncYieldsToAPublicationWithoutCountingAFailure(t *testing.T) {
-	requests, opts, _ := localFirstSetup(t, func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("ETag", `"bbbb"`)
-	})
-	err := New(opts).BackgroundSync(func() (func(), error) { return nil, ErrBackgroundSkipped })
-	if err != nil {
-		t.Fatalf("skipped attempt returned %v", err)
-	}
-	state := LoadSyncState()
-	if state.ConsecutiveFailures != 0 || state.LastError != nil ||
-		state.NextAttemptAt != localFirstTestNow.Add(30*time.Second).Format(time.RFC3339) {
-		t.Fatalf("skipped state = %+v", state)
-	}
-	if requests.Load() != 1 {
-		t.Fatalf("requests = %d, want only the unlocked HEAD (no pull while locked out)", requests.Load())
 	}
 }
 
@@ -318,146 +298,5 @@ func TestImplausibleScheduleDoesNotDisableSyncForever(t *testing.T) {
 	}
 	if _, err := New(opts).Refresh(); err != nil || spawned.Load() != 1 {
 		t.Fatalf("a schedule a year away must be ignored: spawned=%d err=%v", spawned.Load(), err)
-	}
-}
-
-// vaultRaceFixture is a configured local-first machine whose local vault
-// equals the cached remote identity while the remote moved on.
-type vaultRaceFixture struct {
-	tx         *Transaction
-	requests   *atomic.Int64
-	gets       *atomic.Int64
-	lockHeld   *atomic.Bool
-	heldAtCall *atomic.Bool
-	local      []byte
-	remoteBlob []byte
-	remoteID   string
-}
-
-func newVaultRaceFixture(t *testing.T) *vaultRaceFixture {
-	t.Helper()
-	isolateTestUserConfig(t)
-	t.Setenv(config.SyncModeEnv, config.SyncModeLocalFirst)
-	f := &vaultRaceFixture{
-		requests: new(atomic.Int64), gets: new(atomic.Int64),
-		lockHeld: new(atomic.Bool), heldAtCall: new(atomic.Bool),
-		local: []byte("opaque local vault C"), remoteBlob: []byte("opaque remote vault R"),
-	}
-	f.remoteID = opaqueIdentity(f.remoteBlob)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		f.requests.Add(1)
-		if f.lockHeld.Load() {
-			f.heldAtCall.Store(true)
-		}
-		w.Header().Set("ETag", `"`+f.remoteID+`"`)
-		if r.Method == http.MethodGet {
-			f.gets.Add(1)
-			_, _ = w.Write(f.remoteBlob)
-		}
-	}))
-	t.Cleanup(server.Close)
-	if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: "test-token"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := config.WritePrivateFile(config.Path(), f.local); err != nil {
-		t.Fatal(err)
-	}
-	if err := config.WritePrivateFile(remoteIdentityPath(), []byte(opaqueIdentity(f.local)+"\n")); err != nil {
-		t.Fatal(err)
-	}
-	f.tx = New(Options{Now: func() time.Time { return localFirstTestNow }})
-	return f
-}
-
-func (f *vaultRaceFixture) readLocal(t *testing.T) []byte {
-	t.Helper()
-	data, err := os.ReadFile(config.Path())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return data
-}
-
-// lock returns a lock callback; before runs on the n-th acquisition, after the
-// caller has decided to take the lock, to inject a concurrent local mutation.
-func (f *vaultRaceFixture) lock(n int, before func()) func() (func(), error) {
-	calls := 0
-	return func() (func(), error) {
-		calls++
-		if calls == n && before != nil {
-			before()
-		}
-		f.lockHeld.Store(true)
-		return func() { f.lockHeld.Store(false) }, nil
-	}
-}
-
-func TestBackgroundSyncNeverHoldsTheVaultLockAcrossNetworkIO(t *testing.T) {
-	f := newVaultRaceFixture(t)
-	if err := f.tx.BackgroundSync(f.lock(0, nil)); err != nil {
-		t.Fatalf("background sync: %v", err)
-	}
-	if f.heldAtCall.Load() {
-		t.Fatal("a sync request was made while the vault write lock was held")
-	}
-	if got := f.readLocal(t); !bytes.Equal(got, f.remoteBlob) {
-		t.Fatal("changed remote was not pulled")
-	}
-	if cached := cachedRemoteIdentity(); cached != f.remoteID {
-		t.Fatalf("cached remote identity %q does not match the pulled vault %q", cached, f.remoteID)
-	}
-	if local, _ := localOpaqueIdentity(); local != cachedRemoteIdentity() {
-		t.Fatal("local vault identity and cached remote identity disagree after a pull")
-	}
-}
-
-// A mutation saved after the remote check but before the lock is taken is
-// detected as divergence; the pull is not even attempted.
-func TestBackgroundSyncSeesAMutationSavedBeforeTheLock(t *testing.T) {
-	f := newVaultRaceFixture(t)
-	mutated := []byte("opaque local vault C plus a pending mutation")
-	err := f.tx.BackgroundSync(f.lock(1, func() {
-		if err := config.WritePrivateFile(config.Path(), mutated); err != nil {
-			t.Fatal(err)
-		}
-	}))
-	if !errors.Is(err, ErrConflict) {
-		t.Fatalf("error = %v, want %v", err, ErrConflict)
-	}
-	if !bytes.Equal(f.readLocal(t), mutated) {
-		t.Fatal("background sync overwrote the local mutation")
-	}
-	if f.gets.Load() != 0 {
-		t.Fatal("a diverged vault must not be downloaded")
-	}
-}
-
-// A mutation saved between the download and the replacement (the window the
-// second lock acquisition guards) is also divergence: the local pending change
-// survives, the cached identity still names the last confirmed remote, and a
-// later publication stays fail-closed.
-func TestBackgroundSyncSeesAMutationSavedAfterTheDownload(t *testing.T) {
-	f := newVaultRaceFixture(t)
-	cachedBefore := cachedRemoteIdentity()
-	mutated := []byte("opaque local vault C plus a pending mutation")
-	err := f.tx.BackgroundSync(f.lock(2, func() {
-		if err := config.WritePrivateFile(config.Path(), mutated); err != nil {
-			t.Fatal(err)
-		}
-	}))
-	if !errors.Is(err, ErrConflict) {
-		t.Fatalf("error = %v, want %v", err, ErrConflict)
-	}
-	if !bytes.Equal(f.readLocal(t), mutated) {
-		t.Fatal("background sync overwrote the local mutation")
-	}
-	if got := cachedRemoteIdentity(); got != cachedBefore {
-		t.Fatalf("cached remote identity moved to %q without the vault being replaced", got)
-	}
-	if loadConflict() == nil {
-		t.Fatal("divergence evidence was not preserved")
-	}
-	if _, err := f.tx.PreparePublication(mutated); !errors.Is(err, ErrConflict) {
-		t.Fatalf("publication after the race error = %v, want %v (fail closed)", err, ErrConflict)
 	}
 }

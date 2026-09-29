@@ -115,10 +115,14 @@ plans and speculative APIs live elsewhere.
 - A missing sync configuration means sync is not configured. An invalid or
   unreadable sync configuration stops every inventory read or mutation in both
   modes.
-- Local vault mutations, publication finalization, and background pulls share one bounded cross-process
-  vault write lock. A mutation saves only if the vault file is still the
-  version it loaded; a background pull is applied only after re-reading local
-  identity under that lock, so neither can overwrite the other.
+- Local vault mutations, publication finalization, and every pull (background,
+  explicit `sync`/`pull`, strict refresh, reviewed adoption) share one bounded
+  cross-process vault write lock that is never held across network I/O. A
+  mutation saves only if the vault file is still the version it loaded; a pull
+  downloads first, then re-reads local identity under the lock and fails closed
+  on divergence, so neither can overwrite the other.
+- Configured sync that has never confirmed the inventory is reported
+  (`inventory_unsynced` in `status`, one stderr line for human reads).
 - An unrecognized `sync_mode` runs as `local_first` and is reported once on
   stderr by `status` and human reads.
 - `auto_sync: false` disables automatic sync in both modes.

@@ -72,7 +72,7 @@ func TestMutationWaitIsBoundedAndReportsABusyVaultLock(t *testing.T) {
 	loaded := loadHostPolicyVault(t, passphrase)
 	defer inventorytransaction.SetMutationLockWait(100 * time.Millisecond)()
 
-	holder, err := inventorytransaction.BeginVaultWrite()
+	holder, err := config.AcquireFileLock(config.VaultWriteLockName, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

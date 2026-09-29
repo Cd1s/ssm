@@ -16,6 +16,7 @@ var (
 	inventoryStale bool
 	staleWarned    bool
 	modeWarned     bool
+	unsyncedWarned bool
 	// statusCommand makes the invalid-mode notice appear for `status --json`
 	// too; other JSON commands keep stderr empty.
 	statusCommand bool
@@ -27,6 +28,7 @@ var (
 func noteInventoryFreshness(facts synctransaction.Facts) {
 	warnInvalidSyncMode()
 	inventoryStale = facts.Stale
+	warnUnsynced(facts)
 	if !facts.Stale || machineJSON || streamMachine || staleWarned {
 		return
 	}
@@ -57,4 +59,15 @@ func warnInvalidSyncMode() {
 	modeWarned = true
 	fmt.Fprintf(os.Stderr,
 		"ssm: warning: invalid %s %q (want local_first or strict); using local_first\n", source, value)
+}
+
+// warnUnsynced tells the user once that sync is configured but has never
+// confirmed this inventory, so an empty or old vault is not mistaken for the
+// remote one.
+func warnUnsynced(facts synctransaction.Facts) {
+	if !facts.Unsynced || unsyncedWarned || machineJSON || streamMachine {
+		return
+	}
+	unsyncedWarned = true
+	fmt.Fprintln(os.Stderr, "ssm: warning: inventory has not been synced yet; run sshctl sync to pull the remote vault")
 }

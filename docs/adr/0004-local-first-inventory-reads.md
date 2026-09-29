@@ -46,6 +46,11 @@ inventory; it moved the silence into a flag.
 - **Schedule.** Success schedules the next attempt one `sync_interval` later
   (default 10 minutes). Failure backs off exponentially from 30 seconds to one
   hour. Commands inside the window neither request nor spawn.
+- **One install path for every pull.** Explicit `sync`/`pull`, strict-mode refresh, reviewed `--adopt-remote`, and the background sync all
+  download outside any lock, then take the vault write lock, re-read the local
+  and cached remote identities, fail closed on divergence (conflict evidence,
+  nothing overwritten), and only then write the vault together with the cached
+  remote identity. The lock is never held across network I/O.
 - **Background process.** Observes the remote identity with a 5 second request
   bound. Only when it changed does it download (outside any lock), then take
   the vault write lock only to re-read local facts, compare identities, and
@@ -58,6 +63,10 @@ inventory; it moved the silence into a flag.
   their outcome updates the state.
 - **Writes and publication** are unchanged: mutations stay pending until
   `push --only <transaction-id>` or `push --all`, and divergence detection stays fail-closed.
+- **Additional safeguards.** The background process refuses a download
+  without a valid encrypted-vault header, is reaped by its parent, runs from
+  the filesystem root, and truncates recorded messages on UTF-8 boundaries. The
+  state-file lock is a kernel lock that a crash cannot leave stale.
 - **Visibility.** `status` never fails because of sync and reports
   `remote_state`, `last_successful_sync`, `last_sync_error`, `next_sync_attempt`,
   `cache_age_seconds`, and `inventory_stale`. Staleness (`stale_after`, default
@@ -89,7 +98,8 @@ lock.
 The first read after `login` on a machine with no vault sees local (possibly
 empty) inventory; run `sshctl sync` once to pull, or wait for the background
 sync. `update.Auto` still runs inline and is not part of this decision.
-Local mutations, publication finalization, and background pulls are serialised
+Local mutations, publication finalization, and every pull (background and
+explicit) are serialised
 by one short cross-process vault write lock (`vault-write.lock`, separate from
 `publication.lock` so a mutation is still allowed while a publication is in
 flight). The background process downloads outside

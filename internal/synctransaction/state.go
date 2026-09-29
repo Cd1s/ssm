@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+	"unicode/utf8"
 
 	"ssm/internal/cloud"
 	"ssm/internal/config"
@@ -25,8 +26,7 @@ const (
 	skippedRetryDelay        = 30 * time.Second
 	maxErrorMessageBytes     = 300
 
-	stateLockStaleAfter = 10 * time.Second
-	stateLockTimeout    = time.Second
+	stateLockTimeout = time.Second
 )
 
 // Failure causes recorded by this package itself. Transport and HTTP causes
@@ -61,8 +61,6 @@ type SyncState struct {
 
 func syncStatePath() string { return filepath.Join(config.Dir(), "sync-state.json") }
 
-func syncStateLockPath() string { return filepath.Join(config.Dir(), "sync-state.lock") }
-
 // LoadSyncState reads the state file. A missing or unreadable file is the zero
 // state: it never blocks a command.
 func LoadSyncState() SyncState {
@@ -85,37 +83,18 @@ func saveSyncState(state SyncState) error {
 	return config.WritePrivateFile(syncStatePath(), append(data, '\n'))
 }
 
-var errStateLockBusy = errors.New("sync state lock is busy")
+// syncStateLockName is the kernel-level lock (flock/LockFileEx) that
+// serialises read-modify-write of the state file. The OS drops it when its
+// holder dies, so a crash never leaves a stale lock and never delays a command.
+const syncStateLockName = "sync-state.lock"
 
-// withStateLock serializes read-modify-write of the state file across
-// processes with an exclusive-create lock file. The critical section is a few
-// local file operations, so a lock older than stateLockStaleAfter belongs to a
-// crashed process and is taken over.
 func withStateLock(fn func() error) error {
-	if err := config.EnsurePrivateDir(config.Dir()); err != nil {
+	lock, err := config.AcquireFileLock(syncStateLockName, stateLockTimeout)
+	if err != nil {
 		return err
 	}
-	path := syncStateLockPath()
-	deadline := time.Now().Add(stateLockTimeout)
-	for {
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // fixed private coordination path
-		if err == nil {
-			_ = file.Close()
-			defer func() { _ = os.Remove(path) }()
-			return fn()
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return err
-		}
-		if info, statErr := os.Stat(path); statErr == nil && time.Since(info.ModTime()) > stateLockStaleAfter {
-			_ = os.Remove(path)
-			continue
-		}
-		if !time.Now().Before(deadline) {
-			return errStateLockBusy
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	defer func() { _ = lock.Close() }()
+	return fn()
 }
 
 func parseStateTime(raw string) time.Time {
@@ -249,10 +228,7 @@ func (t *Transaction) describeFailure(err error) (cause, message string) {
 	case errors.Is(err, ErrConfiguration):
 		cause = CauseConfiguration
 	}
-	if len(message) > maxErrorMessageBytes {
-		message = message[:maxErrorMessageBytes]
-	}
-	return cause, message
+	return cause, truncateUTF8(message, maxErrorMessageBytes)
 }
 
 // recordOutcome records the result of an explicit or background sync
@@ -286,23 +262,20 @@ func remoteStateFromState(state SyncState) RemoteState {
 	}
 }
 
-// ErrBackgroundSkipped is returned by a BackgroundSync lock callback to end the
-// attempt without recording a sync failure (for example while a publication is
-// in progress).
-var ErrBackgroundSkipped = errors.New("background sync skipped")
+// errBackgroundSkipped ends a background attempt that must leave local state
+// alone for a local reason (vault lock busy, or a publication awaiting
+// reconciliation).
+var errBackgroundSkipped = errors.New("background sync skipped")
 
 // BackgroundSync performs one detached sync attempt: observe the remote
 // identity (bounded by the caller's request timeout), then, only when it
 // changed, download it and replace the local vault. It never publishes and
-// never overwrites divergent local state. lock returns a release function, or
-// ErrBackgroundSkipped when local state must not be touched now.
-//
-// The vault write lock is held only for identity comparison and the file
-// replacement, never across network I/O, and local facts are re-read after
-// acquiring it, so a local mutation saved a moment earlier is seen as
-// divergence instead of being overwritten. The outcome, success or failure, is
-// recorded in the sync state.
-func (t *Transaction) BackgroundSync(lock func() (release func(), err error)) error {
+// never overwrites divergent local state, refuses a malformed download, and
+// leaves local state alone while a publication awaits reconciliation. The
+// download happens outside any lock; the vault write lock is held only to
+// re-read local identity and replace the file (see applyRemoteIdentity). The
+// outcome, success or failure, is recorded in the sync state.
+func (t *Transaction) BackgroundSync() error {
 	if t.offline {
 		return nil
 	}
@@ -315,55 +288,21 @@ func (t *Transaction) BackgroundSync(lock func() (release func(), err error)) er
 		t.recordSkippedNotConfigured()
 		return nil
 	}
-	fail := func(err error) error {
+	remote, err := cloud.RemoteETag(cfg)
+	if err != nil {
+		err = fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err)
 		t.recordFailure(err)
 		return err
 	}
-	remote, err := cloud.RemoteETag(cfg)
-	if err != nil {
-		return fail(fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err))
-	}
-	if remote != "" && remote == cachedRemoteIdentity() {
-		t.recordSuccess()
-		return nil
-	}
-
-	// Divergence needs no download: decide it, and preserve its evidence,
-	// under the lock.
-	release, err := lock()
-	if err != nil {
-		t.RecordSkipped()
-		return nil
-	}
 	facts := t.localFacts()
 	facts.Configuration = state
-	if diverged(facts, remote) {
-		_, err := t.applyRemoteIdentity(cfg, facts, remote, false, nil)
-		release()
-		return fail(err)
-	}
-	release()
-
-	data, etag, err := cloud.Fetch(cfg)
-	if err != nil {
-		return fail(fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err))
-	}
-	release, err = lock()
-	if err != nil {
-		t.RecordSkipped()
-		return nil
-	}
-	defer release()
-	facts = t.localFacts()
-	facts.Configuration = state
-	write := func() (string, error) {
-		if err := config.WritePrivateFile(config.Path(), data); err != nil {
-			return "", err
+	if _, err := t.applyRemoteIdentity(cfg, facts, remote, false, pullBackground); err != nil {
+		if errors.Is(err, errBackgroundSkipped) {
+			t.RecordSkipped()
+			return nil
 		}
-		return etag, nil
-	}
-	if _, err := t.applyRemoteIdentity(cfg, facts, etag, false, write); err != nil {
-		return fail(err)
+		t.recordFailure(err)
+		return err
 	}
 	t.recordSuccess()
 	return nil
@@ -391,4 +330,16 @@ func ResetSyncState() {
 		}
 		return nil
 	})
+}
+
+// truncateUTF8 shortens s to at most max bytes without splitting a character.
+func truncateUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }

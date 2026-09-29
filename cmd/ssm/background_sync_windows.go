@@ -25,8 +25,9 @@ func startDetachedBackgroundSync(executable string) error {
 	defer func() { _ = null.Close() }()
 	command := &exec.Cmd{
 		Path:   executable,
+		Dir:    os.TempDir(),
 		Args:   []string{"sshctl", "sync", backgroundSyncFlag},
-		Env:    os.Environ(),
+		Env:    backgroundEnvironment(),
 		Stdin:  null,
 		Stdout: null,
 		Stderr: null,
