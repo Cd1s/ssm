@@ -300,7 +300,7 @@ var failurePolicies = map[Kind]failurePolicy{
 		Code: CodeSyncPull, Stage: "sync_pull", Hint: "fix sync connectivity or retry explicitly with --offline", Exit: 1,
 	},
 	StreamSyncPullFailed: {
-		Code: CodeSyncPull, Stage: "sync_pull", Hint: "fix sync connectivity or restart explicitly with --offline", Exit: 1,
+		Code: CodeSyncPull, Stage: "sync_pull", Hint: "fix sync connectivity or retry explicitly with --offline", Exit: 1,
 	},
 	TransferLocalRead: {
 		Code: "local_read_failed", Stage: "local_read", Hint: "verify the local path and read permissions", Exit: 1,
@@ -822,6 +822,7 @@ type Failure struct {
 	Message    string   `json:"message"`
 	Hint       string   `json:"hint,omitempty"`
 	Stage      string   `json:"stage,omitempty"`
+	SyncCause  string   `json:"cause,omitempty"`
 	Alias      string   `json:"alias,omitempty"`
 	Exit       int      `json:"exit"`
 	Candidates []string `json:"candidates,omitempty"`
@@ -951,7 +952,28 @@ func ClassifySyncFailure(err error, fallback Kind) Failure {
 	case errors.Is(err, synctransaction.ErrConflict):
 		kind = SyncConflict
 	}
-	return Classify(kind, Details{Cause: err})
+	return WithSyncCause(Classify(kind, Details{Cause: err}), err)
+}
+
+// WithSyncCause records the classified underlying cause of a sync failure and
+// gives refresh failures a cause-specific hint. Configuration and conflict
+// failures carry no cause and keep their canonical hint.
+func WithSyncCause(failure Failure, err error) Failure {
+	if errors.Is(err, synctransaction.ErrConfiguration) || errors.Is(err, synctransaction.ErrConflict) ||
+		errors.Is(err, synctransaction.ErrEmptyLedgerDivergence) {
+		return failure
+	}
+	cause := SyncFailureCause(err)
+	if cause == SyncCauseUnknown && !isRemoteSyncFailure(err) {
+		// Local failures (for example an unreadable publication sidecar) are
+		// not a remote sync outcome and keep their established shape.
+		return failure
+	}
+	failure.SyncCause = cause
+	if failure.Error == CodeSyncPull {
+		failure.Hint = RedactString(syncFailureHint(failure.SyncCause))
+	}
+	return failure
 }
 
 // ResultMetadata is embedded by typed execution results whose exit field has
@@ -961,10 +983,11 @@ type ResultMetadata struct {
 	Message string `json:"message,omitempty"`
 	Hint    string `json:"hint,omitempty"`
 	Stage   string `json:"stage,omitempty"`
+	Cause   string `json:"cause,omitempty"`
 }
 
 func (f Failure) ResultMetadata() ResultMetadata {
-	return ResultMetadata{Error: f.Error, Message: f.Message, Hint: f.Hint, Stage: f.Stage}
+	return ResultMetadata{Error: f.Error, Message: f.Message, Hint: f.Hint, Stage: f.Stage, Cause: f.SyncCause}
 }
 
 // Metadata is embedded by typed command failures that serialize exit together
@@ -975,10 +998,11 @@ type Metadata struct {
 	Hint    string `json:"hint,omitempty"`
 	Exit    int    `json:"exit"`
 	Stage   string `json:"stage,omitempty"`
+	Cause   string `json:"cause,omitempty"`
 }
 
 func (f Failure) Metadata() Metadata {
-	return Metadata{Error: f.Error, Message: f.Message, Hint: f.Hint, Exit: f.Exit, Stage: f.Stage}
+	return Metadata{Error: f.Error, Message: f.Message, Hint: f.Hint, Exit: f.Exit, Stage: f.Stage, Cause: f.SyncCause}
 }
 
 // TransferMetadata preserves the pre-BC-7 transfer failure field order and

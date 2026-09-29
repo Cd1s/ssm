@@ -19,7 +19,7 @@
     "after": {
       "accepted": true,
       "framing": "compact_ndjson",
-      "stdout": "{\"ok\":false,\"error\":\"sync_pull_failed\",\"message\":\"sync refresh failed: remote refresh did not commit\",\"hint\":\"fix sync connectivity or restart explicitly with --offline\",\"stage\":\"sync_pull\",\"exit\":1}\n",
+      "stdout": "{\"ok\":false,\"error\":\"sync_pull_failed\",\"message\":\"sync refresh failed: remote refresh did not commit: server error (500)\",\"hint\":\"sync server returned a 5xx error; retry later or retry explicitly with --offline\",\"stage\":\"sync_pull\",\"cause\":\"http_5xx\",\"exit\":1}\n",
       "stdout_lines": 1,
       "process_exit": 1,
       "consumed_non_empty_lines": 0,

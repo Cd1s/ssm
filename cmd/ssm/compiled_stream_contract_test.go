@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	compiledBC3NewStartupFailure = "{\"ok\":false,\"error\":\"sync_pull_failed\",\"message\":\"sync refresh failed: remote refresh did not commit\",\"hint\":\"fix sync connectivity or restart explicitly with --offline\",\"stage\":\"sync_pull\",\"exit\":1}\n"
+	compiledBC3NewStartupFailure = "{\"ok\":false,\"error\":\"sync_pull_failed\",\"message\":\"sync refresh failed: remote refresh did not commit: server error (500)\",\"hint\":\"sync server returned a 5xx error; retry later or retry explicitly with --offline\",\"stage\":\"sync_pull\",\"cause\":\"http_5xx\",\"exit\":1}\n"
 	compiledBC6NewZeroOnline     = "{\"ok\":false,\"error\":\"invalid_arguments\",\"message\":\"--refresh=0 requires explicit global --offline\",\"hint\":\"use sshctl run \\u003calias\\u003e --stream [--refresh 30s]\",\"exit\":2}\n"
 	compiledStreamMigrationPath  = "testdata/compiled_contracts/v2_stream_migration.json"
 )

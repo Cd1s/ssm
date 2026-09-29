@@ -340,7 +340,7 @@ func (t *Transaction) refresh(explicit bool) (Facts, error) {
 func (t *Transaction) refreshConfigured(cfg *cloud.CloudConfig, facts Facts, forcePull bool) (Facts, error) {
 	remote, err := cloud.RemoteETag(cfg)
 	if err != nil {
-		return facts, fmt.Errorf("%w: remote refresh did not commit", ErrRefresh)
+		return facts, fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err)
 	}
 	facts.Remote = RemoteChecked
 	if !forcePull && remote != "" && remote == facts.RemoteETag {
@@ -361,7 +361,7 @@ func (t *Transaction) refreshConfigured(cfg *cloud.CloudConfig, facts Facts, for
 	}
 	committedIdentity, err := cloud.Pull(cfg)
 	if err != nil {
-		return facts, fmt.Errorf("%w: remote refresh did not commit", ErrRefresh)
+		return facts, fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err)
 	}
 	facts.Changed = true
 	if t.invalidate != nil {
@@ -443,7 +443,7 @@ func (t *Transaction) RemoteIdentity() (string, error) {
 	}
 	etag, err := cloud.RemoteETag(cfg)
 	if err != nil {
-		return "", fmt.Errorf("%w: remote identity was not read", ErrRefresh)
+		return "", fmt.Errorf("%w: remote identity was not read: %w", ErrRefresh, err)
 	}
 	return etag, nil
 }
@@ -463,7 +463,7 @@ func (t *Transaction) PreparePublication(blob []byte) (PreparedPublication, erro
 	target := opaqueIdentity(blob)
 	remote, err := cloud.InspectRemoteBlob(cfg)
 	if err != nil {
-		return PreparedPublication{}, fmt.Errorf("%w: remote push preflight did not complete", ErrRefresh)
+		return PreparedPublication{}, fmt.Errorf("%w: remote push preflight did not complete: %w", ErrRefresh, err)
 	}
 	prerequisite := BlobIdentity{Exists: remote.Exists, Value: remote.Value}
 	if prerequisite.Exists && !publicationIdentityPattern.MatchString(prerequisite.Value) {
@@ -502,7 +502,7 @@ func (t *Transaction) ObservePublicationIdentity() (BlobIdentity, error) {
 	}
 	remote, err := cloud.InspectRemoteBlob(cfg)
 	if err != nil {
-		return BlobIdentity{}, fmt.Errorf("%w: remote publication identity was not read", ErrRefresh)
+		return BlobIdentity{}, fmt.Errorf("%w: remote publication identity was not read: %w", ErrRefresh, err)
 	}
 	identity := BlobIdentity{Exists: remote.Exists, Value: remote.Value}
 	if identity.Exists && !publicationIdentityPattern.MatchString(identity.Value) {
@@ -520,7 +520,7 @@ func (t *Transaction) SendPublication(blob []byte, prepared PreparedPublication)
 	}
 	current, err := t.ObservePublicationIdentity()
 	if err != nil {
-		return BlobIdentity{}, fmt.Errorf("%w: %v", ErrPushNotSent, err)
+		return BlobIdentity{}, fmt.Errorf("%w: %w", ErrPushNotSent, err)
 	}
 	target := BlobIdentity{Exists: true, Value: prepared.Target}
 	if current.equal(target) {
@@ -542,11 +542,11 @@ func (t *Transaction) SendPublication(blob []byte, prepared PreparedPublication)
 	if err != nil {
 		switch {
 		case cloud.PushFailureIsExplicit(err):
-			return BlobIdentity{}, fmt.Errorf("%w: %v", ErrPushRejected, err)
+			return BlobIdentity{}, fmt.Errorf("%w: %w", ErrPushRejected, err)
 		case cloud.PushFailureIsAmbiguous(err):
-			return BlobIdentity{}, fmt.Errorf("%w: %v", ErrPushAmbiguous, err)
+			return BlobIdentity{}, fmt.Errorf("%w: %w", ErrPushAmbiguous, err)
 		default:
-			return BlobIdentity{}, fmt.Errorf("%w: %v", ErrPushNotSent, err)
+			return BlobIdentity{}, fmt.Errorf("%w: %w", ErrPushNotSent, err)
 		}
 	}
 	committed := BlobIdentity{Exists: true, Value: identity}
@@ -603,7 +603,7 @@ func (t *Transaction) PushBlob(blob []byte) (Facts, error) {
 	if facts.RemoteETag != "" {
 		remote, headErr := cloud.RemoteETag(cfg)
 		if headErr != nil {
-			return facts, fmt.Errorf("%w: remote push preflight did not complete", ErrRefresh)
+			return facts, fmt.Errorf("%w: remote push preflight did not complete: %w", ErrRefresh, headErr)
 		}
 		facts.Remote = RemoteChecked
 		if remote != "" && remote != facts.RemoteETag && candidateIdentity != facts.RemoteETag {
@@ -620,7 +620,7 @@ func (t *Transaction) PushBlob(blob []byte) (Facts, error) {
 	}
 	committedIdentity, err := cloud.PushBlob(cfg, blob)
 	if err != nil {
-		return facts, fmt.Errorf("%w: remote push did not commit", ErrRefresh)
+		return facts, fmt.Errorf("%w: remote push did not commit: %w", ErrRefresh, err)
 	}
 	t.commitSuccess("push", committedIdentity)
 	facts = t.localFacts()

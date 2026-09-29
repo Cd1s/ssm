@@ -111,7 +111,13 @@ preserve both sides. Follow [guarded empty-ledger recovery](references/import-js
 for pull, reviewed `--merge`, and a new scoped transaction.
 
 Never silently switch to offline inventory. Stop on `sync_pull_failed` unless
-the caller explicitly accepts stale data with `--offline`. `cloud.json` is a
+the caller explicitly accepts stale data with `--offline`. Sync failures carry
+a stable top-level `cause` (also `cause=` in human output); branch on it:
+`auth` (HTTP 401/403) and `missing_token` need a human to run `ssm login`,
+so do not retry and do not add `--offline`; `tls` needs a human to inspect the
+certificate, never bypass verification; `dns`, `connect_refused`, `timeout`,
+`http_5xx`, and `network` may be retried later; `unknown` is unclassified.
+`message` includes the redacted underlying error. `cloud.json` is a
 path to local configuration, never a value to print or copy into a request.
 
 ## Host keys

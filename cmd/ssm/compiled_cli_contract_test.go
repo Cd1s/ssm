@@ -49,6 +49,7 @@ type compiledMachineContract struct {
 	JSONExit        int      `json:"json_exit"`
 	ProcessExit     int      `json:"process_exit"`
 	Hint            string   `json:"hint,omitempty"`
+	Cause           string   `json:"cause,omitempty"`
 	Alias           string   `json:"alias,omitempty"`
 	Direction       string   `json:"direction,omitempty"`
 	Kind            string   `json:"kind,omitempty"`
@@ -482,6 +483,9 @@ func assertCompiledMachineContract(t *testing.T, result compiledCLIResult, want 
 	}
 	if want.Hint != "" {
 		assertCompiledStringField(t, value, "hint", want.Hint, result)
+	}
+	if want.Cause != "" {
+		assertCompiledStringField(t, value, "cause", want.Cause, result)
 	}
 	if want.Alias != "" {
 		assertCompiledStringField(t, value, "alias", want.Alias, result)
@@ -3584,7 +3588,8 @@ func TestCompiledSyncStateMatrix(t *testing.T) {
 				name: "refresh failure",
 				contract: compiledMachineContract{
 					OK: false, Error: "sync_pull_failed", Stage: "sync_pull", JSONExit: 1, ProcessExit: 1,
-					Hint: "fix sync connectivity or retry explicitly with --offline",
+					Cause: "http_5xx",
+					Hint:  "sync server returned a 5xx error; retry later or retry explicitly with --offline",
 				},
 				configure: func(t *testing.T, cli *compiledCLIHarness) *compiledSyncFixture {
 					sync := newCompiledSyncFixture(t)

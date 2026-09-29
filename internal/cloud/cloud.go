@@ -347,23 +347,41 @@ func postJSON(url string, body []byte) (*http.Response, error) {
 	return httpClient.Do(req)
 }
 
+// HTTPStatusError is returned when the sync service answers with a non-success
+// HTTP status. Callers classify it with errors.As instead of matching text.
+type HTTPStatusError struct {
+	StatusCode int
+	// Message is the service-provided error text, when the body carried one.
+	Message string
+}
+
+func (e *HTTPStatusError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	return fmt.Sprintf("server error (%d)", e.StatusCode)
+}
+
+// MissingTokenError is returned when cloud.json has no usable sync token.
+type MissingTokenError struct{}
+
+func (*MissingTokenError) Error() string {
+	return "cloud token is not configured (run: ssm login)"
+}
+
 func parseError(resp *http.Response) error {
 	var result struct {
 		Error string `json:"error"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("server error (%d)", resp.StatusCode)
+		return &HTTPStatusError{StatusCode: resp.StatusCode}
 	}
-	msg := strings.TrimSpace(result.Error)
-	if msg == "" {
-		return fmt.Errorf("server error (%d)", resp.StatusCode)
-	}
-	return fmt.Errorf("%s", msg)
+	return &HTTPStatusError{StatusCode: resp.StatusCode, Message: strings.TrimSpace(result.Error)}
 }
 
 func requireToken(cfg *CloudConfig) error {
 	if cfg == nil || strings.TrimSpace(cfg.Token) == "" {
-		return fmt.Errorf("cloud token is not configured (run: ssm login)")
+		return &MissingTokenError{}
 	}
 	return nil
 }

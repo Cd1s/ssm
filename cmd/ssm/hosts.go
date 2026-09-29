@@ -294,7 +294,8 @@ func runHostCommand(args []string) {
 			failure := machinecontract.ClassifySyncFailure(err, machinecontract.HostSyncPullFailed)
 			os.Exit(machinecontract.WriteFailure(opts.asJSON, failure, failure))
 		}
-		os.Exit(machinecontract.WriteMetadataError(opts.asJSON, newHostError(machinecontract.HostSyncPullFailed, "%s; retry only with --offline if stale local state is acceptable", machinecontract.RedactError(err)), machinecontract.HostInternalFailure))
+		failure := machinecontract.WithSyncCause(machinecontract.Classify(machinecontract.HostSyncPullFailed, machinecontract.Details{Cause: err}), err)
+		os.Exit(machinecontract.WriteFailure(opts.asJSON, failure, failure.MetadataDocument()))
 	}
 	v, err := loadVault()
 	if err != nil {
