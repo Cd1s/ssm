@@ -46,11 +46,11 @@ func TestCompiledSSHCTLUnknownCommandSuggestsSSM(t *testing.T) {
 		document := decodeExactlyOneJSONObject(t, result.Stdout)
 		hint, _ := document["hint"].(string)
 		if result.ProcessExit != 2 || document["error"] != "unknown_command" ||
-			!strings.Contains(hint, "ssm") || !strings.Contains(hint, "host list") {
+			!strings.Contains(hint, "`vault` is not a command in sshctl or ssm; inspect saved hosts with `sshctl host list`") {
 			t.Fatalf("vault: %s", compiledOutputIdentity(result))
 		}
 		human := cli.Run(t, "sshctl", nil, "--offline", "vault", "list")
-		if human.ProcessExit != 2 || !strings.Contains(human.Stderr, "host list") || !strings.Contains(human.Stderr, "ssm") {
+		if human.ProcessExit != 2 || !strings.Contains(human.Stderr, "ssm: hint=`vault` is not a command in sshctl or ssm; inspect saved hosts with `sshctl host list`") {
 			t.Fatalf("vault human: %s", compiledOutputIdentity(human))
 		}
 	})
@@ -185,6 +185,86 @@ func TestCompiledRunUnknownOptionSuggestions(t *testing.T) {
 				t.Fatalf("%s json: %s", tc.option, compiledOutputIdentity(result))
 			}
 		})
+	}
+	requireNoSSHSession(t, server)
+}
+
+func newAliasTieCLI(t *testing.T, aliases ...string) (*compiledCLIHarness, *compiledSSHFixture) {
+	t.Helper()
+	const password = "COMMAND_SUGGESTION_PASSWORD_CANARY" //nolint:gosec // test-only fake credential canary
+	cli := newCompiledCLIHarness(t)
+	server := newCompiledSSHFixture(t, compiledSSHFixtureOptions{Password: password})
+	cli.TrustSSHHost(t, server)
+	vault := &config.Vault{}
+	for _, alias := range aliases {
+		vault.Connections = append(vault.Connections, server.Connection(alias, password))
+	}
+	cli.SaveVault(t, vault)
+	return cli, server
+}
+
+func TestCompiledAliasTieKeepsAliasNotFound(t *testing.T) {
+	for _, tc := range []struct{ alias, typo string }{{"host1", "host2"}, {"stat", "stats"}} {
+		t.Run(tc.typo, func(t *testing.T) {
+			cli, server := newAliasTieCLI(t, tc.alias)
+			result := cli.Run(t, "sshctl", nil, "--offline", "--json", tc.typo, "hostname")
+			document := decodeExactlyOneJSONObject(t, result.Stdout)
+			candidates, _ := document["candidates"].([]any)
+			if result.ProcessExit != 255 || document["error"] != "alias_not_found" || len(candidates) != 1 || candidates[0] != tc.alias {
+				t.Fatalf("%s: %s", tc.typo, compiledOutputIdentity(result))
+			}
+			requireNoSSHSession(t, server)
+		})
+	}
+}
+
+func TestCompiledNearCommandWithoutSimilarAliasStillSuggestsCommand(t *testing.T) {
+	cli, _ := newAliasTieCLI(t, "web-prod1")
+	// "stats" is one edit from status and no alias is as close.
+	result := cli.Run(t, "sshctl", nil, "--offline", "--json", "stats", "x")
+	document := decodeExactlyOneJSONObject(t, result.Stdout)
+	if result.ProcessExit != 2 || document["error"] != "unknown_command" {
+		t.Fatalf("stats: %s", compiledOutputIdentity(result))
+	}
+	// "stat" is two edits from status (short words allow one): plain alias miss.
+	result = cli.Run(t, "sshctl", nil, "--offline", "--json", "stat", "x")
+	document = decodeExactlyOneJSONObject(t, result.Stdout)
+	if result.ProcessExit != 255 || document["error"] != "alias_not_found" {
+		t.Fatalf("stat: %s", compiledOutputIdentity(result))
+	}
+}
+
+func TestCompiledRedirectKeyCountsAsAliasForSuggestions(t *testing.T) {
+	cli, server := newAliasTieCLI(t, "web-prod1")
+	if set := cli.Run(t, "sshctl", nil, "--offline", "redirect", "set", "stat", "web-prod1"); set.ProcessExit != 0 {
+		t.Fatalf("redirect set: %s", compiledOutputIdentity(set))
+	}
+	result := cli.Run(t, "sshctl", nil, "--offline", "--json", "stats", "hostname")
+	document := decodeExactlyOneJSONObject(t, result.Stdout)
+	if result.ProcessExit != 255 || document["error"] != "alias_not_found" {
+		t.Fatalf("redirect key must win the tie: %s", compiledOutputIdentity(result))
+	}
+	requireNoSSHSession(t, server)
+}
+
+func TestCompiledGlobalJSONAppliesToRunArgumentErrors(t *testing.T) {
+	cli, server := newSuggestionCLI(t)
+	for _, args := range [][]string{
+		{"--offline", "--json", "run", "web-prod1", "--bogus"},
+		{"--offline", "--json", "plan", "web-prod1", "--bogus"},
+		{"--offline", "--json", "map", "web-prod1", "--bogus"},
+		{"--offline", "--json", "web-prod1", "--bogus"},
+	} {
+		result := cli.Run(t, "sshctl", nil, args...)
+		document := decodeExactlyOneJSONObject(t, result.Stdout)
+		if result.ProcessExit != 2 || document["error"] != "invalid_arguments" {
+			t.Fatalf("%v: %s", args, compiledOutputIdentity(result))
+		}
+	}
+	result := cli.Run(t, "ssm", nil, "--offline", "--json", "exec", "web-prod1", "--bogus")
+	document := decodeExactlyOneJSONObject(t, result.Stdout)
+	if result.ProcessExit != 2 || document["error"] != "invalid_arguments" {
+		t.Fatalf("ssm exec: %s", compiledOutputIdentity(result))
 	}
 	requireNoSSHSession(t, server)
 }

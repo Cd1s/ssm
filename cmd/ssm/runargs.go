@@ -438,7 +438,7 @@ func exitRemoteRunArgError(tool, alias string, args []string, err error) {
 		Alias: alias,
 		Tool:  tool,
 	})
-	if hasJSONFlag(args[:remoteArgvStart(args)]) {
+	if machineJSON || hasJSONFlag(args[:remoteArgvStart(args)]) {
 		ssh.WriteRunResult(ssh.RunResult{
 			OK:             false,
 			Alias:          alias,

@@ -72,7 +72,7 @@ func suggestCommand(sshctl bool, word string) (commandSuggestion, bool) {
 	return commandSuggestion{
 		Hint:       fmt.Sprintf("unknown command %q; did you mean %s?", word, strings.Join(quoted, " or ")),
 		Candidates: best,
-		distance:   ssh.EditDistance(normalizeCommandName(lower), normalizeCommandName(first)),
+		distance:   commandDistance(lower, first),
 	}, true
 }
 
@@ -128,16 +128,29 @@ func nearestNames(word string, names []string, limit int, normalize func(string)
 	return out
 }
 
-// aliasIsCloser reports whether some saved alias is strictly closer to word
-// than the suggested command, in which case the word is more likely a mistyped
-// alias and the plain alias_not_found candidates are the better answer.
-func aliasIsCloser(word string, suggestion commandSuggestion, v *config.Vault) bool {
-	if v == nil || suggestion.distance == 0 {
+// commandDistance is the edit distance used for both commands and aliases, so
+// the two can be compared directly.
+func commandDistance(a, b string) int {
+	return ssh.EditDistance(normalizeCommandName(a), normalizeCommandName(b))
+}
+
+// aliasIsCloser reports whether some saved alias or redirect key is at least
+// as close to word as the suggested command. A tie favors alias_not_found with
+// alias candidates, the conservative answer when the word may be a mistyped
+// alias.
+func aliasIsCloser(word string, suggestion commandSuggestion, v *config.Vault, redirects config.Redirects) bool {
+	if suggestion.distance == 0 {
 		return false
 	}
-	lower := strings.ToLower(word)
-	for _, c := range v.Connections {
-		if ssh.EditDistance(lower, strings.ToLower(c.Name)) < suggestion.distance {
+	if v != nil {
+		for _, c := range v.Connections {
+			if commandDistance(word, c.Name) <= suggestion.distance {
+				return true
+			}
+		}
+	}
+	for name := range redirects {
+		if commandDistance(word, name) <= suggestion.distance {
 			return true
 		}
 	}
@@ -204,6 +217,11 @@ func runOptionSuggestion(arg string) string {
 	best := nearestNames(name, long, 2, func(s string) string { return strings.TrimLeft(s, "-") })
 	if len(best) == 0 {
 		return ""
+	}
+	for i, option := range best {
+		if option == "--refresh" {
+			best[i] = "--refresh (only valid together with --stream: `run <alias> --stream --refresh <duration>`)"
+		}
 	}
 	return "did you mean " + strings.Join(best, " or ") + "?"
 }

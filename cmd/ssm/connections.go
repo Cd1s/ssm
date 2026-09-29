@@ -654,7 +654,7 @@ func connectionNotFound(name string, v *config.Vault) {
 	// rather than an alias. This runs only after the exact alias lookup missed
 	// and reuses the already-loaded vault, so it never unlocks or connects.
 	if aliasShorthand {
-		if suggestion, ok := suggestCommand(true, name); ok && !aliasIsCloser(name, suggestion, v) {
+		if suggestion, ok := suggestCommand(true, name); ok && !aliasIsCloser(name, suggestion, v, config.LoadRedirects()) {
 			exitUnknownCommandSuggestion(true, name, suggestion)
 		}
 	}

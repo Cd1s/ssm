@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"ssm/internal/config"
 )
 
 func TestSuggestCommand(t *testing.T) {
@@ -43,6 +45,7 @@ func TestSuggestRunOptionUsesRealOptionTable(t *testing.T) {
 		"--timout":      "--timeout",
 		"--jsn":         "--json",
 		"--timout=5s":   "--timeout",
+		"--refesh":      "--stream",
 	} {
 		if got := runOptionSuggestion(option); !strings.Contains(got, want) {
 			t.Errorf("runOptionSuggestion(%q) = %q, want it to contain %q", option, got, want)
@@ -94,5 +97,25 @@ func TestRunOptionTablesCoverParser(t *testing.T) {
 	sort.Strings(missing)
 	if len(missing) > 0 {
 		t.Fatalf("parseRemoteRunArgs options missing from runValueOptions/runFlagOptions: %v", missing)
+	}
+}
+
+func TestAliasIsCloserTiesAndRedirects(t *testing.T) {
+	v := &config.Vault{Connections: []config.Connection{{Name: "host1"}}}
+	tie, ok := suggestCommand(true, "host2")
+	if !ok || tie.distance != 1 {
+		t.Fatalf("suggestCommand(host2) = %+v, %v", tie, ok)
+	}
+	if !aliasIsCloser("host2", tie, v, nil) {
+		t.Error("a tie must favor the alias")
+	}
+	if aliasIsCloser("host2", tie, &config.Vault{Connections: []config.Connection{{Name: "web-prod1"}}}, nil) {
+		t.Error("an unrelated alias must not suppress the command suggestion")
+	}
+	if !aliasIsCloser("host2", tie, nil, config.Redirects{"host3": "web"}) {
+		t.Error("redirect keys must count as aliases")
+	}
+	if aliasIsCloser("keys", commandSuggestion{}, v, nil) {
+		t.Error("exact ssm-only guidance is never overridden by aliases")
 	}
 }
