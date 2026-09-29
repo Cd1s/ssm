@@ -757,3 +757,157 @@ func TestLocalFirstRunResultsCarryUnsyncedAndLastSyncFailure(t *testing.T) {
 		t.Fatalf("a confirmed sync must clear the fields: %v", clean)
 	}
 }
+
+func writePasswordFile(t *testing.T, cli *compiledCLIHarness) string {
+	t.Helper()
+	path := filepath.Join(cli.temp, "account.password")
+	if err := os.WriteFile(path, []byte("ACCOUNT_PASSWORD_CANARY\n"), 0o600); err != nil { //nolint:gosec // test-only fake credential canary
+		t.Fatal(err)
+	}
+	return path
+}
+
+// login fetches the inventory through the explicit-sync path, so the next read
+// (and the next background sync) starts from a seeded remote identity.
+func TestLoginPullsTheInventoryAndSeedsTheRemoteIdentity(t *testing.T) {
+	cli := newCompiledCLIHarness(t)
+	sync := newCompiledSyncFixture(t)
+	sync.SetClock(t, localFirstClock)
+	remote := encryptCompiledVault(t, cli, &config.Vault{Connections: []config.Connection{
+		{Name: "from-remote", Host: "192.0.2.61", Port: 22, User: "root", Password: "unused"},
+	}})
+	sync.SetRemote(t, remote, compiledOpaqueIdentity(remote))
+	env := map[string]string{"SSM_SYNC_MODE": "local_first", "SSM_COMPILED_TEST_CLOCK_URL": sync.ClockURL()}
+
+	login := cli.RunWithEnv(t, "ssm", nil, env, "login", "--server", sync.URL(), "--email", "user@example.test", "--password-file", writePasswordFile(t, cli))
+	if login.ProcessExit != 0 || strings.Contains(login.Stderr, "warning") {
+		t.Fatalf("login failed or warned; output=%s", compiledOutputIdentity(login))
+	}
+	if !bytes.Equal(cli.VaultBlob(t), remote) {
+		t.Fatal("login did not install the remote vault")
+	}
+	etag, err := os.ReadFile(filepath.Join(cli.home, ".config", "ssm", "remote.etag"))
+	if err != nil || strings.TrimSpace(string(etag)) != compiledOpaqueIdentity(remote) {
+		t.Fatalf("remote identity was not seeded: %q %v", etag, err)
+	}
+	state, _ := os.ReadFile(filepath.Join(cli.home, ".config", "ssm", "sync-state.json"))
+	if !strings.Contains(string(state), "last_success_at") {
+		t.Fatalf("login pull outcome was not recorded: %s", state)
+	}
+
+	list := cli.RunWithEnv(t, "sshctl", nil, env, "--json", "list")
+	if list.ProcessExit != 0 || !strings.Contains(list.Stdout, "from-remote") {
+		t.Fatalf("the first read after login has no inventory; output=%s", compiledOutputIdentity(list))
+	}
+	if list.Stderr != "" {
+		t.Fatalf("stderr = %q", list.Stderr)
+	}
+	// Nothing is due yet, and even when it is, the seeded identity means no
+	// recorded conflict.
+	if _, err := os.Stat(filepath.Join(cli.home, ".config", "ssm", "sync-conflict.json")); !os.IsNotExist(err) {
+		t.Fatal("login recorded a conflict")
+	}
+}
+
+func TestLoginSucceedsWithAWarningWhenTheInitialPullFails(t *testing.T) {
+	cli := newCompiledCLIHarness(t)
+	sync := newCompiledSyncFixture(t)
+	sync.SetClock(t, localFirstClock)
+	sync.SetStatus(t, http.MethodHead, http.StatusServiceUnavailable)
+	env := map[string]string{"SSM_SYNC_MODE": "local_first", "SSM_COMPILED_TEST_CLOCK_URL": sync.ClockURL()}
+
+	login := cli.RunWithEnv(t, "ssm", nil, env, "login", "--server", sync.URL(), "--email", "user@example.test", "--password-file", writePasswordFile(t, cli))
+	if login.ProcessExit != 0 || !strings.Contains(login.Stdout, "Logged in.") {
+		t.Fatalf("login must still succeed; output=%s", compiledOutputIdentity(login))
+	}
+	if !strings.Contains(login.Stderr, "cause=http_5xx") || !strings.Contains(login.Stderr, "run sshctl sync") {
+		t.Fatalf("login did not warn with the cause and the remedy; stderr=%q", login.Stderr)
+	}
+	if strings.Contains(login.Stderr, sync.URL()) || strings.Contains(login.Stderr, "FIXTURE_ACCOUNT_TOKEN") {
+		t.Fatalf("warning leaks the server address or token: %q", login.Stderr)
+	}
+	if _, err := os.Stat(filepath.Join(cli.home, ".config", "ssm", "cloud.json")); err != nil {
+		t.Fatalf("configuration was not saved: %v", err)
+	}
+}
+
+// The first push publishes and records the identity, so the next background
+// sync of a freshly registered account sees a seeded identity, not an empty one.
+func TestFirstPublicationSeedsTheRemoteIdentityForTheNextBackgroundSync(t *testing.T) {
+	s := newLocalFirstScenario(t)
+	if err := os.Remove(filepath.Join(s.cli.home, ".config", "ssm", "remote.etag")); err != nil {
+		t.Fatal(err)
+	}
+	s.sync.SetRemote(t, nil, "") // a fresh account: nothing published yet
+	password := filepath.Join(s.cli.temp, "new-host.password")
+	if err := os.WriteFile(password, []byte("FIRST_PUBLICATION_PASSWORD_CANARY\n"), 0o600); err != nil { //nolint:gosec // test-only fake credential canary
+		t.Fatal(err)
+	}
+	s.writeSyncState(t, map[string]any{"next_attempt_at": rfc3339(localFirstClock.Add(time.Hour))})
+	added := s.run(t, "--json", "host", "add", "first-host", "--host", "192.0.2.88", "--user", "runner", "--password-file", password)
+	id := compiledTransactionID(t, assertCompiledJSONSuccess(t, added), added)
+	pushed := s.run(t, "--json", "push", "--only", id)
+	if pushed.ProcessExit != 0 {
+		t.Fatalf("first publication failed; output=%s", compiledOutputIdentity(pushed))
+	}
+	etag, err := os.ReadFile(filepath.Join(s.cli.home, ".config", "ssm", "remote.etag"))
+	if err != nil || strings.TrimSpace(string(etag)) != compiledOpaqueIdentity(s.sync.UploadedBlob()) {
+		t.Fatalf("published identity was not recorded as the cached remote identity: %q %v", etag, err)
+	}
+	s.writeSyncState(t, map[string]any{"next_attempt_at": rfc3339(localFirstClock.Add(-time.Second))})
+	s.runTrue(t)
+	state := s.waitForSyncState(t, func(state map[string]any) bool { return stateString(state, "last_success_at") != "" })
+	if stateError(state) != nil {
+		t.Fatalf("background sync after the first publication failed: %v", state)
+	}
+	if _, err := os.Stat(filepath.Join(s.cli.home, ".config", "ssm", "sync-conflict.json")); !os.IsNotExist(err) {
+		t.Fatal("a conflict was recorded after the first publication")
+	}
+}
+
+// A configuration directory as v2.0.2 left it after a successful sync (vault,
+// cached remote identity, last_pull; no sync-state.json) works under local_first:
+// the first read starts a normal background sync, without a recorded conflict.
+func TestUpgradeFromV202StateSyncsInTheBackgroundWithoutAConflict(t *testing.T) {
+	for _, remoteChanged := range []bool{false, true} {
+		name := "remote unchanged"
+		if remoteChanged {
+			name = "remote changed"
+		}
+		t.Run(name, func(t *testing.T) {
+			s := newLocalFirstScenario(t) // vault + remote.etag == vault identity, as v2.0.2 wrote them
+			s.cli.writeConfigFile(t, "settings.json", []byte(`{"last_pull":"`+rfc3339(localFirstClock.Add(-time.Hour))+`"}`))
+			if s.readSyncState(t) != nil {
+				t.Fatal("precondition: v2.0.2 wrote no sync-state.json")
+			}
+			var newRemote []byte
+			if remoteChanged {
+				newRemote = encryptCompiledVault(t, s.cli, &config.Vault{Connections: []config.Connection{
+					s.ssh.Connection("lf-host", "LOCAL_FIRST_SSH_PASSWORD_CANARY"), //nolint:gosec // test-only fake credential canary
+					{Name: "added-remotely", Host: "192.0.2.62", Port: 22, User: "root", Password: "unused"},
+				}})
+				s.sync.SetRemote(t, newRemote, compiledOpaqueIdentity(newRemote))
+			}
+
+			started := s.run(t, "run", s.alias, "--argv", "true")
+			if started.ProcessExit != 0 || strings.Contains(started.Stderr, "has not been synced") {
+				t.Fatalf("first read after upgrade failed or wrongly reported an unsynced inventory; stderr=%q", started.Stderr)
+			}
+			state := s.waitForSyncState(t, func(state map[string]any) bool {
+				return stateString(state, "last_success_at") != "" || stateError(state) != nil
+			})
+			if stateError(state) != nil {
+				t.Fatalf("background sync after upgrade failed: %v", state)
+			}
+			if _, err := os.Stat(filepath.Join(s.cli.home, ".config", "ssm", "sync-conflict.json")); !os.IsNotExist(err) {
+				t.Fatal("a conflict was recorded for an untouched v2.0.2 state")
+			}
+			if remoteChanged && !bytes.Equal(s.cli.VaultBlob(t), newRemote) {
+				t.Fatal("the changed remote vault was not pulled")
+			}
+			if !remoteChanged && s.sync.MethodCount(http.MethodGet) != 0 {
+				t.Fatal("an unchanged remote must not be downloaded")
+			}
+		})
+	}
+}

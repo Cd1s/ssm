@@ -101,6 +101,12 @@ func (f *compiledSyncFixture) serveHTTP(w http.ResponseWriter, r *http.Request) 
 		_, _ = io.WriteString(w, strconv.FormatInt(now.UnixNano(), 10))
 		return
 	}
+	if r.URL.Path == "/auth/login" || r.URL.Path == "/auth/register" {
+		// Minimal account endpoints: any credentials yield a fixed token.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"token":"FIXTURE_ACCOUNT_TOKEN"}`)
+		return
+	}
 	if r.URL.Path != "/sync" {
 		http.NotFound(w, r)
 		return

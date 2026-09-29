@@ -63,6 +63,20 @@ func runLogin(args []string) {
 		}
 		resetSyncState()
 		fmt.Println("Logged in.")
+		if !offlineMode {
+			// Fetch the inventory now, through exactly the path of an explicit
+			// sync (strict semantics, vault write lock, conflict evidence on
+			// divergence). A failure never fails the login: the account is
+			// authenticated and the configuration saved.
+			if _, err := syncTransaction(false).Pull(); err != nil {
+				failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullReplaceFailed)
+				cause := failure.SyncCause
+				if cause == "" {
+					cause = "unknown"
+				}
+				fmt.Fprintf(os.Stderr, "ssm: warning: logged in, but the initial vault pull failed (cause=%s): %s; run sshctl sync\n", cause, failure.Message)
+			}
+		}
 		return
 	}
 	os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.LoginArgumentsInvalid, machinecontract.Details{Message: "login requires explicit flags"}))

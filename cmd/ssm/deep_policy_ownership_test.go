@@ -669,6 +669,7 @@ var reviewedCommandPolicyBoundaries = map[string]bool{
 	"runHostCommand":    true,
 	"runHostKeyCommand": true,
 	"runKeysList":       true,
+	"runLogin":          true,
 	"runKeysRemove":     true,
 	"runList":           true,
 	"runMap":            true,

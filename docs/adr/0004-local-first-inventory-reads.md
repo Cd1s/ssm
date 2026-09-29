@@ -101,9 +101,9 @@ lock.
 
 ## Consequences
 
-The first read after `login` on a machine with no vault sees local (possibly
-empty) inventory; run `sshctl sync` once to pull, or wait for the background
-sync. `update.Auto` still runs inline and is not part of this decision.
+`login` fetches the inventory right after authenticating, through the explicit
+`sync` path, and seeds the cached remote identity; if that fetch fails, login
+still succeeds with a stderr warning and `sshctl sync` is the remedy. `update.Auto` still runs inline and is not part of this decision.
 Local mutations, publication finalization, and every pull (background and
 explicit) are serialised
 by one short cross-process vault write lock (`vault-write.lock`, separate from

@@ -134,7 +134,9 @@ true, tell the caller before relying on host details that may have changed;
 run `sshctl --json sync` to force a strict pull. Explicit `sync`, `pull`, and
 `push` stay strict, and setting `sync_mode: strict` (or `SSM_SYNC_MODE=strict`)
 restores refresh-before-read, where `sync_pull_failed` fails the command and
-must not be bypassed silently. Sync failures carry
+must not be bypassed silently. `ssm login` fetches the inventory once right after authenticating (the explicit
+`sync` path); run `sshctl sync` only if its stderr warned that the initial pull
+failed. Sync failures carry
 a stable top-level `cause` (also `cause=` in human output, and in
 `last_sync_error`); branch on it:
 `auth` (HTTP 401/403) and `missing_token` need a human to run `ssm login`,

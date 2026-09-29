@@ -314,7 +314,7 @@ strict 模式下，`status` 的在线刷新失败会返回 `error:sync_pull_fail
 
 `settings.json` 配置项：`sync_mode`（`local_first` 或 `strict`）、`sync_interval`、`stale_after`（Go 时长，或整数加 `d` 表示天）；环境变量 `SSM_SYNC_MODE` 可对单个进程覆盖 `sync_mode`。`auto_sync:false` 在两种模式下都关闭自动同步。`--offline` 与 `SSM_OFFLINE=1` 等价：不解析同步配置、不联网，也不派生后台同步。
 
-显式 `sync`、`pull`、`push` 在两种模式下都保持严格语义（出错即失败），并把结果写入 `sync-state.json`。写操作与发布不变：修改先记为 pending，由 `push --only <transaction-id>` 或 `push --all` 发布，分叉检测仍然 fail-closed。`run --stream --refresh` 在 local_first 下到期时会在 vault 已被后台更新时重新加载快照，同步失败不会中止流。新机器 `login` 之后先运行一次 `sshctl sync` 拉取 vault。
+显式 `sync`、`pull`、`push` 在两种模式下都保持严格语义（出错即失败），并把结果写入 `sync-state.json`。写操作与发布不变：修改先记为 pending，由 `push --only <transaction-id>` 或 `push --all` 发布，分叉检测仍然 fail-closed。`run --stream --refresh` 在 local_first 下到期时会在 vault 已被后台更新时重新加载快照，同步失败不会中止流。`login` 成功后会立即通过与显式 `sshctl sync` 相同的路径（strict 语义、vault 写锁、分叉时保留冲突证据）拉取清单；只有这次初始拉取失败（stderr 会给出 `cause` 并提示运行 `sshctl sync`，`login` 本身仍然成功）时才需要手动运行 `sshctl sync`。
 
 `--offline` 对读命令已弃用：仅为兼容而接受；读默认就是本地的，它现在只用来抑制后台同步（`strict` 模式下仍跳过在线刷新）。`run` 的 JSON 结果还会在“已配置同步但从未确认过清单”时带 `inventory_unsynced:true`，在最近一次同步尝试失败时带 `inventory_sync_error:"<cause>"`（`cause` 取值同上，例如 `http_5xx`；加性字段，human 模式不为此打警告，离线使用保持安静）。在 `strict` 模式以及显式 `sync`/`pull` 下，若另一个 ssm 进程正持有短暂的 vault 写锁（例如并发的本地修改），命令会以 “vault is busy” 失败，重试即可；`pull --adopt-remote <sha256> --yes` 只在冲突证据记录之后本地 vault 没有再变化时才会执行，否则被拒绝并保留本地修改，请重新检查冲突。
 
