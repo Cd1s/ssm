@@ -227,10 +227,10 @@ func TestAcceptReplacesOnlySameTypeEntriesForThisHost(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(original), 0o640); err != nil {
+	if err := os.WriteFile(path, []byte(original), 0o640); err != nil { //nolint:gosec // test needs a non-0600 mode to prove it is preserved
 		t.Fatal(err)
 	}
-	if err := os.Chmod(path, 0o640); err != nil {
+	if err := os.Chmod(path, 0o640); err != nil { //nolint:gosec // test needs a non-0600 mode to prove it is preserved
 		t.Fatal(err)
 	}
 
@@ -378,4 +378,105 @@ func TestHostKeyAlgorithmsForOrdersKnownTypesFirst(t *testing.T) {
 	)
 	assertOrder(hostKeyAlgorithmsFor(path, address),
 		gossh.KeyAlgoRSASHA512, gossh.KeyAlgoRSASHA256, gossh.KeyAlgoRSA, gossh.KeyAlgoECDSA384)
+}
+
+// newTestHostCertSigner returns a host-certificate signer for hostSigner's key,
+// signed by ca.
+func newTestHostCertSigner(t *testing.T, hostSigner, ca gossh.Signer) gossh.Signer {
+	t.Helper()
+	cert := &gossh.Certificate{
+		Key:         hostSigner.PublicKey(),
+		Serial:      1,
+		CertType:    gossh.HostCert,
+		ValidBefore: gossh.CertTimeInfinity,
+	}
+	if err := cert.SignCert(rand.Reader, ca); err != nil {
+		t.Fatal(err)
+	}
+	certSigner, err := gossh.NewCertSigner(cert, hostSigner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return certSigner
+}
+
+func TestDialSucceedsWithCertAuthorityOnlyKnownHosts(t *testing.T) {
+	host, ca := newTestSigner(t, "ed25519"), newTestSigner(t, "ed25519")
+	conn, vault, _ := startRunTestSSHServerWithHostKeys(t, host, newTestHostCertSigner(t, host, ca))
+	home := t.TempDir()
+	setTestHome(t, home)
+	writeTestKnownHosts(t, home, "@cert-authority "+knownLine(knownHostToken(conn), ca))
+
+	if err := dialAndClose(t, conn, vault); err != nil {
+		t.Fatalf("host certificate signed by the known CA must be accepted: %v", err)
+	}
+}
+
+func TestDialSucceedsWithCertAuthorityAndPlainEntryOfAnotherType(t *testing.T) {
+	host, ca := newTestSigner(t, "ed25519"), newTestSigner(t, "ed25519")
+	conn, vault, _ := startRunTestSSHServerWithHostKeys(t, host, newTestHostCertSigner(t, host, ca))
+	home := t.TempDir()
+	setTestHome(t, home)
+	writeTestKnownHosts(t, home,
+		knownLine(knownHostToken(conn), newTestSigner(t, "ecdsa")),
+		"@cert-authority "+knownLine(knownHostToken(conn), ca),
+	)
+
+	if err := dialAndClose(t, conn, vault); err != nil {
+		t.Fatalf("CA entry must keep the certificate-first default order: %v", err)
+	}
+}
+
+func TestCertAuthorityEntriesDoNotCountAsRecordedHostKeyTypes(t *testing.T) {
+	conn, vault, _ := startRunTestSSHServerWithHostKeys(t, newTestSigner(t, "ed25519"))
+	home := t.TempDir()
+	setTestHome(t, home)
+	writeTestKnownHosts(t, home, "@cert-authority "+knownLine(knownHostToken(conn), newTestSigner(t, "ecdsa")))
+
+	if got := failureCode(t, dialAndClose(t, conn, vault)); got != "host_key_mismatch" {
+		t.Fatalf("plain key against a CA-only entry = %q, want the legacy host_key_mismatch", got)
+	}
+	inspection, err := InspectHostKey(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspection.Status != "mismatch" {
+		t.Fatalf("inspect status = %q, want mismatch", inspection.Status)
+	}
+}
+
+func TestSaveHostKeyTerminatesUnterminatedLastLine(t *testing.T) {
+	edSigner := newTestSigner(t, "ed25519")
+	conn, vault, _ := startRunTestSSHServerWithHostKeys(t, edSigner)
+	home := t.TempDir()
+	setTestHome(t, home)
+	path := writeTestKnownHosts(t, home)
+	known := knownLine(knownHostToken(conn), newTestSigner(t, "ecdsa"))
+	if err := os.WriteFile(path, []byte(known), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	inspection, err := InspectHostKey(conn)
+	if err != nil || inspection.Status != "type_changed" {
+		t.Fatalf("inspection = %+v, err = %v", inspection, err)
+	}
+	if _, err := AcceptHostKey(conn, inspection.ObservedFingerprint); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(path) //nolint:gosec // test-owned known_hosts path
+	if want := known + "\n" + knownLine(knownHostToken(conn), edSigner) + "\n"; string(got) != want {
+		t.Fatalf("known_hosts = %q, want %q", got, want)
+	}
+	if err := dialAndClose(t, conn, vault); err != nil {
+		t.Fatalf("dial after accept: %v", err)
+	}
+}
+
+func TestKnownHostPatternMatchingIsCaseSensitiveLikeKnownHosts(t *testing.T) {
+	if knownHostPatternIs("Host.Example", "host.example") {
+		t.Fatal("pattern matched with different case; x/crypto knownhosts is case-sensitive")
+	}
+	if !knownHostPatternIs("host.example", "host.example") {
+		t.Fatal("identical pattern did not match")
+	}
 }

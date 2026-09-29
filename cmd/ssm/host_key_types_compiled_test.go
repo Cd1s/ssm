@@ -16,7 +16,7 @@ import (
 	"ssm/internal/config"
 )
 
-const hostKeyTypesPassword = "ISSUE74_HOST_KEY_TYPES_PASSWORD_CANARY"
+const hostKeyTypesPassword = "ISSUE74_HOST_KEY_TYPES_PASSWORD_CANARY" //nolint:gosec // test-only fake credential canary
 
 func randomCompiledPublicKey(t *testing.T, kind string) gossh.PublicKey {
 	t.Helper()

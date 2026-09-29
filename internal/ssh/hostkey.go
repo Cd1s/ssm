@@ -154,7 +154,7 @@ func inspectKnownHost(path, address string, remote net.Addr, observed gossh.Publ
 		}
 	}
 	sort.Strings(fingerprints)
-	if !wantHasKeyType(keyErr.Want, observed) {
+	if plain, hasAuthority := splitCertAuthorities(path, keyErr.Want); !hasAuthority && !wantHasKeyType(plain, observed) {
 		return "type_changed", fingerprints, nil
 	}
 	return "mismatch", fingerprints, nil
@@ -376,7 +376,7 @@ func knownHostPatternIs(pattern, token string) bool {
 	if strings.HasPrefix(pattern, "!") || strings.ContainsAny(pattern, "*?") {
 		return false
 	}
-	return strings.EqualFold(knownhosts.Normalize(pattern), token)
+	return knownhosts.Normalize(pattern) == token
 }
 
 func knownHostToken(c config.Connection) string {

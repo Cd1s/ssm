@@ -62,10 +62,13 @@ func buildHostKeyCallbackForPath(path string) gossh.HostKeyCallback {
 			return nil
 		}
 		var keyErr *knownhosts.KeyError
-		if errors.As(err, &keyErr) && len(keyErr.Want) > 0 && !wantHasKeyType(keyErr.Want, key) {
+		if errors.As(err, &keyErr) && len(keyErr.Want) > 0 {
 			// known_hosts only has other key types for this endpoint: not a
-			// changed key of a known type, so report it distinctly.
-			return &machinecontract.HostKeyTypeChangedError{KeyError: keyErr, ObservedType: observedKeyType(key)}
+			// changed key of a known type, so report it distinctly. A matching
+			// @cert-authority entry keeps the legacy mismatch classification.
+			if plain, hasAuthority := splitCertAuthorities(path, keyErr.Want); !hasAuthority && !wantHasKeyType(plain, key) {
+				return &machinecontract.HostKeyTypeChangedError{KeyError: keyErr, ObservedType: observedKeyType(key)}
+			}
 		}
 		return err
 	}
@@ -88,11 +91,19 @@ func saveHostKey(path, hostname string, key gossh.PublicKey) error {
 	if err := privatepath.RestrictDirectory(filepath.Dir(path)); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // caller supplies the configured known_hosts path
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // caller supplies the configured known_hosts path
 	if err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(f, knownhosts.Line([]string{hostname}, key)); err != nil {
+	entry := knownhosts.Line([]string{hostname}, key) + "\n"
+	if info, err := f.Stat(); err == nil && info.Size() > 0 {
+		last := make([]byte, 1)
+		if _, err := f.ReadAt(last, info.Size()-1); err == nil && last[0] != '\n' {
+			// Do not glue the new entry onto an unterminated last line.
+			entry = "\n" + entry
+		}
+	}
+	if _, err := f.WriteString(entry); err != nil {
 		_ = f.Close()
 		return err
 	}
