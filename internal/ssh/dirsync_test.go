@@ -157,12 +157,26 @@ func TestSuperviseDirectoryDownloadRemoteExitFailureWinsOverLocalEOF(t *testing.
 }
 
 func TestSuperviseDirectoryDownloadNonExitRemoteErrorDoesNotOverrideLocal(t *testing.T) {
+	// The local end fails first (disk full); the remote then only sees its
+	// channel close. The local failure stays the root cause. The ordering is
+	// fixed with a delay so the result does not depend on scheduling.
 	first, _, _ := superviseDirectoryDownload(
-		func() error { return io.EOF },
+		func() error { time.Sleep(50 * time.Millisecond); return io.EOF },
 		func() error { return errors.New("disk full") },
-		func() {}, func() {}, time.Second,
+		func() {}, func() {}, 2*time.Second,
 	)
 	if first != downloadEndLocal {
 		t.Fatalf("first=%v, want local when the remote only saw a closed channel", first)
+	}
+}
+
+func TestSuperviseDirectoryDownloadRemoteEOFAloneIsARemoteFailure(t *testing.T) {
+	first, remoteErr, localErr := superviseDirectoryDownload(
+		func() error { return io.EOF },
+		func() error { time.Sleep(20 * time.Millisecond); return nil },
+		func() {}, func() {}, 2*time.Second,
+	)
+	if first != downloadEndRemote || !errors.Is(remoteErr, io.EOF) || localErr != nil {
+		t.Fatalf("first=%v remote=%v local=%v", first, remoteErr, localErr)
 	}
 }
