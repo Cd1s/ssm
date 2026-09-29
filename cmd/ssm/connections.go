@@ -157,6 +157,8 @@ func executeRunSpec(v *config.Vault, name string, spec remoteRunSpec) ssh.RunRes
 		RequestedAlias: name,
 		ResolvedAlias:  resolved,
 		Mode:           spec.Mode,
+		Stdin:          spec.Stdin,
+		StdinFile:      spec.StdinFile,
 	}
 	if len(spec.Scripts) == 1 {
 		script := spec.Scripts[0]

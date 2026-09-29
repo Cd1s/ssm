@@ -8,6 +8,7 @@ import (
 	"ssm/internal/config"
 	"ssm/internal/inventorytransaction"
 	"ssm/internal/machinecontract"
+	"ssm/internal/ssh"
 	"ssm/internal/synctransaction"
 )
 
@@ -258,6 +259,9 @@ func runSSHCTLMap(args []string) {
 		}
 		exitRemoteRunArgError("sshctl map", strings.Join(targets, ","), optionArgs, err)
 	}
+	if spec.Stdin == ssh.StdinForward || spec.StdinFile != "" {
+		exitRemoteRunArgError("sshctl map", strings.Join(targets, ","), optionArgs, fmt.Errorf("map does not support --stdin or --stdin-file: one stdin cannot be shared by several targets (use sshctl run <alias> --stdin per host)"))
+	}
 	// Single -f becomes scripts for multi or command for one - already handled in parse
 	if len(spec.Scripts) == 0 && strings.TrimSpace(spec.Command) == "" {
 		exitRemoteRunArgError("sshctl map", strings.Join(targets, ","), optionArgs, fmt.Errorf("missing command or --scripts"))
@@ -445,6 +449,9 @@ func sshctlUsage() {
   sshctl run <alias> -s [--shell sh|bash] [-- args...]
   sshctl run <alias> -f script.sh [-- args...]   # script body goes over stdin
   sshctl run <alias> --scripts a.sh,b.sh    # parallel scripts on one host
+  sshctl run <alias> --stdin --argv <command>  # forward local stdin (any mode, incl. --json)
+  sshctl run <alias> --no-stdin ...            # never forward stdin (like ssh -n; use in loops)
+  sshctl run <alias> --stdin-file in.txt ...   # same as: < in.txt
 
   # Compatibility only: remote shell parsing has quoting/expansion risk
   sshctl run <alias> '<shell command string>'
@@ -463,7 +470,7 @@ func sshctlUsage() {
   # goes to the remote program untouched. -h/--help are honored only before it.
   # Only in sshctl: request, host-key, status, sync. Only in ssm: keys, remove,
   # import-json, update, login, register, logout, server, pull-if-changed, remote-hash.
-Env: SSM_TRACE=1  SSM_TIMEOUT=10s  SSM_REUSE=0  SSM_FORWARD_STDIN=1  SSM_RUN_OUTPUT=buffered
+Env: SSM_TRACE=1  SSM_TIMEOUT=10s  SSM_REUSE=0  SSM_FORWARD_STDIN=1|0  SSM_RUN_OUTPUT=buffered
 `)
 }
 

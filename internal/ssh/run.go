@@ -11,7 +11,6 @@ import (
 	"time"
 
 	gossh "golang.org/x/crypto/ssh"
-	"golang.org/x/term"
 
 	"ssm/internal/config"
 	"ssm/internal/machinecontract"
@@ -34,6 +33,10 @@ type RunOptions struct {
 	Interpreter string
 	ScriptLabel string
 	Mode        string
+	// Stdin selects the local stdin forwarding rule; StdinFile, when set,
+	// forwards that file instead (like "< file") in every mode.
+	Stdin     StdinMode
+	StdinFile string
 	// RequestedAlias is the name the user typed (before redirects).
 	RequestedAlias string
 	ResolvedAlias  string
@@ -62,6 +65,11 @@ type RunResult struct {
 	Mode         string `json:"mode,omitempty"`
 	Transport    string `json:"transport,omitempty"`
 	Preflight    string `json:"preflight,omitempty"`
+	// StdinForwarded appears only when forwarding was decided for a piped
+	// stdin: true when local stdin reached the remote command, false when a
+	// piped stdin was left unread (see Warning).
+	StdinForwarded *bool  `json:"stdin_forwarded,omitempty"`
+	Warning        string `json:"warning,omitempty"`
 
 	failure         machinecontract.Failure
 	sensitiveValues []string
@@ -268,6 +276,24 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 		return res
 	}
 
+	stdinPlan := decideRunStdin(opts)
+	res.StdinForwarded = stdinPlan.Forwarded
+	res.Warning = stdinPlan.Warning
+	var stdinFileHandle *os.File
+	if stdinPlan.Source == stdinFile {
+		var err error
+		stdinFileHandle, err = os.Open(opts.StdinFile)
+		if err != nil {
+			applyRunFailure(&res, machinecontract.Classify(machinecontract.SSHStdinFailed, machinecontract.Details{
+				Message: "failed to open stdin file",
+				Cause:   err,
+				Alias:   opts.RequestedAlias,
+			}))
+			return res
+		}
+		defer func() { _ = stdinFileHandle.Close() }()
+	}
+
 	start := time.Now()
 	client, session, acquireStage, err := acquireSSHSession(c, v, opts.NoReuse)
 	if err != nil {
@@ -319,9 +345,11 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 	}
 	if opts.Input != "" {
 		session.Stdin = strings.NewReader(opts.Input)
-	} else if !opts.Capture {
-		stdinIsTTY := term.IsTerminal(int(os.Stdin.Fd()))
-		if os.Getenv("SSM_FORWARD_STDIN") == "1" || (!stdinIsTTY && stdinHasReadableData()) {
+	} else {
+		switch stdinPlan.Source {
+		case stdinTTY:
+			session.Stdin = os.Stdin
+		case stdinPipe, stdinFile:
 			stdin, err := session.StdinPipe()
 			if err != nil {
 				applyRunFailure(&res, machinecontract.Classify(machinecontract.SSHStdinFailed, machinecontract.Details{
@@ -332,12 +360,11 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 				res.LatencyMS = time.Since(start).Milliseconds()
 				return res
 			}
-			go func() {
-				_, _ = io.Copy(stdin, os.Stdin)
-				_ = stdin.Close()
-			}()
-		} else if stdinIsTTY {
-			session.Stdin = os.Stdin
+			var source io.Reader = os.Stdin
+			if stdinPlan.Source == stdinFile {
+				source = stdinFileHandle
+			}
+			go forwardStdin(stdin, source)
 		}
 	}
 
@@ -586,6 +613,12 @@ func WriteRunResult(res RunResult, asJSON bool) {
 	}
 	if res.Preflight != "" {
 		fmt.Printf("preflight=%s\n", res.Preflight)
+	}
+	if res.StdinForwarded != nil {
+		fmt.Printf("stdin_forwarded=%t\n", *res.StdinForwarded)
+	}
+	if res.Warning != "" {
+		fmt.Printf("warning=%s\n", res.Warning)
 	}
 	if res.Risk != "" {
 		fmt.Printf("risk=%s\n", res.Risk)

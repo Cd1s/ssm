@@ -334,6 +334,11 @@ func (h *compiledCLIHarness) RunWithPhysicalBasename(t *testing.T, executable st
 
 func (h *compiledCLIHarness) run(t *testing.T, executable string, stdin []byte, env map[string]string, args ...string) compiledCLIResult {
 	t.Helper()
+	if len(stdin) == 0 {
+		// No stdin data means the null device, like an agent running with
+		// </dev/null, not an empty pipe that stdin forwarding would report.
+		return h.runWithStdin(t, executable, nil, env, args...)
+	}
 	return h.runWithStdin(t, executable, bytes.NewReader(stdin), env, args...)
 }
 

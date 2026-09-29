@@ -35,12 +35,12 @@ func TestRemoteArgvStart(t *testing.T) {
 // The option table used for boundary scanning must agree with the parser about
 // which options consume a value, or the two rule sets drift.
 func TestRunOptionTableMatchesParseRemoteRunArgs(t *testing.T) {
-	for _, option := range []string{"--jobs", "-j", "--parallel", "--timeout", "--secret", "-e", "--shell", "--interpreter", "-f", "--file", "--scripts"} {
+	for _, option := range []string{"--jobs", "-j", "--parallel", "--timeout", "--secret", "-e", "--shell", "--interpreter", "-f", "--file", "--scripts", "--stdin-file"} {
 		if !runOptionTakesValue(option) {
 			t.Fatalf("%s consumes a value in parseRemoteRunArgs but not in runOptionTakesValue", option)
 		}
 	}
-	for _, option := range []string{"--json", "--raw", "--argv", "--trace", "-v", "--plan", "--dry-run", "--no-reuse", "--preflight", "--no-preflight", "-s", "--script", "--stream", "--offline", "-h", "--help"} {
+	for _, option := range []string{"--json", "--raw", "--argv", "--trace", "-v", "--plan", "--dry-run", "--no-reuse", "--preflight", "--no-preflight", "--stdin", "--no-stdin", "-s", "--script", "--stream", "--offline", "-h", "--help"} {
 		if runOptionTakesValue(option) {
 			t.Fatalf("%s is a flag but runOptionTakesValue says it consumes a value", option)
 		}

@@ -29,6 +29,7 @@ type agentRequest struct {
 	Timeout      string                     `json:"timeout,omitempty"`
 	NoReuse      bool                       `json:"no_reuse,omitempty"`
 	Preflight    *bool                      `json:"preflight,omitempty"`
+	StdinFile    string                     `json:"stdin_file,omitempty"`
 	Deep         bool                       `json:"deep,omitempty"`
 	Host         *agentHostRequest          `json:"host,omitempty"`
 	LocalPath    string                     `json:"local_path,omitempty"`
@@ -37,6 +38,9 @@ type agentRequest struct {
 	SHA256       bool                       `json:"sha256,omitempty"`
 	DirMode      string                     `json:"dir_mode,omitempty"`
 	Fields       map[string]json.RawMessage `json:"-"`
+	// FromStdin marks a request read from stdin, which the request itself has
+	// already consumed, so run must not also try to forward it.
+	FromStdin bool `json:"-"`
 }
 
 type agentHostRequest struct {
@@ -106,7 +110,7 @@ func runAgentRequest(args []string) {
 		if err := validateRequestAlias(req); err != nil {
 			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestAlias, machinecontract.Details{Cause: err, Alias: req.Alias}))
 		}
-		if req.Host != nil || req.Deep || req.Argv != nil || req.ShellCommand != nil || req.ScriptFile != "" || len(req.ScriptArgs) > 0 || req.Shell != "" || len(req.SecretFiles) > 0 || req.NoReuse || req.Preflight != nil {
+		if req.Host != nil || req.Deep || req.Argv != nil || req.ShellCommand != nil || req.ScriptFile != "" || len(req.ScriptArgs) > 0 || req.Shell != "" || len(req.SecretFiles) > 0 || req.NoReuse || req.Preflight != nil || req.StdinFile != "" {
 			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestPutFields, machinecontract.Details{
 				Message: "put accepts only alias, local_path, remote_path, resume, sha256, timeout, and dir_mode", Alias: req.Alias,
 			}))
@@ -233,6 +237,7 @@ func loadAgentRequest(args []string) (agentRequest, error) {
 		}
 		return agentRequest{}, fmt.Errorf("trailing request data: %w", err)
 	}
+	req.FromStdin = path == "-"
 	if req.Version != 1 {
 		return agentRequest{}, fmt.Errorf("unsupported request version %d; expected 1", req.Version)
 	}
@@ -281,7 +286,17 @@ func requestRunSpec(req agentRequest) (remoteRunSpec, error) {
 		return remoteRunSpec{}, fmt.Errorf("exactly one of argv, shell_command, or script_file is required")
 	}
 
-	spec := remoteRunSpec{JSON: true, NoReuse: req.NoReuse, Secrets: map[string]string{}}
+	spec := remoteRunSpec{JSON: true, NoReuse: req.NoReuse, Secrets: map[string]string{}, Stdin: ssh.StdinDefault}
+	if req.FromStdin {
+		spec.Stdin = ssh.StdinDisable
+	}
+	if req.StdinFile != "" {
+		mode, err := resolveStdinOptions(false, false, req.StdinFile, req.ScriptFile != "")
+		if err != nil {
+			return remoteRunSpec{}, err
+		}
+		spec.Stdin, spec.StdinFile = mode, req.StdinFile
+	}
 
 	switch {
 	case req.Argv != nil:
@@ -409,7 +424,7 @@ func validateRequestAlias(req agentRequest) error {
 
 func hasRunRequestFields(req agentRequest) bool {
 	return req.Argv != nil || req.ShellCommand != nil || req.ScriptFile != "" || len(req.ScriptArgs) > 0 ||
-		req.Shell != "" || len(req.SecretFiles) > 0 || req.Timeout != "" || req.NoReuse || req.Preflight != nil ||
+		req.Shell != "" || len(req.SecretFiles) > 0 || req.Timeout != "" || req.NoReuse || req.Preflight != nil || req.StdinFile != "" ||
 		req.LocalPath != "" || req.RemotePath != "" || req.Resume != "" || req.SHA256
 }
 

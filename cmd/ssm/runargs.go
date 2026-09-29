@@ -28,6 +28,10 @@ type remoteRunSpec struct {
 	FromArgs  bool             // command came from argv (not only scripts)
 	Mode      string
 	Preflight bool
+	// Stdin and StdinFile carry the stdin forwarding choice. Only run/exec
+	// honor them; the zero value never forwards (map jobs, argv streams).
+	Stdin     ssh.StdinMode
+	StdinFile string
 }
 
 // runValueOptions are the sshctl run/exec/plan/map options that consume the
@@ -39,10 +43,12 @@ var (
 	runValueOptions = []string{
 		"--jobs", "-j", "--parallel", "--timeout", "--secret", "-e",
 		"--shell", "--interpreter", "-f", "--file", "--scripts", "--refresh",
+		"--stdin-file",
 	}
 	runFlagOptions = []string{
 		"--raw", "--argv", "--trace", "-v", "--json", "--plan", "--dry-run", "--no-reuse",
 		"--preflight", "--no-preflight", "-s", "--script", "-h", "--help", "--stream",
+		"--stdin", "--no-stdin",
 	}
 )
 
@@ -132,6 +138,9 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		argvMode  bool
 		preflight bool
 		afterDash bool
+		stdinFlag bool
+		noStdin   bool
+		stdinFile string
 	)
 
 	for i := 0; i < len(args); i++ {
@@ -246,6 +255,27 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 					filePaths = append(filePaths, p)
 				}
 			}
+		case arg == "--stdin":
+			stdinFlag = true
+		case arg == "--no-stdin":
+			noStdin = true
+		case arg == "--stdin-file":
+			if i+1 >= len(args) {
+				return remoteRunSpec{}, fmt.Errorf("--stdin-file requires a path")
+			}
+			if stdinFile != "" {
+				return remoteRunSpec{}, fmt.Errorf("--stdin-file may be given only once")
+			}
+			stdinFile = args[i+1] //nolint:gosec // length is checked at the top of this case
+			i++
+		case strings.HasPrefix(arg, "--stdin-file="):
+			if stdinFile != "" {
+				return remoteRunSpec{}, fmt.Errorf("--stdin-file may be given only once")
+			}
+			stdinFile = strings.TrimPrefix(arg, "--stdin-file=")
+			if stdinFile == "" {
+				return remoteRunSpec{}, fmt.Errorf("--stdin-file requires a path")
+			}
 		case arg == "-h", arg == "--help":
 			return remoteRunSpec{}, fmt.Errorf("help")
 		case strings.HasPrefix(arg, "-") && arg != "-":
@@ -254,6 +284,11 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 			parts = args[i:]
 			i = len(args)
 		}
+	}
+
+	stdinMode, err := resolveStdinOptions(stdinFlag, noStdin, stdinFile, fromStdin || len(filePaths) > 0)
+	if err != nil {
+		return remoteRunSpec{}, err
 	}
 
 	if (fromStdin || len(filePaths) > 0) && (raw || argvMode) {
@@ -351,7 +386,40 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		FromArgs:  fromArgs,
 		Mode:      mode,
 		Preflight: preflight,
+		Stdin:     stdinMode,
+		StdinFile: stdinFile,
 	}, nil
+}
+
+// resolveStdinOptions validates the stdin forwarding options against each
+// other and against script sources, whose body already travels over the
+// remote stdin.
+func resolveStdinOptions(forward, disable bool, file string, scriptSource bool) (ssh.StdinMode, error) {
+	switch {
+	case forward && disable:
+		return 0, fmt.Errorf("--stdin and --no-stdin cannot be combined")
+	case file != "" && (forward || disable):
+		return 0, fmt.Errorf("--stdin-file cannot be combined with --stdin or --no-stdin")
+	case scriptSource && (forward || file != ""):
+		return 0, fmt.Errorf("--stdin/--stdin-file cannot be combined with -s, -f, or --scripts: the script body is sent over stdin")
+	}
+	if file != "" {
+		info, err := os.Stat(file)
+		if err != nil {
+			return 0, fmt.Errorf("stdin file %s: %w", file, err)
+		}
+		if info.IsDir() {
+			return 0, fmt.Errorf("stdin file %s is a directory", file)
+		}
+		return ssh.StdinForward, nil
+	}
+	switch {
+	case forward:
+		return ssh.StdinForward, nil
+	case disable:
+		return ssh.StdinDisable, nil
+	}
+	return ssh.StdinDefault, nil
 }
 
 func parseSecretKV(spec string, into map[string]string) error {

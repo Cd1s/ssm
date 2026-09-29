@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"ssm/internal/ssh"
 )
 
 func TestRequestV1PublishedSchemaIncludesStrictGet(t *testing.T) {
@@ -144,5 +146,83 @@ func TestLoadAgentPutRequestResumeV1(t *testing.T) {
 	}
 	if req.Op != "put" || req.Resume != "v1" || !req.SHA256 || req.LocalPath == "" || req.RemotePath == "" {
 		t.Fatalf("put request = %+v", req)
+	}
+}
+
+func TestRequestRunSpecStdinFile(t *testing.T) {
+	dir := t.TempDir()
+	payload := filepath.Join(dir, "in.txt")
+	script := filepath.Join(dir, "s.sh")
+	for _, path := range []string{payload, script} {
+		if err := os.WriteFile(path, []byte("true\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	spec, err := requestRunSpec(agentRequest{Version: 1, Op: "run", Alias: "prod", Argv: []string{"cat"}, StdinFile: payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Stdin != ssh.StdinForward || spec.StdinFile != payload {
+		t.Fatalf("Stdin=%v StdinFile=%q", spec.Stdin, spec.StdinFile)
+	}
+	plain, err := requestRunSpec(agentRequest{Version: 1, Op: "run", Alias: "prod", Argv: []string{"cat"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.Stdin != ssh.StdinDefault || plain.StdinFile != "" {
+		t.Fatalf("default request Stdin=%v StdinFile=%q", plain.Stdin, plain.StdinFile)
+	}
+	fromStdin, err := requestRunSpec(agentRequest{Version: 1, Op: "run", Alias: "prod", Argv: []string{"cat"}, FromStdin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fromStdin.Stdin != ssh.StdinDisable {
+		t.Fatalf("request read from stdin must not forward stdin, got %v", fromStdin.Stdin)
+	}
+	for name, req := range map[string]agentRequest{
+		"with script_file": {Version: 1, Op: "run", Alias: "prod", ScriptFile: script, StdinFile: payload},
+		"missing file":     {Version: 1, Op: "run", Alias: "prod", Argv: []string{"cat"}, StdinFile: filepath.Join(dir, "absent")},
+	} {
+		if _, err := requestRunSpec(req); err == nil {
+			t.Errorf("%s: accepted stdin_file request", name)
+		}
+	}
+}
+
+func TestLoadAgentRequestAcceptsStdinFileAndRejectsItOutsideRun(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.json")
+	body := `{"version":1,"op":"run","alias":"prod","argv":["cat"],"stdin_file":"in.txt"}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req, err := loadAgentRequest([]string{"--file", path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.StdinFile != "in.txt" || req.FromStdin {
+		t.Fatalf("request = %+v", req)
+	}
+	if !hasRunRequestFields(agentRequest{StdinFile: "in.txt"}) {
+		t.Fatal("stdin_file must count as a run field so check/doctor/host reject it")
+	}
+}
+
+func TestRequestV1PublishedSchemaDeclaresStdinFile(t *testing.T) {
+	path := filepath.Join("..", "..", "skills", "agent-ssm", "references", "request-v1.schema.json")
+	data, err := os.ReadFile(path) //nolint:gosec // repository-owned public schema fixture
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, fragment := range []string{
+		`"stdin_file": {"type": "string", "minLength": 1}`,
+		`{"required": ["shell_command"]}, {"required": ["stdin_file"]}]}}`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Errorf("published request schema missing stdin_file fragment %s", fragment)
+		}
+	}
+	if got := strings.Count(text, `{"required": ["stdin_file"]}`); got != 3 {
+		t.Errorf("stdin_file exclusions = %d, want 3 (script_file run, put, get)", got)
 	}
 }
