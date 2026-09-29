@@ -2524,6 +2524,7 @@ func testWindowsConcurrentUpdaters(t *testing.T) {
 	if err := first.Start(); err != nil {
 		t.Fatal(err)
 	}
+	defer reapWindowsTestChild(first)
 	waitForWindowsTestPath(t, ready)
 
 	second := windowsReplacementTestCommand(target, secondStage)
@@ -2568,6 +2569,7 @@ func testWindowsConcurrentCleanup(t *testing.T) {
 	if err := updater.Start(); err != nil {
 		t.Fatal(err)
 	}
+	defer reapWindowsTestChild(updater)
 	waitForWindowsTestPath(t, ready)
 
 	backup := windowsReplacementBackup(target)
@@ -2955,6 +2957,7 @@ func testWindowsCanonicalSubstitutionAtRenameGap(t *testing.T) {
 	if err := updater.Start(); err != nil {
 		t.Fatal(err)
 	}
+	defer reapWindowsTestChild(updater)
 	waitForWindowsTestPath(t, ready)
 
 	attackerCanonical := appendTestExecutableMarker(t, testExecutable, "\nATTACKER_CANONICAL_SUBSTITUTE\n")
@@ -3074,6 +3077,7 @@ func testWindowsRollbackReplacesCanonicalSubstitute(t *testing.T) {
 	if err := updater.Start(); err != nil {
 		t.Fatal(err)
 	}
+	defer reapWindowsTestChild(updater)
 	waitForWindowsTestPath(t, ready)
 
 	attackerCanonical := appendTestExecutableMarker(t, testExecutable, "\nATTACKER_ROLLBACK_SUBSTITUTE\n")
@@ -3182,6 +3186,7 @@ func testWindowsRollbackRejectsLateHardLink(t *testing.T) {
 	if err := updater.Start(); err != nil {
 		t.Fatal(err)
 	}
+	defer reapWindowsTestChild(updater)
 	waitForWindowsTestPath(t, ready)
 
 	backup := windowsReplacementBackup(target)
@@ -3276,6 +3281,7 @@ func testWindowsLateHardLinksCannotCompromiseTarget(t *testing.T) {
 			if err := updater.Start(); err != nil {
 				t.Fatal(err)
 			}
+			defer reapWindowsTestChild(updater)
 			waitForWindowsTestPath(t, ready)
 			linkErr := os.Link(test.source(target, stage), alias)
 			if err := os.WriteFile(proceed, []byte("continue"), 0o600); err != nil { //nolint:gosec // test-owned synchronization fixture
@@ -3420,6 +3426,7 @@ func testWindowsPreparedRecoveryRejectsDescriptorMutation(t *testing.T) {
 	if err := updater.Start(); err != nil {
 		t.Fatal(err)
 	}
+	defer reapWindowsTestChild(updater)
 	waitForWindowsTestPath(t, ready)
 	linkErr := os.Link(stage, stageAlias)
 	if err := os.WriteFile(proceed, []byte("continue"), 0o600); err != nil { //nolint:gosec // test-owned synchronization fixture
@@ -3838,6 +3845,7 @@ func testWindowsPreparedFullRecoveryRejectsRMControlMutation(t *testing.T) {
 	if err := updater.Start(); err != nil {
 		t.Fatal(err)
 	}
+	defer reapWindowsTestChild(updater)
 	waitForWindowsTestPath(t, ready)
 	linkErr := os.Link(stage, stageAlias)
 	if err := os.WriteFile(proceed, []byte("continue"), 0o600); err != nil { //nolint:gosec // test-owned synchronization fixture
@@ -5928,4 +5936,15 @@ func runWindowsSharingAttempt(t *testing.T, body func(t *testing.T)) (violation 
 	}()
 	body(t)
 	return nil
+}
+
+// reapWindowsTestChild kills and waits for a still-running child on every exit
+// path (including a sharing-violation retry panic) so no process outlives its
+// attempt and keeps executables in the abandoned temporary directory open.
+func reapWindowsTestChild(command *exec.Cmd) {
+	if command.Process == nil || command.ProcessState != nil {
+		return
+	}
+	_ = command.Process.Kill()
+	_ = command.Wait()
 }
