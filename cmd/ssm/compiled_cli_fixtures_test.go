@@ -292,6 +292,20 @@ type compiledSSHFixtureOptions struct {
 	UploadTarStopAtEndMarker bool
 
 	record func(string)
+
+	// DropDuringHandshake closes each accepted TCP connection before the SSH
+	// handshake, as a server that resets or hangs up on new clients.
+	DropDuringHandshake bool
+	// DropAfterExec closes the TCP connection right after accepting an exec
+	// request, as a host that reboots while the command runs.
+	DropAfterExec bool
+	// HangAfterExec accepts an exec request, drains stdin, and then never
+	// reports an exit status, so only a client-side timeout can end it. The
+	// remote file/directory probe is still answered so get reaches its
+	// download command.
+	HangAfterExec bool
+
+	dropConnection func()
 }
 
 type compiledSSHFixture struct {
@@ -463,12 +477,18 @@ func (f *compiledSSHFixture) serve(serverConfig *gossh.ServerConfig) {
 }
 
 func (f *compiledSSHFixture) serveConnection(raw net.Conn, serverConfig *gossh.ServerConfig) {
+	if f.options.DropDuringHandshake {
+		_ = raw.Close()
+		return
+	}
 	serverConn, channels, requests, err := gossh.NewServerConn(raw, serverConfig)
 	if err != nil {
 		_ = raw.Close()
 		return
 	}
 	f.connections.Add(1)
+	options := f.options
+	options.dropConnection = func() { _ = serverConn.Close() }
 	requestsDone := make(chan struct{})
 	go func() {
 		gossh.DiscardRequests(requests)
@@ -488,7 +508,7 @@ func (f *compiledSSHFixture) serveConnection(raw net.Conn, serverConfig *gossh.S
 			continue
 		}
 		f.sessions.Add(1)
-		serveCompiledSSHSession(channel, channelRequests, f.options)
+		serveCompiledSSHSession(channel, channelRequests, options)
 	}
 	_ = serverConn.Close()
 	<-requestsDone
@@ -512,6 +532,16 @@ func serveCompiledSSHSession(channel gossh.Channel, requests <-chan *gossh.Reque
 		}
 		if options.record != nil {
 			options.record(payload.Command)
+		}
+		if options.DropAfterExec && options.dropConnection != nil {
+			options.dropConnection()
+			return
+		}
+		if options.HangAfterExec && !strings.HasPrefix(payload.Command, "if [ -d ") {
+			_, _ = io.Copy(io.Discard, channel)
+			for range requests {
+			}
+			return
 		}
 		status, configured := executeConfiguredCompiledSSHRun(channel, channel.Stderr(), payload.Command, options)
 		if !configured {

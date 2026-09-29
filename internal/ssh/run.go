@@ -597,6 +597,7 @@ func WriteRunResult(res RunResult, asJSON bool) {
 				Message:         res.Message,
 				Hint:            res.Hint,
 				Stage:           res.Stage,
+				Outcome:         res.Outcome,
 				Stdout:          res.Stdout,
 				SensitiveValues: res.sensitiveValues,
 			},

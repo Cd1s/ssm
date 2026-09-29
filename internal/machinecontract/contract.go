@@ -7,9 +7,11 @@ package machinecontract
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
+	"syscall"
 
 	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -60,6 +62,8 @@ const (
 	InterpreterNotFound                 Kind = "interpreter_not_found"
 	RemoteScriptFailed                  Kind = "remote_script_failed"
 	RunInterrupted                      Kind = "run_interrupted"
+	ConnectionLost                      Kind = "connection_lost"
+	HandshakeFailed                     Kind = "handshake_failed"
 	ScriptSyntaxFailed                  Kind = "script_syntax_failed"
 	HostInvalidArguments                Kind = "host_invalid_arguments"
 	HostApplyInvalidArguments           Kind = "host_apply_invalid_arguments"
@@ -228,6 +232,18 @@ const (
 	CodeInterrupted    = "interrupted"
 )
 
+// CodeConnectionLost means the SSH connection broke after the command was
+// sent; the remote command's outcome is unknown and retrying is not safe.
+const CodeConnectionLost = "connection_lost"
+
+// CodeHandshakeFailed means TCP connected but the SSH handshake failed, so no
+// command was sent and retrying is safe.
+const CodeHandshakeFailed = "handshake_failed"
+
+// OutcomeUnknown is the value of the additive outcome field on failures that
+// cannot say whether the remote command ran.
+const OutcomeUnknown = "unknown"
+
 // CodeHostKeyTypeChanged means known_hosts has entries for the endpoint but
 // none of the observed key's type.
 const CodeHostKeyTypeChanged = "host_key_type_changed"
@@ -275,6 +291,10 @@ type failurePolicy struct {
 	HintFromCause   bool
 	HintFromDetails bool
 	SuppressMessage bool
+	Outcome         string
+	// TransportWrapper marks a generic transport-wrapping code whose cause is
+	// the SSH error itself, so a transport-loss classification may replace it.
+	TransportWrapper bool
 }
 
 var failurePolicies = map[Kind]failurePolicy{
@@ -361,6 +381,16 @@ var failurePolicies = map[Kind]failurePolicy{
 	RunInterrupted: {
 		Code: CodeInterrupted, Stage: "remote_execution",
 		Hint: "a local signal stopped sshctl; it was forwarded to the remote command, which may still be running", Exit: 130,
+	},
+	ConnectionLost: {
+		Code: CodeConnectionLost, Stage: "remote_execution", Outcome: OutcomeUnknown,
+		Hint: "the connection dropped after the command was sent; the remote command may still be running or may have finished. Check the process state on the host before retrying; do not retry blindly",
+		Exit: ExitConnectionFailed,
+	},
+	HandshakeFailed: {
+		Code: CodeHandshakeFailed, Stage: "handshake",
+		Hint: "TCP connected but the SSH handshake failed before any command was sent, so retrying is safe; check that sshd is healthy and not rate limiting connections (MaxStartups, fail2ban)",
+		Exit: ExitConnectionFailed,
 	},
 	ScriptSyntaxFailed: {
 		Code: CodeScriptSyntax, Stage: "syntax_preflight",
@@ -679,12 +709,15 @@ var failurePolicies = map[Kind]failurePolicy{
 	},
 	TransferSessionOpenFailed: {
 		Code: "session_failed", Stage: "dial", Hint: "retry after checking SSH session limits", Exit: 1,
+		TransportWrapper: true,
 	},
 	TransferStdinOpenFailed: {
 		Code: "remote_write_failed", Stage: "remote_write", Hint: "retry the upload; the final destination was not replaced", Exit: 1,
+		TransportWrapper: true,
 	},
 	TransferStartFailed: {
 		Code: "remote_write_failed", Stage: "remote_write", Hint: "remote temporary file was not published", Exit: 1,
+		TransportWrapper: true,
 	},
 	TransferTimedOut: {
 		Code: "transfer_timeout", Stage: "timeout",
@@ -693,9 +726,11 @@ var failurePolicies = map[Kind]failurePolicy{
 	TransferRemoteWriteFailed: {
 		Code: "remote_write_failed", Stage: "remote_write",
 		Hint: "retry; the remote temporary file is cleaned and the final path is unchanged", Exit: 1,
+		TransportWrapper: true,
 	},
 	TransferRemoteCloseFailed: {
 		Code: "remote_write_failed", Stage: "remote_write", Hint: "retry; the final path was not replaced", Exit: 1,
+		TransportWrapper: true,
 	},
 	TransferIntegrityMismatch: {
 		Code: "integrity_failed", Stage: "integrity",
@@ -731,9 +766,11 @@ var failurePolicies = map[Kind]failurePolicy{
 	ResumeStdinOpenFailed: {
 		Code: "remote_write_failed", Stage: "remote_write",
 		Hint: "retry resume; existing verified prefix remains available", Exit: 1,
+		TransportWrapper: true,
 	},
 	ResumeStartFailed: {
 		Code: "remote_write_failed", Stage: "remote_write", Hint: "retry resume; final destination was not replaced", Exit: 1,
+		TransportWrapper: true,
 	},
 	ResumeTimedOut: {
 		Code: "transfer_timeout", Stage: "timeout",
@@ -742,9 +779,11 @@ var failurePolicies = map[Kind]failurePolicy{
 	ResumeRemoteWriteFailed: {
 		Code: "remote_write_failed", Stage: "remote_write",
 		Hint: "retry with --resume=v1; the destination was not replaced", Exit: 1,
+		TransportWrapper: true,
 	},
 	ResumeRetryFailed: {
 		Code: "remote_write_failed", Stage: "remote_write", Hint: "retry with --resume=v1", Exit: 1,
+		TransportWrapper: true,
 	},
 	ResumeVerificationToolMissing: {
 		Code: "verification_tool_missing", Stage: "capability",
@@ -767,6 +806,7 @@ var failurePolicies = map[Kind]failurePolicy{
 	},
 	ResumeProbeSessionFailed: {
 		Code: "session_failed", Stage: "resume_probe", Hint: "retry after checking SSH session limits", Exit: 1,
+		TransportWrapper: true,
 	},
 	ResumeStateIncompatible: {
 		Code: "partial_state_incompatible", Stage: "resume_validate",
@@ -789,6 +829,7 @@ var failurePolicies = map[Kind]failurePolicy{
 	TransferDownloadRemoteRead: {
 		Code: "remote_read_failed", Stage: "remote_read",
 		Hint: "check the remote path and read permissions; the final local path was not replaced", Exit: 1,
+		TransportWrapper: true,
 	},
 	TransferDownloadLocalWrite: {
 		Code: "local_write_failed", Stage: "local_write",
@@ -852,6 +893,7 @@ type Failure struct {
 	Hint       string   `json:"hint,omitempty"`
 	Stage      string   `json:"stage,omitempty"`
 	SyncCause  string   `json:"cause,omitempty"`
+	Outcome    string   `json:"outcome,omitempty"`
 	Alias      string   `json:"alias,omitempty"`
 	Exit       int      `json:"exit"`
 	Candidates []string `json:"candidates,omitempty"`
@@ -870,6 +912,7 @@ type Failure struct {
 	humanAlias        string
 	renderer          rendererPolicy
 	humanProjection   *Failure
+	transportWrapper  bool
 }
 
 func (f Failure) ErrorMessage() string {
@@ -957,6 +1000,7 @@ func Classify(kind Kind, details Details) Failure {
 		Message:           RedactString(message),
 		Hint:              RedactString(policy.Hint),
 		Stage:             policy.Stage,
+		Outcome:           policy.Outcome,
 		Alias:             RedactString(details.Alias),
 		Exit:              exit,
 		Candidates:        candidates,
@@ -972,6 +1016,7 @@ func Classify(kind Kind, details Details) Failure {
 		cause:             details.Cause,
 		processExit:       processExit,
 		renderer:          policy.Renderer,
+		transportWrapper:  policy.TransportWrapper,
 	}
 }
 
@@ -1020,10 +1065,11 @@ type ResultMetadata struct {
 	Hint    string `json:"hint,omitempty"`
 	Stage   string `json:"stage,omitempty"`
 	Cause   string `json:"cause,omitempty"`
+	Outcome string `json:"outcome,omitempty"`
 }
 
 func (f Failure) ResultMetadata() ResultMetadata {
-	return ResultMetadata{Error: f.Error, Message: f.Message, Hint: f.Hint, Stage: f.Stage, Cause: f.SyncCause}
+	return ResultMetadata{Error: f.Error, Message: f.Message, Hint: f.Hint, Stage: f.Stage, Cause: f.SyncCause, Outcome: f.Outcome}
 }
 
 // Metadata is embedded by typed command failures that serialize exit together
@@ -1035,10 +1081,11 @@ type Metadata struct {
 	Exit    int    `json:"exit"`
 	Stage   string `json:"stage,omitempty"`
 	Cause   string `json:"cause,omitempty"`
+	Outcome string `json:"outcome,omitempty"`
 }
 
 func (f Failure) Metadata() Metadata {
-	return Metadata{Error: f.Error, Message: f.Message, Hint: f.Hint, Exit: f.Exit, Stage: f.Stage, Cause: f.SyncCause}
+	return Metadata{Error: f.Error, Message: f.Message, Hint: f.Hint, Exit: f.Exit, Stage: f.Stage, Cause: f.SyncCause, Outcome: f.Outcome}
 }
 
 // TransferMetadata preserves the pre-BC-7 transfer failure field order and
@@ -1070,6 +1117,7 @@ type TransferOutcome struct {
 	Local         string `json:"local,omitempty"`
 	Remote        string `json:"remote,omitempty"`
 	Stage         string `json:"stage"`
+	Outcome       string `json:"outcome,omitempty"`
 	BytesSent     *int64 `json:"bytes_sent,omitempty"`
 	BytesReceived *int64 `json:"bytes_received,omitempty"`
 	Integrity     string `json:"integrity,omitempty"`
@@ -1084,6 +1132,7 @@ func TransferFailureOutcome(f Failure, outcome TransferOutcome) TransferOutcome 
 	outcome.OK = false
 	outcome.Error, outcome.Message, outcome.Hint, outcome.Exit = f.Error, f.Message, f.Hint, f.Exit
 	outcome.Stage = f.Stage
+	outcome.Outcome = f.Outcome
 	return outcome
 }
 
@@ -1107,6 +1156,9 @@ type SSHContext struct {
 	Port               int
 	Stage              string
 	SessionAcquisition bool
+	// ExecPhase marks an error from an established connection after a command
+	// or transfer was started, where a bare EOF means the connection was lost.
+	ExecPhase bool
 }
 
 func isShellInterpreterName(interpreter string) bool {
@@ -1182,7 +1234,7 @@ func ClassifySSH(err error, context SSHContext) Failure {
 	var classified *ClassifiedError
 	if errors.As(err, &classified) {
 		failure := classified.Failure
-		if context.Stage != "" {
+		if context.Stage != "" && !policyOwnsStage(failure.Error) {
 			failure.Stage = context.Stage
 		}
 		if failure.Error == CodeInternal && isDialFailure(err, context) {
@@ -1240,7 +1292,11 @@ func ClassifySSH(err error, context SSHContext) Failure {
 			strings.Contains(lower, "connect: "):
 			kind = DialNetwork
 			details.Message = fmt.Sprintf("network error dialing %s: %s", address, message)
-		case strings.Contains(lower, "session"):
+		case isHandshakeError(lower):
+			kind = HandshakeFailed
+		case !context.SessionAcquisition && isConnectionBreak(err, lower, context.ExecPhase || context.Stage == "session"):
+			kind = ConnectionLost
+		case isSessionRejection(err, lower):
 			kind = SessionFailed
 		}
 	}
@@ -1249,7 +1305,7 @@ func ClassifySSH(err error, context SSHContext) Failure {
 		kind = SessionAcquisitionFailed
 	}
 	failure := Classify(kind, details)
-	if context.Stage != "" {
+	if context.Stage != "" && !policyOwnsStage(failure.Error) {
 		failure.Stage = context.Stage
 	}
 	if failure.Error == CodeInternal && isDialFailure(err, context) {
@@ -1257,6 +1313,60 @@ func ClassifySSH(err error, context SSHContext) Failure {
 		failure.processExit = ExitConnectionFailed
 	}
 	return failure
+}
+
+// policyOwnsStage reports whether a code's stage is part of its meaning, so a
+// caller's generic stage (dial, session) must not overwrite it. handshake and
+// remote_execution tell an agent whether the command was ever sent.
+func policyOwnsStage(code string) bool {
+	return code == CodeHandshakeFailed || code == CodeConnectionLost
+}
+
+// isHandshakeError recognizes a failure after TCP connected but before the SSH
+// session was established: x/crypto wraps every such error as "ssh: handshake
+// failed: ...". The dial adapter classifies these before any caller stage is
+// known, so no stage-based fallback is needed.
+func isHandshakeError(lower string) bool {
+	return strings.Contains(lower, "handshake failed") ||
+		strings.Contains(lower, "reading version string") ||
+		strings.Contains(lower, "no common algorithm")
+}
+
+// isConnectionBreak recognizes an established SSH connection that ended
+// unexpectedly. Reset, broken pipe, closed-socket, ssh disconnect and
+// missing-exit-status errors are unambiguous transport signals. A bare EOF is
+// only one during execution (execPhase): elsewhere, for example while parsing
+// a private key, an EOF is an unrelated program error and stays internal.
+func isConnectionBreak(err error, lower string, execPhase bool) bool {
+	var exitMissing *gossh.ExitMissingError
+	switch {
+	case errors.As(err, &exitMissing),
+		errors.Is(err, net.ErrClosed),
+		errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.ECONNABORTED), errors.Is(err, syscall.EPIPE),
+		isPlatformConnectionBreak(err):
+		return true
+	}
+	for _, marker := range []string{
+		"remote command exited without exit status",
+		"connection reset", "connection was forcibly closed", "connection was aborted", "connection abort",
+		"broken pipe", "use of closed network connection", "connection closed",
+		"ssh: disconnect",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	if !execPhase {
+		return false
+	}
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		strings.Contains(lower, "unexpected eof") || lower == "eof" || strings.HasSuffix(lower, ": eof")
+}
+
+// isSessionRejection recognizes a peer refusing to open the session channel.
+func isSessionRejection(err error, lower string) bool {
+	var openFailed *gossh.OpenChannelError
+	return errors.As(err, &openFailed) || strings.Contains(lower, "session")
 }
 
 func isTimeoutErrorMessage(message string) bool {
@@ -1311,7 +1421,29 @@ func ClassifyTransferOperation(err error, context SSHContext, carried Failure) F
 	if err == nil {
 		return Failure{}
 	}
-	human := ClassifySSH(err, context)
+	if carried.Error == "transfer_timeout" {
+		// sshctl closed the session itself when --timeout expired, so any EOF
+		// or missing exit status that follows is a consequence. The carried
+		// tuple (transfer_timeout, exit 1) is final and renders as itself.
+		return carried
+	}
+	transportContext := context
+	transportContext.ExecPhase = true
+	human := ClassifySSH(err, transportContext)
+	if policyOwnsStage(human.Error) {
+		if carried.Error != "" && !carried.transportWrapper {
+			// A specific diagnosis from the remote result or from sshctl
+			// itself (transfer_timeout, integrity_*, remote_extract, local_*,
+			// capability errors) wins over the transport error that may
+			// accompany it, such as the EOF after sshctl closed its own
+			// session. Its contract exit is kept.
+			return carried
+		}
+		// handshake_failed and connection_lost keep their own stage and
+		// outcome, and the 255 transport exit, so a transfer that never
+		// started or one that broke midway is not reported as remote_write.
+		return human
+	}
 	human.Stage = ""
 	if carried.Error != "" {
 		// Preserve the pre-BC-7 human guidance for regular-file remote-write
@@ -1338,10 +1470,27 @@ func ClassifyTransferOperation(err error, context SSHContext, carried Failure) F
 func ClassifyDownload(err error, context SSHContext) Failure {
 	classifyContext := context
 	classifyContext.Stage = ""
+	classifyContext.ExecPhase = true
 	failure := ClassifySSH(err, classifyContext)
+	carried, hasCarried := FailureFromError(err)
+	if hasCarried && carried.Error == "transfer_timeout" {
+		carried.Alias = RedactString(context.Alias)
+		carried.humanAlias = RedactString(context.ResolvedAlias)
+		return carried
+	}
+	if policyOwnsStage(failure.Error) {
+		if hasCarried && !carried.transportWrapper {
+			carried.Alias = RedactString(context.Alias)
+			carried.humanAlias = RedactString(context.ResolvedAlias)
+			return carried
+		}
+		failure.Alias = RedactString(context.Alias)
+		failure.humanAlias = RedactString(context.ResolvedAlias)
+		return failure
+	}
 	human := failure
 	human.Stage = ""
-	if carried, ok := FailureFromError(err); ok && isDownloadOutcomeFailure(carried) {
+	if hasCarried && isDownloadOutcomeFailure(carried) {
 		carried.Exit = ExitForError(err)
 		carried.processExit = carried.Exit
 		carried.Alias = RedactString(context.Alias)

@@ -110,15 +110,10 @@ func uploadFileResumable(c config.Connection, v *config.Vault, localPath, remote
 	result.BytesSent = written
 	if copyErr != nil {
 		_ = stdin.Close()
-		_ = session.Close()
-		if timedOut.Load() {
-			return result, transferError(machinecontract.ResumeTimedOut, written, copyErr)
-		}
-		return result, transferError(machinecontract.ResumeRemoteWriteFailed, written, copyErr)
+		return result, collectResumeRemoteFirst(session, remoteExitGrace, &result, written, &timedOut, &stdout, copyErr, machinecontract.ResumeRemoteWriteFailed)
 	}
 	if err := stdin.Close(); err != nil {
-		_ = session.Close()
-		return result, transferError(machinecontract.ResumeRetryFailed, written, err)
+		return result, collectResumeRemoteFirst(session, remoteExitGrace, &result, written, &timedOut, &stdout, err, machinecontract.ResumeRetryFailed)
 	}
 	if err := session.Wait(); err != nil {
 		if timedOut.Load() {
@@ -153,6 +148,32 @@ func uploadFileResumable(c config.Connection, v *config.Vault, localPath, remote
 	result.Integrity = "sha256_verified"
 	result.RemoteSHA256 = remoteDigest
 	return result, nil
+}
+
+// collectResumeRemoteFirst mirrors collectRemoteFirst for the resume script:
+// when the remote exited first, its marker output is the first-hand reason.
+func collectResumeRemoteFirst(session sessionWaiter, grace time.Duration, result *TransferResult, written int64, timedOut *atomic.Bool, stdout *bytes.Buffer, cause error, fallback machinecontract.Kind) *TransferError {
+	waitErr := waitSessionBounded(session, grace)
+	_ = session.Close()
+	// Read after the wait: the --timeout timer may fire during the grace.
+	if timedOut.Load() {
+		return transferError(machinecontract.ResumeTimedOut, written, cause)
+	}
+	if waitErr != nil {
+		marker := stdout.String()
+		switch {
+		case strings.Contains(marker, "SSM_RESUME_ERROR tool_missing"):
+			return transferError(machinecontract.ResumeVerificationToolMissing, written, errors.New(remoteSHA256UnavailableMessage))
+		case strings.Contains(marker, "SSM_RESUME_ERROR state_changed"):
+			return transferError(machinecontract.ResumeStateChanged, written, errors.New("remote partial state changed"))
+		case strings.Contains(marker, "SSM_RESUME_ERROR digest_mismatch"):
+			result.Integrity = "mismatch"
+			return transferError(machinecontract.ResumeIntegrityMismatch, written, errors.New("remote final digest mismatch"))
+		case strings.Contains(marker, "SSM_RESUME_ERROR publish_failed"):
+			return transferError(machinecontract.ResumePublishFailed, written, errors.New("atomic publish failed"))
+		}
+	}
+	return transferError(fallback, written, cause)
 }
 
 func resumePaths(remotePath, digest string) (partial, metadata, cleanupPattern string) {

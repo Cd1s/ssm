@@ -252,6 +252,31 @@ PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
 
 写错命令时 sshctl 会给出提示而不是当作别名：第一个词不是已知子命令时仍按 `sshctl <alias> <command>` 简写处理，别名不存在才判断它是不是命令。`ssm` 独有的命令（如 `keys`、`login`）、与子命令只差一两个字符的拼写（如 `stauts`、`hostkey`）返回 `unknown_command`（退出码 2），`hint` 给出正确的入口或命令，相近的命令名放在 `candidates`；`ssm` 入口对 sshctl 独有命令和拼写错误同样提示（human 模式下有建议时返回 `unknown_command` 和退出码 2；没有建议时保持旧的 `Unknown command` 输出，退出码不变）。别名与命令同样接近（平局）或更近，包括 redirect 的旧名，则按别名处理，返回 `alias_not_found`。其余情况仍是 `alias_not_found`（退出码 255），`candidates` 是编辑距离最近的别名，只是候选，绝不会自动选择或执行。`run`/`exec`/`plan`/`map` 的未知选项返回 `invalid_arguments`（退出码 2），`hint` 会给出建议，例如 `--script-file` 提示 `-f`、`--fetch` 提示 `get`，其余按真实选项表的编辑距离匹配。
 
+#### 退出码与传输错误
+
+`--json` 模式下以 `error` 字段为准，不要看进程退出码：远端程序可以返回任意退出码（包括 1、2、255），而 `2>&1 | tail` 这类管道还会丢掉退出码。
+
+| 退出码 | 含义 |
+|---|---|
+| 0 | 成功。 |
+| 1 | sshctl 的非 SSH 传输层失败：`internal`、vault、同步与更新错误，所有 `host` 与 `host-key` 子命令失败（包括其中的 `alias_not_found`），`script_syntax_error`，以及 `put`/`get` 的传输错误（`remote_write_failed`、`transfer_timeout`、`integrity_failed`、`partial_state_*`、`local_read_failed`）；或远端命令返回 1。请读 `error`。 |
+| 2 | 参数或 request 无效（`invalid_arguments`、`invalid_request`），或远端命令返回 2。 |
+| 127 | 远端脚本解释器不存在（`interpreter_not_found`），或远端命令返回 127。 |
+| 128 + 信号编号 | 本地 SIGINT/SIGTERM/SIGHUP 中断了 `run`（`interrupted`；130、143、129）。信号已转发，远端命令可能仍在运行。 |
+| 255 | `run`、`map`、`check`、`doctor`、`put`、`get` 的 SSH 传输层失败：`dial_timeout`、`dial_refused`、`dial_network`、`handshake_failed`、`host_key_unknown`/`host_key_mismatch`/`host_key_type_changed`（连接被拒绝）、`auth_failed`、`no_auth_configured`、`session_failed`、`connection_lost`；以及 `run`、`map`、`check`、`doctor` 的 `alias_not_found`。远端命令本身也可能返回 255。 |
+| 其它值 | 远端命令自己的退出码，原样透传。 |
+
+`map` 以第一个失败结果的退出码退出；数组里每个结果各自带 `error`。`put`/`get` 传输中途断开时与 `run` 一样返回 `connection_lost` 和 255，因为这是传输层失败，而不是传输专属错误。
+
+**契约变化。** `put`/`get` 传输中途断开，原来报 `remote_write_failed`（下载为 `remote_read_failed`）和退出码 1，现在报 `connection_lost`，退出码 255，并带 `outcome:"unknown"`。sshctl 自己因 `--timeout` 中止文件或目录 `get`、文件 `put` 的行为不变：`transfer_timeout`、退出码 1、没有 `outcome`。`host` 子命令的 `alias_not_found` 在 JSON 中 `exit` 为 255，进程退出码为 1；请以 `error` 字段为准。
+
+是否可以安全重试，取决于命令有没有发出：
+
+- 可以重试：`dial_timeout`、`dial_refused`、`dial_network`；`handshake_failed`（`stage:handshake`，TCP 已连上但 SSH 握手失败，例如 EOF、connection reset 或协议错误，命令没有发出）；以及 `stage:session` 的 `session_failed`（会话没能打开，命令没有发出）。`no common algorithm` 这类确定性的握手失败每次都会同样失败，重试没有意义，应修正算法或服务器配置。`auth_failed` 和 `host_key_*` 保持各自的错误码，需要修复而不是重试。
+- 不可安全重试：`connection_lost`（`stage:remote_execution`，并带 `outcome:"unknown"`）。命令发出后连接中断，例如主机重启或执行了 `sysupgrade`，远端命令可能仍在运行，也可能已经结束。先去主机上确认进程状态。
+
+`outcome` 是加性字段，只出现在 `connection_lost` 上。
+
 动态或不可信参数、脚本、secret 文件路径、传输和主机变更使用 schema version 1 的[request-v1 schema](skills/agent-ssm/references/request-v1.schema.json)：
 
 ```json

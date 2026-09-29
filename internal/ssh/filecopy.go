@@ -145,23 +145,12 @@ func UploadFileWithOptions(c config.Connection, v *config.Vault, localPath, remo
 	result.BytesSent = written
 	if copyErr != nil {
 		_ = stdin.Close()
-		// A remote that exits before reading (for example because it has no
-		// SHA-256 tool) closes the channel under the writer. Collect its exit
-		// so that first-hand reason is reported instead of a write error.
-		waitErr := waitSessionBounded(session, remoteExitGrace)
-		_ = session.Close()
-		if timedOut.Load() {
-			return result, transferError(machinecontract.TransferTimedOut, written, copyErr)
-		}
-		if waitErr != nil && strings.Contains(stdout.String(), integrityToolMissingMarker) {
-			result.Stage = "capability"
-			return result, transferKindError(machinecontract.IntegrityToolUnavailable, written, errors.New(remoteSHA256UnavailableMessage))
-		}
-		return result, transferError(machinecontract.TransferRemoteWriteFailed, written, copyErr)
+		return result, collectRemoteFirst(session, remoteExitGrace, &result, written, &timedOut, &stdout, copyErr, machinecontract.TransferRemoteWriteFailed)
 	}
 	if err := stdin.Close(); err != nil {
-		_ = session.Close()
-		return result, transferError(machinecontract.TransferRemoteCloseFailed, written, err)
+		// The remote may already have exited (for example because it has no
+		// SHA-256 tool), so Close can fail after every byte was written.
+		return result, collectRemoteFirst(session, remoteExitGrace, &result, written, &timedOut, &stdout, err, machinecontract.TransferRemoteCloseFailed)
 	}
 	if err := session.Wait(); err != nil {
 		if timedOut.Load() {
@@ -177,6 +166,13 @@ func UploadFileWithOptions(c config.Connection, v *config.Vault, localPath, remo
 			return result, transferError(machinecontract.TransferIntegrityMismatch, written, errors.New("remote integrity verification failed"))
 		}
 		message := strings.TrimSpace(stderr.String())
+		var remoteExit *gossh.ExitError
+		if message == "" && !errors.As(err, &remoteExit) {
+			// No exit status and no remote diagnostic: the session ended
+			// without the remote command reporting anything, which is a
+			// transport failure, not a remote permissions problem.
+			return result, transferError(machinecontract.TransferRemoteWriteFailed, written, err)
+		}
 		if message == "" {
 			message = err.Error()
 		}
@@ -197,6 +193,33 @@ func UploadFileWithOptions(c config.Connection, v *config.Vault, localPath, remo
 		result.Integrity = "size_verified"
 	}
 	return result, nil
+}
+
+// collectRemoteFirst is used when writing to or closing the upload stdin
+// failed. A remote that exits before reading its input closes the channel
+// under the writer, so its exit status and marker output are the first-hand
+// reason and win over the local write or close error. Only when the remote
+// reported nothing does the generic fallback kind apply.
+func collectRemoteFirst(session sessionWaiter, grace time.Duration, result *TransferResult, written int64, timedOut *atomic.Bool, stdout *bytes.Buffer, cause error, fallback machinecontract.Kind) *TransferError {
+	waitErr := waitSessionBounded(session, grace)
+	_ = session.Close()
+	// Read after the wait: the --timeout timer may fire during the grace.
+	if timedOut.Load() {
+		return transferError(machinecontract.TransferTimedOut, written, cause)
+	}
+	if waitErr != nil {
+		output := stdout.String()
+		if strings.Contains(output, integrityToolMissingMarker) {
+			result.Stage = "capability"
+			return transferKindError(machinecontract.IntegrityToolUnavailable, written, errors.New(remoteSHA256UnavailableMessage))
+		}
+		if strings.Contains(output, "SSM_INTEGRITY_MISMATCH") {
+			result.Stage = "integrity"
+			result.Integrity = "mismatch"
+			return transferError(machinecontract.TransferIntegrityMismatch, written, errors.New("remote integrity verification failed"))
+		}
+	}
+	return transferError(fallback, written, cause)
 }
 
 func transferError(kind machinecontract.Kind, bytesSent int64, cause error) *TransferError {
