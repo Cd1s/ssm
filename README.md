@@ -259,19 +259,19 @@ PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
 | 退出码 | 含义 |
 |---|---|
 | 0 | 成功。 |
-| 1 | sshctl 自身失败（`internal`、同步、vault、更新），或远端命令返回 1（`remote_failed`、`remote_script_failed`）。请读 `error`。 |
+| 1 | sshctl 的非 SSH 传输层失败：`internal`、vault、同步与更新错误，所有 `host` 与 `host-key` 子命令失败（包括其中的 `alias_not_found`），`script_syntax_error`，以及 `put`/`get` 的传输错误（`remote_write_failed`、`transfer_timeout`、`integrity_failed`、`partial_state_*`、`local_read_failed`）；或远端命令返回 1。请读 `error`。 |
 | 2 | 参数或 request 无效（`invalid_arguments`、`invalid_request`），或远端命令返回 2。 |
 | 127 | 远端脚本解释器不存在（`interpreter_not_found`），或远端命令返回 127。 |
 | 128 + 信号编号 | 本地 SIGINT/SIGTERM/SIGHUP 中断了 `run`（`interrupted`；130、143、129）。信号已转发，远端命令可能仍在运行。 |
-| 255 | sshctl 传输层失败：`dial_timeout`、`dial_refused`、`dial_network`、`handshake_failed`、`host_key_*`、`auth_failed`、`no_auth_configured`、`session_failed`、`connection_lost`、`alias_not_found`。远端命令本身也可能返回 255。 |
+| 255 | `run`、`map`、`check`、`doctor`、`put`、`get` 的 SSH 传输层失败：`dial_timeout`、`dial_refused`、`dial_network`、`handshake_failed`、`host_key_unknown`/`host_key_mismatch`/`host_key_type_changed`（连接被拒绝）、`auth_failed`、`no_auth_configured`、`session_failed`、`connection_lost`；以及 `run`、`map`、`check`、`doctor` 的 `alias_not_found`。远端命令本身也可能返回 255。 |
 | 其它值 | 远端命令自己的退出码，原样透传。 |
 
-`map` 以第一个失败结果的退出码退出；数组里每个结果各自带 `error`。
+`map` 以第一个失败结果的退出码退出；数组里每个结果各自带 `error`。`put`/`get` 传输中途断开时与 `run` 一样返回 `connection_lost` 和 255，因为这是传输层失败，而不是传输专属错误。
 
-两个传输错误码的处理方式不同：
+是否可以安全重试，取决于命令有没有发出：
 
-- `handshake_failed`（`stage:handshake`）：TCP 已连上但 SSH 握手失败（EOF、connection reset、协议或密钥交换错误），命令没有发出，重试安全。认证失败（`auth_failed`）和 host key 错误（`host_key_*`）保持各自的错误码。
-- `connection_lost`（`stage:remote_execution`，并带 `outcome:"unknown"`）：命令发出后连接中断，例如主机重启或执行了 `sysupgrade`。远端命令可能仍在运行，也可能已经结束。先去主机上确认进程状态；重试不安全。
+- 可以重试：`dial_timeout`、`dial_refused`、`dial_network`；`handshake_failed`（`stage:handshake`，TCP 已连上但 SSH 握手失败，例如 EOF、connection reset 或协议错误，命令没有发出）；以及 `stage:session` 的 `session_failed`（会话没能打开，命令没有发出）。`no common algorithm` 这类确定性的握手失败每次都会同样失败，重试没有意义，应修正算法或服务器配置。`auth_failed` 和 `host_key_*` 保持各自的错误码，需要修复而不是重试。
+- 不可安全重试：`connection_lost`（`stage:remote_execution`，并带 `outcome:"unknown"`）。命令发出后连接中断，例如主机重启或执行了 `sysupgrade`，远端命令可能仍在运行，也可能已经结束。先去主机上确认进程状态。
 
 `outcome` 是加性字段，只出现在 `connection_lost` 上。
 

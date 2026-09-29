@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -136,5 +138,76 @@ func TestCompiledMapClassifiesEachResultIndependently(t *testing.T) {
 	}
 	if strings.Contains(human.Stdout, "error=internal") {
 		t.Fatalf("human map reported internal:\n%s", human.Stdout)
+	}
+}
+
+func TestCompiledPutClassifiesConnectionLostMidTransfer(t *testing.T) {
+	h := newTransportErrorsHarness(t)
+	source := filepath.Join(h.cli.temp, "put-source")
+	if err := os.WriteFile(source, []byte("payload\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	machine := h.cli.Run(t, "sshctl", nil, "--offline", "--json", "put", "b-lost", source, "/remote/dest")
+	if machine.ProcessExit != 255 || machine.Stderr != "" {
+		t.Fatalf("json put exit=%d stderr=%q stdout=%q, want exit 255", machine.ProcessExit, machine.Stderr, machine.Stdout)
+	}
+	document := decodeExactlyOneJSONObject(t, machine.Stdout)
+	if document["ok"] != false || document["error"] != "connection_lost" || document["outcome"] != "unknown" ||
+		document["stage"] != "remote_execution" || document["exit"] != float64(255) || document["direction"] != "put" {
+		t.Fatalf("json put document = %s", machine.Stdout)
+	}
+
+	human := h.cli.Run(t, "sshctl", nil, "--offline", "put", "b-lost", source, "/remote/dest")
+	want := "ssm: error=connection_lost stage=remote_execution outcome=unknown alias=b-lost address=" + h.lost.Address() + "\n"
+	if human.ProcessExit != 255 || human.Stdout != "" || !strings.HasPrefix(human.Stderr, want) {
+		t.Fatalf("human put exit=%d stdout=%q stderr=%q, want exit 255 with prefix %q", human.ProcessExit, human.Stdout, human.Stderr, want)
+	}
+}
+
+func TestCompiledGetClassifiesConnectionLostMidTransfer(t *testing.T) {
+	h := newTransportErrorsHarness(t)
+	destination := filepath.Join(h.cli.temp, "get-destination")
+
+	machine := h.cli.Run(t, "sshctl", nil, "--offline", "--json", "get", "b-lost", "/remote/source", destination)
+	if machine.ProcessExit != 255 || machine.Stderr != "" {
+		t.Fatalf("json get exit=%d stderr=%q stdout=%q, want exit 255", machine.ProcessExit, machine.Stderr, machine.Stdout)
+	}
+	document := decodeExactlyOneJSONObject(t, machine.Stdout)
+	if document["ok"] != false || document["error"] != "connection_lost" || document["outcome"] != "unknown" ||
+		document["stage"] != "remote_execution" || document["exit"] != float64(255) || document["direction"] != "get" {
+		t.Fatalf("json get document = %s", machine.Stdout)
+	}
+
+	human := h.cli.Run(t, "sshctl", nil, "--offline", "get", "b-lost", "/remote/source", destination)
+	want := "ssm: error=connection_lost stage=remote_execution outcome=unknown alias=b-lost address=" + h.lost.Address() + "\n"
+	if human.ProcessExit != 255 || human.Stdout != "" || !strings.HasPrefix(human.Stderr, want) {
+		t.Fatalf("human get exit=%d stdout=%q stderr=%q, want exit 255 with prefix %q", human.ProcessExit, human.Stdout, human.Stderr, want)
+	}
+}
+
+func TestCompiledPutClassifiesHandshakeFailure(t *testing.T) {
+	h := newTransportErrorsHarness(t)
+	source := filepath.Join(h.cli.temp, "put-source")
+	if err := os.WriteFile(source, []byte("payload\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	machine := h.cli.Run(t, "sshctl", nil, "--offline", "--json", "put", "c-handshake", source, "/remote/dest")
+	if machine.ProcessExit != 255 || machine.Stderr != "" {
+		t.Fatalf("json put exit=%d stderr=%q stdout=%q, want exit 255", machine.ProcessExit, machine.Stderr, machine.Stdout)
+	}
+	document := decodeExactlyOneJSONObject(t, machine.Stdout)
+	if document["error"] != "handshake_failed" || document["stage"] != "handshake" || document["exit"] != float64(255) {
+		t.Fatalf("json put document = %s", machine.Stdout)
+	}
+	if _, present := document["outcome"]; present {
+		t.Fatalf("handshake_failed must not carry outcome: %s", machine.Stdout)
+	}
+
+	human := h.cli.Run(t, "sshctl", nil, "--offline", "put", "c-handshake", source, "/remote/dest")
+	want := "ssm: error=handshake_failed stage=handshake alias=c-handshake address=" + h.handshake.Address() + "\n"
+	if human.ProcessExit != 255 || human.Stdout != "" || !strings.HasPrefix(human.Stderr, want) {
+		t.Fatalf("human put exit=%d stdout=%q stderr=%q, want exit 255 with prefix %q", human.ProcessExit, human.Stdout, human.Stderr, want)
 	}
 }

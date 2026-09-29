@@ -47,7 +47,9 @@ func TestClassifySSHTransportErrorsNeverFallBackToInternal(t *testing.T) {
 		{"exec closed socket text", errors.New("write tcp 192.0.2.2:1->192.0.2.1:22: use of closed network connection"), sessionContext, CodeConnectionLost, "remote_execution", "unknown"},
 		{"exec ssh disconnect", errors.New("ssh: disconnect, reason 11: Connection closed by remote host"), sessionContext, CodeConnectionLost, "remote_execution", "unknown"},
 		{"exec windows forced close", errors.New("wsarecv: An existing connection was forcibly closed by the remote host."), sessionContext, CodeConnectionLost, "remote_execution", "unknown"},
-		{"unstaged EOF is lost, not handshake", io.EOF, bareContext, CodeConnectionLost, "remote_execution", "unknown"},
+		{"transfer-phase EOF", io.EOF, SSHContext{Alias: "prod", Host: "192.0.2.1", Port: 22, ExecPhase: true}, CodeConnectionLost, "remote_execution", "unknown"},
+		{"windows connection aborted text", errors.New("wsarecv: An established connection was aborted by the software in your host machine."), sessionContext, CodeConnectionLost, "remote_execution", "unknown"},
+		{"windows connection reset text", errors.New("wsarecv: An existing connection was forcibly closed by the remote host."), bareContext, CodeConnectionLost, "remote_execution", "unknown"},
 
 		{"handshake EOF", errors.New("ssh: handshake failed: EOF"), dialContext, CodeHandshakeFailed, "handshake", ""},
 		{"handshake EOF without stage", fmt.Errorf("ssh: handshake failed: %w", io.EOF), bareContext, CodeHandshakeFailed, "handshake", ""},
@@ -56,8 +58,6 @@ func TestClassifySSHTransportErrorsNeverFallBackToInternal(t *testing.T) {
 		{"handshake protocol error", errors.New("ssh: handshake failed: ssh: overflow reading version string"), dialContext, CodeHandshakeFailed, "handshake", ""},
 		{"handshake kex failure", errors.New("ssh: handshake failed: ssh: no common algorithm for key exchange; client offered: [a], server offered: [b]"), dialContext, CodeHandshakeFailed, "handshake", ""},
 		{"handshake server disconnect", errors.New("ssh: handshake failed: ssh: disconnect, reason 2: Protocol error"), dialContext, CodeHandshakeFailed, "handshake", ""},
-		{"dial-stage bare EOF", io.EOF, dialContext, CodeHandshakeFailed, "handshake", ""},
-		{"dial-stage bare reset", resetErr, dialContext, CodeHandshakeFailed, "handshake", ""},
 
 		{"session channel rejected typed", &gossh.OpenChannelError{Reason: gossh.ResourceShortage, Message: "open failed"}, bareContext, CodeSession, "", ""},
 		{"session channel rejected pinned text", errors.New(`ssh: rejected: resource shortage ("fixture session rejected")`), bareContext, CodeSession, "", ""},
@@ -89,6 +89,45 @@ func TestClassifySSHTransportErrorsNeverFallBackToInternal(t *testing.T) {
 				t.Fatalf("outcome %q must appear only on connection_lost: %+v", got.Outcome, got)
 			}
 		})
+	}
+}
+
+// TestClassifySSHBareEOFOutsideExecutionStaysInternal guards against the EOF
+// matcher swallowing non-transport errors, such as a truncated private key.
+func TestClassifySSHBareEOFOutsideExecutionStaysInternal(t *testing.T) {
+	t.Parallel()
+	for _, err := range []error{
+		io.EOF,
+		fmt.Errorf("parse private key: %w", io.ErrUnexpectedEOF),
+		errors.New("ssh: no key found: EOF"),
+		errors.New("EOF"),
+	} {
+		for _, stage := range []string{"", "dial"} {
+			got := ClassifySSH(err, SSHContext{Alias: "prod", Host: "192.0.2.1", Port: 22, Stage: stage})
+			if got.Error != CodeInternal {
+				t.Fatalf("ClassifySSH(%v, stage %q) = %+v, want internal", err, stage, got)
+			}
+		}
+	}
+}
+
+func TestClassifyTransferKeepsTransportStageAndExit(t *testing.T) {
+	t.Parallel()
+	context := SSHContext{Alias: "prod", Host: "192.0.2.1", Port: 22}
+	handshake := errors.New("ssh: handshake failed: EOF")
+	for name, classify := range map[string]func(error, Failure) Failure{
+		"put": func(err error, carried Failure) Failure { return ClassifyTransferOperation(err, context, carried) },
+		"get": func(err error, _ Failure) Failure { return ClassifyDownload(err, context) },
+	} {
+		got := classify(handshake, Failure{})
+		if got.Error != CodeHandshakeFailed || got.Stage != "handshake" || got.Outcome != "" || got.Exit != ExitConnectionFailed || ProcessExit(got) != ExitConnectionFailed {
+			t.Fatalf("%s handshake = %+v", name, got)
+		}
+		carried := Classify(TransferRemoteWriteFailed, Details{Cause: io.EOF})
+		got = classify(fmt.Errorf("transfer: %w", &gossh.ExitMissingError{}), carried)
+		if got.Error != CodeConnectionLost || got.Stage != "remote_execution" || got.Outcome != "unknown" || got.Exit != ExitConnectionFailed || ProcessExit(got) != ExitConnectionFailed {
+			t.Fatalf("%s connection lost = %+v", name, got)
+		}
 	}
 }
 

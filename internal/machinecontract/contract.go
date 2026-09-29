@@ -1101,6 +1101,7 @@ type TransferOutcome struct {
 	Local         string `json:"local,omitempty"`
 	Remote        string `json:"remote,omitempty"`
 	Stage         string `json:"stage"`
+	Outcome       string `json:"outcome,omitempty"`
 	BytesSent     *int64 `json:"bytes_sent,omitempty"`
 	BytesReceived *int64 `json:"bytes_received,omitempty"`
 	Integrity     string `json:"integrity,omitempty"`
@@ -1115,6 +1116,7 @@ func TransferFailureOutcome(f Failure, outcome TransferOutcome) TransferOutcome 
 	outcome.OK = false
 	outcome.Error, outcome.Message, outcome.Hint, outcome.Exit = f.Error, f.Message, f.Hint, f.Exit
 	outcome.Stage = f.Stage
+	outcome.Outcome = f.Outcome
 	return outcome
 }
 
@@ -1138,6 +1140,9 @@ type SSHContext struct {
 	Port               int
 	Stage              string
 	SessionAcquisition bool
+	// ExecPhase marks an error from an established connection after a command
+	// or transfer was started, where a bare EOF means the connection was lost.
+	ExecPhase bool
 }
 
 func isShellInterpreterName(interpreter string) bool {
@@ -1271,9 +1276,9 @@ func ClassifySSH(err error, context SSHContext) Failure {
 			strings.Contains(lower, "connect: "):
 			kind = DialNetwork
 			details.Message = fmt.Sprintf("network error dialing %s: %s", address, message)
-		case isHandshakeError(err, lower, context):
+		case isHandshakeError(lower):
 			kind = HandshakeFailed
-		case isConnectionBreak(err, lower) && !context.SessionAcquisition:
+		case !context.SessionAcquisition && isConnectionBreak(err, lower, context.ExecPhase || context.Stage == "session"):
 			kind = ConnectionLost
 		case isSessionRejection(err, lower):
 			kind = SessionFailed
@@ -1303,40 +1308,43 @@ func policyOwnsStage(code string) bool {
 
 // isHandshakeError recognizes a failure after TCP connected but before the SSH
 // session was established: x/crypto wraps every such error as "ssh: handshake
-// failed: ...". A connection break reported by the dial stage itself also
-// happened during the handshake, since no command can be sent yet.
-func isHandshakeError(err error, lower string, context SSHContext) bool {
-	if strings.Contains(lower, "handshake failed") ||
+// failed: ...". The dial adapter classifies these before any caller stage is
+// known, so no stage-based fallback is needed.
+func isHandshakeError(lower string) bool {
+	return strings.Contains(lower, "handshake failed") ||
 		strings.Contains(lower, "reading version string") ||
-		strings.Contains(lower, "no common algorithm") {
-		return true
-	}
-	return context.Stage == "dial" && isConnectionBreak(err, lower)
+		strings.Contains(lower, "no common algorithm")
 }
 
 // isConnectionBreak recognizes an established SSH connection that ended
-// unexpectedly: EOF, reset, broken pipe, a closed socket, an ssh disconnect
-// message, or a session that ended without an exit status.
-func isConnectionBreak(err error, lower string) bool {
+// unexpectedly. Reset, broken pipe, closed-socket, ssh disconnect and
+// missing-exit-status errors are unambiguous transport signals. A bare EOF is
+// only one during execution (execPhase): elsewhere, for example while parsing
+// a private key, an EOF is an unrelated program error and stays internal.
+func isConnectionBreak(err error, lower string, execPhase bool) bool {
 	var exitMissing *gossh.ExitMissingError
 	switch {
 	case errors.As(err, &exitMissing),
-		errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF),
 		errors.Is(err, net.ErrClosed),
-		errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.ECONNABORTED), errors.Is(err, syscall.EPIPE):
+		errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.ECONNABORTED), errors.Is(err, syscall.EPIPE),
+		isPlatformConnectionBreak(err):
 		return true
 	}
 	for _, marker := range []string{
 		"remote command exited without exit status",
-		"connection reset", "connection was forcibly closed", "connection abort",
+		"connection reset", "connection was forcibly closed", "connection was aborted", "connection abort",
 		"broken pipe", "use of closed network connection", "connection closed",
-		"ssh: disconnect", "unexpected eof",
+		"ssh: disconnect",
 	} {
 		if strings.Contains(lower, marker) {
 			return true
 		}
 	}
-	return lower == "eof" || strings.HasSuffix(lower, ": eof")
+	if !execPhase {
+		return false
+	}
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		strings.Contains(lower, "unexpected eof") || lower == "eof" || strings.HasSuffix(lower, ": eof")
 }
 
 // isSessionRejection recognizes a peer refusing to open the session channel.
@@ -1397,7 +1405,15 @@ func ClassifyTransferOperation(err error, context SSHContext, carried Failure) F
 	if err == nil {
 		return Failure{}
 	}
-	human := ClassifySSH(err, context)
+	transportContext := context
+	transportContext.ExecPhase = true
+	human := ClassifySSH(err, transportContext)
+	if policyOwnsStage(human.Error) {
+		// handshake_failed and connection_lost keep their own stage and
+		// outcome, and the 255 transport exit, so a transfer that never
+		// started or one that broke midway is not reported as remote_write.
+		return human
+	}
 	human.Stage = ""
 	if carried.Error != "" {
 		// Preserve the pre-BC-7 human guidance for regular-file remote-write
@@ -1424,7 +1440,13 @@ func ClassifyTransferOperation(err error, context SSHContext, carried Failure) F
 func ClassifyDownload(err error, context SSHContext) Failure {
 	classifyContext := context
 	classifyContext.Stage = ""
+	classifyContext.ExecPhase = true
 	failure := ClassifySSH(err, classifyContext)
+	if policyOwnsStage(failure.Error) {
+		failure.Alias = RedactString(context.Alias)
+		failure.humanAlias = RedactString(context.ResolvedAlias)
+		return failure
+	}
 	human := failure
 	human.Stage = ""
 	if carried, ok := FailureFromError(err); ok && isDownloadOutcomeFailure(carried) {
