@@ -60,6 +60,9 @@ func SuggestNames(query string, names []string, limit int) []string {
 	return out
 }
 
+// EditDistance is the Levenshtein distance between a and b in runes.
+func EditDistance(a, b string) int { return levenshtein(a, b) }
+
 func levenshtein(a, b string) int {
 	ar, br := []rune(a), []rune(b)
 	if len(ar) == 0 {

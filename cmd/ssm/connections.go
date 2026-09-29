@@ -650,6 +650,14 @@ func connectionNotFound(name string, v *config.Vault) {
 		}
 		suggestions = ssh.SuggestNames(name, names, 5)
 	}
+	// "sshctl <alias> <cmd>" shorthand: the word may be a mistyped command
+	// rather than an alias. This runs only after the exact alias lookup missed
+	// and reuses the already-loaded vault, so it never unlocks or connects.
+	if aliasShorthand {
+		if suggestion, ok := suggestCommand(true, name); ok && !aliasIsCloser(name, suggestion, v) {
+			exitUnknownCommandSuggestion(true, name, suggestion)
+		}
+	}
 	exit := machinecontract.WriteClassified(machineJSON, machinecontract.AliasNotFound, machinecontract.Details{
 		Message: fmt.Sprintf("connection %q not found", name), Alias: name, Candidates: suggestions,
 	})

@@ -30,15 +30,30 @@ type remoteRunSpec struct {
 	Preflight bool
 }
 
+// runValueOptions are the sshctl run/exec/plan/map options that consume the
+// next token as their value; runFlagOptions take no value. Together they are
+// the option table shared by remoteArgvStart and the unknown-option
+// suggestions, and a test keeps them in step with parseRemoteRunArgs.
+// --refresh belongs to the "run <alias> --stream" form.
+var (
+	runValueOptions = []string{
+		"--jobs", "-j", "--parallel", "--timeout", "--secret", "-e",
+		"--shell", "--interpreter", "-f", "--file", "--scripts", "--refresh",
+	}
+	runFlagOptions = []string{
+		"--raw", "--argv", "--trace", "-v", "--json", "--plan", "--dry-run", "--no-reuse",
+		"--preflight", "--no-preflight", "-s", "--script", "-h", "--help", "--stream",
+	}
+)
+
 // runOptionTakesValue reports whether an sshctl run/exec/plan/map option
 // consumes the next token as its value. It is the single source of truth used
 // by remoteArgvStart so option scanning cannot drift from parseRemoteRunArgs.
-// --refresh belongs to the "run <alias> --stream" form.
 func runOptionTakesValue(arg string) bool {
-	switch arg {
-	case "--jobs", "-j", "--parallel", "--timeout", "--secret", "-e",
-		"--shell", "--interpreter", "-f", "--file", "--scripts", "--refresh":
-		return true
+	for _, name := range runValueOptions {
+		if arg == name {
+			return true
+		}
 	}
 	return false
 }
@@ -234,7 +249,7 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		case arg == "-h", arg == "--help":
 			return remoteRunSpec{}, fmt.Errorf("help")
 		case strings.HasPrefix(arg, "-") && arg != "-":
-			return remoteRunSpec{}, fmt.Errorf("unknown run option: %s", arg)
+			return remoteRunSpec{}, unknownRunOptionError(arg)
 		default:
 			parts = args[i:]
 			i = len(args)

@@ -160,6 +160,8 @@ for the related guarded recovery rules.
 ## Failure rules
 
 - `alias_not_found`: list/search and ask for an exact alias if needed; never execute a suggestion.
+- `unknown_command` (exit 2): the first word is not a sshctl subcommand or existing alias; follow the `hint` (for example an ssm-only command such as `keys`, or a near-miss like `stauts` -> `status`) and never treat the word as an alias.
+- `invalid_arguments` from `run|exec|plan|map` with an unknown option: the `hint` suggests the real option (`--script-file` -> `-f`, `--fetch` -> `get`); fix the option, do not guess more.
 - `sync_push_failed`: preserve the verified pending mutation and retry the same scoped transaction ID.
 - `dial_*|auth_failed`: diagnose network or credentials, not quoting.
 - `remote_failed|remote_script_failed`: transport succeeded; preserve remote exit and structured stderr.
