@@ -172,57 +172,68 @@ func PushBlobObserved(cfg *CloudConfig, data []byte) (string, bool, error) {
 // bytes and returns the identity confirmed by that GET. Sync policy and
 // metadata commits belong to internal/synctransaction.
 func Pull(cfg *CloudConfig) (string, error) {
-	if err := requireToken(cfg); err != nil {
+	data, etag, err := Fetch(cfg)
+	if err != nil {
 		return "", err
+	}
+	if err := config.WritePrivateFile(config.Path(), data); err != nil {
+		config.Debug("pull: write vault error: %v", err)
+		return "", err
+	}
+	config.Debug("pull: success")
+	return etag, nil
+}
+
+// Fetch downloads the opaque encrypted vault and its confirmed identity
+// without touching local state. The background sync fetches outside the vault
+// write lock and takes the lock only to compare identities and replace the
+// file.
+func Fetch(cfg *CloudConfig) ([]byte, string, error) {
+	if err := requireToken(cfg); err != nil {
+		return nil, "", err
 	}
 	server := strings.TrimRight(cfg.Server, "/")
 	req, err := http.NewRequest("GET", server+"/sync", nil)
 	if err != nil {
 		config.Debug("pull: request error: %v", err)
-		return "", &RequestError{}
+		return nil, "", &RequestError{}
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		config.Debug("pull: connection failed: %v", err)
-		return "", &TransportError{Err: err}
+		return nil, "", &TransportError{Err: err}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == 404 {
 		config.Debug("pull: no vault on server (404)")
-		return "", fmt.Errorf("no vault found on server; review pending mutations, then choose sshctl --json push --only <transaction-id> or sshctl --json push --all")
+		return nil, "", fmt.Errorf("no vault found on server; review pending mutations, then choose sshctl --json push --only <transaction-id> or sshctl --json push --all")
 	}
 	if resp.StatusCode != 200 {
 		config.Debug("pull: server error %d", resp.StatusCode)
-		return "", parseError(resp)
+		return nil, "", parseError(resp)
 	}
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxPullBlobBytes+1))
 	if err != nil {
 		config.Debug("pull: read body error: %v", err)
-		return "", &TransportError{Err: err}
+		return nil, "", &TransportError{Err: err}
 	}
 	if int64(len(data)) > maxPullBlobBytes {
 		config.Debug("pull: sync blob too large")
-		return "", fmt.Errorf("sync blob too large")
+		return nil, "", fmt.Errorf("sync blob too large")
 	}
 	if len(data) == 0 {
 		config.Debug("pull: empty sync blob")
-		return "", fmt.Errorf("sync blob is empty")
-	}
-
-	if err := config.WritePrivateFile(config.Path(), data); err != nil {
-		config.Debug("pull: write vault error: %v", err)
-		return "", err
+		return nil, "", fmt.Errorf("sync blob is empty")
 	}
 	etag := strings.Trim(resp.Header.Get("ETag"), `"`)
 	if etag == "" {
 		etag = hashBytes(data)
 	}
-	config.Debug("pull: success")
-	return etag, nil
+	return data, etag, nil
 }
 
 // PullExpected atomically replaces the local encrypted vault only after the

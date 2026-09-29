@@ -47,8 +47,9 @@ inventory; it moved the silence into a flag.
   (default 10 minutes). Failure backs off exponentially from 30 seconds to one
   hour. Commands inside the window neither request nor spawn.
 - **Background process.** Observes the remote identity with a 5 second request
-  bound. Only when it changed does it take the publication lock, re-read local
-  facts, and pull. It uses the same conflict protection as before: a diverged
+  bound. Only when it changed does it download (outside any lock), then take
+  the vault write lock only to re-read local facts, compare identities, and
+  replace the file. It uses the same conflict protection as before: a diverged
   local vault is preserved, evidence is saved, the outcome is recorded with
   `cause=conflict`, and nothing is overwritten or published. It leaves local
   state alone while a publication holds the lock or an unreconciled publishing
@@ -88,12 +89,17 @@ lock.
 The first read after `login` on a machine with no vault sees local (possibly
 empty) inventory; run `sshctl sync` once to pull, or wait for the background
 sync. `update.Auto` still runs inline and is not part of this decision.
-A background pull replaces the vault file atomically under the publication
-lock, but local mutation commands do not take that lock between loading and
-saving the vault. If a remote change is pulled inside that window (roughly the
-vault decrypt-and-encrypt time of one mutation command), the mutation command's
-save can overwrite the pulled vault while the cached remote identity already
-names the pulled version, so a later `push` would not see a divergence.
-Concurrent mutation commands in v2.0.2 share the same hazard; the background
-process makes it reachable without a second human. Serializing local mutations
-with the publication lock is a recommended follow-up.
+Local mutations, publication finalization, and background pulls are serialised
+by one short cross-process vault write lock (`vault-write.lock`, separate from
+`publication.lock` so a mutation is still allowed while a publication is in
+flight). The background process downloads outside
+the lock, then takes it only to re-read local facts, compare identities, and
+replace the file, so a local mutation saved earlier is seen as divergence and
+kept. Every command that saves the vault after a local mutation (`host`
+add/update/upsert/remove, `remove`, `keys remove`, `import-json`, request-v1
+host mutations) holds the lock from an identity check through the save and
+refuses with a clear error if the vault file is no longer the version it loaded
+(nothing is saved; retry). Lock waits are bounded (5 seconds) and report that
+the vault is busy. The cached remote identity therefore always names the vault
+that was actually pulled, and a later publication still fails closed when the
+remote moved.

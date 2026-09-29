@@ -293,10 +293,15 @@ var ErrBackgroundSkipped = errors.New("background sync skipped")
 
 // BackgroundSync performs one detached sync attempt: observe the remote
 // identity (bounded by the caller's request timeout), then, only when it
-// changed, take exclusive ownership through lock and refresh. It never
-// publishes and never overwrites divergent local state. lock returns a release
-// function, or ErrBackgroundSkipped when local state must not be touched now.
-// The outcome, success or failure, is recorded in the sync state.
+// changed, download it and replace the local vault. It never publishes and
+// never overwrites divergent local state. lock returns a release function, or
+// ErrBackgroundSkipped when local state must not be touched now.
+//
+// The vault write lock is held only for identity comparison and the file
+// replacement, never across network I/O, and local facts are re-read after
+// acquiring it, so a local mutation saved a moment earlier is seen as
+// divergence instead of being overwritten. The outcome, success or failure, is
+// recorded in the sync state.
 func (t *Transaction) BackgroundSync(lock func() (release func(), err error)) error {
 	if t.offline {
 		return nil
@@ -310,23 +315,55 @@ func (t *Transaction) BackgroundSync(lock func() (release func(), err error)) er
 		t.recordSkippedNotConfigured()
 		return nil
 	}
-	remote, err := cloud.RemoteETag(cfg)
-	if err != nil {
-		err = fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err)
+	fail := func(err error) error {
 		t.recordFailure(err)
 		return err
 	}
+	remote, err := cloud.RemoteETag(cfg)
+	if err != nil {
+		return fail(fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err))
+	}
+	if remote != "" && remote == cachedRemoteIdentity() {
+		t.recordSuccess()
+		return nil
+	}
+
+	// Divergence needs no download: decide it, and preserve its evidence,
+	// under the lock.
 	release, err := lock()
 	if err != nil {
 		t.RecordSkipped()
 		return nil
 	}
-	defer release()
 	facts := t.localFacts()
 	facts.Configuration = state
-	if _, err := t.applyRemoteIdentity(cfg, facts, remote, false); err != nil {
-		t.recordFailure(err)
-		return err
+	if diverged(facts, remote) {
+		_, err := t.applyRemoteIdentity(cfg, facts, remote, false, nil)
+		release()
+		return fail(err)
+	}
+	release()
+
+	data, etag, err := cloud.Fetch(cfg)
+	if err != nil {
+		return fail(fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err))
+	}
+	release, err = lock()
+	if err != nil {
+		t.RecordSkipped()
+		return nil
+	}
+	defer release()
+	facts = t.localFacts()
+	facts.Configuration = state
+	write := func() (string, error) {
+		if err := config.WritePrivateFile(config.Path(), data); err != nil {
+			return "", err
+		}
+		return etag, nil
+	}
+	if _, err := t.applyRemoteIdentity(cfg, facts, etag, false, write); err != nil {
+		return fail(err)
 	}
 	t.recordSuccess()
 	return nil

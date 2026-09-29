@@ -59,6 +59,23 @@ func (s *Settings) EffectiveSyncMode() string {
 	return SyncModeLocalFirst
 }
 
+// InvalidSyncMode reports a configured sync mode that is not recognized, from
+// the environment override or settings.json, so callers can tell the user that
+// the default local_first is in effect instead of what they typed.
+func (s *Settings) InvalidSyncMode() (source, value string) {
+	for _, candidate := range []struct{ source, value string }{
+		{SyncModeEnv, os.Getenv(SyncModeEnv)},
+		{"settings.json sync_mode", s.SyncMode},
+	} {
+		switch strings.TrimSpace(candidate.value) {
+		case "", SyncModeStrict, SyncModeLocalFirst:
+		default:
+			return candidate.source, candidate.value
+		}
+	}
+	return "", ""
+}
+
 // EffectiveSyncInterval is the minimum spacing between successful background
 // sync attempts.
 func (s *Settings) EffectiveSyncInterval() time.Duration {

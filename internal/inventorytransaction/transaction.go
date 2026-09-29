@@ -188,6 +188,47 @@ func New(opts Options) *Transaction {
 	}
 }
 
+// Errors from saving a locally mutated vault under the vault write lock.
+var (
+	// ErrVaultBusy reports that another process (a publication or a background
+	// sync applying a pull) still holds the vault write lock.
+	ErrVaultBusy = errors.New("vault is busy: another ssm process (for example a publication or background sync) holds the vault write lock; retry the command")
+	// ErrVaultChanged reports that the vault file was replaced after this
+	// command loaded it, so saving would silently discard that replacement.
+	ErrVaultChanged = errors.New("vault changed while this command was running (for example a background sync pulled a newer vault); nothing was saved, retry the command")
+)
+
+// mutationLockWait bounds how long a local mutation waits for the vault write
+// lock. Holders keep it only to compare identities and replace the file, so
+// contention is brief; the bound keeps a stuck holder from hanging a command.
+var mutationLockWait = publicationLockTimeout
+
+// saveLoadedVault persists a locally mutated vault. It holds the vault write
+// lock (shared with publication finalization and background pulls) from the
+// identity check through the save, and refuses to save if the vault file is no longer
+// the version this process loaded. This closes the window in which a
+// background pull could be overwritten by a mutation's load-then-save.
+func saveLoadedVault(after *config.Vault, masterPass string) error {
+	session, err := beginVaultWriteWithin(mutationLockWait)
+	if err != nil {
+		if errors.Is(err, ErrPublicationBusy) {
+			return ErrVaultBusy
+		}
+		return err
+	}
+	defer func() { _ = session.Close() }()
+	if loaded, known := config.LoadedBlobIdentity(); known {
+		current, err := config.CurrentBlobIdentity()
+		if err != nil {
+			return err
+		}
+		if current != loaded {
+			return ErrVaultChanged
+		}
+	}
+	return config.Save(after, masterPass)
+}
+
 // ApplyHost constructs, validates, optionally verifies, appends, and persists
 // one modern host mutation. Failed verification and unchanged retries do not
 // consume a transaction ID or alter the ledger.
@@ -241,7 +282,7 @@ func (t *Transaction) ApplyHost(before *config.Vault, change HostChange) (Mutati
 	}
 	after.PendingMutations = append(after.PendingMutations, mutation)
 	receipt.TransactionID = id
-	if err := config.Save(after, t.masterPass); err != nil {
+	if err := saveLoadedVault(after, t.masterPass); err != nil {
 		return MutationReceipt{}, hostError(machinecontract.HostVaultFailed, "%s", err)
 	}
 	receipt.Applied = true
@@ -293,7 +334,7 @@ func (t *Transaction) RemoveSavedKey(before *config.Vault, name string) (SavedKe
 		KeysAfter:  append([]config.SSHKey(nil), after.Keys...),
 		KeyCount:   1,
 	})
-	if err := config.Save(after, t.masterPass); err != nil {
+	if err := saveLoadedVault(after, t.masterPass); err != nil {
 		return SavedKeyMutationReceipt{}, fmt.Errorf("save saved-key transaction: %w", err)
 	}
 	return SavedKeyMutationReceipt{
@@ -358,7 +399,7 @@ func (t *Transaction) ApplyImport(before, imported *config.Vault, replace bool) 
 			return ImportReceipt{}, &MergeReportError{Err: err}
 		}
 	}
-	if err := config.Save(after, t.masterPass); err != nil {
+	if err := saveLoadedVault(after, t.masterPass); err != nil {
 		return ImportReceipt{}, fmt.Errorf("save import transaction: %w", err)
 	}
 	return ImportReceipt{
@@ -1060,6 +1101,16 @@ func (t *Transaction) reconcilePublishingIntent() (PublicationReceipt, *Publicat
 }
 
 func (t *Transaction) finalizePublishingIntent(intent publishingIntent) (PublicationReceipt, error) {
+	// Local finalization reloads and rewrites the vault, so it must not
+	// interleave with a mutation's identity check and save.
+	vaultLock, err := beginVaultWriteWithin(mutationLockWait)
+	if err != nil {
+		if errors.Is(err, ErrPublicationBusy) {
+			return PublicationReceipt{}, ErrVaultBusy
+		}
+		return PublicationReceipt{}, err
+	}
+	defer func() { _ = vaultLock.Close() }()
 	current, err := config.Load(t.masterPass)
 	if err != nil {
 		return PublicationReceipt{}, fmt.Errorf("load pending publication for finalization: %w", err)

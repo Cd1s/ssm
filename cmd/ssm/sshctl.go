@@ -356,6 +356,7 @@ type statusResult struct {
 }
 
 func runSSHCTLStatus() {
+	statusCommand = true
 	recovery, recoveryErr := inventorytransaction.New(inventorytransaction.Options{
 		MasterPass: masterPass,
 		Sync:       syncTransaction(false),

@@ -1,11 +1,14 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"ssm/internal/vault"
@@ -129,15 +132,59 @@ func Exists() bool {
 	return err == nil
 }
 
+// absentBlobIdentity stands for a vault file that does not exist.
+const absentBlobIdentity = "absent"
+
+var (
+	loadedBlobMu       sync.Mutex
+	loadedBlobIdentity string
+	loadedBlobKnown    bool
+)
+
+func blobIdentity(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func recordLoadedBlob(identity string) {
+	loadedBlobMu.Lock()
+	loadedBlobIdentity, loadedBlobKnown = identity, true
+	loadedBlobMu.Unlock()
+}
+
+// LoadedBlobIdentity returns the identity of the encrypted vault bytes this
+// process most recently loaded or saved. Local mutation commands compare it to
+// CurrentBlobIdentity under the vault write lock so a vault replaced in the
+// meantime (for example by a background pull) is never overwritten.
+func LoadedBlobIdentity() (string, bool) {
+	loadedBlobMu.Lock()
+	defer loadedBlobMu.Unlock()
+	return loadedBlobIdentity, loadedBlobKnown
+}
+
+// CurrentBlobIdentity reads the identity of the vault file as it is now.
+func CurrentBlobIdentity() (string, error) {
+	data, err := os.ReadFile(Path())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return absentBlobIdentity, nil
+		}
+		return "", err
+	}
+	return blobIdentity(data), nil
+}
+
 func Load(masterPass string) (*Vault, error) {
 	_ = EnsurePrivateDir(Dir())
 	data, err := os.ReadFile(Path())
 	if err != nil {
 		if os.IsNotExist(err) {
+			recordLoadedBlob(absentBlobIdentity)
 			return &Vault{}, nil
 		}
 		return nil, err
 	}
+	recordLoadedBlob(blobIdentity(data))
 
 	plaintext, err := vault.Decrypt(data, masterPass)
 	if err != nil {
@@ -164,7 +211,11 @@ func Save(v *Vault, masterPass string) error {
 		return err
 	}
 
-	return WritePrivateFile(Path(), encrypted)
+	if err := WritePrivateFile(Path(), encrypted); err != nil {
+		return err
+	}
+	recordLoadedBlob(blobIdentity(encrypted))
+	return nil
 }
 
 func EncryptVault(v *Vault, masterPass string) ([]byte, error) {

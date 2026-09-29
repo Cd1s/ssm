@@ -436,19 +436,22 @@ func (t *Transaction) refreshConfigured(cfg *cloud.CloudConfig, facts Facts, for
 	if err != nil {
 		return facts, fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err)
 	}
-	return t.applyRemoteIdentity(cfg, facts, remote, forcePull)
+	return t.applyRemoteIdentity(cfg, facts, remote, forcePull, nil)
 }
 
 // applyRemoteIdentity decides between no-op, conflict and pull for an already
 // observed remote identity.
-func (t *Transaction) applyRemoteIdentity(cfg *cloud.CloudConfig, facts Facts, remote string, forcePull bool) (Facts, error) {
+//
+// pull replaces the local vault; nil uses a direct download. The background
+// sync passes a function that writes an already downloaded blob so the vault
+// write lock is held only for this decision and the file replacement.
+func (t *Transaction) applyRemoteIdentity(cfg *cloud.CloudConfig, facts Facts, remote string, forcePull bool, pull func() (string, error)) (Facts, error) {
 	facts.Remote = RemoteChecked
 	if !forcePull && remote != "" && remote == facts.RemoteETag {
 		facts.Remote = RemoteChecked
 		return facts, nil
 	}
-	if facts.RemoteETag != "" && remote != "" && remote != facts.RemoteETag &&
-		facts.LocalETag != "" && facts.LocalETag != facts.RemoteETag {
+	if diverged(facts, remote) {
 		conflict := SyncConflict{
 			DetectedAt: t.now().UTC().Format(time.RFC3339),
 			LocalETag:  facts.LocalETag, RemoteETag: remote, CachedETag: facts.RemoteETag,
@@ -459,7 +462,13 @@ func (t *Transaction) applyRemoteIdentity(cfg *cloud.CloudConfig, facts Facts, r
 		facts.Conflict = &conflict
 		return facts, fmt.Errorf("%w: local and remote opaque blobs diverged", ErrConflict)
 	}
-	committedIdentity, err := cloud.Pull(cfg)
+	var committedIdentity string
+	var err error
+	if pull == nil {
+		committedIdentity, err = cloud.Pull(cfg)
+	} else {
+		committedIdentity, err = pull()
+	}
 	if err != nil {
 		return facts, fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err)
 	}
@@ -473,6 +482,13 @@ func (t *Transaction) applyRemoteIdentity(cfg *cloud.CloudConfig, facts Facts, r
 	facts.Changed = true
 	facts.Remote = RemoteChecked
 	return facts, nil
+}
+
+// diverged reports that both the remote and the local vault moved away from the
+// last confirmed remote identity.
+func diverged(facts Facts, remote string) bool {
+	return facts.RemoteETag != "" && remote != "" && remote != facts.RemoteETag &&
+		facts.LocalETag != "" && facts.LocalETag != facts.RemoteETag
 }
 
 func (t *Transaction) Pull() (Facts, error) {

@@ -115,6 +115,12 @@ plans and speculative APIs live elsewhere.
 - A missing sync configuration means sync is not configured. An invalid or
   unreadable sync configuration stops every inventory read or mutation in both
   modes.
+- Local vault mutations, publication finalization, and background pulls share one bounded cross-process
+  vault write lock. A mutation saves only if the vault file is still the
+  version it loaded; a background pull is applied only after re-reading local
+  identity under that lock, so neither can overwrite the other.
+- An unrecognized `sync_mode` runs as `local_first` and is reported once on
+  stderr by `status` and human reads.
 - `auto_sync: false` disables automatic sync in both modes.
 - In `strict` mode offline inventory requires an explicit `--offline` (or
   `SSM_OFFLINE=1`) choice that accepts stale local state.

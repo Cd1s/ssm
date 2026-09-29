@@ -5,6 +5,7 @@ import (
 	"os"
 	"time"
 
+	"ssm/internal/config"
 	"ssm/internal/synctransaction"
 )
 
@@ -14,12 +15,17 @@ import (
 var (
 	inventoryStale bool
 	staleWarned    bool
+	modeWarned     bool
+	// statusCommand makes the invalid-mode notice appear for `status --json`
+	// too; other JSON commands keep stderr empty.
+	statusCommand bool
 )
 
 // noteInventoryFreshness is the sync transaction's observer for every
 // successful inventory read. It stores staleness and, for human output, prints
 // one warning line on stderr so stdout stays clean.
 func noteInventoryFreshness(facts synctransaction.Facts) {
+	warnInvalidSyncMode()
 	inventoryStale = facts.Stale
 	if !facts.Stale || machineJSON || streamMachine || staleWarned {
 		return
@@ -36,4 +42,19 @@ func formatStaleAge(age time.Duration) string {
 		return fmt.Sprintf("%d days", int(age/(24*time.Hour)))
 	}
 	return fmt.Sprintf("%d hours", int(age/time.Hour))
+}
+
+// warnInvalidSyncMode tells the user once that an unrecognized sync_mode was
+// ignored, so a misspelled "strict" is not silently run as local_first.
+func warnInvalidSyncMode() {
+	if modeWarned || streamMachine || (machineJSON && !statusCommand) {
+		return
+	}
+	source, value := config.LoadSettings().InvalidSyncMode()
+	if source == "" {
+		return
+	}
+	modeWarned = true
+	fmt.Fprintf(os.Stderr,
+		"ssm: warning: invalid %s %q (want local_first or strict); using local_first\n", source, value)
 }

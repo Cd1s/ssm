@@ -915,7 +915,7 @@ func assertSyncTransactionDepth(t *testing.T, packageAST astPackage) {
 		{function: "configuration", calls: []string{"ReadFile", "json.Unmarshal"}},
 		{function: "refreshConfigured", calls: []string{"RemoteETag", "applyRemoteIdentity"}},
 		{function: "applyRemoteIdentity", calls: []string{"Pull", "commitSuccess", "preserveConflict"}},
-		{function: "BackgroundSync", calls: []string{"RemoteETag", "applyRemoteIdentity", "recordFailure", "recordSuccess"}},
+		{function: "BackgroundSync", calls: []string{"RemoteETag", "Fetch", "applyRemoteIdentity", "recordSuccess"}},
 		{function: "PreparePublication", calls: []string{"InspectRemoteBlob", "preserveConflict"}},
 		{function: "SendPublication", calls: []string{"ObservePublicationIdentity", "PushBlobObserved"}},
 		{function: "Facts", calls: []string{"configuration", "localFacts"}},
@@ -927,9 +927,10 @@ func assertSyncTransactionDepth(t *testing.T, packageAST astPackage) {
 func assertInventoryTransactionDepth(t *testing.T, packageAST astPackage) {
 	t.Helper()
 	assertPolicyPaths(t, packageAST, "inventory transaction", []policyPath{
-		{function: "ApplyHost", calls: []string{"buildHostCandidate", "config.Save"}},
-		{function: "RemoveSavedKey", calls: []string{"removeKeyByName", "config.Save"}},
-		{function: "ApplyImport", calls: []string{"validateImportInventory", "config.Save"}},
+		{function: "ApplyHost", calls: []string{"buildHostCandidate", "saveLoadedVault"}},
+		{function: "RemoveSavedKey", calls: []string{"removeKeyByName", "saveLoadedVault"}},
+		{function: "ApplyImport", calls: []string{"validateImportInventory", "saveLoadedVault"}},
+		{function: "saveLoadedVault", calls: []string{"beginVaultWriteWithin", "CurrentBlobIdentity", "config.Save"}},
 		{function: "Publish", calls: []string{"project", "SendPublication", "finalizePublishingIntent"}},
 		{function: "ReconcilePublishingIntent", calls: []string{"reconcilePublishingIntent"}},
 		{function: "Preflight", calls: []string{"dependencies"}},

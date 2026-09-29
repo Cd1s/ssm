@@ -674,3 +674,28 @@ func TestLocalFirstStreamIsNotStoppedBySyncFailures(t *testing.T) {
 		t.Fatalf("stream made %d sync requests during backoff", got)
 	}
 }
+
+func TestInvalidSyncModeIsReportedOnceAndRunsAsLocalFirst(t *testing.T) {
+	s := newLocalFirstScenario(t)
+	s.cli.writeConfigFile(t, "settings.json", []byte(`{"sync_mode":"strikt"}`))
+	s.writeSyncState(t, map[string]any{"next_attempt_at": rfc3339(localFirstClock.Add(time.Hour))})
+	s.sync.SetStatus(t, http.MethodHead, http.StatusServiceUnavailable)
+	noEnv := map[string]string{"SSM_SYNC_MODE": ""}
+	const want = `ssm: warning: invalid settings.json sync_mode "strikt" (want local_first or strict); using local_first`
+
+	human := s.runWith(t, noEnv, "list")
+	if human.ProcessExit != 0 || strings.Count(human.Stderr, want) != 1 || strings.Contains(human.Stdout, "warning") {
+		t.Fatalf("human read did not report the invalid mode exactly once on stderr; stderr=%q", human.Stderr)
+	}
+	status := s.runWith(t, noEnv, "--json", "status")
+	if status.ProcessExit != 0 || strings.Count(status.Stderr, want) != 1 {
+		t.Fatalf("status did not report the invalid mode; stderr=%q", status.Stderr)
+	}
+	decodeExactlyOneJSONObject(t, status.Stdout)
+	if jsonRead := s.runWith(t, noEnv, "--json", "list"); jsonRead.Stderr != "" {
+		t.Fatalf("--json read wrote to stderr: %q", jsonRead.Stderr)
+	}
+	if got := s.syncRequests(); got != 0 {
+		t.Fatalf("invalid mode did not run as local_first: %d sync requests", got)
+	}
+}
