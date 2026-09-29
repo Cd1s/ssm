@@ -793,10 +793,32 @@ func unavailablePrerequisites(
 			if state.detail != "" {
 				detail += " (" + state.detail + ")"
 			}
+			if hint := prerequisiteAcquisitionHint(prerequisite); hint != "" {
+				detail += "; to get it: " + hint
+			}
 			unavailable = append(unavailable, detail)
 		}
 	}
 	return unavailable
+}
+
+// prerequisiteAcquisitionHint returns a copyable command that obtains the exact
+// pinned tool. The version comes from the manifest prerequisite itself so the
+// hint cannot drift from the enforced pin.
+func prerequisiteAcquisitionHint(prerequisite Prerequisite) string {
+	if prerequisite.Kind != "tool" || prerequisite.Version == "" || prerequisite.Version == "any" {
+		return ""
+	}
+	switch prerequisite.Name {
+	case "go":
+		return "GOTOOLCHAIN=go" + prerequisite.Version + " go run ./cmd/verify <profile>"
+	case "gofmt":
+		return "GOTOOLCHAIN=" + prerequisite.Version + " go run ./cmd/verify <profile>"
+	case "golangci-lint":
+		return "GOBIN=<dir> go install " + golangciLintInstallPackage + "@v" + prerequisite.Version +
+			" && PATH=<dir>:$PATH go run ./cmd/verify <profile>"
+	}
+	return ""
 }
 
 func checkPrerequisite(

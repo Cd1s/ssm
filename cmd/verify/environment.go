@@ -116,6 +116,7 @@ func isolatedEnvironmentForOSWithCache(
 		"SSL_CERT_FILE",
 		"SSL_CERT_DIR",
 		"SSHD",
+		"SSM_VERIFY_REQUIRE_PINNED",
 	} {
 		if value, present := lookup(name); present {
 			values[name] = value
@@ -152,7 +153,7 @@ func prepareVerifierCache(repoRoot, requestedRoot string) (verifierCache, error)
 		if err != nil {
 			return verifierCache{}, fmt.Errorf("resolve user cache directory: %w", err)
 		}
-		root = filepath.Join(base, "ssm", "verify", "go1.26.8")
+		root = filepath.Join(base, "ssm", "verify", "go"+pinnedGoVersion)
 	}
 	root, err := filepath.Abs(root)
 	if err != nil {

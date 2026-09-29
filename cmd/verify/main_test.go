@@ -167,6 +167,7 @@ func TestPrerequisitesReportAvailabilityAndVersion(t *testing.T) {
 		name         string
 		prerequisite Prerequisite
 		want         bool
+		hostPinned   bool
 	}{
 		{
 			name:         "current platform",
@@ -187,6 +188,7 @@ func TestPrerequisitesReportAvailabilityAndVersion(t *testing.T) {
 			name:         "pinned Go",
 			prerequisite: Prerequisite{Kind: "tool", Name: "go", Version: "1.26.8"},
 			want:         true,
+			hostPinned:   true,
 		},
 		{
 			name:         "wrong Go version",
@@ -201,6 +203,9 @@ func TestPrerequisitesReportAvailabilityAndVersion(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got := checkPrerequisite(context.Background(), repo, test.prerequisite, environment)
+			if test.hostPinned {
+				skipUnlessHostPinned(t, got)
+			}
 			if got.available != test.want {
 				t.Fatalf("available = %t (%s), want %t", got.available, got.detail, test.want)
 			}
@@ -227,33 +232,50 @@ func TestPrerequisitesReportAvailabilityAndVersion(t *testing.T) {
 	if got, want := format.Action.Command.Executable, "{goroot}/bin/gofmt{exe}"; got != want {
 		t.Fatalf("format executable = %q, want %q", got, want)
 	}
-	fakeBin := t.TempDir()
-	goRoot := strings.TrimSpace(commandOutput(t, repo, "go", "env", "GOROOT"))
-	gofmtName := "gofmt" + executableSuffix()
-	gofmtData, err := os.ReadFile(filepath.Join(goRoot, "bin", gofmtName)) //nolint:gosec // resolved pinned Go toolchain fixture
-	if err != nil {
-		t.Fatal(err)
+	t.Run("pinned gofmt from GOROOT", func(t *testing.T) {
+		fakeBin := t.TempDir()
+		goRoot := strings.TrimSpace(commandOutput(t, repo, "go", "env", "GOROOT"))
+		gofmtName := "gofmt" + executableSuffix()
+		gofmtData, err := os.ReadFile(filepath.Join(goRoot, "bin", gofmtName)) //nolint:gosec // resolved pinned Go toolchain fixture
+		if err != nil {
+			t.Fatal(err)
+		}
+		//nolint:gosec // copied executable fixture must retain owner execute permission on Unix
+		if err := os.WriteFile(filepath.Join(fakeBin, gofmtName), gofmtData, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+		state := checkPrerequisite(
+			context.Background(),
+			repo,
+			Prerequisite{Kind: "tool", Name: "gofmt", Version: "go1.26.8"},
+			newTestProcessEnvironment(t),
+		)
+		skipUnlessHostPinned(t, state)
+		if !state.available {
+			t.Fatalf("pinned gofmt unavailable: %s", state.detail)
+		}
+		if strings.Contains(state.detail, fakeBin) {
+			t.Fatalf("gofmt prerequisite resolved unrelated PATH entry: %s", state.detail)
+		}
+		if !strings.Contains(state.detail, goRoot) {
+			t.Fatalf("gofmt prerequisite detail %q does not identify pinned GOROOT %q", state.detail, goRoot)
+		}
+	})
+}
+
+// skipUnlessHostPinned keeps host-environment assertions from failing plain
+// `go test ./...` on machines whose Go toolchain is not the reviewed pin.
+// Official CI sets SSM_VERIFY_REQUIRE_PINNED=1 so an unpinned host fails there.
+func skipUnlessHostPinned(t *testing.T, state prerequisiteState) {
+	t.Helper()
+	if state.available {
+		return
 	}
-	//nolint:gosec // copied executable fixture must retain owner execute permission on Unix
-	if err := os.WriteFile(filepath.Join(fakeBin, gofmtName), gofmtData, 0o700); err != nil {
-		t.Fatal(err)
+	if os.Getenv("SSM_VERIFY_REQUIRE_PINNED") == "1" {
+		t.Fatalf("SSM_VERIFY_REQUIRE_PINNED=1 but the host toolchain is not the pinned one: %s", state.detail)
 	}
-	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	state := checkPrerequisite(
-		context.Background(),
-		repo,
-		Prerequisite{Kind: "tool", Name: "gofmt", Version: "go1.26.8"},
-		newTestProcessEnvironment(t),
-	)
-	if !state.available {
-		t.Fatalf("pinned gofmt unavailable: %s", state.detail)
-	}
-	if strings.Contains(state.detail, fakeBin) {
-		t.Fatalf("gofmt prerequisite resolved unrelated PATH entry: %s", state.detail)
-	}
-	if !strings.Contains(state.detail, goRoot) {
-		t.Fatalf("gofmt prerequisite detail %q does not identify pinned GOROOT %q", state.detail, goRoot)
-	}
+	t.Skipf("host toolchain is not the pinned one (%s); set GOTOOLCHAIN=go1.26.8 or SSM_VERIFY_REQUIRE_PINNED=1 to enforce", state.detail)
 }
 
 func TestSSHMatrixIsRequiredInOfficialLinuxCI(t *testing.T) {

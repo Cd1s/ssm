@@ -234,10 +234,10 @@ type v2ReadinessToolVersion struct {
 }
 
 var v2ReadinessObservedToolVersions = []v2ReadinessToolVersion{
-	{Tool: "Go", Version: "1.26.8"},
+	{Tool: "Go", Version: pinnedGoVersion},
 	{Tool: "git", Version: "2.47.3"},
 	{Tool: "jq", Version: "1.7"},
-	{Tool: "golangci-lint", Version: "2.11.4"},
+	{Tool: "golangci-lint", Version: pinnedGolangciLintVersion},
 	{Tool: "Node.js", Version: "20.19.2"},
 	{Tool: "npm/npx", Version: "9.2.0"},
 	{Tool: "GNU Bash", Version: "5.2.37(1)-release"},

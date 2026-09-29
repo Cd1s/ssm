@@ -28,7 +28,7 @@ func reviewedActionPolicy() map[string]Action {
 		),
 		"vulnerability": reviewedCommand(
 			"go",
-			[]string{"run", "golang.org/x/vuln/cmd/govulncheck@v1.6.0", "./..."},
+			[]string{"run", govulncheckModule + "@" + pinnedGovulncheckVersion, "./..."},
 			nil,
 			"",
 		),

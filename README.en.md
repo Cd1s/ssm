@@ -197,6 +197,21 @@ ssm update --major --yes
 
 `--major --yes` does not bypass SHA-256, exact-tag, keyless-provenance, or failure-recovery checks. A failed update preserves the old executable and recovery evidence. See the [migration guide](docs/migration-v1-to-v2.md) and [provenance runbook](docs/update-provenance-runbook.md).
 
+## Development and verification
+
+For everyday development run `go test ./...` with any recent Go. When the host is not the pinned toolchain, the `cmd/verify` subtests that assert the host is the pinned version report SKIP with the reason instead of failing. Set `SSM_VERIFY_REQUIRE_PINNED=1` (official CI does) to enforce them.
+
+The formal gate is `go run ./cmd/verify ci`, which needs the exact pinned tools: Go 1.26.8 and golangci-lint 2.11.4. When one is missing or the wrong version, verify prints the acquisition command in its message:
+
+```bash
+# Pinned Go toolchain (downloaded by Go itself)
+GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
+
+# Pinned golangci-lint
+GOBIN=<dir> go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
+PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
+```
+
 ## Advanced / for agents and automation
 
 Read the [official Agent Skill](skills/agent-ssm/SKILL.md) and [version compatibility matrix](skills/agent-ssm/references/version-compatibility.md) first. They define the v1.4.3/v1.4.4 compatibility branch and the v2 branch shared by supported v2.0.0 and current v2.0.2, including the schema and fields each branch may use.
