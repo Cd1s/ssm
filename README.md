@@ -151,6 +151,17 @@ sshctl run my-server --stream
 
 在线 stream 的 `--refresh` 必须为正数；`--refresh=0` 只有在显式全局 `--offline` 时才允许。复杂 shell 语法、动态参数或 secret 使用 request 文件；不要把生成的脚本塞进 `bash -c`。
 
+#### 运行脚本（shell 或 Python）
+
+`-f`/`-s` 通过 SSH stdin 发送脚本正文，不会在远端写临时文件。不带 `--interpreter` 时按脚本 shebang 选 shell（`#!/bin/bash`、`#!/usr/bin/env bash` 用 bash）；没有 shebang 则用 `sh`。shebang 指向 python3 等非 shell 程序时会返回 `invalid_arguments` 并提示加 `--interpreter`。
+
+```bash
+sshctl --json run my-server -f report.py --interpreter python3 -- a b   # sys.argv[1:] == ['a', 'b']
+sshctl run my-server -f deploy.sh --shell bash
+```
+
+显式 `--interpreter` 视为用户已确认，不受 shell 白名单限制。取值只能是一个程序名、一个绝对路径，或 `env <name>`（例如 `--interpreter "env python3"`）；带参数或含 shell 元字符的值会被拒绝。非 shell 解释器以 `<解释器> - <参数...>` 启动，要求它在收到 `-` 时从 stdin 读脚本（python3、perl、ruby 支持）。远端缺少解释器时返回 `interpreter_not_found`（退出码 127）。`--preflight` 只做 shell 语法检查，与非 shell 解释器同时使用会被拒绝。`--shell` 仍是仅限 shell 的选项；`--interpreter bash` 继续可用，等同 `--shell bash`。request 文件在 `script_file` 旁用 `"interpreter"` 字段表达同样语义。
+
 ### 上传或下载文件
 
 当你要传普通文件或目录树时：

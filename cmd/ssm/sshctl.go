@@ -448,6 +448,7 @@ func sshctlUsage() {
   sshctl run <alias> --argv <command> [args...]  # force literal argv mode
   sshctl run <alias> -s [--shell sh|bash] [-- args...]
   sshctl run <alias> -f script.sh [-- args...]   # script body goes over stdin
+  sshctl run <alias> -f report.py --interpreter python3 [-- args...]  # non-shell script over stdin
   sshctl run <alias> --scripts a.sh,b.sh    # parallel scripts on one host
   sshctl run <alias> --stdin --argv <command>  # forward local stdin (any mode, incl. --json)
   sshctl run <alias> --no-stdin ...            # never forward stdin (like ssh -n; use in loops)

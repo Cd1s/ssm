@@ -151,6 +151,17 @@ sshctl run my-server --stream
 
 Online stream `--refresh` must be positive; `--refresh=0` is valid only with explicit global `--offline`. Use a request file for dynamic arguments, complex shell syntax, or secrets; do not put generated scripts inside `bash -c`.
 
+#### Run a script (shell or Python)
+
+`-f`/`-s` send the script over SSH stdin; nothing is written to the remote host. Without `--interpreter` the script's shebang picks the shell (`#!/bin/bash` and `#!/usr/bin/env bash` use bash); a script with no shebang runs with `sh`. A shebang that names a non-shell program such as python3 is refused with `invalid_arguments` and a hint to add `--interpreter`.
+
+```bash
+sshctl --json run my-server -f report.py --interpreter python3 -- a b   # sys.argv[1:] == ['a', 'b']
+sshctl run my-server -f deploy.sh --shell bash
+```
+
+An explicit `--interpreter` is treated as confirmed and is not limited to the shell allowlist. The value is one program name, one absolute path, or `env <name>` (for example `--interpreter "env python3"`); interpreter arguments and shell metacharacters are rejected. Non-shell interpreters are started as `<interpreter> - <args...>` and must read the script from stdin when given `-` (python3, perl, and ruby do). A missing remote interpreter returns `interpreter_not_found` (exit 127). `--preflight` checks shell syntax only, so it is rejected together with a non-shell interpreter. `--shell` remains the shell-only option; `--interpreter bash` still works and means the same as `--shell bash`. A request file accepts the same value as `"interpreter"` next to `script_file`.
+
 ### Upload or download files
 
 Use these for a regular file or directory tree:

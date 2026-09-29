@@ -71,6 +71,7 @@ not prove SSH transport failure.
 - Repeated simple argv on one exact alias: keep `sshctl run <exact-alias> --stream` open and send one JSON string array per line. Online streams require a positive --refresh interval (30s by default); `--refresh=0` is valid only with explicit global `--offline`. Inspect every NDJSON result and stop on refresh failure.
 - Dynamic, untrusted, or data-dependent argv: use request schema version 1 with `op:"run"` and the schema selected above.
 - Shell syntax or a generated script: use `script_file` with optional `script_args` and `shell`; use preflight where supported.
+- Non-shell script (Python, Perl, Ruby): `sshctl --json run <exact-alias> -f script.py --interpreter python3 -- args...` or request `script_file` plus `interpreter`. The script still travels over stdin and runs as `<interpreter> - args...`. `interpreter` is one program name, an absolute path, or `env <name>`; without it a non-shell shebang returns `invalid_arguments`. `preflight` is shell-only and is rejected with a non-shell interpreter.
 - Secrets: use `secret_files` or credential file options. Values are paths, never secret contents.
 - Host changes: use typed `host.add|host.update|host.upsert|host.remove`; verify first, then publish only a changed result's exact `transaction_id`.
 - Regular-file upload: use typed `put`; add `resume:"v1"` only when requested and `sha256:true` when integrity verification is required. Auto-created parent directories default to 0755; use `dir_mode` (or `--dir-mode`) to override.

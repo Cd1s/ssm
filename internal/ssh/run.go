@@ -502,8 +502,25 @@ func secretValues(secrets map[string]string) []string {
 // RunScriptPreflight validates shell syntax remotely without executing the
 // script. Interpreter lookup remains distinguishable from a syntax error.
 func RunScriptPreflight(c config.Connection, v *config.Vault, spec ScriptSpec, noReuse bool, requestedAlias, resolvedAlias string) RunResult {
+	command, err := BuildScriptSyntaxRunner(spec)
+	if err != nil {
+		res := RunResult{
+			Alias:        requestedAlias,
+			ScriptLabel:  spec.Label,
+			Interpreter:  spec.Interpreter,
+			Preflight:    "failed",
+			InputBytes:   len(spec.Body),
+			ScriptSHA256: ScriptDigest(spec.Body),
+			Mode:         "script",
+		}
+		applyRunFailure(&res, machinecontract.Classify(machinecontract.InvalidRunArguments, machinecontract.Details{
+			Cause: err,
+			Alias: requestedAlias,
+		}))
+		return res
+	}
 	res := Run(c, v, RunOptions{
-		Command:        BuildScriptSyntaxRunner(spec),
+		Command:        command,
 		Input:          spec.Body,
 		RiskCommand:    spec.Body,
 		Capture:        true,
