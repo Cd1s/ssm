@@ -16,14 +16,12 @@ import (
 
 var localFirstTestNow = time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 
-func localFirstSetup(t *testing.T, handler http.HandlerFunc) (requests *atomic.Int64, opts Options, spawned *atomic.Int64) {
+func localFirstSetup(t *testing.T) (requests *atomic.Int64, opts Options, spawned *atomic.Int64) {
 	t.Helper()
 	isolateTestUserConfig(t)
 	t.Setenv(config.SyncModeEnv, config.SyncModeLocalFirst)
 	requests, spawned = new(atomic.Int64), new(atomic.Int64)
-	if handler == nil {
-		handler = func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }
-	}
+	handler := func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		handler(w, r)
@@ -40,7 +38,7 @@ func localFirstSetup(t *testing.T, handler http.HandlerFunc) (requests *atomic.I
 }
 
 func TestLocalFirstRefreshNeverContactsTheServiceAndSpawnsOnceWhenDue(t *testing.T) {
-	requests, opts, spawned := localFirstSetup(t, nil)
+	requests, opts, spawned := localFirstSetup(t)
 	tx := New(opts)
 	facts, err := tx.Refresh()
 	if err != nil {
@@ -64,7 +62,7 @@ func TestLocalFirstRefreshNeverContactsTheServiceAndSpawnsOnceWhenDue(t *testing
 }
 
 func TestLocalFirstClaimIsAtomicAcrossConcurrentCommands(t *testing.T) {
-	_, opts, spawned := localFirstSetup(t, nil)
+	_, opts, spawned := localFirstSetup(t)
 	var wait sync.WaitGroup
 	for i := 0; i < 24; i++ {
 		wait.Add(1)
@@ -81,14 +79,14 @@ func TestLocalFirstClaimIsAtomicAcrossConcurrentCommands(t *testing.T) {
 
 func TestLocalFirstDoesNotSpawnWhenOfflineDisabledOrNotConfigured(t *testing.T) {
 	t.Run("offline", func(t *testing.T) {
-		_, opts, spawned := localFirstSetup(t, nil)
+		_, opts, spawned := localFirstSetup(t)
 		opts.Offline = true
 		if _, err := New(opts).Refresh(); err != nil || spawned.Load() != 0 {
 			t.Fatalf("offline spawned=%d err=%v", spawned.Load(), err)
 		}
 	})
 	t.Run("auto_sync false", func(t *testing.T) {
-		_, opts, spawned := localFirstSetup(t, nil)
+		_, opts, spawned := localFirstSetup(t)
 		settings := config.LoadSettings()
 		settings.AutoSync = false
 		if err := config.SaveSettings(settings); err != nil {
@@ -100,7 +98,7 @@ func TestLocalFirstDoesNotSpawnWhenOfflineDisabledOrNotConfigured(t *testing.T) 
 		}
 	})
 	t.Run("not configured", func(t *testing.T) {
-		_, opts, spawned := localFirstSetup(t, nil)
+		_, opts, spawned := localFirstSetup(t)
 		if err := cloud.DeleteCloud(); err != nil {
 			t.Fatal(err)
 		}
@@ -112,7 +110,7 @@ func TestLocalFirstDoesNotSpawnWhenOfflineDisabledOrNotConfigured(t *testing.T) 
 }
 
 func TestLocalFirstSpawnFailureReleasesTheClaim(t *testing.T) {
-	_, opts, spawned := localFirstSetup(t, nil)
+	_, opts, spawned := localFirstSetup(t)
 	opts.SpawnBackground = func() error { spawned.Add(1); return errors.New("spawn refused") }
 	tx := New(opts)
 	if _, err := tx.Refresh(); err != nil {
@@ -124,7 +122,7 @@ func TestLocalFirstSpawnFailureReleasesTheClaim(t *testing.T) {
 }
 
 func TestBackgroundSyncRecordsFailureCauseAndExponentialBackoff(t *testing.T) {
-	requests, opts, _ := localFirstSetup(t, nil)
+	requests, opts, _ := localFirstSetup(t)
 	opts.DescribeFailure = func(err error) (string, string) {
 		var status *HTTPStatusError
 		if errors.As(err, &status) && status.StatusCode == http.StatusServiceUnavailable {
@@ -153,7 +151,7 @@ func TestBackgroundSyncRecordsFailureCauseAndExponentialBackoff(t *testing.T) {
 }
 
 func TestBackgroundSyncSuccessSchedulesTheNextAttemptAndClearsFailures(t *testing.T) {
-	_, opts, _ := localFirstSetup(t, nil)
+	_, opts, _ := localFirstSetup(t)
 	if err := saveSyncState(SyncState{
 		ConsecutiveFailures: 4, LastError: &SyncError{Cause: "network", Message: "x", At: "2026-08-01T11:00:00Z"},
 	}); err != nil {
@@ -186,7 +184,7 @@ func TestBackgroundSyncSuccessSchedulesTheNextAttemptAndClearsFailures(t *testin
 }
 
 func TestLocalFirstStatusFactsReportRecordedOutcomeAndStaleness(t *testing.T) {
-	_, opts, _ := localFirstSetup(t, nil)
+	_, opts, _ := localFirstSetup(t)
 	settings := config.LoadSettings()
 	settings.LastPull = localFirstTestNow.Add(-8 * 24 * time.Hour).Format(time.RFC3339)
 	if err := config.SaveSettings(settings); err != nil {
@@ -213,7 +211,7 @@ func TestLocalFirstStatusFactsReportRecordedOutcomeAndStaleness(t *testing.T) {
 }
 
 func TestLocalFirstStreamReloadsAfterTheVaultChangesUnderneathIt(t *testing.T) {
-	_, opts, _ := localFirstSetup(t, nil)
+	_, opts, _ := localFirstSetup(t)
 	if err := os.MkdirAll(config.Dir(), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +243,7 @@ func TestLocalFirstStreamReloadsAfterTheVaultChangesUnderneathIt(t *testing.T) {
 }
 
 func TestStrictModeKeepsRefreshBeforeRead(t *testing.T) {
-	requests, opts, spawned := localFirstSetup(t, nil)
+	requests, opts, spawned := localFirstSetup(t)
 	t.Setenv(config.SyncModeEnv, config.SyncModeStrict)
 	if _, err := New(opts).Refresh(); !errors.Is(err, ErrRefresh) {
 		t.Fatalf("strict refresh error = %v, want %v", err, ErrRefresh)
@@ -289,7 +287,7 @@ func TestSyncSettingsDefaultsAndParsing(t *testing.T) {
 }
 
 func TestImplausibleScheduleDoesNotDisableSyncForever(t *testing.T) {
-	_, opts, spawned := localFirstSetup(t, nil)
+	_, opts, spawned := localFirstSetup(t)
 	if err := saveSyncState(SyncState{
 		NextAttemptAt: localFirstTestNow.Add(365 * 24 * time.Hour).Format(time.RFC3339),
 		InFlightUntil: localFirstTestNow.Add(24 * time.Hour).Format(time.RFC3339),
