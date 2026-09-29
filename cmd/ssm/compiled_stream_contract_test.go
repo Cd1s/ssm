@@ -279,7 +279,7 @@ func TestCompiledStreamStartupNetworkPolicy(t *testing.T) {
 	const want = "{\"ok\":false,\"error\":\"invalid_request\",\"message\":\"argv must contain at least one item\",\"hint\":\"send one non-empty JSON string array per line\",\"stage\":\"decode\",\"exit\":2}\n"
 
 	t.Run("explicit global offline skips update and sync requests", func(t *testing.T) {
-		cli := newCompiledCLIHarness(t)
+		cli := newCompiledCLIHarnessWithPrivateBinaries(t)
 		sync := newCompiledSyncFixture(t)
 		cli.SaveVault(t, &config.Vault{})
 		cli.SaveCloud(t, sync.URL(), "ISSUE21_OFFLINE_STARTUP_TOKEN_CANARY")
@@ -313,7 +313,7 @@ func TestCompiledStreamStartupNetworkPolicy(t *testing.T) {
 	})
 
 	t.Run("online startup preserves update and sync requests", func(t *testing.T) {
-		cli := newCompiledCLIHarness(t)
+		cli := newCompiledCLIHarnessWithPrivateBinaries(t)
 		sync := newCompiledSyncFixture(t)
 		cli.SaveVault(t, &config.Vault{})
 		blob := cli.VaultBlob(t)

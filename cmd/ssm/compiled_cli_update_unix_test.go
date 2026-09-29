@@ -23,7 +23,7 @@ func TestCompiledCLICommandsSurviveMovedOrUnlinkedExecutable(t *testing.T) {
 	if _, err := os.Stat("/proc/self/fd"); err != nil {
 		t.Skipf("procfs file-descriptor execution is unavailable: %v", err)
 	}
-	harness := newCompiledCLIHarness(t)
+	harness := newCompiledCLIHarnessWithPrivateBinaries(t)
 	harness.SaveVault(t, nil)
 
 	tests := []struct {
