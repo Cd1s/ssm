@@ -240,6 +240,16 @@ Whether a retry is safe depends on whether the command was sent:
 - `transfer_timeout|partial_state_*|integrity_failed`: do not publish or append ambiguous data.
 - Unknown categories: run `sshctl --json doctor <exact-alias> --deep` after the version branch is selected.
 
+## Environment variables and connection reuse
+
+`SSM_TIMEOUT` is the deprecated connection-timeout alias; `SSM_DIAL_TIMEOUT`
+and `SSM_CONNECT_TIMEOUT` bound TCP connect plus SSH handshake only.
+`SSM_REUSE=0|off|false|no` disables the process-local connection pool;
+`status` reports `reuse_scope=process`, and no connection is reused across
+processes. `SSM_FORWARD_STDIN=1|0` controls default stdin forwarding,
+`SSM_RUN_OUTPUT=buffered` restores buffered output, `SSM_CONFIG_DIR` selects
+the config directory, and `SSM_MASTER_PASS_FILE` points to a protected file.
+
 ## Updates and rollback
 
 The current v2.0.2 is GitHub latest. Same-major automatic/manual updates remain

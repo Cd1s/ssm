@@ -522,9 +522,9 @@ func hostCommandUsage() {
   sshctl host list [--json] [--offline]
   sshctl host search <query> [--json] [--offline]
   sshctl host show <alias> [--json] [--offline]
-	  sshctl host add <alias> --host <address> --user <user> [--port 22] [--group <name>] [--transfer auto|shell|sftp] <auth> [--verify] [--push] [--json] [--offline]
-	  sshctl host update <alias> [--host ...] [--user ...] [--port ...] [--group ...] [--transfer ...] [<auth>] [--verify] [--push] [--json] [--offline]
-	  sshctl host upsert <alias> --host <address> --user <user> [--port 22] [--group <name>] [--transfer auto|shell|sftp] [<auth>] [--verify] [--push] [--json] [--offline]
+  sshctl host add <alias> --host <address> --user <user> [--port 22] [--group <name>] [--transfer auto|shell|sftp] <auth> [--verify] [--push] [--json] [--offline]
+  sshctl host update <alias> [--host ...] [--user ...] [--port ...] [--group ...] [--transfer ...] [<auth>] [--verify] [--push] [--json] [--offline]
+  sshctl host upsert <alias> --host <address> --user <user> [--port 22] [--group <name>] [--transfer auto|shell|sftp] [<auth>] [--verify] [--push] [--json] [--offline]
   sshctl host remove <alias> --yes [--prune-key] [--json] [--offline]
 
 Auth (choose one when required):

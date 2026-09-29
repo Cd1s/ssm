@@ -387,7 +387,7 @@ func runSSHCTLStatus() {
 	if config.Exists() {
 		vaultStatus = "present"
 	}
-	reuse := map[bool]string{true: "on", false: "off"}[os.Getenv("SSM_REUSE") != "0" && os.Getenv("SSM_REUSE") != "off"]
+	reuse := map[bool]string{true: "on", false: "off"}[ssh.ReuseEnabled()]
 	syncFacts := syncTransaction(false).Facts()
 	cloudStatus := "missing"
 	switch syncFacts.Configuration {
@@ -464,7 +464,7 @@ func isRemoteReachabilityFailure(err error) bool {
 }
 
 func sshctlUsage() {
-	fmt.Print(`Usage:
+	fmt.Print(strings.ReplaceAll(`Usage:
 	  # Agent discovery and typed operations
 	  sshctl --json status
 	  sshctl --json host list
@@ -518,10 +518,12 @@ func sshctlUsage() {
   # goes to the remote program untouched. -h/--help are honored only before it.
   # Only in sshctl: request, host-key, status, sync. Only in ssm: keys, remove,
   # import-json, update, login, register, logout, server, pull-if-changed, remote-hash.
-Env: SSM_TRACE=1  SSM_TIMEOUT=10s  SSM_REUSE=0  SSM_FORWARD_STDIN=1|0  SSM_RUN_OUTPUT=buffered
-     SSM_OFFLINE=1 (same as --offline)  SSM_SYNC_MODE=strict|local_first (overrides settings sync_mode)
+Env: SSM_TRACE=1  SSM_TIMEOUT=10s  SSM_DIAL_TIMEOUT=10s  SSM_CONNECT_TIMEOUT=10s
+     SSM_REUSE=0|off|false|no  SSM_FORWARD_STDIN=1|0  SSM_RUN_OUTPUT=buffered
+     SSM_CONFIG_DIR=<dir>  SSM_MASTER_PASS_FILE=<protected-file>
+     SSM_OFFLINE=1  SSM_SYNC_MODE=strict|local_first
      --offline is deprecated for reads: accepted for compatibility; reads are local by default and it now only suppresses background sync
-`)
+`, "\t", "  "))
 }
 
 func sshctlUsageExit() {

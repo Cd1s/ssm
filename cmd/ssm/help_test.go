@@ -43,6 +43,19 @@ func TestRunHelpDocumentsFastStream(t *testing.T) {
 	}
 }
 
+func TestHelpOutputHasNoTabIndentation(t *testing.T) {
+	for _, args := range [][]string{
+		{"--help"}, {"run", "--help"}, {"map", "--help"}, {"host", "--help"},
+	} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			out := captureHelpOutput(t, func() { runSSHCTL(args) })
+			if strings.ContainsRune(out, '\t') {
+				t.Fatalf("help %v contains tab indentation: %q", args, out)
+			}
+		})
+	}
+}
+
 func captureHelpOutput(t *testing.T, fn func()) string {
 	t.Helper()
 	read, write, err := os.Pipe()
