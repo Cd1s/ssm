@@ -349,6 +349,47 @@ func TestCompiledHumanRunForwardsSIGTERMAndFlushesOutput(t *testing.T) {
 	assertNoDiagnosticSpools(t, cli.temp)
 }
 
+func TestCompiledHumanRunKeepsSignalsIgnoredAtStartup(t *testing.T) {
+	cli, fixture := newCompiledExecRunHarness(t, "stream-nohup")
+	// trap '' HUP makes SIGHUP ignored before exec, as nohup does.
+	cmd := exec.Command("sh", "-c", `trap '' HUP; exec "$0" "$@"`, cli.paths["sshctl"], //nolint:gosec // test-built compiled CLI under a fixed shell prelude
+		"--offline", "run", "stream-nohup", "--argv", "sh", "-c", "echo ready; sleep 2; echo done")
+	cmd.Env = isolatedCompiledCLIEnvironmentWith(cli.home, cli.temp, map[string]string{"SSM_MASTER_PASS_FILE": cli.passPath})
+	cmd.Stdin = bytes.NewReader(nil)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+	reader := bufio.NewReader(stdout)
+	if line, err := reader.ReadString('\n'); err != nil || line != "ready\n" {
+		t.Fatalf("ready line = %q, %v; stderr=%q", line, err, stderr.String())
+	}
+	if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
+		t.Fatal(err)
+	}
+	rest, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("ignored SIGHUP interrupted the run: %v; stderr=%q", err, stderr.String())
+	}
+	if string(rest) != "done\n" || len(fixture.Signals()) != 0 {
+		t.Fatalf("run after ignored SIGHUP: rest=%q remote signals=%q", rest, fixture.Signals())
+	}
+}
+
 func TestCompiledHumanRunStopsWhenLocalStdoutCloses(t *testing.T) {
 	cli, _ := newCompiledExecRunHarness(t, "stream-closed")
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

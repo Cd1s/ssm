@@ -32,7 +32,17 @@ func watchRunInterrupt(session *gossh.Session) *runInterrupt {
 		done:     make(chan struct{}),
 		finished: make(chan struct{}),
 	}
-	signal.Notify(watch.signals, runInterruptSignals...)
+	// A signal ignored at startup (nohup, background jobs) stays ignored:
+	// Notify would otherwise re-enable it.
+	var watched []os.Signal
+	for _, candidate := range runInterruptSignals {
+		if !signal.Ignored(candidate) {
+			watched = append(watched, candidate)
+		}
+	}
+	if len(watched) > 0 {
+		signal.Notify(watch.signals, watched...)
+	}
 	go watch.forward(session)
 	return watch
 }

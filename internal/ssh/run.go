@@ -176,10 +176,7 @@ func RedactSecrets(s string, secrets map[string]string) string {
 }
 
 func runSensitiveValues(opts RunOptions) []string {
-	values := make([]string, 0, len(opts.Secrets)+1)
-	for _, value := range opts.Secrets {
-		values = append(values, value)
-	}
+	values := secretValues(opts.Secrets)
 	if opts.Input == "" {
 		return values
 	}
@@ -460,9 +457,10 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 	return res
 }
 
-// secretValues lists the explicit --secret values masked in streamed output.
+// secretValues lists the explicit --secret values, which streamed human
+// output masks and failure rendering redacts.
 func secretValues(secrets map[string]string) []string {
-	values := make([]string, 0, len(secrets))
+	values := make([]string, 0, len(secrets)+1)
 	for _, value := range secrets {
 		values = append(values, value)
 	}
