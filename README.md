@@ -173,6 +173,20 @@ sshctl get my-server /tmp/notes.txt ./notes.txt --sha256 --timeout 30s --json
 
 `--sha256` 只适用于需要完整性核验的普通文件；目录传输的保证与普通文件不同，详见[进阶契约](#进阶--给-agent-与自动化)。远端依次探测 `sha256sum`、`shasum -a 256`、`openssl dgst -sha256`，三者都没有时返回 `error:integrity_tool_unavailable`（去掉 `--sha256` 即可）。`put` 自动创建的父目录默认权限为 `0755`，可用 `--dir-mode <八进制>`（如 `--dir-mode 0750`）覆盖；文件本身仍通过私有临时文件加 rename 写入，权限语义不变。`get` 与 `put` 接受同样位置无关的 `--json`、`--timeout`、`--sha256`（下载后在本地计算并与远端摘要比对，不一致则失败且不替换目标）；`get` 不支持 `--resume`。
 
+#### 没有 POSIX shell 的目标（SFTP）
+
+默认（主机 `transfer: auto`）通过远端 POSIX shell 传输。`get` 在路径探测无法解析（输出不是 `DIR`/`FILE`/`MISSING`）、shell 报错或整个 exec 被拒时返回 `error:remote_shell_unsupported`（`stage:discovery`），不再误报路径不存在；`put` 只在 exec 被拒时返回它。此时改用 SFTP 子系统（同一条 SSH 连接，不执行任何远端命令）：单次加 `--sftp`，或把主机设为 `sftp`：
+
+```bash
+sshctl put win-box ./notes.txt C:/temp/notes.txt --sftp --sha256 --json
+sshctl host update win-box --transfer sftp --offline --json   # auto|shell|sftp，默认 auto
+```
+
+request v1 用 `host.transfer` 设置主机字段，`put`/`get` 请求可带顶层 `transfer`：`shell`/`sftp` 只对这一次操作覆盖主机设置；`auto` 或省略则沿用主机设置（因此 `auto` 不能覆盖已设为 `sftp` 的主机）。SFTP 目前只支持单个普通文件：目录和 `put --resume` 返回 `error:unsupported_transfer_option`；服务器没有 sftp 子系统返回 `error:sftp_unavailable`。SFTP 的保证与 shell 路径不同，结果里的字段如实反映：
+
+- `get`：先 `Stat` 判断类型，流式写入本地 staging 再原子发布（`atomic:true`）。SFTP 没有远端摘要命令，`--sha256` 对收到的字节流计算摘要，并核对远端报告的大小和落盘文件，`remote_sha256` 即该流摘要；不加 `--sha256` 时 `integrity:not_checked`。
+- `put`：写入同目录的私有临时文件后 rename。服务器支持 `posix-rename@openssh.com` 时原子替换（`atomic:true`）；不支持时先把旧目标移到一旁再 rename，失败会还原，但结果报 `atomic:false`。`--sha256` 通过 SFTP 读回临时文件在本地比对（`integrity:sha256_verified`），服务器不允许读回时返回 `integrity_tool_unavailable`（`stage:capability`，与 shell 路径一致，`integrity:not_available`）且不发布；不加时只核对大小（`size_verified`）。`--dir-mode` 对新建父目录同样生效。目标已是目录时报错且不动它。超时或连接中断的 SFTP `put` 可能遗留 `<目标>.ssm-upload.<hex>` 临时文件：会先尝试用新的 SFTP 会话清理，清理不了时失败信息会写出该临时文件的路径。
+
 ### 添加或修改主机
 
 当你要新增一台主机，或只改现有 alias 的某个字段时。先用 `--verify` 检查候选配置，验证成功后才保存：
@@ -184,6 +198,8 @@ sshctl host upsert my-server \
 
 sshctl host update my-server --port 2222 --verify --json
 ```
+
+`--transfer auto|shell|sftp`（request v1 的 `host.transfer`）设置该主机 `put`/`get` 使用的协议，默认 `auto`（不写入 vault）；见[上传或下载文件](#上传或下载文件)。
 
 私钥和密码只能通过 `--key-file`、`--password-file` 或已保存的 `--key` 名称引用，不能作为 inline 值。变更默认只保存在本机 pending ledger；成功结果会返回一个待审查的 `transaction_id`。幂等 no-op 会返回 `changed:false`、`action:"unchanged"` 并省略 ID；do not publish 这个 no-op。
 

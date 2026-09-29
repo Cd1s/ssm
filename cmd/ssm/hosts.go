@@ -34,6 +34,7 @@ type hostCommandOptions struct {
 	port         optionalInt
 	user         optionalString
 	group        optionalString
+	transfer     optionalString
 	passwordFile optionalString
 	keyName      optionalString
 	keyFile      optionalString
@@ -137,6 +138,15 @@ func parseHostCommandArgs(args []string) (hostCommandOptions, error) {
 				return opts, err
 			}
 			opts.group = optionalString{value: value, set: true}
+		case matchesValueFlag(arg, "--transfer"):
+			value, err := readFlagValue(args, &i, "--transfer")
+			if err != nil {
+				return opts, err
+			}
+			if _, ok := config.NormalizeTransfer(value); !ok {
+				return opts, newHostError(machinecontract.HostInvalidArguments, "--transfer must be auto, shell, or sftp")
+			}
+			opts.transfer = optionalString{value: value, set: true}
 		case matchesValueFlag(arg, "--password-file"):
 			value, err := readFlagValue(args, &i, "--password-file")
 			if err != nil {
@@ -275,7 +285,7 @@ func validateHostCommandOptions(opts hostCommandOptions) error {
 }
 
 func (o hostCommandOptions) hasMutationOptions() bool {
-	return o.host.set || o.port.set || o.user.set || o.group.set ||
+	return o.host.set || o.port.set || o.user.set || o.group.set || o.transfer.set ||
 		o.passwordFile.set || o.keyName.set || o.keyFile.set || o.newKeyName.set
 }
 
@@ -361,6 +371,7 @@ func hostChangeFromOptions(opts hostCommandOptions) inventorytransaction.HostCha
 	change.Port = optionalIntPointer(opts.port)
 	change.User = optionalStringPointer(opts.user)
 	change.Group = optionalStringPointer(opts.group)
+	change.Transfer = optionalStringPointer(opts.transfer)
 	change.PasswordFile = optionalStringPointer(opts.passwordFile)
 	change.SavedKey = optionalStringPointer(opts.keyName)
 	change.KeyFile = optionalStringPointer(opts.keyFile)
@@ -452,6 +463,9 @@ func writeHostView(h hostView, asJSON bool) {
 	if h.Group != "" {
 		fmt.Printf("\tgroup=%s", h.Group)
 	}
+	if h.Transfer != "" {
+		fmt.Printf("\ttransfer=%s", h.Transfer)
+	}
 	fmt.Println()
 }
 
@@ -508,9 +522,9 @@ func hostCommandUsage() {
   sshctl host list [--json] [--offline]
   sshctl host search <query> [--json] [--offline]
   sshctl host show <alias> [--json] [--offline]
-	  sshctl host add <alias> --host <address> --user <user> [--port 22] [--group <name>] <auth> [--verify] [--push] [--json] [--offline]
-	  sshctl host update <alias> [--host ...] [--user ...] [--port ...] [--group ...] [<auth>] [--verify] [--push] [--json] [--offline]
-	  sshctl host upsert <alias> --host <address> --user <user> [--port 22] [--group <name>] [<auth>] [--verify] [--push] [--json] [--offline]
+	  sshctl host add <alias> --host <address> --user <user> [--port 22] [--group <name>] [--transfer auto|shell|sftp] <auth> [--verify] [--push] [--json] [--offline]
+	  sshctl host update <alias> [--host ...] [--user ...] [--port ...] [--group ...] [--transfer ...] [<auth>] [--verify] [--push] [--json] [--offline]
+	  sshctl host upsert <alias> --host <address> --user <user> [--port 22] [--group <name>] [--transfer auto|shell|sftp] [<auth>] [--verify] [--push] [--json] [--offline]
   sshctl host remove <alias> --yes [--prune-key] [--json] [--offline]
 
 Auth (choose one when required):

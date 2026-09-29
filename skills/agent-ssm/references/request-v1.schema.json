@@ -53,6 +53,7 @@
     "resume": {"enum": ["v1"]},
     "sha256": {"type": "boolean"},
     "dir_mode": {"type": "string", "pattern": "^0?[0-7]{1,3}$"},
+    "transfer": {"enum": ["auto", "shell", "sftp"]},
     "host": {"$ref": "#/$defs/host"}
   },
   "$defs": {
@@ -64,6 +65,7 @@
         "port": {"type": "integer", "minimum": 1, "maximum": 65535},
         "user": {"type": "string"},
         "group": {"type": "string"},
+        "transfer": {"enum": ["auto", "shell", "sftp"]},
         "saved_key": {"type": "string"},
         "key_file": {"type": "string"},
         "key_name": {"type": "string"},
@@ -81,7 +83,7 @@
       "if": {"properties": {"op": {"enum": ["run", "plan"]}}},
       "then": {
         "required": ["alias"],
-        "not": {"anyOf": [{"required": ["local_path"]}, {"required": ["remote_path"]}, {"required": ["resume"]}, {"required": ["sha256"]}, {"required": ["dir_mode"]}]},
+        "not": {"anyOf": [{"required": ["local_path"]}, {"required": ["remote_path"]}, {"required": ["resume"]}, {"required": ["sha256"]}, {"required": ["dir_mode"]}, {"required": ["transfer"]}]},
         "oneOf": [
           {"required": ["argv"], "not": {"anyOf": [{"required": ["shell_command"]}, {"required": ["script_file"]}]}},
           {"required": ["shell_command"], "not": {"anyOf": [{"required": ["argv"]}, {"required": ["script_file"]}]}},
@@ -92,6 +94,10 @@
     {
       "if": {"properties": {"op": {"enum": ["check", "host.search", "host.show", "host.add", "host.update", "host.upsert", "host.remove"]}}},
       "then": {"required": ["alias"]}
+    },
+    {
+      "if": {"properties": {"op": {"enum": ["check", "doctor", "host.list", "host.search", "host.show", "host.add", "host.update", "host.upsert", "host.remove"]}}},
+      "then": {"not": {"required": ["transfer"]}}
     },
     {
       "if": {"properties": {"op": {"const": "put"}}},

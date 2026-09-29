@@ -20,6 +20,9 @@ import (
 )
 
 func UploadPathWithOptions(c config.Connection, v *config.Vault, localPath, remotePath string, opts UploadOptions) (TransferResult, error) {
+	if c.UsesSFTP() {
+		return uploadPathSFTP(c, v, localPath, remotePath, opts)
+	}
 	info, err := os.Stat(localPath)
 	if err != nil {
 		return TransferResult{Direction: "put", Kind: "unknown", Stage: "local_read", Integrity: "not_checked", Resume: "unsupported"}, transferError(machinecontract.TransferLocalRead, 0, err)
@@ -62,6 +65,9 @@ func DownloadPath(c config.Connection, v *config.Vault, remotePath, localPath st
 // DownloadPathWithOptions is DownloadPath with optional timeout and SHA-256
 // verification (regular files only).
 func DownloadPathWithOptions(c config.Connection, v *config.Vault, remotePath, localPath string, opts DownloadOptions) (TransferResult, error) {
+	if c.UsesSFTP() {
+		return downloadFileSFTP(c, v, remotePath, localPath, opts)
+	}
 	// Probe: if remote is a directory, tar it; else single file.
 	isDir, err := remoteIsDir(c, v, remotePath)
 	if err != nil {
@@ -104,6 +110,12 @@ func remoteIsDir(c config.Connection, v *config.Vault, remotePath string) (bool,
 		ShellQuote(remotePath), ShellQuote(remotePath))
 	out, err := session.CombinedOutput(cmd)
 	if err != nil {
+		var exit *gossh.ExitError
+		if errors.As(err, &exit) || isExecRefused(err) {
+			// A POSIX shell answers this probe with exit 0. A non-zero exit or
+			// a refused exec request means the target has no such shell.
+			return false, remoteShellUnsupportedError(string(out), err)
+		}
 		return false, err
 	}
 	switch strings.TrimSpace(string(out)) {
@@ -111,9 +123,42 @@ func remoteIsDir(c config.Connection, v *config.Vault, remotePath string) (bool,
 		return true, nil
 	case "FILE":
 		return false, nil
-	default:
+	case "MISSING":
 		return false, fmt.Errorf("remote path %s not found", remotePath)
+	default:
+		return false, remoteShellUnsupportedError(string(out), nil)
 	}
+}
+
+// isExecRefused reports the client-side error x/crypto/ssh returns when the
+// server rejects an exec request (for example an SFTP-only account).
+// It relies on the exact text "ssh: command <cmd> failed" that
+// golang.org/x/crypto/ssh (session.go, Session.start, v0.56.0) produces; the
+// library exposes no typed error for it. TestCompiledExecRefusedIsAnUnsupportedRemoteShell
+// pins this, so a changed message fails that test instead of silently
+// degrading to a generic error.
+func isExecRefused(err error) bool {
+	message := err.Error()
+	return strings.HasPrefix(message, "ssh: command ") && strings.HasSuffix(message, " failed")
+}
+
+const remoteShellProbeDetailLimit = 120
+
+// remoteShellUnsupportedError reports a target whose shell did not answer the
+// POSIX path probe, instead of misreporting the path as missing (issue #87).
+func remoteShellUnsupportedError(output string, cause error) error {
+	detail := strings.Join(strings.Fields(output), " ")
+	if len(detail) > remoteShellProbeDetailLimit {
+		detail = detail[:remoteShellProbeDetailLimit] + "..."
+	}
+	message := "the remote host does not run a POSIX shell for commands"
+	switch {
+	case detail != "":
+		message += fmt.Sprintf(" (received %q)", detail)
+	case cause != nil:
+		message += ": " + cause.Error()
+	}
+	return transferKindError(machinecontract.RemoteShellUnsupported, 0, errors.New(message))
 }
 
 // errLocalTarUnavailable means the local tar binary is missing or cannot be

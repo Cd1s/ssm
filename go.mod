@@ -3,12 +3,15 @@ module ssm
 go 1.26.8
 
 require (
+	github.com/pkg/sftp v1.13.11
 	github.com/sigstore/protobuf-specs v0.5.1
 	golang.org/x/crypto v0.56.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
 	google.golang.org/protobuf v1.36.11
 )
+
+require github.com/kr/fs v0.1.0 // indirect
 
 require (
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect

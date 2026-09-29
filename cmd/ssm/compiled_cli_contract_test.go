@@ -1056,6 +1056,7 @@ type compiledConnectionIdentity struct {
 	Password compiledSecretIdentity `safe:"password"`
 	KeyName  string                 `safe:"key_name"`
 	Group    string                 `safe:"group"`
+	Transfer string                 `safe:"transfer"`
 }
 
 type compiledKeyIdentity struct {
@@ -1115,7 +1116,7 @@ func TestCompiledVaultPublicationIdentityCoversPersistedFields(t *testing.T) {
 		"Connections", "Keys", "PendingBase", "PendingMutations",
 	})
 	assertCompiledPersistedFields(t, reflect.TypeOf(config.Connection{}), []string{
-		"Name", "Host", "Port", "User", "Password", "KeyName", "Group",
+		"Name", "Host", "Port", "User", "Password", "KeyName", "Group", "Transfer",
 	})
 	assertCompiledPersistedFields(t, reflect.TypeOf(config.SSHKey{}), []string{
 		"Name", "PrivateKey",
@@ -1140,7 +1141,7 @@ func TestCompiledVaultPublicationIdentityCoversPersistedFields(t *testing.T) {
 	fixture := func() *config.Vault {
 		before := config.Connection{
 			Name: "before", Host: "192.0.2.80", Port: 2200, User: "before-user",
-			Password: "ISSUE17_NORMALIZATION_BEFORE_PASSWORD_CANARY", KeyName: "before-key", Group: "before-group",
+			Password: "ISSUE17_NORMALIZATION_BEFORE_PASSWORD_CANARY", KeyName: "before-key", Group: "before-group", Transfer: "sftp",
 		}
 		after := config.Connection{
 			Name: "after", Host: "192.0.2.81", Port: 2201, User: "after-user",
@@ -1183,6 +1184,7 @@ func TestCompiledVaultPublicationIdentityCoversPersistedFields(t *testing.T) {
 		{path: "connection password presence", mutate: func(v *config.Vault) { v.Connections[0].Password = "" }},
 		{path: "connection key reference", mutate: func(v *config.Vault) { v.Connections[0].KeyName = "changed" }},
 		{path: "connection group", mutate: func(v *config.Vault) { v.Connections[0].Group = "changed" }},
+		{path: "connection transfer", mutate: func(v *config.Vault) { v.Connections[0].Transfer = "shell" }},
 		{path: "keys order", mutate: func(v *config.Vault) { v.Keys[0], v.Keys[1] = v.Keys[1], v.Keys[0] }},
 		{path: "keys presence", mutate: func(v *config.Vault) { v.Keys = nil }},
 		{path: "key name", mutate: func(v *config.Vault) { v.Keys[0].Name = "changed" }},
@@ -1322,6 +1324,7 @@ func compiledOptionalConnectionIdentity(value *config.Connection) *compiledConne
 		Password: compiledSensitiveIdentity(value.Password, value.Password != ""),
 		KeyName:  value.KeyName,
 		Group:    value.Group,
+		Transfer: value.Transfer,
 	}
 }
 

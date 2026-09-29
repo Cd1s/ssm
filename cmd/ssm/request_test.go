@@ -226,3 +226,37 @@ func TestRequestV1PublishedSchemaDeclaresStdinFile(t *testing.T) {
 		t.Errorf("stdin_file exclusions = %d, want 3 (script_file run, put, get)", got)
 	}
 }
+
+func TestRequestV1PublishedSchemaDeclaresTransfer(t *testing.T) {
+	path := filepath.Join("..", "..", "skills", "agent-ssm", "references", "request-v1.schema.json")
+	data, err := os.ReadFile(path) //nolint:gosec // repository-owned public schema fixture
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+		Defs       struct {
+			Host struct {
+				Additional bool                       `json:"additionalProperties"`
+				Properties map[string]json.RawMessage `json:"properties"`
+			} `json:"host"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := schema.Properties["transfer"]; !ok {
+		t.Error("schema lacks top-level transfer")
+	}
+	if _, ok := schema.Defs.Host.Properties["transfer"]; !ok || schema.Defs.Host.Additional {
+		t.Error("schema host object lacks transfer or allows additional properties")
+	}
+	text := string(data)
+	if !strings.Contains(text, `{"required": ["transfer"]}]},
+        "oneOf"`) {
+		t.Error("run/plan must reject transfer")
+	}
+	if !strings.Contains(text, `"then": {"not": {"required": ["transfer"]}}`) {
+		t.Error("non-transfer ops must reject transfer")
+	}
+}

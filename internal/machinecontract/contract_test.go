@@ -907,6 +907,30 @@ func TestMachineContractMatrix(t *testing.T) {
 			code:    "invalid_arguments", stage: "validate",
 			hint: "use sshctl get <alias> <remote> <local> [--sha256] [--timeout <duration>] [--json]", exit: 2,
 		},
+		{
+			name: "remote shell unsupported", kind: RemoteShellUnsupported,
+			details: Details{Message: "unrecognized path probe response"},
+			code:    "remote_shell_unsupported", stage: "discovery",
+			hint: "the remote login shell did not answer the POSIX path probe; retry with --sftp or set the host to transfer: sftp (sshctl host update <alias> --transfer sftp)", exit: 1,
+		},
+		{
+			name: "sftp unavailable", kind: TransferSFTPUnavailable,
+			details: Details{Message: "subsystem request failed"},
+			code:    "sftp_unavailable", stage: "capability",
+			hint: "the server did not start the sftp subsystem; enable SFTP on the server or use the shell transfer (transfer: auto or shell)", exit: 1,
+		},
+		{
+			name: "sftp unsupported", kind: TransferSFTPUnsupported,
+			details: Details{Message: "sftp directory transfer"},
+			code:    "unsupported_transfer_option", stage: "validate",
+			hint: "SFTP transfer supports single regular files only (no directories or --resume); use the shell transfer for those", exit: 1,
+		},
+		{
+			name: "sftp readback unavailable", kind: TransferSFTPReadbackUnavailable,
+			details: Details{Message: "cannot read back"},
+			code:    "integrity_tool_unavailable", stage: "capability",
+			hint: "the SFTP server did not allow reading the uploaded file back for verification, so nothing was published; retry without --sha256 (size is still verified)", exit: 1,
+		},
 	}
 
 	seen := make(map[Kind]bool, len(tests))
@@ -2502,5 +2526,29 @@ func TestClassifySSHSeparatesHostKeyTypeChangeFromMismatch(t *testing.T) {
 	mismatch := fmt.Errorf("ssh: handshake failed: %w", keyErr)
 	if got := ClassifySSH(mismatch, SSHContext{Alias: "a", Host: "h", Port: 22}); got.Error != "host_key_mismatch" {
 		t.Fatalf("same-type mismatch classified as %+v", got)
+	}
+}
+
+// Issue #87: the SFTP-transfer failures reach get callers with their own
+// policy instead of being collapsed into the generic SSH envelope.
+func TestClassifyDownloadCarriesSFTPTransferFailures(t *testing.T) {
+	for _, test := range []struct {
+		kind      Kind
+		wantError string
+		wantStage string
+	}{
+		{RemoteShellUnsupported, "remote_shell_unsupported", "discovery"},
+		{TransferSFTPUnavailable, "sftp_unavailable", "capability"},
+		{TransferSFTPUnsupported, "unsupported_transfer_option", "validate"},
+		{TransferSFTPReadbackUnavailable, "integrity_tool_unavailable", "capability"},
+	} {
+		cause := errors.New("remote said no")
+		carried := Classify(test.kind, Details{Cause: cause})
+		got := ClassifyDownload(&testTransferFailureCarrier{failure: carried, cause: cause}, SSHContext{
+			Alias: "sftp", Host: "192.0.2.1", Port: 22,
+		})
+		if got.Error != test.wantError || got.Stage != test.wantStage || got.Alias != "sftp" {
+			t.Fatalf("ClassifyDownload(%s) = %+v", test.kind, got)
+		}
 	}
 }

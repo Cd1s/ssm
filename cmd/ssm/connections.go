@@ -273,6 +273,32 @@ type putOptions struct {
 	timeout                     time.Duration
 	resumeVersion               string
 	dirMode                     os.FileMode
+	// transfer overrides the host's transfer mode for this operation: "" keeps
+	// the host setting, "shell" or "sftp" force that protocol.
+	transfer string
+	sftp     bool
+}
+
+// parseRequestTransfer validates the request-v1 transfer field. "auto" and the
+// empty value keep the host setting.
+func parseRequestTransfer(value string) (string, error) {
+	mode, ok := config.NormalizeTransfer(value)
+	if !ok {
+		return "", fmt.Errorf("transfer must be auto, shell, or sftp")
+	}
+	return mode, nil
+}
+
+// withTransferOverride applies a per-operation protocol choice to a resolved
+// connection copy; the stored host setting is never modified.
+func withTransferOverride(c config.Connection, transfer string, sftp bool) config.Connection {
+	switch {
+	case sftp:
+		c.Transfer = config.TransferSFTP
+	case transfer != "":
+		c.Transfer = transfer
+	}
+	return c
 }
 
 var errInvalidDirMode = errors.New("invalid --dir-mode")
@@ -298,6 +324,8 @@ func parsePutArgs(args []string) (putOptions, error) {
 			machineJSON = true
 		case args[i] == "--sha256":
 			opts.verifySHA256 = true
+		case args[i] == "--sftp":
+			opts.sftp = true
 		case args[i] == "--resume" && i+1 < len(args):
 			i++
 			opts.resumeVersion = args[i]
@@ -371,6 +399,7 @@ func runPutWithOptions(opts putOptions) {
 	if !ok {
 		connectionNotFound(opts.name, v)
 	}
+	c = withTransferOverride(c, opts.transfer, opts.sftp)
 	result, err := ssh.UploadPathWithOptions(c, v, opts.localPath, opts.remotePath, ssh.UploadOptions{VerifySHA256: opts.verifySHA256, Timeout: opts.timeout, ResumeVersion: opts.resumeVersion, DirMode: opts.dirMode})
 	if err != nil {
 		context := machinecontract.SSHContext{Alias: c.Name, Host: c.Host, Port: c.Port}
@@ -409,6 +438,8 @@ type getOptions struct {
 	name, remotePath, localPath string
 	verifySHA256                bool
 	timeout                     time.Duration
+	transfer                    string
+	sftp                        bool
 }
 
 // parseGetArgs accepts the flag set shared with put (except --resume and
@@ -422,6 +453,8 @@ func parseGetArgs(args []string) (getOptions, error) {
 			machineJSON = true
 		case args[i] == "--sha256":
 			opts.verifySHA256 = true
+		case args[i] == "--sftp":
+			opts.sftp = true
 		case args[i] == "--timeout" && i+1 < len(args):
 			i++
 			duration, err := time.ParseDuration(args[i])
@@ -473,6 +506,7 @@ func runGet(opts getOptions) {
 	if !ok {
 		connectionNotFound(name, v)
 	}
+	c = withTransferOverride(c, opts.transfer, opts.sftp)
 	result, err := ssh.DownloadPathWithOptions(c, v, remotePath, localPath, ssh.DownloadOptions{VerifySHA256: opts.verifySHA256, Timeout: opts.timeout})
 	if err != nil {
 		context := machinecontract.SSHContext{
