@@ -5,17 +5,92 @@ import (
 	"strings"
 )
 
+var (
+	helpTokens = []string{"help", "--help", "-h", "--version", "-v"}
+
+	sharedCommands = []string{
+		"pull", "push", "list", "host", "hosts", "run", "exec", "plan", "map", "check", "doctor",
+		"put", "get", "redirect", "alias-link",
+	}
+	sshctlOnlyCommands = []string{"request", "sync", "host-key", "known-hosts", "shell", "status"}
+	ssmOnlyCommands    = []string{
+		"update", "remove", "keys", "ls", "import-json", "server", "register", "login", "logout",
+		"pull-if-changed", "remote-hash",
+	}
+
+	// sshctlCommands are the subcommands of the sshctl entrypoint. A first
+	// token outside this set is a host alias in the "sshctl <alias> <command>"
+	// shorthand, whose remote argv is never scanned for sshctl options.
+	sshctlCommands = commandSet(sharedCommands, sshctlOnlyCommands, helpTokens)
+
+	// ssmCommands are the subcommands of the ssm entrypoint, which has no
+	// alias shorthand.
+	ssmCommands = commandSet(sharedCommands, ssmOnlyCommands, helpTokens)
+
+	// knownCLICommands is the union of both entrypoints; ssm uses it so that
+	// help for sshctl-only commands can point at sshctl.
+	knownCLICommands = commandSet(sharedCommands, sshctlOnlyCommands, ssmOnlyCommands, helpTokens)
+)
+
+func commandSet(groups ...[]string) map[string]bool {
+	set := map[string]bool{}
+	for _, group := range groups {
+		for _, name := range group {
+			set[name] = true
+		}
+	}
+	return set
+}
+
+func isKnownCommand(sshctl bool, command string) bool {
+	if sshctl {
+		return sshctlCommands[command]
+	}
+	return knownCLICommands[command]
+}
+
+// optionRegion returns the tokens after the command name that sshctl itself
+// may interpret (-h, --help, --json, ...). For run/exec/plan/map and the
+// "<alias> <command>" shorthand it stops at the remote argv boundary so the
+// remote program's own -h/--help/--json are never captured. Other commands
+// are scanned up to a bare "--".
+func optionRegion(sshctl bool, command string, rest []string) []string {
+	switch command {
+	case "run", "exec", "plan":
+		return rest[:runOptionEnd(rest)]
+	case "map":
+		return rest[:mapOptionEnd(rest)]
+	}
+	// Only sshctl has the "sshctl <alias> <command>" shorthand; an unknown
+	// ssm command is an error whose output mode still honors --json.
+	if sshctl && !isKnownCommand(sshctl, command) {
+		return rest[:remoteArgvStart(rest)]
+	}
+	for i, arg := range rest {
+		if arg == "--" {
+			return rest[:i]
+		}
+	}
+	return rest
+}
+
 func sshctlHelpRequest(args []string) (string, []string, bool) {
+	return helpRequest(true, args)
+}
+
+func helpRequest(sshctl bool, args []string) (string, []string, bool) {
 	if len(args) > 1 && args[0] == "help" {
 		return args[1], args[2:], true
 	}
 	if len(args) > 1 {
-		for _, arg := range args[1:] {
+		for _, arg := range optionRegion(sshctl, args[0], args[1:]) {
 			if arg == "-h" || arg == "--help" {
 				return args[0], args[1:], true
 			}
 		}
-		if args[1] == "help" {
+		// "<command> help", but not "sshctl <alias> help" where help is the
+		// remote command.
+		if args[1] == "help" && isKnownCommand(sshctl, args[0]) {
 			return args[0], args[2:], true
 		}
 	}
@@ -64,5 +139,42 @@ func sshctlCommandUsage(command string, args []string) {
 		fmt.Print("Usage: sshctl check <alias> [--json]\nRuns a non-interactive SSH health probe for one exact alias.\n")
 	default:
 		sshctlUsage()
+	}
+}
+
+// ssmCommandUsage prints help for one subcommand of the ssm entrypoint. It is
+// pure output: it never unlocks the vault, reads cloud configuration, touches
+// the network, or writes configuration. login, register, and server keep their
+// historical raw flag help through their own flag sets.
+func ssmCommandUsage(command string, rest []string) {
+	switch command {
+	case "login":
+		runLogin([]string{"--help"})
+	case "register":
+		runRegister([]string{"--help"})
+	case "server":
+		runServer([]string{"--help"})
+	case "update":
+		fmt.Print("Usage: ssm update [--major [--yes]]\nUpdates within the installed major version. --major reviews a major-version migration; --major --yes explicitly authorizes it. Digest and provenance verification are never bypassed.\n")
+	case "logout":
+		fmt.Print("Usage: ssm logout\nRemoves stored sync credentials.\n")
+	case "remove":
+		fmt.Print("Usage: ssm remove <alias>\nLegacy removal of one host; creates a reviewable pending transaction. Prefer: sshctl host remove <alias> --yes.\n")
+	case "keys":
+		fmt.Print("Usage:\n  ssm keys              list saved SSH keys\n  ssm keys remove <name> remove a saved SSH key\nsshctl has no keys command; use sshctl host commands with --key-file/--key.\n")
+	case "import-json":
+		fmt.Print("Usage: ssm [--json] import-json <path> (--merge | --replace --yes)\nImports reviewed JSON connections; every change creates a pending transaction; publish it with push --only <transaction-id>.\n")
+	case "pull-if-changed":
+		fmt.Print("Usage: ssm pull-if-changed\nDownloads the encrypted vault only when the remote hash changed.\n")
+	case "remote-hash":
+		fmt.Print("Usage: ssm remote-hash\nPrints the remote encrypted vault hash.\n")
+	case "ls":
+		sshctlCommandUsage("list", rest)
+	case "request", "host-key", "known-hosts", "status", "sync", "shell":
+		fmt.Printf("Note: ssm has no %s command; it exists only in sshctl. sshctl usage:\n", command)
+		sshctlCommandUsage(command, rest)
+	default:
+		fmt.Printf("Note: ssm %s accepts the same syntax as sshctl %s.\n", command, command)
+		sshctlCommandUsage(command, rest)
 	}
 }

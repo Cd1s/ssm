@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"ssm/internal/config"
@@ -34,17 +35,13 @@ func isSSHCTLInvocation(path string) bool {
 // cannot cause config, vault, or network work before a startup failure is
 // rendered.
 func startupOutputMode(executable string, rawArgs []string) (jsonMode, streamMode bool) {
-	jsonMode = hasJSONFlagBeforeDash(rawArgs)
-	if !isSSHCTLInvocation(executable) {
-		return jsonMode, false
-	}
-
 	args := make([]string, 0, len(rawArgs))
 	seenCommand := false
 	for i := 0; i < len(rawArgs); i++ {
 		arg := rawArgs[i]
 		switch {
 		case !seenCommand && (arg == "--json" || arg == "--offline"):
+			jsonMode = jsonMode || arg == "--json"
 			continue
 		case !seenCommand && arg == "--master-pass-file":
 			if i+1 < len(rawArgs) {
@@ -62,10 +59,18 @@ func startupOutputMode(executable string, rawArgs []string) (jsonMode, streamMod
 			}
 		}
 	}
+	// A --json inside the remote argv of run/exec/plan/map belongs to the
+	// remote program, so only the sshctl-owned region is scanned.
+	if len(args) > 0 && commandHasJSONFlag(isSSHCTLInvocation(executable), args[0], args[1:]) {
+		jsonMode = true
+	}
+	if !isSSHCTLInvocation(executable) {
+		return jsonMode, false
+	}
 	if len(args) == 0 {
 		return jsonMode, false
 	}
-	if _, _, help := sshctlHelpRequest(args); help {
+	if _, _, help := helpRequest(true, args); help {
 		return jsonMode, false
 	}
 
@@ -143,7 +148,7 @@ func main() {
 		}
 		os.Exit(machinecontract.WriteClassified(machineJSON, kind, machinecontract.Details{Cause: err}))
 	}
-	if !offlineMode && !isInformationalInvocation(rawArgs) {
+	if !offlineMode && !isInformationalInvocationFor(sshctlInvocation, rawArgs) {
 		if err := checkUpdate(); err != nil {
 			failure := machinecontract.Classify(
 				updateFailureKind(err, machinecontract.UpdateFailed),
@@ -163,6 +168,13 @@ func main() {
 
 	if len(args) < 1 {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.MissingCommand, machinecontract.Details{Message: "command required"}))
+	}
+
+	// Help never unlocks the vault, reads sync state, or touches the network,
+	// so it is answered before any command runs.
+	if command, rest, ok := helpRequest(false, args); ok && knownCLICommands[command] && !slices.Contains(helpTokens, command) {
+		ssmCommandUsage(command, rest)
+		return
 	}
 
 	switch args[0] {
@@ -192,6 +204,10 @@ Usage:
                        digest and provenance verification are never bypassed
   ssm import-json <path> (--merge | --replace --yes) import reviewed JSON connections
   ssm server           run the headless encrypted sync server
+  ssm <command> --help   per-command help (never unlocks the vault or uses the network)
+
+Only in sshctl: request, host-key, status, sync. Only in ssm: keys, remove,
+import-json, update, login, register, logout, server, pull-if-changed, remote-hash.
 
 Cloud (optional):
   ssm login            authenticate with sync server
@@ -209,7 +225,7 @@ Cloud (optional):
 		runUpdate(args[1:])
 		return
 	case "host", "hosts":
-		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
+		machineJSON = machineJSON || commandHasJSONFlag(false, args[0], args[1:])
 		unlock()
 		runHostCommand(args[1:])
 	case "remove":
@@ -308,7 +324,7 @@ Cloud (optional):
 		unlock()
 		runRedirect(args[1:])
 	case "put":
-		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
+		machineJSON = machineJSON || commandHasJSONFlag(false, args[0], args[1:])
 		unlock()
 		runPutArgs(args[1:])
 	case "get":
@@ -320,7 +336,7 @@ Cloud (optional):
 		unlock()
 		runGet(args[1], args[2], args[3])
 	case "import-json":
-		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
+		machineJSON = machineJSON || commandHasJSONFlag(false, args[0], args[1:])
 		unlock()
 		runImportJSON(args[1:])
 	case "server":
@@ -373,6 +389,11 @@ func runUpdate(args []string) {
 		}))
 	}
 	if major {
+		// ReviewMajor unlocks the vault to inspect pending recovery, so it
+		// needs the same default master.pass fallback as unlockVault.
+		if masterPassFile == "" {
+			masterPassFile = defaultMasterPassFileIfPresent()
+		}
 		review, err := update.ReviewMajor(version, yes, masterPassFile)
 		renderFailure := func(cause error) {
 			failure := machinecontract.Classify(machinecontract.UpdateMigrationFailed, machinecontract.Details{Cause: cause})
@@ -533,30 +554,39 @@ func beginMigrationJSON(review update.MigrationReview) (func(bool, machinecontra
 	}, nil
 }
 
+// isInformationalInvocation reports whether the invocation only prints help,
+// the version, or is the update command, so the automatic update check is
+// skipped. Only sshctl-owned tokens count: -h/--help inside the remote argv of
+// run/exec/plan/map (or after a bare "--") belongs to the remote program.
 func isInformationalInvocation(args []string) bool {
-	command := ""
+	return isInformationalInvocationFor(false, args)
+}
+
+func isInformationalInvocationFor(sshctl bool, args []string) bool {
+	rest := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--" {
-			return false
+		if len(rest) == 0 {
+			switch {
+			case args[i] == "--json" || args[i] == "--offline":
+				continue
+			case args[i] == "--master-pass-file":
+				i++
+				continue
+			case strings.HasPrefix(args[i], "--master-pass-file="):
+				continue
+			}
 		}
-		switch arg {
-		case "--help", "-h", "help", "--version", "-v":
-			return true
-		case "--json", "--offline":
-			continue
-		case "--master-pass-file":
-			i++
-			continue
-		}
-		if strings.HasPrefix(arg, "--master-pass-file=") || strings.HasPrefix(arg, "-") {
-			continue
-		}
-		if command == "" {
-			command = arg
-		}
+		rest = append(rest, args[i])
 	}
-	return command == "update"
+	if len(rest) == 0 {
+		return false
+	}
+	switch rest[0] {
+	case "--help", "-h", "help", "--version", "-v", "update":
+		return true
+	}
+	_, _, help := helpRequest(sshctl, rest)
+	return help
 }
 
 func parseGlobalArgs(args []string) ([]string, error) {
@@ -627,6 +657,9 @@ func unlock() {
 // choosing a renderer. Normal commands and run --stream render the same
 // classified failure through their respective machine-contract framing.
 func unlockVault() (machinecontract.Failure, bool) {
+	if masterPassFile == "" {
+		masterPassFile = defaultMasterPassFileIfPresent()
+	}
 	if masterPassFile != "" {
 		data, err := os.ReadFile(masterPassFile)
 		if err != nil {
@@ -684,6 +717,24 @@ func unlockVault() (machinecontract.Failure, bool) {
 		machinecontract.MasterPassFileRequiredExisting,
 		machinecontract.Details{Message: "vault passphrase is required"},
 	), true
+}
+
+// defaultMasterPassPath is the default master-pass location shared by both
+// entrypoints.
+func defaultMasterPassPath() string {
+	return filepath.Join(config.Dir(), "master.pass")
+}
+
+// defaultMasterPassFileIfPresent returns <config dir>/master.pass when it
+// exists, so ssm unlocks like sshctl without SSM_MASTER_PASS_FILE. When the
+// file is absent it returns "" and the historical ssm behavior (session
+// password cache, master_pass_file_required errors) is unchanged.
+func defaultMasterPassFileIfPresent() string {
+	path := defaultMasterPassPath()
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		return path
+	}
+	return ""
 }
 
 // loadVault consumes the vault already decrypted by unlock. Commands used to

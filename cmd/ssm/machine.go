@@ -39,3 +39,11 @@ func hasJSONFlagBeforeDash(args []string) bool {
 	}
 	return false
 }
+
+// commandHasJSONFlag reports whether the tokens after command contain a
+// --json meant for sshctl itself. For run/exec/plan/map and the
+// "<alias> <command>" shorthand, --json inside the remote argv belongs to the
+// remote program and is ignored; other commands stop at a bare "--".
+func commandHasJSONFlag(sshctl bool, command string, rest []string) bool {
+	return hasJSONFlag(optionRegion(sshctl, command, rest))
+}

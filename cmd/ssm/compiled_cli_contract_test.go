@@ -2212,7 +2212,13 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 
 	t.Run("missing non-interactive unlock file", func(t *testing.T) {
 		contract := reviewedCompiledMachineContract(t, "unlock_file_required")
-		result := cli.RunReviewedWithoutMasterPass(t, contract)
+		// ssm now falls back to <config dir>/master.pass when it exists (#75),
+		// so the missing-file contract needs a config directory without one.
+		missing := newCompiledCLIHarness(t)
+		if err := os.Remove(missing.passPath); err != nil {
+			t.Fatalf("remove default master pass file: %v", err)
+		}
+		result := missing.RunReviewedWithoutMasterPass(t, contract)
 		assertCompiledMachineContract(t, result, contract)
 	})
 

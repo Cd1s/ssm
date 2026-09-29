@@ -271,6 +271,9 @@ type compiledSSHFixtureOptions struct {
 	RunStderrFragments        []string
 	RunExitStatus             uint32
 	RunDrainStdin             bool
+	// RecordCommand, when set, receives every exec request command line the
+	// fixture serves, so tests can assert the exact remote argv.
+	RecordCommand func(string)
 }
 
 type compiledSSHFixture struct {
@@ -469,6 +472,9 @@ func serveCompiledSSHSession(channel gossh.Channel, requests <-chan *gossh.Reque
 			return
 		}
 		_ = request.Reply(true, nil)
+		if options.RecordCommand != nil {
+			options.RecordCommand(payload.Command)
+		}
 		status, configured := executeConfiguredCompiledSSHRun(channel, channel.Stderr(), payload.Command, options)
 		if !configured {
 			status = executeCompiledSSHCommand(channel, channel.Stderr(), payload.Command)

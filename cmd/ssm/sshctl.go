@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"ssm/internal/config"
@@ -13,7 +12,7 @@ import (
 )
 
 func runSSHCTL(args []string) {
-	if hasJSONFlagBeforeDash(args) && len(args) > 0 && args[0] == "--json" {
+	if len(args) > 0 && args[0] == "--json" {
 		machineJSON = true
 	}
 	parsed, err := parseGlobalArgs(args)
@@ -28,7 +27,7 @@ func runSSHCTLParsed(args []string) {
 		masterPassFile = os.Getenv("SSM_MASTER_PASS_FILE")
 	}
 	if masterPassFile == "" {
-		masterPassFile = filepath.Join(config.Dir(), "master.pass")
+		masterPassFile = defaultMasterPassPath()
 	}
 
 	if len(args) == 0 {
@@ -70,15 +69,15 @@ func runSSHCTLParsed(args []string) {
 			runSSHCTLList()
 		}
 	case "host", "hosts":
-		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
+		machineJSON = machineJSON || commandHasJSONFlag(true, args[0], args[1:])
 		unlock()
 		runHostCommand(args[1:])
 	case "host-key", "known-hosts":
-		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
+		machineJSON = machineJSON || commandHasJSONFlag(true, args[0], args[1:])
 		unlock()
 		runHostKeyCommand(args[1:])
 	case "run", "exec":
-		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
+		machineJSON = machineJSON || commandHasJSONFlag(true, args[0], args[1:])
 		alias, runArgs, err := splitRunAlias(args[1:])
 		if err != nil {
 			if runStreamRequested(args[1:]) {
@@ -88,7 +87,7 @@ func runSSHCTLParsed(args []string) {
 		}
 		runSSHCTLRunInvocation(alias, runArgs)
 	case "plan":
-		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
+		machineJSON = machineJSON || commandHasJSONFlag(true, args[0], args[1:])
 		alias, runArgs, err := splitRunAlias(args[1:])
 		if err != nil {
 			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.PlanAliasRequired, machinecontract.Details{Cause: err}))
@@ -98,14 +97,14 @@ func runSSHCTLParsed(args []string) {
 	case "map":
 		// sshctl map <targets> [options] [--] <command...>
 		// targets: comma-separated aliases and/or globs
-		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
+		machineJSON = machineJSON || commandHasJSONFlag(true, args[0], args[1:])
 		if len(args) < 2 {
 			sshctlUsageExit()
 		}
 		unlock()
 		runSSHCTLMap(args[1:])
 	case "check":
-		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
+		machineJSON = machineJSON || commandHasJSONFlag(true, args[0], args[1:])
 		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
 			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.CheckAliasRequired, machinecontract.Details{Message: "check requires an exact host alias"}))
 		}
@@ -124,11 +123,11 @@ func runSSHCTLParsed(args []string) {
 		unlock()
 		runCheck(args[1], jsonFlag)
 	case "doctor":
-		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
+		machineJSON = machineJSON || commandHasJSONFlag(true, args[0], args[1:])
 		unlock()
 		runSSHCTLDoctor(args[1:])
 	case "put":
-		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
+		machineJSON = machineJSON || commandHasJSONFlag(true, args[0], args[1:])
 		unlock()
 		runPutArgs(args[1:])
 	case "get":
@@ -138,7 +137,7 @@ func runSSHCTLParsed(args []string) {
 		unlock()
 		runGet(args[1], args[2], args[3])
 	case "redirect", "alias-link":
-		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
+		machineJSON = machineJSON || commandHasJSONFlag(true, args[0], args[1:])
 		unlock()
 		runRedirect(args[1:])
 	case "shell":
@@ -245,29 +244,21 @@ func runSSHCTLMap(args []string) {
 		sshctlUsageExit()
 	}
 	// Collect targets until we hit a flag or --
-	var targets []string
-	i := 0
-	for ; i < len(args); i++ {
-		a := args[i]
-		if a == "--" || strings.HasPrefix(a, "-") {
-			break
-		}
-		targets = append(targets, a)
-	}
+	targets, optionArgs := splitMapTargets(args)
 	if len(targets) == 0 {
 		exitRemoteRunArgError("sshctl map", "", args, fmt.Errorf("missing target alias/pattern"))
 	}
-	spec, err := parseRemoteRunArgs(args[i:])
+	spec, err := parseRemoteRunArgs(optionArgs)
 	if err != nil {
 		if err.Error() == "help" {
 			sshctlUsage()
 			os.Exit(0)
 		}
-		exitRemoteRunArgError("sshctl map", strings.Join(targets, ","), args[i:], err)
+		exitRemoteRunArgError("sshctl map", strings.Join(targets, ","), optionArgs, err)
 	}
 	// Single -f becomes scripts for multi or command for one - already handled in parse
 	if len(spec.Scripts) == 0 && strings.TrimSpace(spec.Command) == "" {
-		exitRemoteRunArgError("sshctl map", strings.Join(targets, ","), args[i:], fmt.Errorf("missing command or --scripts"))
+		exitRemoteRunArgError("sshctl map", strings.Join(targets, ","), optionArgs, fmt.Errorf("missing command or --scripts"))
 	}
 	runMap(targets, spec)
 }
@@ -465,6 +456,11 @@ func sshctlUsage() {
   sshctl put <alias> <local> <remote> [--resume=v1] [--sha256] [--timeout 2m] [--json]
   sshctl get <alias> <remote> <local>
   sshctl redirect list|set <old> <new>|rm <old>
+  # Remote argv boundary: after the alias, "--argv", "--", or the first non-option
+  # word starts the remote command; everything after it (-h, --help, --json, ...)
+  # goes to the remote program untouched. -h/--help are honored only before it.
+  # Only in sshctl: request, host-key, status, sync. Only in ssm: keys, remove,
+  # import-json, update, login, register, logout, server, pull-if-changed, remote-hash.
 Env: SSM_TRACE=1  SSM_TIMEOUT=10s  SSM_REUSE=0  SSM_FORWARD_STDIN=1  SSM_RUN_OUTPUT=buffered
 `)
 }
