@@ -120,6 +120,8 @@ sshctl --json run my-server --argv hostname
 sshctl --json run my-server --argv uname -sr
 ```
 
+别名之后，`--argv`、`--` 或第一个非选项参数即开始远端命令；其后的全部内容（包括 `-h`、`--help`、`--json`）原样交给远端程序（`sshctl run my-server --argv df -h` 会真的执行 `df -h`）。`-h/--help` 和 `--json` 只在这个边界之前才是 sshctl 的选项。`exec`、`plan`、`map` 以及 `-f`/`-s`/`--scripts` 模式下 `--` 之后的脚本参数同样适用。
+
 需要连续执行多条简单命令时，可以复用同一进程和连接；每行输入一个 JSON argv 数组：
 
 ```bash

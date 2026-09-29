@@ -30,6 +30,74 @@ type remoteRunSpec struct {
 	Preflight bool
 }
 
+// runOptionTakesValue reports whether an sshctl run/exec/plan/map option
+// consumes the next token as its value. It is the single source of truth used
+// by remoteArgvStart so option scanning cannot drift from parseRemoteRunArgs.
+// --refresh belongs to the "run <alias> --stream" form.
+func runOptionTakesValue(arg string) bool {
+	switch arg {
+	case "--jobs", "-j", "--parallel", "--timeout", "--secret", "-e",
+		"--shell", "--interpreter", "-f", "--file", "--scripts", "--refresh":
+		return true
+	}
+	return false
+}
+
+// remoteArgvStart returns the index in args (the tokens after the host alias,
+// or after the map target list) of the token that starts the remote argv, or
+// len(args) when there is none. The boundary is "--argv", "--", or the first
+// non-option token. Tokens at and after the boundary belong to the remote
+// program and must never be scanned for sshctl options such as -h, --help,
+// --json, or --timeout.
+func remoteArgvStart(args []string) int {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--" || arg == "--argv":
+			return i
+		case runOptionTakesValue(arg):
+			i++
+		case strings.HasPrefix(arg, "-") && arg != "-":
+		default:
+			return i
+		}
+	}
+	return len(args)
+}
+
+// runOptionEnd returns the end of the sshctl-owned region of the tokens that
+// follow "run", "exec", or "plan": an optional leading --json, the exact
+// alias, and the options before the remote argv boundary.
+func runOptionEnd(args []string) int {
+	i := 0
+	if len(args) > 0 && args[0] == "--json" {
+		i = 1
+	}
+	if i < len(args) && !strings.HasPrefix(args[i], "-") {
+		i++
+	}
+	return i + remoteArgvStart(args[i:])
+}
+
+// splitMapTargets separates the leading target list (aliases and globs) from
+// the options and remote argv of "map".
+func splitMapTargets(args []string) (targets, rest []string) {
+	i := 0
+	for ; i < len(args); i++ {
+		if args[i] == "--" || strings.HasPrefix(args[i], "-") {
+			break
+		}
+		targets = append(targets, args[i])
+	}
+	return targets, args[i:]
+}
+
+// mapOptionEnd is the map counterpart of runOptionEnd.
+func mapOptionEnd(args []string) int {
+	targets, rest := splitMapTargets(args)
+	return len(targets) + remoteArgvStart(rest)
+}
+
 // parseRemoteRunArgs parses options and command parts after the host alias
 // (or after map target list).
 func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
@@ -61,7 +129,16 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		case arg == "--raw":
 			raw = true
 		case arg == "--argv":
+			// --argv starts the remote argv: nothing after it is an sshctl
+			// option. A redundant "--" right after it is accepted for
+			// compatibility with "run <alias> --argv -- <command>".
 			argvMode = true
+			parts = args[i+1:]
+			if len(parts) > 0 && parts[0] == "--" {
+				parts = parts[1:]
+				afterDash = true
+			}
+			i = len(args)
 		case arg == "--trace", arg == "-v":
 			trace = true
 		case arg == "--json":
@@ -346,7 +423,7 @@ func exitRemoteRunArgError(tool, alias string, args []string, err error) {
 		Alias: alias,
 		Tool:  tool,
 	})
-	if hasJSONFlag(args) {
+	if hasJSONFlag(args[:remoteArgvStart(args)]) {
 		ssh.WriteRunResult(ssh.RunResult{
 			OK:             false,
 			Alias:          alias,

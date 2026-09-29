@@ -66,6 +66,7 @@ not prove SSH transport failure.
 ## Choose the smallest safe operation
 
 - Fixed, reviewed literal argv: `sshctl --json run <exact-alias> --argv <command> [args...]`.
+  Remote argv boundary: after the alias, `--argv`, `--`, or the first non-option word starts the remote command; everything after it (`-h`, `--help`, `--json`, ...) reaches the remote program untouched. Put sshctl options such as `--json`, `--timeout`, or `--help` before that boundary. The same holds for `exec`, `plan`, `map`, and script arguments after `--`.
 - Repeated simple argv on one exact alias: keep `sshctl run <exact-alias> --stream` open and send one JSON string array per line. Online streams require a positive --refresh interval (30s by default); `--refresh=0` is valid only with explicit global `--offline`. Inspect every NDJSON result and stop on refresh failure.
 - Dynamic, untrusted, or data-dependent argv: use request schema version 1 with `op:"run"` and the schema selected above.
 - Shell syntax or a generated script: use `script_file` with optional `script_args` and `shell`; use preflight where supported.

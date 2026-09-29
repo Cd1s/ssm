@@ -120,6 +120,8 @@ sshctl --json run my-server --argv hostname
 sshctl --json run my-server --argv uname -sr
 ```
 
+After the alias, `--argv`, `--`, or the first non-option word starts the remote command. Everything after it, including `-h`, `--help`, and `--json`, goes to the remote program untouched (`sshctl run my-server --argv df -h` runs `df -h`). `-h/--help` and `--json` are sshctl options only before that boundary. The same rule applies to `exec`, `plan`, and `map`, and script arguments after `--` in `-f`/`-s`/`--scripts` mode.
+
 For repeated simple commands, reuse one process and connection; send one JSON argv array per line:
 
 ```bash
