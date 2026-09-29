@@ -133,6 +133,8 @@ sshctl --json run my-server --argv uname -sr
 - `SSM_FORWARD_STDIN=1` 等价默认开启转发（含 `--json`），`SSM_FORWARD_STDIN=0` 等价 `--no-stdin`；显式选项优先于环境变量。
 - `-s`、`-f`、`--scripts` 的脚本正文已经占用远端 stdin，与 `--stdin`/`--stdin-file` 同用返回 `invalid_arguments`；`map` 与 `run --stream` 同样拒绝 `--stdin`/`--stdin-file`。
 
+去掉探测后，human 默认模式下若 stdin 是永不结束的管道（CI 或 agent 继承的 stdin 常见如此）且远端命令会读取 stdin，命令会一直等待；此时加 `--no-stdin` 或 `</dev/null`。
+
 在 `while read h; do ...; done < hosts.txt` 这类循环里，务必给循环内的每次调用加 `--no-stdin`（或 `</dev/null`），否则第一次调用会把剩余的输入转发给远端：
 
 ```bash

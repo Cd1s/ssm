@@ -213,3 +213,38 @@ func TestCompiledRunExitsAfterRemoteExitWithHeldOpenStdin(t *testing.T) {
 	jsonResult := cli.RunWithHeldOpenStdin(t, "sshctl", "--offline", "--json", "run", "alpha", "--stdin", "--argv", "true")
 	assertCompiledJSONSuccess(t, jsonResult)
 }
+
+func TestCompiledConnectionFailureDoesNotReportStdinForwarded(t *testing.T) {
+	cli := newCompiledCLIHarness(t)
+	refused := newCompiledRefusedTCPPort(t)
+	const password = "STDIN_REFUSED_PASSWORD_CANARY" //nolint:gosec // test-only fake credential canary
+	cli.SaveVault(t, &config.Vault{Connections: []config.Connection{{
+		Name: "refused", Host: refused.host, Port: refused.port, User: "runner", Password: password,
+	}}})
+	for name, args := range map[string][]string{
+		"--stdin":      {"--offline", "run", "refused", "--json", "--stdin", "--argv", "cat"},
+		"json default": {"--offline", "run", "refused", "--json", "--argv", "cat"},
+		"--stdin-file": nil,
+	} {
+		if args == nil {
+			path := filepath.Join(t.TempDir(), "in.txt")
+			if err := os.WriteFile(path, []byte("x\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			args = []string{"--offline", "run", "refused", "--json", "--stdin-file", path, "--argv", "cat"}
+		}
+		t.Run(name, func(t *testing.T) {
+			result := cli.Run(t, "sshctl", []byte("data\n"), args...)
+			if result.ProcessExit == 0 {
+				t.Fatalf("connection to a refused port succeeded: %s", compiledOutputIdentity(result))
+			}
+			failure := decodeCompiledStdinFailure(t, result)
+			if value, present := failure["stdin_forwarded"]; present {
+				t.Fatalf("failed connection reported stdin_forwarded = %#v", value)
+			}
+			if _, present := failure["warning"]; present {
+				t.Fatal("failed connection carried a stdin warning")
+			}
+		})
+	}
+}

@@ -36,8 +36,8 @@ const (
 	stdinTTY
 	// stdinPipe copies local stdin to the remote command until EOF.
 	stdinPipe
-	// stdinFile copies a file to the remote command until EOF.
-	stdinFile
+	// stdinFromFile copies a file to the remote command until EOF.
+	stdinFromFile
 )
 
 type stdinDecision struct {
@@ -52,7 +52,7 @@ func boolPtr(value bool) *bool { return &value }
 // decideStdin applies the stdin forwarding rules. env is SSM_FORWARD_STDIN.
 func decideStdin(mode StdinMode, file, env string, capture, isTTY, isNull bool) stdinDecision {
 	if file != "" {
-		return stdinDecision{Source: stdinFile, Forwarded: boolPtr(true)}
+		return stdinDecision{Source: stdinFromFile, Forwarded: boolPtr(true)}
 	}
 	if mode == StdinInternal {
 		return stdinDecision{}

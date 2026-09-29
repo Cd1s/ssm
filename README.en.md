@@ -133,6 +133,8 @@ After the alias, `--argv`, `--`, or the first non-option word starts the remote 
 - `SSM_FORWARD_STDIN=1` turns forwarding on by default (including `--json`) and `SSM_FORWARD_STDIN=0` is the same as `--no-stdin`; an explicit option beats the environment variable.
 - The body of `-s`, `-f`, and `--scripts` already uses the remote stdin, so combining them with `--stdin`/`--stdin-file` fails with `invalid_arguments`; `map` and `run --stream` also reject `--stdin`/`--stdin-file`.
 
+Because the probe is gone, a default human run whose stdin is a never-ending pipe (common when CI or an agent inherits stdin) waits forever if the remote command reads stdin; add `--no-stdin` or `</dev/null` in that case.
+
 Inside loops such as `while read h; do ...; done < hosts.txt`, give every call `--no-stdin` (or `</dev/null`); otherwise the first call forwards the remaining input to the remote command:
 
 ```bash

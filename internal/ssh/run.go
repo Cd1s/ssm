@@ -277,10 +277,8 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 	}
 
 	stdinPlan := decideRunStdin(opts)
-	res.StdinForwarded = stdinPlan.Forwarded
-	res.Warning = stdinPlan.Warning
 	var stdinFileHandle *os.File
-	if stdinPlan.Source == stdinFile {
+	if stdinPlan.Source == stdinFromFile {
 		var err error
 		stdinFileHandle, err = os.Open(opts.StdinFile)
 		if err != nil {
@@ -346,10 +344,16 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 	if opts.Input != "" {
 		session.Stdin = strings.NewReader(opts.Input)
 	} else {
+		if stdinPlan.Source != stdinPipe && stdinPlan.Source != stdinFromFile {
+			// Nothing is forwarded here; the report is set only once the
+			// session exists so connection failures carry no stdin fields.
+			res.StdinForwarded = stdinPlan.Forwarded
+			res.Warning = stdinPlan.Warning
+		}
 		switch stdinPlan.Source {
 		case stdinTTY:
 			session.Stdin = os.Stdin
-		case stdinPipe, stdinFile:
+		case stdinPipe, stdinFromFile:
 			stdin, err := session.StdinPipe()
 			if err != nil {
 				applyRunFailure(&res, machinecontract.Classify(machinecontract.SSHStdinFailed, machinecontract.Details{
@@ -360,8 +364,9 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 				res.LatencyMS = time.Since(start).Milliseconds()
 				return res
 			}
+			res.StdinForwarded = stdinPlan.Forwarded
 			var source io.Reader = os.Stdin
-			if stdinPlan.Source == stdinFile {
+			if stdinPlan.Source == stdinFromFile {
 				source = stdinFileHandle
 			}
 			go forwardStdin(stdin, source)

@@ -45,9 +45,9 @@ func TestDecideStdinRules(t *testing.T) {
 		"other env values are ignored":         {input{mode: StdinDefault, env: "yes", capture: true}, stdinNone, "false", true},
 		"--stdin beats env 0":                  {input{mode: StdinForward, env: "0"}, stdinPipe, "true", false},
 		"--no-stdin beats env 1":               {input{mode: StdinDisable, env: "1"}, stdinNone, "unset", false},
-		"stdin file forwards json":             {input{mode: StdinForward, file: "in", capture: true}, stdinFile, "true", false},
-		"stdin file beats --no-stdin env 0":    {input{mode: StdinDefault, file: "in", env: "0"}, stdinFile, "true", false},
-		"stdin file beats internal for direct": {input{mode: StdinInternal, file: "in"}, stdinFile, "true", false},
+		"stdin file forwards json":             {input{mode: StdinForward, file: "in", capture: true}, stdinFromFile, "true", false},
+		"stdin file beats --no-stdin env 0":    {input{mode: StdinDefault, file: "in", env: "0"}, stdinFromFile, "true", false},
+		"stdin file beats internal for direct": {input{mode: StdinInternal, file: "in"}, stdinFromFile, "true", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := decideStdin(tc.in.mode, tc.in.file, tc.in.env, tc.in.capture, tc.in.tty, tc.in.null)
