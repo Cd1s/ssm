@@ -490,3 +490,28 @@ func TestFailureMessagesAreNeverRawErrorText(t *testing.T) {
 		t.Fatalf("last_error = %+v, want a fixed phrase without raw error text", failure)
 	}
 }
+
+// The reset takes the vault write lock too, so it cannot slip between a
+// background process's claim check and its install.
+func TestResetSyncStateWaitsForTheVaultWriteLock(t *testing.T) {
+	isolateTestUserConfig(t)
+	if err := saveSyncState(SyncState{ConsecutiveFailures: 2}); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := config.AcquireFileLock(config.VaultWriteLockName, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func(old time.Duration) { resetLockWait = old }(resetLockWait)
+	resetLockWait = 50 * time.Millisecond
+	if err := ResetSyncState(); err == nil {
+		t.Fatal("a reset that could not take the vault lock must not be silent")
+	}
+	_ = holder.Close()
+	if err := ResetSyncState(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(syncStatePath()); !os.IsNotExist(err) {
+		t.Fatal("state was not removed once the lock was free")
+	}
+}

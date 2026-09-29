@@ -68,13 +68,16 @@ func runLogin(args []string) {
 			// sync (strict semantics, vault write lock, conflict evidence on
 			// divergence). A failure never fails the login: the account is
 			// authenticated and the configuration saved.
-			if _, err := syncTransaction(false).Pull(); err != nil {
-				failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullReplaceFailed)
-				cause := failure.SyncCause
-				if cause == "" {
-					cause = "unknown"
-				}
-				fmt.Fprintf(os.Stderr, "ssm: warning: logged in, but the initial vault pull failed (cause=%s): %s; run sshctl sync\n", cause, failure.Message)
+			if _, err := syncTransaction(false).Pull(); errors.Is(err, cloud.ErrNoVaultOnServer) {
+				// A new account has nothing to fetch yet; that is not a
+				// failure, and the attempt must not linger as one.
+				resetSyncState()
+				fmt.Println("No vault on the server yet; it is created by the first publication (sshctl --json push --only <transaction-id>).")
+			} else if err != nil {
+				// The fixed-phrase description, never error text: transport
+				// errors embed the sync server address.
+				cause, message := machinecontract.DescribeSyncFailure(err)
+				fmt.Fprintf(os.Stderr, "ssm: warning: logged in, but the initial vault pull failed (cause=%s): %s; run sshctl sync\n", cause, message)
 			}
 		}
 		return

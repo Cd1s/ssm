@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -330,6 +331,8 @@ func CreateVaultIfAbsent(v *Vault, masterPass string) (bool, error) {
 	defer func() { _ = lock.Close() }()
 	if _, statErr := os.Stat(Path()); statErr == nil {
 		return false, nil
+	} else if !errors.Is(statErr, fs.ErrNotExist) {
+		return false, statErr
 	}
 	if err := Save(v, masterPass); err != nil {
 		return false, err

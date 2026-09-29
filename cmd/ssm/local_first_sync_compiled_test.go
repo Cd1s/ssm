@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -909,5 +910,53 @@ func TestUpgradeFromV202StateSyncsInTheBackgroundWithoutAConflict(t *testing.T) 
 				t.Fatal("an unchanged remote must not be downloaded")
 			}
 		})
+	}
+}
+
+// A transport failure during the initial pull embeds the sync server address in
+// its error text; the login warning must show only the cause and a fixed phrase.
+func TestLoginWarningNeverExposesTheSyncServerAddress(t *testing.T) {
+	cli := newCompiledCLIHarness(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/auth/login" {
+			_, _ = w.Write([]byte(`{"token":"FIXTURE_ACCOUNT_TOKEN"}`))
+			return
+		}
+		// Drop the connection mid-request: a transport error whose text carries the URL.
+		if hijacker, ok := w.(http.Hijacker); ok {
+			if conn, _, err := hijacker.Hijack(); err == nil {
+				_ = conn.Close()
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+	login := cli.RunWithEnv(t, "ssm", nil, map[string]string{"SSM_SYNC_MODE": "local_first"},
+		"login", "--server", server.URL, "--email", "user@example.test", "--password-file", writePasswordFile(t, cli))
+	if login.ProcessExit != 0 || !strings.Contains(login.Stderr, "cause=network") || !strings.Contains(login.Stderr, "run sshctl sync") {
+		t.Fatalf("login must warn with the cause; stderr=%q", login.Stderr)
+	}
+	parsed, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{server.URL, parsed.Host, parsed.Hostname(), parsed.Port(), "/sync"} {
+		if strings.Contains(login.Stderr, forbidden) || strings.Contains(login.Stdout, forbidden) {
+			t.Fatalf("login output exposes the sync server address fragment %q: %q", forbidden, login.Stderr)
+		}
+	}
+}
+
+// An account without a published vault yet is not a failed login.
+func TestLoginTreatsAnAccountWithoutAServerVaultAsBenign(t *testing.T) {
+	cli := newCompiledCLIHarness(t)
+	sync := newCompiledSyncFixture(t)
+	sync.SetClock(t, localFirstClock)
+	env := map[string]string{"SSM_SYNC_MODE": "local_first", "SSM_COMPILED_TEST_CLOCK_URL": sync.ClockURL()}
+	login := cli.RunWithEnv(t, "ssm", nil, env, "login", "--server", sync.URL(), "--email", "user@example.test", "--password-file", writePasswordFile(t, cli))
+	if login.ProcessExit != 0 || login.Stderr != "" || !strings.Contains(login.Stdout, "No vault on the server yet") {
+		t.Fatalf("a new account must log in quietly; output=%s stderr=%q", compiledOutputIdentity(login), login.Stderr)
+	}
+	if state, err := os.ReadFile(filepath.Join(cli.home, ".config", "ssm", "sync-state.json")); err == nil && strings.Contains(string(state), "last_error") {
+		t.Fatalf("the benign attempt was recorded as a failure: %s", state)
 	}
 }

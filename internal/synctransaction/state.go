@@ -364,6 +364,14 @@ func ResetSyncState() error {
 	if _, err := os.Lstat(syncStatePath()); err != nil {
 		return nil
 	}
+	// Lock order everywhere is vault write lock, then state lock. Holding the
+	// vault lock means a background process cannot be between its claim check
+	// and its install while the state is removed.
+	vaultLock, err := config.AcquireFileLock(config.VaultWriteLockName, resetLockWait)
+	if err != nil {
+		return fmt.Errorf("reset sync state: %w", err)
+	}
+	defer func() { _ = vaultLock.Close() }()
 	lock, err := config.AcquireFileLock(syncStateLockName, resetLockWait)
 	if err != nil {
 		return fmt.Errorf("reset sync state: %w", err)
