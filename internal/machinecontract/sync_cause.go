@@ -119,3 +119,15 @@ func isRemoteSyncFailure(err error) bool {
 		errors.Is(err, synctransaction.ErrPushRejected) ||
 		errors.Is(err, synctransaction.ErrPushAmbiguous)
 }
+
+// DescribeSyncFailure gives the recorded sync state its stable cause and a
+// redacted, address-free message, using the same classification as command
+// failures. Divergence and configuration causes are assigned by the sync
+// transaction itself.
+func DescribeSyncFailure(err error) (cause, message string) {
+	cause = SyncFailureCause(err)
+	if cause == "" {
+		cause = SyncCauseUnknown
+	}
+	return cause, RedactError(err)
+}

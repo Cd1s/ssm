@@ -148,7 +148,7 @@ func main() {
 		}
 		os.Exit(machinecontract.WriteClassified(machineJSON, kind, machinecontract.Details{Cause: err}))
 	}
-	if !offlineMode && !isInformationalInvocationFor(sshctlInvocation, rawArgs) {
+	if !offlineMode && !isInformationalInvocationFor(sshctlInvocation, rawArgs) && !isBackgroundSyncInvocation(args) {
 		if err := checkUpdate(); err != nil {
 			failure := machinecontract.Classify(
 				updateFailureKind(err, machinecontract.UpdateFailed),
@@ -597,6 +597,12 @@ func isInformationalInvocationFor(sshctl bool, args []string) bool {
 func parseGlobalArgs(args []string) ([]string, error) {
 	if masterPassFile == "" {
 		masterPassFile = os.Getenv("SSM_MASTER_PASS_FILE")
+	}
+
+	if os.Getenv("SSM_OFFLINE") == "1" {
+		// Equivalent to the global --offline flag: no sync configuration is
+		// read and no background sync is started.
+		offlineMode = true
 	}
 
 	out := make([]string, 0, len(args))

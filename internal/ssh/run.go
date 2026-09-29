@@ -70,6 +70,9 @@ type RunResult struct {
 	// piped stdin was left unread (see Warning).
 	StdinForwarded *bool  `json:"stdin_forwarded,omitempty"`
 	Warning        string `json:"warning,omitempty"`
+	// InventoryStale is set when the inventory used for this run came from a
+	// local cache older than the configured stale_after.
+	InventoryStale bool `json:"inventory_stale,omitempty"`
 
 	failure         machinecontract.Failure
 	sensitiveValues []string

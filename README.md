@@ -40,7 +40,7 @@ sshctl --json --version
 sshctl --json status
 ```
 
-它会告诉你同步是否已配置、状态是否 fresh，以及有没有待发布的本地变更。没有配置同步时，结果会明确说明 unconfigured，不会偷偷改用旧缓存。
+它会告诉你同步是否已配置、状态是否 fresh，以及有没有待发布的本地变更。没有配置同步时，结果会明确说明 unconfigured。默认的 local-first 模式下它还会报告最近一次同步的结果和缓存年龄（`remote_state`、`last_sync_error`、`cache_age_seconds`、`inventory_stale`），同步端点不可达时也不会失败，详见“同步模式”。
 
 ### 4. 列出主机
 
@@ -202,7 +202,7 @@ sshctl --json push --only <transaction-id>
 - 不把密码、私钥、master pass、token、`cloud.json` 或解密后的 vault 内容放进命令参数、JSON、日志、Issue、PR 或提交。
 - 不自动选择 alias，不把候选名称当成精确目标。
 - host key 首次出现或变化时必须先 inspect、带外核验完整 SHA-256 指纹，再显式 accept。
-- 在线同步失败时不会静默切到旧缓存；只有明确接受 stale inventory 才能使用 `--offline`。
+- 默认 local-first：读命令直接用本地清单，同步服务器不挡命令；使用本地清单不是静默的，`status` 报告 `remote_state`/`last_sync_error`/`cache_age_seconds`，清单过期时有 `inventory_stale` 和 stderr 警告。需要“刷新失败即失败”时设置 `sync_mode: strict`。
 - 发布必须有明确 scope；`push --only <transaction-id>` 只发布一个 reviewed transaction，相关依赖未满足时也不会偷偷扩大范围。
 
 ## 更新与回滚
@@ -298,13 +298,25 @@ v2 的 request schema 支持 `op:get`；v1.4.3/v1.4.4 必须使用[兼容桥接 
 
 v2 transfer result 按 `direction`（`put`/`get`）和 `kind`（`file`/`directory`）分支。普通文件只报告实际提供的 `atomic`、`integrity`、`resume` 和 byte 字段；目录传输明确报告 `atomic:false`、`integrity:not_available`、`resume:unsupported`，目录 get 不虚构 `bytes_received`。只有明确使用 `--resume=v1` 才启用普通文件续传，续传状态和完整性校验失败时不会替换目标文件。目录上传遇到远端 tar 失败（权限、磁盘满、目标不是目录）会直接返回远端错误 `stage:remote_extract`，目标目录可能已部分写入，不会再逐文件重试；只有本机没有可执行的 `tar` 时才使用逐文件 fallback。目录下载在任一端失败时立即关闭另一端并有界退出。request v1 的 `op:put` 增加 `dir_mode`，`op:get` 增加 `sha256`/`timeout`（均为加性字段）。
 
-`status` 的在线刷新失败会返回 `error:sync_pull_failed` 与 `stage:sync_pull`；存在但格式错误的 `cloud.json` 会返回 `error:sync_config_error`。只有显式 `--offline` 才读取缓存。非 capture 的 human run 默认流式输出：stdout 逐字节透传（包括远端回显的值，与成功输出契约一致），stderr 中的显式 `--secret` 值替换为 `***`，并按行脱敏凭据形态的内容；没有大小上限，也不写临时文件，适合 `tar -czf - dir | tar -xzf -` 这类字节管道和长时间运行的命令。收到 SIGINT/SIGTERM/SIGHUP 时，sshctl 把信号转发给远端命令，输出 flush 后以 `error:interrupted` 和 128+信号编号退出。`--json` 会把完整 stdout/stderr 缓存在内存里再输出一个 JSON 值，失败结果整体脱敏；大输出请用 human 模式或 `get`。设置 `SSM_RUN_OUTPUT=buffered` 可恢复 v2.0.2 的回放模式：结果确定后再输出、失败时整体脱敏、每个流 8 MiB 上限，超限返回 `error:internal`。流式模式不再按行屏蔽 `-s`/`-f` 脚本正文（否则 `set -x` 轨迹会被抹掉），也不再事后脱敏失败时的 stdout，凭据请用 `--secret` 传入；启动时已被忽略的信号（如 `nohup`）保持忽略；`--json` 运行不转发信号。buffered 模式和目录/文件传输的诊断缓冲仍以 0600 私有临时文件保存原始字节，回放后删除，进程被杀留下的文件会在 24 小时后由下一次运行清理。
+strict 模式下，`status` 的在线刷新失败会返回 `error:sync_pull_failed` 与 `stage:sync_pull`，只有显式 `--offline` 才读取缓存；local_first（默认）下 `status` 与读命令不因同步失败而失败。存在但格式错误的 `cloud.json` 在两种模式下都会返回 `error:sync_config_error`。非 capture 的 human run 默认流式输出：stdout 逐字节透传（包括远端回显的值，与成功输出契约一致），stderr 中的显式 `--secret` 值替换为 `***`，并按行脱敏凭据形态的内容；没有大小上限，也不写临时文件，适合 `tar -czf - dir | tar -xzf -` 这类字节管道和长时间运行的命令。收到 SIGINT/SIGTERM/SIGHUP 时，sshctl 把信号转发给远端命令，输出 flush 后以 `error:interrupted` 和 128+信号编号退出。`--json` 会把完整 stdout/stderr 缓存在内存里再输出一个 JSON 值，失败结果整体脱敏；大输出请用 human 模式或 `get`。设置 `SSM_RUN_OUTPUT=buffered` 可恢复 v2.0.2 的回放模式：结果确定后再输出、失败时整体脱敏、每个流 8 MiB 上限，超限返回 `error:internal`。流式模式不再按行屏蔽 `-s`/`-f` 脚本正文（否则 `set -x` 轨迹会被抹掉），也不再事后脱敏失败时的 stdout，凭据请用 `--secret` 传入；启动时已被忽略的信号（如 `nohup`）保持忽略；`--json` 运行不转发信号。buffered 模式和目录/文件传输的诊断缓冲仍以 0600 私有临时文件保存原始字节，回放后删除，进程被杀留下的文件会在 24 小时后由下一次运行清理。
 
 同步失败的具体原因保留在错误链中：`sync_pull_failed`（以及推送、host 的同步失败）的 `--json` 结果新增顶层 `cause` 字段（仅出现在同步失败上，加性），`message` 带上已脱敏的底层错误，human 输出在 `ssm: error=... stage=...` 行末追加 `cause=<值>`。`cause` 是稳定枚举：`dns`（域名无法解析）、`connect_refused`（连接被拒）、`timeout`（超时）、`tls`（证书校验失败）、`auth`（HTTP 401/403，token 被拒）、`http_5xx`（服务端 5xx）、`missing_token`（配置缺 token）、`network`（其他传输层错误）、`unknown`（其余，包括其他 HTTP 状态）。`hint` 随 `cause` 变化：`auth` 与 `missing_token` 要求重新 `ssm login` 后重试，不建议 `--offline`；`tls` 需要人工排查证书，不要绕过校验；`dns`、`connect_refused`、`timeout`、`http_5xx`、`network` 可稍后重试，或在明确接受 stale inventory 时显式 `--offline`。
 
 ### 精确发布范围与空 ledger
 
 `push --only <transaction-id>` 发布一个 reviewed transaction，`push --all` 只固定并发布调用开始时的 pending ID 集合。空集合不会覆盖整个本地 blob：一致时是 `action:"noop"`，缺少或不一致的身份则是 `error:"sync_conflict"`；按[空 ledger 恢复说明](skills/agent-ssm/references/import-json.md)执行受保护的 pull、reviewed `--merge` 和新的 `push --only <transaction-id>`。
+
+### 同步模式：local-first（默认）与 strict
+
+中心服务器只负责同步，不会挡在每条命令前，离线也能用。默认的 `sync_mode: local_first` 下，读命令（`run`、`map`、`get`、`put`、`check`、`doctor`、`list`、`host list|show`、`host-key`、`keys`、`status`）只读本地 vault，前台不发任何同步请求。自动同步到期时，命令在 `sync-state.json` 里原子占位，派生一个分离的后台进程 `sshctl sync --background`（隐藏选项）：它先做短超时的“有变化才拉取”检查，只在远端变化时拉取，绝不自动 push，也不覆盖有分叉的本地 vault；与 `push` 的发布锁互斥。成功后至少间隔 `sync_interval`（默认 `10m`）才再检查；失败按 30 秒起、每次翻倍、封顶 1 小时的指数退避记录，退避期内的命令不再尝试。同步失败绝不会让读命令失败。
+
+可见而非阻断：`status` 在 local_first 下永不因同步失败而失败，并报告 `remote_state`（`checked`、`unreachable`、`not_checked`、`not_configured`、`auto_sync_disabled`）、`last_successful_sync`、`last_sync_error`（`cause`、脱敏的 `message`、`at`；分叉时 `cause` 为 `conflict`）、`next_sync_attempt`、`cache_age_seconds` 和 `inventory_stale`（这些字段都是加性的）。缓存年龄超过 `stale_after`（默认 `7d`，从最近一次确认的 pull、push 或成功的后台检查算起）时，`run` 的 JSON 结果带 `inventory_stale:true`，human 读命令在 stderr 打一行警告，stdout 不受影响。
+
+`settings.json` 配置项：`sync_mode`（`local_first` 或 `strict`）、`sync_interval`、`stale_after`（Go 时长，或整数加 `d` 表示天）；环境变量 `SSM_SYNC_MODE` 可对单个进程覆盖 `sync_mode`。`auto_sync:false` 在两种模式下都关闭自动同步。`--offline` 与 `SSM_OFFLINE=1` 等价：不解析同步配置、不联网，也不派生后台同步。
+
+显式 `sync`、`pull`、`push` 在两种模式下都保持严格语义（出错即失败），并把结果写入 `sync-state.json`。写操作与发布不变：修改先记为 pending，由 `push --only <transaction-id>` 或 `push --all` 发布，分叉检测仍然 fail-closed。`run --stream --refresh` 在 local_first 下到期时会在 vault 已被后台更新时重新加载快照，同步失败不会中止流。新机器 `login` 之后先运行一次 `sshctl sync` 拉取 vault。
+
+需要 v2.0.2 的行为（每次读之前在线刷新、刷新失败即命令失败）时，在 `settings.json` 设置 `"sync_mode": "strict"`，或对单个进程设置 `SSM_SYNC_MODE=strict`。相对 v2.0.2，默认行为的变化是：读命令不再因同步端点不可达而失败，也不再为每条命令多花一次 `HEAD` 请求。
 
 ### 可选同步服务器
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -47,6 +48,10 @@ func runSSHCTLParsed(args []string) {
 	case "request":
 		runAgentRequest(args[1:])
 	case "sync", "pull":
+		if isBackgroundSyncInvocation(args) {
+			runBackgroundSync()
+			return
+		}
 		runPull(args[1:])
 	case "push":
 		runPush(args[1:])
@@ -342,6 +347,12 @@ type statusResult struct {
 	CacheAge   int64                                     `json:"cache_age_seconds,omitempty"`
 	Conflict   *synctransaction.SyncConflict             `json:"sync_conflict,omitempty"`
 	Recovery   *inventorytransaction.PublicationRecovery `json:"publication_recovery,omitempty"`
+	// Local-first synchronization facts. They appear only when a sync outcome
+	// or staleness is known, so strict-mode output keeps its exact shape.
+	LastSuccessfulSync string                     `json:"last_successful_sync,omitempty"`
+	LastSyncError      *synctransaction.SyncError `json:"last_sync_error,omitempty"`
+	NextSyncAttempt    string                     `json:"next_sync_attempt,omitempty"`
+	InventoryStale     bool                       `json:"inventory_stale,omitempty"`
 }
 
 func runSSHCTLStatus() {
@@ -349,6 +360,12 @@ func runSSHCTLStatus() {
 		MasterPass: masterPass,
 		Sync:       syncTransaction(false),
 	}).ReconcilePublishingIntent()
+	if recoveryErr != nil && syncTransaction(false).LocalFirst() && isRemoteReachabilityFailure(recoveryErr) {
+		// local_first status never fails because the sync service is
+		// unreachable. The recovery view still reports the unresolved
+		// publication; reconciliation resumes when the service answers.
+		recoveryErr = nil
+	}
 	if recoveryErr == nil {
 		// Reconciliation waits for any in-flight publisher. Discard the vault
 		// snapshot loaded before that wait so status cannot report its stale
@@ -396,6 +413,9 @@ func runSSHCTLStatus() {
 			Freshness: freshness, Remote: remoteState, Pending: pending, Mutations: pendingMutations,
 			Offline: syncFacts.Offline, CacheAge: syncFacts.CacheAge, Conflict: syncFacts.Conflict,
 			Recovery: recovery,
+
+			LastSuccessfulSync: syncFacts.LastSuccess, LastSyncError: syncFacts.LastError,
+			NextSyncAttempt: syncFacts.NextAttempt, InventoryStale: syncFacts.Stale,
 		}
 		if recoveryErr != nil {
 			failure := machinecontract.ClassifySyncFailure(recoveryErr, machinecontract.SyncPushFailed)
@@ -414,6 +434,27 @@ func runSSHCTLStatus() {
 	}
 	fmt.Printf("version=%s\nhosts=%d\nvault=%s\nsync=%s\nredirects=%d\nreuse=%s\nreuse_scope=process\nfreshness=%s\nremote_state=%s\npending_changes=%t\noffline=%t\ncache_age_seconds=%d\n",
 		version, count, vaultStatus, cloudStatus, len(config.LoadRedirects()), reuse, freshness, remoteState, pending, syncFacts.Offline, syncFacts.CacheAge)
+	if syncFacts.LastSuccess != "" {
+		fmt.Printf("last_successful_sync=%s\n", syncFacts.LastSuccess)
+	}
+	if syncFacts.LastError != nil {
+		fmt.Printf("last_sync_error=%s\nlast_sync_error_at=%s\n", syncFacts.LastError.Cause, syncFacts.LastError.At)
+	}
+	if syncFacts.NextAttempt != "" {
+		fmt.Printf("next_sync_attempt=%s\n", syncFacts.NextAttempt)
+	}
+	if syncFacts.Stale {
+		fmt.Println("inventory_stale=true")
+	}
+}
+
+// isRemoteReachabilityFailure reports a failure to observe the remote service,
+// as opposed to a local error or a divergence that needs review.
+func isRemoteReachabilityFailure(err error) bool {
+	return errors.Is(err, synctransaction.ErrRefresh) &&
+		!errors.Is(err, synctransaction.ErrConflict) &&
+		!errors.Is(err, synctransaction.ErrEmptyLedgerDivergence) &&
+		!errors.Is(err, synctransaction.ErrConfiguration)
 }
 
 func sshctlUsage() {
@@ -472,6 +513,7 @@ func sshctlUsage() {
   # Only in sshctl: request, host-key, status, sync. Only in ssm: keys, remove,
   # import-json, update, login, register, logout, server, pull-if-changed, remote-hash.
 Env: SSM_TRACE=1  SSM_TIMEOUT=10s  SSM_REUSE=0  SSM_FORWARD_STDIN=1|0  SSM_RUN_OUTPUT=buffered
+     SSM_OFFLINE=1 (same as --offline)  SSM_SYNC_MODE=strict|local_first (overrides settings sync_mode)
 `)
 }
 

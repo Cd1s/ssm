@@ -35,6 +35,7 @@ func runRegister(args []string) {
 		if err := cloud.SaveCloud(cfg); err != nil {
 			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 		}
+		synctransaction.ResetSyncState()
 		fmt.Println("Account registered.")
 		return
 	}
@@ -60,6 +61,7 @@ func runLogin(args []string) {
 		if err := cloud.SaveCloud(cfg); err != nil {
 			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 		}
+		synctransaction.ResetSyncState()
 		fmt.Println("Logged in.")
 		return
 	}
@@ -131,6 +133,7 @@ func runLogout() {
 			Cause: err, Tool: "legacy_message", Script: "logout",
 		}))
 	}
+	synctransaction.ResetSyncState()
 	fmt.Println("Logged out.")
 }
 
@@ -401,11 +404,18 @@ func runPull(args []string) {
 }
 
 func syncTransaction(commandOffline bool) *synctransaction.Transaction {
-	return synctransaction.New(synctransaction.Options{
-		Offline:    offlineMode || commandOffline,
-		Invalidate: invalidateInventory,
-		Now:        syncTransactionClock(),
-	})
+	offline := offlineMode || commandOffline
+	options := synctransaction.Options{
+		Offline:         offline,
+		Invalidate:      invalidateInventory,
+		Now:             syncTransactionClock(),
+		DescribeFailure: machinecontract.DescribeSyncFailure,
+		Observe:         noteInventoryFreshness,
+	}
+	if !offline {
+		options.SpawnBackground = spawnBackgroundSync
+	}
+	return synctransaction.New(options)
 }
 
 func invalidateInventory() {

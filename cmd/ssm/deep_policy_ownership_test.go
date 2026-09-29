@@ -655,8 +655,11 @@ var reviewedCommandPolicyBoundaries = map[string]bool{
 	// These are the command's reviewed invocation roots. A root may invoke an
 	// owner directly; policy-bearing helpers and closures below it are still
 	// rejected by the graph.
-	"runArgvStream":     true,
-	"runAgentRequest":   true,
+	"runArgvStream":   true,
+	"runAgentRequest": true,
+	// The detached local-first sync process; it composes the sync transaction
+	// with the publication lock and owns no refresh policy itself.
+	"runBackgroundSync": true,
 	"runCheck":          true,
 	"runDoctor":         true,
 	"runExecSpec":       true,
@@ -910,7 +913,9 @@ func assertSyncTransactionDepth(t *testing.T, packageAST astPackage) {
 	t.Helper()
 	assertPolicyPaths(t, packageAST, "sync transaction", []policyPath{
 		{function: "configuration", calls: []string{"ReadFile", "json.Unmarshal"}},
-		{function: "refreshConfigured", calls: []string{"RemoteETag", "Pull", "commitSuccess"}},
+		{function: "refreshConfigured", calls: []string{"RemoteETag", "applyRemoteIdentity"}},
+		{function: "applyRemoteIdentity", calls: []string{"Pull", "commitSuccess", "preserveConflict"}},
+		{function: "BackgroundSync", calls: []string{"RemoteETag", "applyRemoteIdentity", "recordFailure", "recordSuccess"}},
 		{function: "PreparePublication", calls: []string{"InspectRemoteBlob", "preserveConflict"}},
 		{function: "SendPublication", calls: []string{"ObservePublicationIdentity", "PushBlobObserved"}},
 		{function: "Facts", calls: []string{"configuration", "localFacts"}},

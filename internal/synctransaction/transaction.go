@@ -43,6 +43,7 @@ type RemoteState string
 const (
 	RemoteChecked          RemoteState = "checked"
 	RemoteNotChecked       RemoteState = "not_checked"
+	RemoteUnreachable      RemoteState = "unreachable"
 	RemoteNotConfigured    RemoteState = "not_configured"
 	RemoteAutoSyncDisabled RemoteState = "auto_sync_disabled"
 )
@@ -166,18 +167,37 @@ type Facts struct {
 	RemoteETag    string
 	Conflict      *SyncConflict
 	Changed       bool
+
+	// Local-first facts. They describe the last background or explicit sync
+	// outcome recorded in sync-state.json; they are empty in strict mode.
+	LastSuccess string
+	NextAttempt string
+	LastError   *SyncError
+	Stale       bool
 }
 
 type Options struct {
 	Offline    bool
 	Invalidate func()
 	Now        func() time.Time
+	// SpawnBackground starts the detached background sync process. It is
+	// called only in local-first mode, only when an automatic attempt is due
+	// and this process won the atomic claim. Nil disables background sync.
+	SpawnBackground func() error
+	// DescribeFailure classifies a sync failure into a stable cause and a
+	// redacted, address-free message for the recorded last_error.
+	DescribeFailure func(error) (cause, message string)
+	// Observe receives the facts of every successful inventory-read Refresh.
+	Observe func(Facts)
 }
 
 type Transaction struct {
 	offline    bool
 	invalidate func()
 	now        func() time.Time
+	spawn      func() error
+	describe   func(error) (string, string)
+	observe    func(Facts)
 }
 
 // Stream owns synchronization policy for one run --stream process lifetime.
@@ -189,6 +209,11 @@ type Stream struct {
 	interval    time.Duration
 	nextRefresh time.Time
 	initialized bool
+	// baseline is the local encrypted-blob identity the stream last observed
+	// in local-first mode; a change means a background pull (or another
+	// process) replaced the vault and the caller must reload its snapshot.
+	baseline    string
+	baselineSet bool
 }
 
 func New(opts Options) *Transaction {
@@ -196,7 +221,16 @@ func New(opts Options) *Transaction {
 	if now == nil {
 		now = time.Now
 	}
-	return &Transaction{offline: opts.Offline, invalidate: opts.Invalidate, now: now}
+	return &Transaction{
+		offline: opts.Offline, invalidate: opts.Invalidate, now: now,
+		spawn: opts.SpawnBackground, describe: opts.DescribeFailure, observe: opts.Observe,
+	}
+}
+
+// LocalFirst reports whether inventory reads use the local vault without
+// waiting for the sync service. strict restores refresh-before-read.
+func (t *Transaction) LocalFirst() bool {
+	return config.LoadSettings().EffectiveSyncMode() == config.SyncModeLocalFirst
 }
 
 // Offline reports whether this transaction is forbidden from consulting sync
@@ -254,6 +288,17 @@ func (s *Stream) refresh() (Facts, error) {
 	if err != nil {
 		return facts, err
 	}
+	if s.transaction.LocalFirst() {
+		if identity, identityErr := localOpaqueIdentity(); identityErr == nil {
+			if s.baselineSet && identity != s.baseline && !facts.Changed {
+				facts.Changed = true
+				if s.transaction.invalidate != nil {
+					s.transaction.invalidate()
+				}
+			}
+			s.baseline, s.baselineSet = identity, true
+		}
+	}
 	s.nextRefresh = s.transaction.now().Add(s.interval)
 	return facts, nil
 }
@@ -304,12 +349,28 @@ func (t *Transaction) InspectLocal() (Facts, error) {
 // cloud configuration or transport. Missing configuration retains the
 // unconfigured behavior; every present invalid configuration is fatal.
 func (t *Transaction) Refresh() (Facts, error) {
-	return t.refresh(false)
+	facts, err := t.refresh(false)
+	if err == nil && t.observe != nil {
+		t.observe(facts)
+	}
+	return facts, err
 }
 
 // Sync performs an explicit refresh even when automatic sync is disabled.
 func (t *Transaction) Sync() (Facts, error) {
-	return t.refresh(true)
+	facts, err := t.refresh(true)
+	t.recordExplicitOutcome(err)
+	return facts, err
+}
+
+// recordExplicitOutcome updates sync-state.json after an explicit sync, pull,
+// or publication step in local-first mode. strict mode does not use the state
+// file, so its behavior (including clock reads) is exactly v2.0.2.
+func (t *Transaction) recordExplicitOutcome(err error) {
+	if t.offline || !t.LocalFirst() {
+		return
+	}
+	t.recordOutcome(err)
 }
 
 func (t *Transaction) refresh(explicit bool) (Facts, error) {
@@ -330,11 +391,44 @@ func (t *Transaction) refresh(explicit bool) (Facts, error) {
 		}
 		return facts, nil
 	}
-	if !explicit && !config.LoadSettings().AutoSync {
+	settings := config.LoadSettings()
+	if !explicit && !settings.AutoSync {
 		facts.Remote = RemoteAutoSyncDisabled
 		return facts, nil
 	}
+	if !explicit && settings.EffectiveSyncMode() == config.SyncModeLocalFirst {
+		return t.refreshLocalFirst(facts, settings), nil
+	}
 	return t.refreshConfigured(cfg, facts, false)
+}
+
+// refreshLocalFirst answers from local facts only: it never contacts the sync
+// service. When an automatic attempt is due it claims that attempt atomically
+// in sync-state.json and starts one detached background process. Failure to
+// claim or spawn never affects the calling command.
+func (t *Transaction) refreshLocalFirst(facts Facts, settings *config.Settings) Facts {
+	now := t.now()
+	state := LoadSyncState()
+	if t.spawn != nil && state.due(now) && t.claimBackground(now) {
+		if err := t.spawn(); err != nil {
+			config.Debug("background sync: spawn failed")
+			t.releaseClaim()
+		}
+	}
+	return t.decorateLocalFirst(facts, settings, LoadSyncState())
+}
+
+// decorateLocalFirst adds the recorded sync outcome and staleness to facts for
+// a configured, auto-sync-enabled local-first inventory read.
+func (t *Transaction) decorateLocalFirst(facts Facts, settings *config.Settings, state SyncState) Facts {
+	facts.Remote = remoteStateFromState(state)
+	facts.LastSuccess = state.LastSuccessAt
+	facts.NextAttempt = state.NextAttemptAt
+	facts.LastError = state.LastError
+	facts.LastSync, facts.CacheAge = cacheAge(settings, t.now(), state.LastSuccessAt)
+	facts.Stale = facts.LastSync != "" &&
+		time.Duration(facts.CacheAge)*time.Second > settings.EffectiveStaleAfter()
+	return facts
 }
 
 func (t *Transaction) refreshConfigured(cfg *cloud.CloudConfig, facts Facts, forcePull bool) (Facts, error) {
@@ -342,6 +436,12 @@ func (t *Transaction) refreshConfigured(cfg *cloud.CloudConfig, facts Facts, for
 	if err != nil {
 		return facts, fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err)
 	}
+	return t.applyRemoteIdentity(cfg, facts, remote, forcePull)
+}
+
+// applyRemoteIdentity decides between no-op, conflict and pull for an already
+// observed remote identity.
+func (t *Transaction) applyRemoteIdentity(cfg *cloud.CloudConfig, facts Facts, remote string, forcePull bool) (Facts, error) {
 	facts.Remote = RemoteChecked
 	if !forcePull && remote != "" && remote == facts.RemoteETag {
 		facts.Remote = RemoteChecked
@@ -376,6 +476,12 @@ func (t *Transaction) refreshConfigured(cfg *cloud.CloudConfig, facts Facts, for
 }
 
 func (t *Transaction) Pull() (Facts, error) {
+	facts, err := t.pull()
+	t.recordExplicitOutcome(err)
+	return facts, err
+}
+
+func (t *Transaction) pull() (Facts, error) {
 	facts := t.localFacts()
 	cfg, state, err := t.configuration()
 	facts.Configuration = state
@@ -451,7 +557,12 @@ func (t *Transaction) RemoteIdentity() (string, error) {
 // PreparePublication performs push preflight and returns only safe opaque
 // identities. Callers must durably persist their exact scope and this plan
 // before SendPublication.
-func (t *Transaction) PreparePublication(blob []byte) (PreparedPublication, error) {
+func (t *Transaction) PreparePublication(blob []byte) (_ PreparedPublication, err error) {
+	defer func() {
+		if err != nil && !errors.Is(err, ErrUnconfigured) {
+			t.recordExplicitOutcome(err)
+		}
+	}()
 	facts := t.localFacts()
 	cfg, state, err := t.configuration()
 	if err != nil {
@@ -514,7 +625,12 @@ func (t *Transaction) ObservePublicationIdentity() (BlobIdentity, error) {
 // SendPublication verifies that the prerequisite has not changed, then sends
 // the exact opaque target. It does not commit sync metadata; the inventory
 // owner does that only after target equality and local finalization.
-func (t *Transaction) SendPublication(blob []byte, prepared PreparedPublication) (BlobIdentity, error) {
+func (t *Transaction) SendPublication(blob []byte, prepared PreparedPublication) (_ BlobIdentity, err error) {
+	defer func() {
+		if err != nil {
+			t.recordExplicitOutcome(err)
+		}
+	}()
 	if opaqueIdentity(blob) != prepared.Target {
 		return BlobIdentity{}, fmt.Errorf("%w: prepared target identity changed", ErrPushNotSent)
 	}
@@ -582,6 +698,7 @@ func (t *Transaction) preservePublicationConflict(prepared PreparedPublication, 
 // owner has confirmed target equality and finalized the exact local IDs.
 func (t *Transaction) ConfirmPublication(target string) {
 	t.commitSuccess("push", target)
+	t.recordExplicitOutcome(nil)
 }
 
 func (t *Transaction) PushBlob(blob []byte) (Facts, error) {
@@ -644,10 +761,18 @@ func (t *Transaction) Facts() Facts {
 	case ConfigurationUnconfigured:
 		facts.Remote = RemoteNotConfigured
 	case ConfigurationConfigured:
-		if config.LoadSettings().AutoSync {
-			facts.Remote = RemoteChecked
-		} else {
+		settings := config.LoadSettings()
+		switch {
+		case !settings.AutoSync:
 			facts.Remote = RemoteAutoSyncDisabled
+			if settings.EffectiveSyncMode() == config.SyncModeLocalFirst {
+				facts = t.decorateLocalFirst(facts, settings, LoadSyncState())
+				facts.Remote = RemoteAutoSyncDisabled
+			}
+		case settings.EffectiveSyncMode() == config.SyncModeLocalFirst:
+			facts = t.decorateLocalFirst(facts, settings, LoadSyncState())
+		default:
+			facts.Remote = RemoteChecked
 		}
 	case ConfigurationInvalid:
 		facts.Remote = RemoteNotChecked
@@ -764,9 +889,9 @@ func clearConflict() error {
 	return err
 }
 
-func cacheAge(settings *config.Settings, now time.Time) (string, int64) {
+func cacheAge(settings *config.Settings, now time.Time, confirmations ...string) (string, int64) {
 	var latest time.Time
-	for _, raw := range []string{settings.LastPull, settings.LastPush} {
+	for _, raw := range append([]string{settings.LastPull, settings.LastPush}, confirmations...) {
 		if parsed, err := time.Parse(time.RFC3339, raw); err == nil && parsed.After(latest) {
 			latest = parsed
 		}

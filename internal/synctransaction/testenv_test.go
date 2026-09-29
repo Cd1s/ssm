@@ -17,6 +17,9 @@ func isolateTestUserConfig(t *testing.T) string {
 	t.Setenv("APPDATA", home)
 	t.Setenv("LOCALAPPDATA", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	// The policy tests assert refresh-before-read, the strict sync mode.
+	// local_first tests select their mode explicitly.
+	t.Setenv(config.SyncModeEnv, config.SyncModeStrict)
 	return home
 }
 

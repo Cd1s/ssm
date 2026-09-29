@@ -145,6 +145,7 @@ func executeRunSpec(v *config.Vault, name string, spec remoteRunSpec) ssh.RunRes
 			Alias:          name,
 			Exit:           machinecontract.ProcessExit(failure),
 			ResultMetadata: failure.ResultMetadata(),
+			InventoryStale: inventoryStale,
 		}
 	}
 	applyRunSpecEnv(spec)
@@ -175,6 +176,7 @@ func executeRunSpec(v *config.Vault, name string, spec remoteRunSpec) ssh.RunRes
 		runOpts.ScriptLabel = script.Label
 	}
 	res := ssh.Run(c, v, runOpts)
+	res.InventoryStale = inventoryStale
 	if len(spec.Scripts) == 1 && spec.Preflight {
 		if spec.Plan {
 			res.Preflight = "pending"

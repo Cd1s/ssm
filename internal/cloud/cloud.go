@@ -60,6 +60,14 @@ func PushFailureIsAmbiguous(err error) bool {
 
 var httpClient = &http.Client{Timeout: 15 * time.Second}
 
+// SetRequestTimeout bounds every later sync-service request in this process.
+// The detached background sync uses a shorter bound than interactive commands.
+func SetRequestTimeout(timeout time.Duration) {
+	if timeout > 0 {
+		httpClient.Timeout = timeout
+	}
+}
+
 var maxPullBlobBytes int64 = 64 << 20
 
 func cloudPath() string {

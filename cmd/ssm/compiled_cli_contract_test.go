@@ -82,6 +82,11 @@ func TestMain(m *testing.M) {
 		_, _ = io.WriteString(os.Stderr, "config=\"{\\\"token\\\":\\\"FALLBACK_LOCAL_TAR_DIAGNOSTIC\\\"}\"\n")
 		os.Exit(31)
 	}
+	// The inventory-read tests written for v2.0.2 assert refresh-before-read
+	// behavior, which is the strict sync mode. local_first tests opt in by
+	// setting SSM_SYNC_MODE for the compiled process they run. In-process tests
+	// must never start a detached background sync from the test binary.
+	_ = os.Setenv("SSM_SYNC_MODE", "strict")
 	if os.Getenv("SSM_TEST_PUSH_HELPER") == "1" {
 		os.Exit(m.Run())
 	}
@@ -453,6 +458,7 @@ func isolatedCompiledCLIEnvironmentWith(home, temp string, overrides map[string]
 		"SSM_FORWARD_STDIN":          true,
 		"SSM_RUN_OUTPUT":             true,
 		"SSM_TEST_PUBLICATION_FAULT": true,
+		"SSM_OFFLINE":                true,
 	}
 	for key := range overrides {
 		blocked[key] = true
@@ -473,6 +479,9 @@ func isolatedCompiledCLIEnvironmentWith(home, temp string, overrides map[string]
 	)
 	if _, overridden := overrides["SSM_UPDATE_REPO"]; !overridden {
 		env = append(env, "SSM_UPDATE_REPO=off")
+	}
+	if _, overridden := overrides["SSM_SYNC_MODE"]; !overridden {
+		env = append(env, "SSM_SYNC_MODE=strict")
 	}
 	keys := make([]string, 0, len(overrides))
 	for key := range overrides {

@@ -1115,6 +1115,14 @@ func publishingIntentPath() string {
 	return filepath.Join(config.Dir(), "publishing-intent.json")
 }
 
+// HasPublishingIntent reports whether a publishing-intent recovery record
+// exists. The background sync uses it to leave an unreconciled publication
+// alone; the record itself is never read.
+func HasPublishingIntent() bool {
+	_, err := os.Lstat(publishingIntentPath())
+	return err == nil
+}
+
 func savePublishingIntent(intent publishingIntent) error {
 	if err := validatePublishingIntent(intent); err != nil {
 		return err

@@ -93,7 +93,7 @@ SSM refuses to overwrite a key shared by another host. Use `--key-name` to creat
 
 ## Verify, then push
 
-Host mutations require a successful remote refresh. With `--verify` (the request default), the candidate is checked before saving; failure returns `applied:false` and leaves the encrypted vault unchanged. They intentionally do not use silent auto-push. A refresh failure returns `sync_pull_failed`; use `--offline` only when stale local state is explicitly acceptable.
+Host mutations use the local inventory in the default local_first sync mode, so they succeed and stay pending while the sync service is down; in `sync_mode: strict` they require a successful remote refresh. With `--verify` (the request default), the candidate is checked before saving; failure returns `applied:false` and leaves the encrypted vault unchanged. They intentionally do not use silent auto-push. In strict mode a refresh failure returns `sync_pull_failed`; use `--offline` only when stale local state is explicitly acceptable.
 
 ```bash
 sshctl host show <alias> --json
