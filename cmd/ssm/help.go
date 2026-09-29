@@ -57,7 +57,7 @@ func isKnownCommand(sshctl bool, command string) bool {
 func optionRegion(sshctl bool, command string, rest []string) []string {
 	switch command {
 	case "run", "exec", "plan":
-		return rest[:remoteArgvStart(rest)]
+		return rest[:runOptionEnd(rest)]
 	case "map":
 		return rest[:mapOptionEnd(rest)]
 	}
