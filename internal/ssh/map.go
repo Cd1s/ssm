@@ -22,8 +22,9 @@ type MapJob struct {
 	Secrets        map[string]string
 	Mode           string
 	Preflight      bool
-	RetryDial      int
-	RetryBackoff   time.Duration
+	RetryDial int
+	RetryBackoff time.Duration
+	ExecTimeout time.Duration
 }
 
 // Map runs jobs with bounded parallelism. Each job resolves alias redirects
@@ -99,8 +100,12 @@ func runMapJob(v *config.Vault, job MapJob, noReuse bool) RunResult {
 		Interpreter:    job.Interpreter,
 		ScriptLabel:    job.ScriptLabel,
 		Mode:           job.Mode,
+<<<<<<< HEAD
 		RetryDial:      job.RetryDial,
 		RetryBackoff:   job.RetryBackoff,
+=======
+		ExecTimeout:    job.ExecTimeout,
+>>>>>>> 50394ae (feat(run): add exec timeout, handshake deadline and SSH keepalive)
 	})
 	if job.Input != "" && job.Preflight {
 		res.Preflight = "passed"

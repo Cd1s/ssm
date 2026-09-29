@@ -30,6 +30,9 @@ type RunOptions struct {
 	Capture     bool              // capture stdout/stderr into RunResult
 	PlanOnly    bool              // do not dial/run
 	NoReuse     bool
+	// ExecTimeout, when positive, bounds how long the command may run: SIGTERM
+	// at the deadline, then the session is closed after a grace period.
+	ExecTimeout time.Duration
 	Interpreter string
 	ScriptLabel string
 	Mode        string
@@ -55,6 +58,7 @@ type RunResult struct {
 	Exit          int    `json:"exit"`
 	Stdout        string `json:"stdout,omitempty"`
 	Stderr        string `json:"stderr,omitempty"`
+	TimedOut      bool   `json:"timed_out,omitempty"`
 	LatencyMS     int64  `json:"latency_ms,omitempty"`
 	RemoteCommand string `json:"remote_command,omitempty"` // secrets redacted
 	machinecontract.ResultMetadata
@@ -412,7 +416,9 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 	if !opts.Capture {
 		interrupt = watchRunInterrupt(session)
 	}
+	execDeadline := watchExecTimeout(session, opts.ExecTimeout)
 	err = session.Run(full)
+	execDeadline.stop()
 	if interrupt != nil {
 		interrupt.stop()
 	}
@@ -443,6 +449,23 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 			_ = machinecontract.WriteHuman(failure)
 			return res
 		}
+	}
+	if execDeadline.expired() {
+		// sshctl ended the command itself, so any EOF or missing exit status
+		// is a consequence of that, not a lost connection.
+		if !opts.Capture {
+			_ = output.Finish(false)
+		}
+		failure := machinecontract.Classify(machinecontract.ExecTimedOut, machinecontract.Details{
+			Message: fmt.Sprintf("command exceeded --exec-timeout %s", opts.ExecTimeout),
+			Alias:   opts.RequestedAlias,
+		})
+		applyRunFailure(&res, failure)
+		res.TimedOut = true
+		if !opts.Capture {
+			_ = machinecontract.WriteHuman(failure)
+		}
+		return res
 	}
 	if err != nil {
 		uncapturedInterpreterMarker := false

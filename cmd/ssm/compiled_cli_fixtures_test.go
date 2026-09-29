@@ -316,6 +316,10 @@ type compiledSSHFixtureOptions struct {
 	// DropDuringHandshake closes each accepted TCP connection before the SSH
 	// handshake, as a server that resets or hangs up on new clients.
 	DropDuringHandshake bool
+	// SilentHandshake accepts each TCP connection and then sends nothing and
+	// never answers, as an sshd that is out of resources or a black-holed
+	// path. Only a client-side deadline can end the handshake.
+	SilentHandshake bool
 	// DropAfterExec closes the TCP connection right after accepting an exec
 	// request, as a host that reboots while the command runs.
 	DropAfterExec bool
@@ -506,6 +510,12 @@ func (f *compiledSSHFixture) serve(serverConfig *gossh.ServerConfig) {
 
 func (f *compiledSSHFixture) serveConnection(raw net.Conn, serverConfig *gossh.ServerConfig) {
 	if f.options.DropDuringHandshake {
+		_ = raw.Close()
+		return
+	}
+	if f.options.SilentHandshake {
+		// Hold the connection open until the client or the fixture closes it.
+		_, _ = io.Copy(io.Discard, raw)
 		_ = raw.Close()
 		return
 	}

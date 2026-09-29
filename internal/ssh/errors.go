@@ -24,10 +24,13 @@ func ClassifyError(err error, connection config.Connection) *machinecontract.Cla
 	return machinecontract.NewClassifiedError(failure)
 }
 
-// DialTimeout returns the SSH dial timeout from SSM_TIMEOUT / SSM_DIAL_TIMEOUT
-// or the default 15s. Values are Go durations ("10s", "1m") or integer seconds.
+// DialTimeout returns the connect timeout: the total budget for TCP connect
+// plus the SSH handshake (including authentication). It reads
+// SSM_CONNECT_TIMEOUT (--connect-timeout), then SSM_TIMEOUT (the --timeout
+// compatibility alias) and SSM_DIAL_TIMEOUT, else defaults to 15s. Values are
+// Go durations ("10s", "1m") or integer seconds.
 func DialTimeout() time.Duration {
-	for _, key := range []string{"SSM_TIMEOUT", "SSM_DIAL_TIMEOUT"} {
+	for _, key := range []string{"SSM_CONNECT_TIMEOUT", "SSM_TIMEOUT", "SSM_DIAL_TIMEOUT"} {
 		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 			if duration, err := parseTimeout(value); err == nil && duration > 0 {
 				return duration

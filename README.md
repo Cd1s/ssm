@@ -149,6 +149,8 @@ sshctl run my-server --stream
 ["uname","-sr"]
 ```
 
+要限制命令的运行时间，用 `--exec-timeout 2m`（到期先发 SIGTERM，再返回 `exec_timeout`、退出码 124 和已收到的输出）；`--connect-timeout` 及其别名 `--timeout` 只管建连。详见[超时与 keepalive](#超时与-keepalive)。
+
 在线 stream 的 `--refresh` 必须为正数；`--refresh=0` 只有在显式全局 `--offline` 时才允许。复杂 shell 语法、动态参数或 secret 使用 request 文件；不要把生成的脚本塞进 `bash -c`。
 
 #### 运行脚本（shell 或 Python）
@@ -286,6 +288,7 @@ PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
 | 0 | 成功。 |
 | 1 | sshctl 的非 SSH 传输层失败：`internal`、vault、同步与更新错误，所有 `host` 与 `host-key` 子命令失败（包括其中的 `alias_not_found`），`script_syntax_error`，以及 `put`/`get` 的传输错误（`remote_write_failed`、`transfer_timeout`、`integrity_failed`、`partial_state_*`、`local_read_failed`）；或远端命令返回 1。请读 `error`。 |
 | 2 | 参数或 request 无效（`invalid_arguments`、`invalid_request`），或远端命令返回 2。 |
+| 124 | `run`、`map` 的 `--exec-timeout` 到期（`exec_timeout`）：先向远端发 SIGTERM，宽限期后关闭 session。与 GNU `timeout` 的退出码一致；远端命令自己也可能返回 124，请读 `error`。 |
 | 127 | 远端脚本解释器不存在（`interpreter_not_found`），或远端命令返回 127。 |
 | 128 + 信号编号 | 本地 SIGINT/SIGTERM/SIGHUP 中断了 `run`（`interrupted`；130、143、129）。信号已转发，远端命令可能仍在运行。 |
 | 255 | `run`、`map`、`check`、`doctor`、`put`、`get` 的 SSH 传输层失败：`dial_timeout`、`dial_refused`、`dial_network`、`handshake_failed`、`host_key_unknown`/`host_key_mismatch`/`host_key_type_changed`（连接被拒绝）、`auth_failed`、`no_auth_configured`、`session_failed`、`connection_lost`；以及 `run`、`map`、`check`、`doctor` 的 `alias_not_found`。远端命令本身也可能返回 255。 |
@@ -298,9 +301,27 @@ PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
 是否可以安全重试，取决于命令有没有发出：
 
 - 可以重试：`dial_timeout`、`dial_refused`、`dial_network`；`handshake_failed`（`stage:handshake`，TCP 已连上但 SSH 握手失败，例如 EOF、connection reset 或协议错误，命令没有发出）；以及 `stage:session` 的 `session_failed`（会话没能打开，命令没有发出）。`no common algorithm` 这类确定性的握手失败每次都会同样失败，重试没有意义，应修正算法或服务器配置。`auth_failed` 和 `host_key_*` 保持各自的错误码，需要修复而不是重试。
+- 不可盲目重试：`exec_timeout`（`stage:remote_execution`，带 `timed_out:true`）。命令已经发出并跑到了 `--exec-timeout`；sshctl 发过 SIGTERM 并在宽限期后关闭了 session，但远端进程可能仍在运行。先在主机上确认，再决定是否加大 `--exec-timeout` 重跑。
 - 不可安全重试：`connection_lost`（`stage:remote_execution`，并带 `outcome:"unknown"`）。命令发出后连接中断，例如主机重启或执行了 `sysupgrade`，远端命令可能仍在运行，也可能已经结束。先去主机上确认进程状态。
 
 `outcome` 是加性字段，只出现在 `connection_lost` 上。
+
+#### 超时与 keepalive
+
+每个超时管的是不同的阶段，不要混用：
+
+| 选项 | 管什么 | 默认 |
+|---|---|---|
+| `--connect-timeout <时长>` | TCP 建连 **加上** SSH 握手（含认证）的总时限。到期报 `handshake_failed`（`stage:handshake`，命令没有发出，可以安全重试，提示可调大 `--connect-timeout`）；TCP 都没连上仍报 `dial_timeout`。 | 15s |
+| `--timeout <时长>`（`run`/`exec`/`plan`/`map`） | `--connect-timeout` 的兼容别名。它是连接超时，**不是执行超时**。 | 15s |
+| `--exec-timeout <时长>` | 远端命令最长运行多久（`run`/`exec`/`plan`、`map`、`run --stream` 的每一行；request 用 `exec_timeout`）。到期先发 `SIGTERM`，5 秒宽限期后关闭 session，返回 `exec_timeout`，退出码 124，JSON 带 `timed_out:true` 与已收到的 `stdout`/`stderr`；human 模式已流式输出的内容保留，最后打印分类行。 | 不限制 |
+| `put`/`get` 的 `--timeout` | 文件传输超时（`transfer_timeout`）。语义不变。 | 不限制 |
+
+环境变量 `SSM_CONNECT_TIMEOUT` 等价于 `--connect-timeout`（`SSM_TIMEOUT` 是旧别名）。没有任何选项时握手期限也生效，取默认 15s。
+
+**契约变化。** `--timeout` 过去只限制 TCP 建连，握手阶段可以无限期挂住；现在它覆盖 TCP 建连加握手。这是对挂死行为的收紧：能正常握手的连接不受影响；握手卡住的连接会在期限内以 `handshake_failed` 失败，而不再无限等待。超时的握手（TCP 已连上）归为 `handshake_failed` 而不是 `dial_timeout`，因为命令没有发出、可以安全重试，且卡住的原因是 sshd（限流、OOM、半开）而不是网络不可达。
+
+**Keepalive。** 默认开启：每 15 秒对每条 SSH 连接发一次 `keepalive@openssh.com`（要求回复）；连续 3 次没有回复就关闭连接，此时正在运行的命令报 `connection_lost`（`outcome:"unknown"`）。连接池里复用的连接同样受益。`SSM_KEEPALIVE=0` 关闭；`SSM_KEEPALIVE=<时长>`（如 `5s`）修改间隔。sshctl 因 `--exec-timeout` 自己关闭 session 后得到的 EOF 不会被报成 `connection_lost`。
 
 动态或不可信参数、脚本、secret 文件路径、传输和主机变更使用 schema version 1 的[request-v1 schema](skills/agent-ssm/references/request-v1.schema.json)：
 

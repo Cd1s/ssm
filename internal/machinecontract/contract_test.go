@@ -44,8 +44,15 @@ func TestMachineContractMatrix(t *testing.T) {
 			name: "handshake failed", kind: HandshakeFailed,
 			details: Details{Message: "ssh: handshake failed: EOF", Alias: "hs"},
 			code:    "handshake_failed", stage: "handshake",
-			hint: "TCP connected but the SSH handshake failed before any command was sent, so retrying is safe; check that sshd is healthy and not rate limiting connections (MaxStartups, fail2ban)",
+			hint: "TCP connected but the SSH handshake failed before any command was sent, so retrying is safe; check that sshd is healthy and not rate limiting connections (MaxStartups, fail2ban); if the server is only slow, raise --connect-timeout",
 			exit: 255, alias: "hs",
+		},
+		{
+			name: "exec timeout", kind: ExecTimedOut,
+			details: Details{Message: "command exceeded --exec-timeout 2s", Alias: "slow"},
+			code:    "exec_timeout", stage: "remote_execution",
+			hint: "sshctl stopped the command after --exec-timeout: it sent SIGTERM and closed the session after a grace period, so the remote command may still be running; stdout and stderr hold what arrived before the deadline. Check the process state on the host, raise --exec-timeout, or run long work in the background on the host",
+			exit: 124, alias: "slow",
 		},
 		{
 			name: "internal", kind: InternalFailure,

@@ -206,11 +206,18 @@ func (f *compiledExecSSHFixture) Connection(alias string) config.Connection {
 
 func trustCompiledExecSSHHost(t *testing.T, h *compiledCLIHarness, fixture *compiledExecSSHFixture) {
 	t.Helper()
+	trustCompiledExecSSHAddress(t, h, fixture.listener.Addr().String(), fixture.signer)
+}
+
+// trustCompiledExecSSHAddress records signer's key for address, which may be a
+// proxy in front of the fixture.
+func trustCompiledExecSSHAddress(t *testing.T, h *compiledCLIHarness, address string, signer gossh.Signer) {
+	t.Helper()
 	directory := filepath.Join(h.home, ".ssh")
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	line := knownhosts.Line([]string{knownhosts.Normalize(fixture.listener.Addr().String())}, fixture.signer.PublicKey()) + "\n"
+	line := knownhosts.Line([]string{knownhosts.Normalize(address)}, signer.PublicKey()) + "\n"
 	file, err := os.OpenFile(filepath.Join(directory, "known_hosts"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // path is beneath the harness's isolated home
 	if err != nil {
 		t.Fatal(err)
