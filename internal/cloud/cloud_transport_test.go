@@ -141,8 +141,8 @@ func TestRequestConstructionFailuresNeverExposeServerAddress(t *testing.T) {
 
 	_, remoteErr := RemoteETag(cfg)
 	_, inspectErr := InspectRemoteBlob(cfg)
-	_, pullErr := Pull(cfg)
-	_, expectedErr := PullExpected(cfg, "identity")
+	_, pullErr := pullForTest(cfg)
+	expectedErr := pullExpectedForTest(cfg, "identity")
 	_, pushErr := PushBlob(cfg, []byte("blob"))
 	_, registerErr := Register(server, "user@example.invalid", "PASSWORD_CANARY")
 	_, loginErr := Login(server, "user@example.invalid", "PASSWORD_CANARY")
@@ -185,8 +185,8 @@ func TestTruncatedResponseBodyNeverExposesServerAddress(t *testing.T) {
 		t.Run("reset="+strconv.FormatBool(reset), func(t *testing.T) {
 			setTestHome(t, t.TempDir())
 			cfg := &CloudConfig{Server: server.URL, Token: "TRUNCATED_TOKEN_CANARY"} //nolint:gosec // test-only fake credential canary
-			_, pullErr := Pull(cfg)
-			_, expectedErr := PullExpected(cfg, "identity")
+			_, pullErr := pullForTest(cfg)
+			expectedErr := pullExpectedForTest(cfg, "identity")
 			for name, err := range map[string]error{"Pull": pullErr, "PullExpected": expectedErr} {
 				t.Run(name, func(t *testing.T) {
 					assertNoAddress(t, err, server.URL)

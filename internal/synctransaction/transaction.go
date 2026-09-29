@@ -553,7 +553,14 @@ func (t *Transaction) installFetched(data []byte, etag string, mode pullMode) (F
 	if mode == pullBackground && !config.ValidVaultBlob(data) {
 		return facts, fmt.Errorf("%w: downloaded vault has an invalid format and was not installed", ErrRefresh)
 	}
-	if mode != pullAdopt && diverged(facts, etag) {
+	if mode == pullAdopt {
+		// The adoption was reviewed against specific evidence. If the local
+		// vault changed after that evidence was recorded, the review no longer
+		// covers it: fail closed and keep the newer local state.
+		if facts.Conflict == nil || facts.LocalETag != facts.Conflict.LocalETag {
+			return facts, fmt.Errorf("%w: local vault changed after the conflict was recorded; nothing was replaced, re-check with sshctl --offline --json doctor before adopting", ErrConflict)
+		}
+	} else if diverged(facts, etag) {
 		return t.conflictError(facts, etag)
 	}
 	if err := config.WritePrivateFile(config.Path(), data); err != nil {

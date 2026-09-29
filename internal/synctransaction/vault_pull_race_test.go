@@ -172,7 +172,7 @@ func TestAdoptRemoteInstallsUnderTheVaultLock(t *testing.T) {
 	if err := config.WritePrivateFile(config.Path(), fakeVaultBlob("diverged local")); err != nil {
 		t.Fatal(err)
 	}
-	if err := preserveConflict(SyncConflict{LocalETag: "l", RemoteETag: f.remoteID, CachedETag: opaqueIdentity(f.local)}); err != nil {
+	if err := preserveConflict(SyncConflict{LocalETag: opaqueIdentity(fakeVaultBlob("diverged local")), RemoteETag: f.remoteID, CachedETag: opaqueIdentity(f.local)}); err != nil {
 		t.Fatal(err)
 	}
 	lock, err := config.AcquireFileLock(config.VaultWriteLockName, time.Second)
@@ -318,5 +318,35 @@ func TestUnsyncedFactsAreReportedUntilAConfirmedSync(t *testing.T) {
 	}
 	if facts := f.tx().Facts(); facts.Unsynced {
 		t.Fatalf("a confirmed sync must clear unsynced: %+v", facts)
+	}
+}
+
+// A reviewed adoption covers only the local vault the conflict evidence was
+// recorded for; a later local change makes it fail closed.
+func TestAdoptRemoteRefusesWhenTheLocalVaultChangedAfterTheConflictWasRecorded(t *testing.T) {
+	f := newPullRace(t, config.SyncModeStrict, nil)
+	reviewed := fakeVaultBlob("diverged local")
+	if err := config.WritePrivateFile(config.Path(), reviewed); err != nil {
+		t.Fatal(err)
+	}
+	if err := preserveConflict(SyncConflict{LocalETag: opaqueIdentity(reviewed), RemoteETag: f.remoteID, CachedETag: opaqueIdentity(f.local)}); err != nil {
+		t.Fatal(err)
+	}
+	newer := fakeVaultBlob("diverged local plus a newer mutation")
+	if err := config.WritePrivateFile(config.Path(), newer); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.tx().AdoptRemote(BlobIdentity{Exists: true, Value: f.remoteID})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("adoption over an unreviewed local change error = %v, want %v", err, ErrConflict)
+	}
+	if !bytes.Equal(readVault(t), newer) {
+		t.Fatal("adoption overwrote a local change made after the review")
+	}
+	if got := cachedRemoteIdentity(); got != opaqueIdentity(f.local) {
+		t.Fatalf("cached remote identity moved to %q without the vault being replaced", got)
+	}
+	if loadConflict() == nil {
+		t.Fatal("the conflict evidence must remain for a new review")
 	}
 }

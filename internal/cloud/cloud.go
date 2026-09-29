@@ -168,27 +168,11 @@ func PushBlobObserved(cfg *CloudConfig, data []byte) (string, bool, error) {
 	return etag, etag != "", nil
 }
 
-// Pull atomically replaces the local encrypted vault with opaque response
-// bytes and returns the identity confirmed by that GET. It does not take the
-// vault write lock and does not check for local changes, so production callers
-// use Fetch and install through the sync transaction instead.
-func Pull(cfg *CloudConfig) (string, error) {
-	data, etag, err := Fetch(cfg)
-	if err != nil {
-		return "", err
-	}
-	if err := config.WritePrivateFile(config.Path(), data); err != nil {
-		config.Debug("pull: write vault error: %v", err)
-		return "", err
-	}
-	config.Debug("pull: success")
-	return etag, nil
-}
-
 // Fetch downloads the opaque encrypted vault and its confirmed identity
-// without touching local state. The background sync fetches outside the vault
-// write lock and takes the lock only to compare identities and replace the
-// file.
+// without touching local state. There is deliberately no function here that
+// writes the vault: every pull is installed by the sync transaction, which
+// takes the vault write lock, re-reads local identity, and fails closed on
+// divergence.
 func Fetch(cfg *CloudConfig) ([]byte, string, error) {
 	if err := requireToken(cfg); err != nil {
 		return nil, "", err
@@ -235,21 +219,6 @@ func Fetch(cfg *CloudConfig) ([]byte, string, error) {
 		etag = hashBytes(data)
 	}
 	return data, etag, nil
-}
-
-// PullExpected atomically replaces the local encrypted vault only after the
-// GET body and returned identity both match the expected opaque identity. It
-// does not take the vault write lock; the sync transaction uses FetchExpected
-// and installs under that lock.
-func PullExpected(cfg *CloudConfig, expected string) (string, error) {
-	data, identity, err := FetchExpected(cfg, expected)
-	if err != nil {
-		return "", err
-	}
-	if err := config.WritePrivateFile(config.Path(), data); err != nil {
-		return "", err
-	}
-	return identity, nil
 }
 
 // FetchExpected downloads the vault and verifies that both the response
