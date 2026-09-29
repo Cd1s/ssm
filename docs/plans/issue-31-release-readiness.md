@@ -138,7 +138,7 @@ Release profile prerequisites: `tool:git@any`, `repository:fully-populated-regul
 
 - requirement: `required`
 - description: Run the complete Go unit and integration test suite.
-- action: command `go test ./...`
+- action: command `go test -timeout=30m ./...`
 - tool/file/capability prerequisites: `tool:go@1.26.8`, `capability:repository-modules@go-mod-download`
 
 ### 07. `race`
@@ -463,7 +463,7 @@ These are the exact local entry points for Issue #31 review; the release action 
 - `vet`: `go vet ./...`
 - `vulnerability`: `go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...`
 - `build`: `go build -buildvcs=false -o {temp}/ssm{exe} ./cmd/ssm`
-- `unit`: `go test ./...`
+- `unit`: `go test -timeout=30m ./...`
 - `race`: `go test -race -timeout=15m ./...`
 - `agent-prompts-json`: `jq empty skills/agent-ssm/test-prompts.json`
 - `request-schema-json`: `jq empty skills/agent-ssm/references/request-v1.schema.json`

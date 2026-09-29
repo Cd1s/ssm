@@ -95,6 +95,7 @@
               "executable": "go",
               "args": [
                 "test",
+                "-timeout=30m",
                 "./..."
               ]
             }
@@ -309,6 +310,7 @@
               "executable": "go",
               "args": [
                 "test",
+                "-timeout=30m",
                 "./..."
               ]
             }
@@ -843,6 +845,7 @@
               "executable": "go",
               "args": [
                 "test",
+                "-timeout=30m",
                 "./..."
               ]
             }

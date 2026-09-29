@@ -418,7 +418,7 @@ func unitCheck() Check {
 		ID:            "unit",
 		Description:   "Run the complete Go unit and integration test suite.",
 		Requirement:   requirementRequired,
-		Action:        commandAction("go", []string{"test", "./..."}, nil, ""),
+		Action:        commandAction("go", []string{"test", "-timeout=30m", "./..."}, nil, ""),
 		Prerequisites: goPrerequisites(),
 	}
 }

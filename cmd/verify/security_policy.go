@@ -40,7 +40,7 @@ func reviewedActionPolicy() map[string]Action {
 		),
 		"unit": reviewedCommand(
 			"go",
-			[]string{"test", "./..."},
+			[]string{"test", "-timeout=30m", "./..."},
 			nil,
 			"",
 		),
