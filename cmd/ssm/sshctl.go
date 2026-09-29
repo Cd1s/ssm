@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"ssm/internal/config"
@@ -28,7 +27,7 @@ func runSSHCTLParsed(args []string) {
 		masterPassFile = os.Getenv("SSM_MASTER_PASS_FILE")
 	}
 	if masterPassFile == "" {
-		masterPassFile = filepath.Join(config.Dir(), "master.pass")
+		masterPassFile = defaultMasterPassPath()
 	}
 
 	if len(args) == 0 {

@@ -146,3 +146,45 @@ func TestCompiledDefaultMasterPassFileForBothEntrypoints(t *testing.T) {
 		})
 	})
 }
+
+// Without any master pass (no env, no default file) help must still work: it
+// never unlocks the vault.
+func TestCompiledSubcommandHelpWorksWithoutMasterPass(t *testing.T) {
+	cli := newCompiledCLIHarness(t)
+	cli.SaveVault(t, &config.Vault{})
+	if err := os.Remove(cli.passPath); err != nil {
+		t.Fatal(err)
+	}
+	for _, executable := range []string{"sshctl", "ssm"} {
+		for _, command := range helpSubcommands[executable] {
+			t.Run(executable+" "+command+" --help", func(t *testing.T) {
+				result := cli.RunWithoutMasterPass(t, executable, nil, command, "--help")
+				output := result.Stdout + result.Stderr
+				if result.ProcessExit != 0 || !strings.Contains(output, "Usage") || strings.Contains(output, "master_pass_file") {
+					t.Fatalf("help without master pass: %s", compiledOutputIdentity(result))
+				}
+			})
+		}
+	}
+}
+
+func TestCompiledSSMHelpForSSHCTLOnlyCommandsPointsAtSSHCTL(t *testing.T) {
+	cli := newCompiledCLIHarness(t)
+	for _, command := range []string{"request", "sync", "host-key", "status", "shell", "known-hosts"} {
+		t.Run(command, func(t *testing.T) {
+			result := cli.RunWithoutMasterPass(t, "ssm", nil, command, "--help")
+			if result.ProcessExit != 0 || !strings.Contains(result.Stdout, "ssm has no "+command+" command") || !strings.Contains(result.Stdout, "sshctl") {
+				t.Fatalf("ssm %s --help: %s", command, compiledOutputIdentity(result))
+			}
+		})
+	}
+}
+
+func TestCompiledSSMUnknownCommandKeepsJSONError(t *testing.T) {
+	cli := newCompiledCLIHarness(t)
+	result := cli.RunWithoutMasterPass(t, "ssm", nil, "foo", "x", "--json")
+	value := decodeExactlyOneJSONObject(t, result.Stdout)
+	if result.ProcessExit == 0 || value["ok"] != false {
+		t.Fatalf("ssm unknown command JSON error changed: %s", compiledOutputIdentity(result))
+	}
+}

@@ -5,35 +5,42 @@ import (
 	"strings"
 )
 
-func commandSet(names ...string) map[string]bool {
-	set := make(map[string]bool, len(names))
-	for _, name := range names {
-		set[name] = true
-	}
-	return set
-}
-
 var (
 	helpTokens = []string{"help", "--help", "-h", "--version", "-v"}
+
+	sharedCommands = []string{
+		"pull", "push", "list", "host", "hosts", "run", "exec", "plan", "map", "check", "doctor",
+		"put", "get", "redirect", "alias-link",
+	}
+	sshctlOnlyCommands = []string{"request", "sync", "host-key", "known-hosts", "shell", "status"}
+	ssmOnlyCommands    = []string{
+		"update", "remove", "keys", "ls", "import-json", "server", "register", "login", "logout",
+		"pull-if-changed", "remote-hash",
+	}
 
 	// sshctlCommands are the subcommands of the sshctl entrypoint. A first
 	// token outside this set is a host alias in the "sshctl <alias> <command>"
 	// shorthand, whose remote argv is never scanned for sshctl options.
-	sshctlCommands = commandSet(append([]string{
-		"request", "sync", "pull", "push", "list", "host", "hosts", "host-key", "known-hosts",
-		"run", "exec", "plan", "map", "check", "doctor", "put", "get", "redirect", "alias-link",
-		"shell", "status",
-	}, helpTokens...)...)
+	sshctlCommands = commandSet(sharedCommands, sshctlOnlyCommands, helpTokens)
+
+	// ssmCommands are the subcommands of the ssm entrypoint, which has no
+	// alias shorthand.
+	ssmCommands = commandSet(sharedCommands, ssmOnlyCommands, helpTokens)
 
 	// knownCLICommands is the union of both entrypoints; ssm uses it so that
 	// help for sshctl-only commands can point at sshctl.
-	knownCLICommands = commandSet(append([]string{
-		"request", "sync", "pull", "push", "list", "ls", "host", "hosts", "host-key", "known-hosts",
-		"run", "exec", "plan", "map", "check", "doctor", "put", "get", "redirect", "alias-link",
-		"shell", "status", "update", "remove", "keys", "import-json", "server", "register",
-		"login", "logout", "pull-if-changed", "remote-hash",
-	}, helpTokens...)...)
+	knownCLICommands = commandSet(sharedCommands, sshctlOnlyCommands, ssmOnlyCommands, helpTokens)
 )
+
+func commandSet(groups ...[]string) map[string]bool {
+	set := map[string]bool{}
+	for _, group := range groups {
+		for _, name := range group {
+			set[name] = true
+		}
+	}
+	return set
+}
 
 func isKnownCommand(sshctl bool, command string) bool {
 	if sshctl {
@@ -54,7 +61,9 @@ func optionRegion(sshctl bool, command string, rest []string) []string {
 	case "map":
 		return rest[:mapOptionEnd(rest)]
 	}
-	if !isKnownCommand(sshctl, command) {
+	// Only sshctl has the "sshctl <alias> <command>" shorthand; an unknown
+	// ssm command is an error whose output mode still honors --json.
+	if sshctl && !isKnownCommand(sshctl, command) {
 		return rest[:remoteArgvStart(rest)]
 	}
 	for i, arg := range rest {

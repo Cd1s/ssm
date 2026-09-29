@@ -167,6 +167,7 @@ func TestStartupOutputModeRemoteArgvJSON(t *testing.T) {
 		{"ssm exec remote json", "ssm", []string{"exec", "prod", "echo", "--json"}, false},
 		{"ssm list json", "ssm", []string{"list", "--json"}, true},
 		{"alias shorthand remote json", "sshctl", []string{"prod", "echo", "--json"}, false},
+		{"ssm has no alias shorthand", "ssm", []string{"foo", "x", "--json"}, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if gotJSON, _ := startupOutputMode(test.executable, test.args); gotJSON != test.wantJSON {
@@ -218,5 +219,17 @@ func TestDefaultMasterPassFileIfPresent(t *testing.T) {
 	}
 	if got := defaultMasterPassFileIfPresent(); got != path {
 		t.Fatalf("present master.pass returned %q, want %q", got, path)
+	}
+}
+
+func TestSSMUnknownCommandScansJSONUntilDash(t *testing.T) {
+	if !commandHasJSONFlag(false, "foo", []string{"x", "--json"}) {
+		t.Fatal("ssm has no alias shorthand: --json after an unknown command must stay visible")
+	}
+	if commandHasJSONFlag(false, "foo", []string{"--", "--json"}) {
+		t.Fatal("--json after a bare -- must stay hidden")
+	}
+	if !commandHasJSONFlag(false, "exec", []string{"host", "--json", "echo"}) || commandHasJSONFlag(false, "exec", []string{"host", "echo", "--json"}) {
+		t.Fatal("ssm exec must keep the remote argv boundary")
 	}
 }

@@ -389,6 +389,11 @@ func runUpdate(args []string) {
 		}))
 	}
 	if major {
+		// ReviewMajor unlocks the vault to inspect pending recovery, so it
+		// needs the same default master.pass fallback as unlockVault.
+		if masterPassFile == "" {
+			masterPassFile = defaultMasterPassFileIfPresent()
+		}
 		review, err := update.ReviewMajor(version, yes, masterPassFile)
 		renderFailure := func(cause error) {
 			failure := machinecontract.Classify(machinecontract.UpdateMigrationFailed, machinecontract.Details{Cause: cause})
@@ -714,12 +719,18 @@ func unlockVault() (machinecontract.Failure, bool) {
 	), true
 }
 
+// defaultMasterPassPath is the default master-pass location shared by both
+// entrypoints.
+func defaultMasterPassPath() string {
+	return filepath.Join(config.Dir(), "master.pass")
+}
+
 // defaultMasterPassFileIfPresent returns <config dir>/master.pass when it
 // exists, so ssm unlocks like sshctl without SSM_MASTER_PASS_FILE. When the
 // file is absent it returns "" and the historical ssm behavior (session
 // password cache, master_pass_file_required errors) is unchanged.
 func defaultMasterPassFileIfPresent() string {
-	path := filepath.Join(config.Dir(), "master.pass")
+	path := defaultMasterPassPath()
 	if info, err := os.Stat(path); err == nil && !info.IsDir() {
 		return path
 	}
