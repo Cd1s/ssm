@@ -30,8 +30,10 @@ type remoteRunSpec struct {
 	Preflight bool
 	// Stdin and StdinFile carry the stdin forwarding choice. Only run/exec
 	// honor them; the zero value never forwards (map jobs, argv streams).
-	Stdin     ssh.StdinMode
-	StdinFile string
+	Stdin        ssh.StdinMode
+	StdinFile    string
+	RetryDial    int
+	RetryBackoff time.Duration
 }
 
 // runValueOptions are the sshctl run/exec/plan/map options that consume the
@@ -42,7 +44,7 @@ type remoteRunSpec struct {
 var (
 	runValueOptions = []string{
 		"--jobs", "-j", "--parallel", "--timeout", "--secret", "-e",
-		"--shell", "--interpreter", "-f", "--file", "--scripts", "--refresh",
+		"--shell", "--interpreter", "-f", "--file", "--scripts", "--refresh", "--retry-dial",
 		"--stdin-file",
 	}
 	runFlagOptions = []string{
@@ -123,25 +125,28 @@ func mapOptionEnd(args []string) int {
 // (or after map target list).
 func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 	var (
-		raw       bool
-		fromStdin bool
-		filePaths []string
-		trace     bool
-		timeout   time.Duration
-		jsonOut   = machineJSON
-		plan      bool
-		noReuse   bool
-		workers   int
-		secrets   = map[string]string{}
-		parts     []string
-		shell     string
-		interp    string
-		argvMode  bool
-		preflight bool
-		afterDash bool
-		stdinFlag bool
-		noStdin   bool
-		stdinFile string
+		raw          bool
+		fromStdin    bool
+		filePaths    []string
+		trace        bool
+		timeout      time.Duration
+		jsonOut      = machineJSON
+		plan         bool
+		noReuse      bool
+		workers      int
+		secrets      = map[string]string{}
+		parts        []string
+		shell        string
+		interp       string
+		argvMode     bool
+		preflight    bool
+		afterDash    bool
+		stdinFlag    bool
+		noStdin      bool
+		stdinFile    string
+		retryDial    int
+		retryBackoff time.Duration
+		retryErr     error
 	)
 
 	for i := 0; i < len(args); i++ {
@@ -208,6 +213,20 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 				return remoteRunSpec{}, err
 			}
 			timeout = d
+		case arg == "--retry-dial":
+			if i+1 >= len(args) {
+				return remoteRunSpec{}, fmt.Errorf("--retry-dial requires N[:backoff]")
+			}
+			i++
+			retryDial, retryBackoff, retryErr = parseRetryDial(args[i]) //nolint:gosec // i+1 was bounds-checked immediately above
+			if retryErr != nil {
+				return remoteRunSpec{}, retryErr
+			}
+		case strings.HasPrefix(arg, "--retry-dial="):
+			retryDial, retryBackoff, retryErr = parseRetryDial(strings.TrimPrefix(arg, "--retry-dial="))
+			if retryErr != nil {
+				return remoteRunSpec{}, retryErr
+			}
 		case arg == "--secret", arg == "-e":
 			if i+1 >= len(args) {
 				return remoteRunSpec{}, fmt.Errorf("%s requires NAME=value or NAME=@path", arg)
@@ -398,7 +417,27 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		Preflight: preflight,
 		Stdin:     stdinMode,
 		StdinFile: stdinFile,
+		RetryDial: retryDial, RetryBackoff: retryBackoff,
 	}, nil
+}
+
+func parseRetryDial(value string) (int, time.Duration, error) {
+	parts := strings.Split(value, ":")
+	if len(parts) > 2 || parts[0] == "" {
+		return 0, 0, fmt.Errorf("invalid --retry-dial %q (use N[:backoff])", value)
+	}
+	n, err := strconv.Atoi(parts[0])
+	if err != nil || n < 0 {
+		return 0, 0, fmt.Errorf("invalid --retry-dial %q (N must be non-negative)", value)
+	}
+	backoff := 250 * time.Millisecond
+	if len(parts) == 2 {
+		backoff, err = time.ParseDuration(parts[1])
+		if err != nil || backoff <= 0 {
+			return 0, 0, fmt.Errorf("invalid --retry-dial backoff %q", parts[1])
+		}
+	}
+	return n, backoff, nil
 }
 
 // resolveStdinOptions validates the stdin forwarding options against each

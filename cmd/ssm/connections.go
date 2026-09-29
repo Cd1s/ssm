@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -161,6 +162,8 @@ func executeRunSpec(v *config.Vault, name string, spec remoteRunSpec) ssh.RunRes
 		Mode:           spec.Mode,
 		Stdin:          spec.Stdin,
 		StdinFile:      spec.StdinFile,
+		RetryDial:      spec.RetryDial,
+		RetryBackoff:   spec.RetryBackoff,
 	}
 	if len(spec.Scripts) == 1 {
 		script := spec.Scripts[0]
@@ -261,6 +264,10 @@ func runMap(targetPatterns []string, spec remoteRunSpec) {
 		}
 		ssh.WriteMapResults(planned, spec.JSON)
 		os.Exit(0)
+	}
+	for i := range jobs {
+		jobs[i].RetryDial = spec.RetryDial
+		jobs[i].RetryBackoff = spec.RetryBackoff
 	}
 	results := ssh.Map(v, jobs, workers, spec.NoReuse)
 	ssh.WriteMapResults(results, spec.JSON)
@@ -568,6 +575,96 @@ func runCheck(name string, asJSON bool) {
 	if !res.OK {
 		os.Exit(machinecontract.ConnectionResultExit(res.OK))
 	}
+}
+
+func runWait(args []string) {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.InvalidSSHCTLArguments, machinecontract.Details{Message: "wait requires an exact host alias"}))
+	}
+	name := args[0]
+	timeout, interval := 5*time.Minute, 5*time.Second
+	until := "ssh"
+	for i := 1; i < len(args); i++ {
+		if i+1 >= len(args) {
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.InvalidSSHCTLArguments, machinecontract.Details{Message: fmt.Sprintf("%s requires a value", args[i])}))
+		}
+		switch args[i] {
+		case "--timeout", "--interval":
+			d, err := time.ParseDuration(args[i+1])
+			if err != nil || d <= 0 {
+				os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.InvalidSSHCTLArguments, machinecontract.Details{Message: fmt.Sprintf("invalid %s", args[i])}))
+			}
+			if args[i] == "--timeout" {
+				timeout = d
+			} else {
+				interval = d
+			}
+		case "--until":
+			until = args[i+1]
+		default:
+			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.InvalidSSHCTLArguments, machinecontract.Details{Message: fmt.Sprintf("unknown wait option %q", args[i])}))
+		}
+		i++
+	}
+	if until != "ssh" && until != "tcp" {
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.InvalidSSHCTLArguments, machinecontract.Details{Message: "--until supports ssh or tcp"}))
+	}
+	if _, err := syncTransaction(false).Refresh(); err != nil {
+		os.Exit(machinecontract.WriteFailure(machineJSON, machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullFailed), machinecontract.Failure{}))
+	}
+	v, err := loadVault()
+	if err != nil {
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
+	}
+	c, _, ok := resolveConnection(v, name)
+	if !ok {
+		connectionNotFound(name, v)
+	}
+	deadline := time.Now().Add(timeout)
+	attempts := 0
+	for {
+		attempts++
+		ready := false
+		if until == "tcp" {
+			port := c.Port
+			if port == 0 {
+				port = 22
+			}
+			conn, dialErr := net.DialTimeout("tcp", net.JoinHostPort(c.Host, strconv.Itoa(port)), minDuration(interval, time.Second*5))
+			if dialErr == nil {
+				_ = conn.Close()
+				ready = true
+			}
+		} else {
+			ready = ssh.Check(c, v).OK
+		}
+		if ready {
+			result := struct {
+				OK        bool   `json:"ok"`
+				Alias     string `json:"alias"`
+				Attempts  int    `json:"attempts"`
+				ElapsedMS int64  `json:"elapsed_ms"`
+			}{true, name, attempts, (timeout - time.Until(deadline)).Milliseconds()}
+			if machineJSON {
+				writeMachineValue(result)
+			} else {
+				fmt.Printf("ok=1\nalias=%s\nattempts=%d\n", name, attempts)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			failure := machinecontract.Failure{Error: "wait_timeout", Message: fmt.Sprintf("host %q did not become ready within %s", name, timeout), Hint: "check the host or increase --timeout", Exit: 1, Stage: "wait"}
+			os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+		}
+		time.Sleep(interval)
+	}
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func runDoctor(alias string, deep, asJSON bool) {
