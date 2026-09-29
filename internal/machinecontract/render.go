@@ -386,6 +386,11 @@ func renderStandardHuman(output io.Writer, failure Failure) error {
 			return err
 		}
 	}
+	if failure.SyncCause != "" {
+		if _, err := fmt.Fprintf(output, " cause=%s", failure.SyncCause); err != nil {
+			return err
+		}
+	}
 	if _, err := fmt.Fprintln(output); err != nil {
 		return err
 	}

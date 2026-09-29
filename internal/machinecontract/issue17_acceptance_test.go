@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"golang.org/x/crypto/ssh/knownhosts"
+
+	"ssm/internal/synctransaction"
 )
 
 type issue17FixtureRow struct {
@@ -20,6 +22,7 @@ type issue17FixtureRow struct {
 	JSONExit    int      `json:"json_exit"`
 	ProcessExit int      `json:"process_exit"`
 	Hint        string   `json:"hint,omitempty"`
+	Cause       string   `json:"cause,omitempty"`
 	Alias       string   `json:"alias,omitempty"`
 	Candidates  []string `json:"candidates,omitempty"`
 	Absent      []string `json:"absent,omitempty"`
@@ -55,7 +58,7 @@ func TestIssue17ReviewedFailureRenderingMatrix(t *testing.T) {
 			}
 			if failure.Error != row.Error || failure.Stage != row.Stage ||
 				failure.Exit != row.JSONExit || ProcessExit(failure) != row.ProcessExit ||
-				failure.Hint != row.Hint || alias != row.Alias ||
+				failure.Hint != row.Hint || failure.SyncCause != row.Cause || alias != row.Alias ||
 				!reflect.DeepEqual(failure.Candidates, row.Candidates) {
 				t.Fatalf("classified failure = %+v, reviewed row = %+v, process exit = %d", failure, row, ProcessExit(failure))
 			}
@@ -98,8 +101,9 @@ func TestIssue17PreBC3StreamStartupUsesJSONDocument(t *testing.T) {
 		"  \"ok\": false,\n" +
 		"  \"error\": \"sync_pull_failed\",\n" +
 		"  \"message\": \"sync endpoint failed\",\n" +
-		"  \"hint\": \"fix sync connectivity or restart explicitly with --offline\",\n" +
+		"  \"hint\": \"sync server returned a 5xx error; retry later or retry explicitly with --offline\",\n" +
 		"  \"stage\": \"sync_pull\",\n" +
+		"  \"cause\": \"http_5xx\",\n" +
 		"  \"exit\": 1\n" +
 		"}\n"
 	if stdout.String() != want || stderr.Len() != 0 || strings.Count(strings.TrimSpace(stdout.String()), "\n") == 0 {
@@ -195,7 +199,10 @@ func issue17RenderCases() map[string]issue17RenderCase {
 	remote255 := Classify(RemoteCommandFailed, Details{
 		Message: "remote command exited non-zero", Alias: "remote-255", Exit: 255,
 	})
-	stream := Classify(StreamSyncPullFailed, Details{Message: "sync endpoint failed"})
+	stream := WithSyncCause(
+		Classify(StreamSyncPullFailed, Details{Message: "sync endpoint failed"}),
+		&synctransaction.HTTPStatusError{StatusCode: 503},
+	)
 
 	return map[string]issue17RenderCase{
 		"unknown_sshctl": {
@@ -265,8 +272,8 @@ func issue17RenderCases() map[string]issue17RenderCase {
 		},
 		"stream_refresh_failed": {
 			failure: stream, machineMode: NDJSON, machine: stream,
-			wantMachine: "{\"ok\":false,\"error\":\"sync_pull_failed\",\"message\":\"sync endpoint failed\",\"hint\":\"fix sync connectivity or restart explicitly with --offline\",\"stage\":\"sync_pull\",\"exit\":1}\n",
-			wantHuman:   "ssm: error=sync_pull_failed stage=sync_pull\nError: sync endpoint failed\nssm: hint=fix sync connectivity or restart explicitly with --offline\n",
+			wantMachine: "{\"ok\":false,\"error\":\"sync_pull_failed\",\"message\":\"sync endpoint failed\",\"hint\":\"sync server returned a 5xx error; retry later or retry explicitly with --offline\",\"stage\":\"sync_pull\",\"cause\":\"http_5xx\",\"exit\":1}\n",
+			wantHuman:   "ssm: error=sync_pull_failed stage=sync_pull cause=http_5xx\nError: sync endpoint failed\nssm: hint=sync server returned a 5xx error; retry later or retry explicitly with --offline\n",
 		},
 	}
 }

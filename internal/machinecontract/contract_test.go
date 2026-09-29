@@ -183,7 +183,7 @@ func TestMachineContractMatrix(t *testing.T) {
 		{
 			name: "stream refresh", kind: StreamSyncPullFailed,
 			details: Details{Message: "sync endpoint failed"},
-			code:    "sync_pull_failed", stage: "sync_pull", hint: "fix sync connectivity or restart explicitly with --offline", exit: 1,
+			code:    "sync_pull_failed", stage: "sync_pull", hint: "fix sync connectivity or retry explicitly with --offline", exit: 1,
 		},
 		{
 			name: "host validation", kind: HostInvalidArguments,

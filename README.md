@@ -243,6 +243,8 @@ v2 transfer result 按 `direction`（`put`/`get`）和 `kind`（`file`/`director
 
 `status` 的在线刷新失败会返回 `error:sync_pull_failed` 与 `stage:sync_pull`；存在但格式错误的 `cloud.json` 会返回 `error:sync_config_error`。只有显式 `--offline` 才读取缓存。非 capture 的 human run 默认流式输出：stdout 逐字节透传（包括远端回显的值，与成功输出契约一致），stderr 中的显式 `--secret` 值替换为 `***`，并按行脱敏凭据形态的内容；没有大小上限，也不写临时文件，适合 `tar -czf - dir | tar -xzf -` 这类字节管道和长时间运行的命令。收到 SIGINT/SIGTERM/SIGHUP 时，sshctl 把信号转发给远端命令，输出 flush 后以 `error:interrupted` 和 128+信号编号退出。`--json` 会把完整 stdout/stderr 缓存在内存里再输出一个 JSON 值，失败结果整体脱敏；大输出请用 human 模式或 `get`。设置 `SSM_RUN_OUTPUT=buffered` 可恢复 v2.0.2 的回放模式：结果确定后再输出、失败时整体脱敏、每个流 8 MiB 上限，超限返回 `error:internal`。流式模式不再按行屏蔽 `-s`/`-f` 脚本正文（否则 `set -x` 轨迹会被抹掉），也不再事后脱敏失败时的 stdout，凭据请用 `--secret` 传入；启动时已被忽略的信号（如 `nohup`）保持忽略；`--json` 运行不转发信号。buffered 模式和目录/文件传输的诊断缓冲仍以 0600 私有临时文件保存原始字节，回放后删除，进程被杀留下的文件会在 24 小时后由下一次运行清理。
 
+同步失败的具体原因保留在错误链中：`sync_pull_failed`（以及推送、host 的同步失败）的 `--json` 结果新增顶层 `cause` 字段（仅出现在同步失败上，加性），`message` 带上已脱敏的底层错误，human 输出在 `ssm: error=... stage=...` 行末追加 `cause=<值>`。`cause` 是稳定枚举：`dns`（域名无法解析）、`connect_refused`（连接被拒）、`timeout`（超时）、`tls`（证书校验失败）、`auth`（HTTP 401/403，token 被拒）、`http_5xx`（服务端 5xx）、`missing_token`（配置缺 token）、`network`（其他传输层错误）、`unknown`（其余，包括其他 HTTP 状态）。`hint` 随 `cause` 变化：`auth` 与 `missing_token` 要求重新 `ssm login` 后重试，不建议 `--offline`；`tls` 需要人工排查证书，不要绕过校验；`dns`、`connect_refused`、`timeout`、`http_5xx`、`network` 可稍后重试，或在明确接受 stale inventory 时显式 `--offline`。
+
 ### 精确发布范围与空 ledger
 
 `push --only <transaction-id>` 发布一个 reviewed transaction，`push --all` 只固定并发布调用开始时的 pending ID 集合。空集合不会覆盖整个本地 blob：一致时是 `action:"noop"`，缺少或不一致的身份则是 `error:"sync_conflict"`；按[空 ledger 恢复说明](skills/agent-ssm/references/import-json.md)执行受保护的 pull、reviewed `--merge` 和新的 `push --only <transaction-id>`。

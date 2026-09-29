@@ -2,13 +2,18 @@ package cloud
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,7 +87,7 @@ func Register(server, email, password string) (string, error) {
 
 	resp, err := postJSON(server+"/auth/register", body)
 	if err != nil {
-		return "", fmt.Errorf("connection failed: %w", err)
+		return "", &TransportError{Err: err}
 	}
 	defer resp.Body.Close()
 
@@ -98,7 +103,7 @@ func Login(server, email, password string) (string, error) {
 
 	resp, err := postJSON(server+"/auth/login", body)
 	if err != nil {
-		return "", fmt.Errorf("connection failed: %w", err)
+		return "", &TransportError{Err: err}
 	}
 	defer resp.Body.Close()
 
@@ -131,7 +136,7 @@ func PushBlobObserved(cfg *CloudConfig, data []byte) (string, bool, error) {
 	req, err := http.NewRequest("PUT", server+"/sync", bytes.NewReader(data))
 	if err != nil {
 		config.Debug("push: request error: %v", err)
-		return "", false, &pushFailure{err: err}
+		return "", false, &pushFailure{err: &RequestError{}}
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	req.Header.Set("Content-Type", "application/octet-stream")
@@ -140,7 +145,7 @@ func PushBlobObserved(cfg *CloudConfig, data []byte) (string, bool, error) {
 	if err != nil {
 		config.Debug("push: connection failed: %v", err)
 		return "", false, &pushFailure{
-			err:       fmt.Errorf("connection failed: %w", err),
+			err:       &TransportError{Err: err},
 			ambiguous: true,
 		}
 	}
@@ -166,14 +171,14 @@ func Pull(cfg *CloudConfig) (string, error) {
 	req, err := http.NewRequest("GET", server+"/sync", nil)
 	if err != nil {
 		config.Debug("pull: request error: %v", err)
-		return "", err
+		return "", &RequestError{}
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		config.Debug("pull: connection failed: %v", err)
-		return "", fmt.Errorf("connection failed: %w", err)
+		return "", &TransportError{Err: err}
 	}
 	defer resp.Body.Close()
 
@@ -189,7 +194,7 @@ func Pull(cfg *CloudConfig) (string, error) {
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxPullBlobBytes+1))
 	if err != nil {
 		config.Debug("pull: read body error: %v", err)
-		return "", err
+		return "", &TransportError{Err: err}
 	}
 	if int64(len(data)) > maxPullBlobBytes {
 		config.Debug("pull: sync blob too large")
@@ -222,12 +227,12 @@ func PullExpected(cfg *CloudConfig, expected string) (string, error) {
 	server := strings.TrimRight(cfg.Server, "/")
 	req, err := http.NewRequest("GET", server+"/sync", nil)
 	if err != nil {
-		return "", err
+		return "", &RequestError{}
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("connection failed: %w", err)
+		return "", &TransportError{Err: err}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -235,7 +240,7 @@ func PullExpected(cfg *CloudConfig, expected string) (string, error) {
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxPullBlobBytes+1))
 	if err != nil {
-		return "", err
+		return "", &TransportError{Err: err}
 	}
 	if int64(len(data)) > maxPullBlobBytes || len(data) == 0 {
 		return "", fmt.Errorf("sync blob is invalid")
@@ -274,13 +279,13 @@ func InspectRemoteBlob(cfg *CloudConfig) (RemoteBlobIdentity, error) {
 	server := strings.TrimRight(cfg.Server, "/")
 	req, err := http.NewRequest("HEAD", server+"/sync", nil)
 	if err != nil {
-		return RemoteBlobIdentity{}, err
+		return RemoteBlobIdentity{}, &RequestError{}
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return RemoteBlobIdentity{}, fmt.Errorf("connection failed: %w", err)
+		return RemoteBlobIdentity{}, &TransportError{Err: err}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -341,10 +346,122 @@ func CheckVerified(cfg *CloudConfig) bool {
 func postJSON(url string, body []byte) (*http.Response, error) {
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, &RequestError{}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	return httpClient.Do(req)
+}
+
+// HTTPStatusError is returned when the sync service answers with a non-success
+// HTTP status. Callers classify it with errors.As instead of matching text.
+type HTTPStatusError struct {
+	StatusCode int
+	// Message is the service-provided error text, when the body carried one.
+	Message string
+}
+
+func (e *HTTPStatusError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	return fmt.Sprintf("server error (%d)", e.StatusCode)
+}
+
+// TransportError wraps a failure to complete an HTTP exchange with the sync
+// service. Error() renders only address-free detail (the sync server address
+// belongs to cloud.json and must not reach diagnostics), while Unwrap keeps
+// the full chain for errors.As classification.
+type TransportError struct{ Err error }
+
+func (e *TransportError) Error() string { return transportDetail(e.Err) }
+func (e *TransportError) Unwrap() error { return e.Err }
+
+// transportDetail describes a transport error without URLs, hosts, ports or
+// resolver addresses. Its TLS branches must cover the same types as
+// IsTLSFailure.
+func transportDetail(err error) string {
+	for err != nil {
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+			continue
+		}
+		break
+	}
+	if err == nil {
+		return "request failed"
+	}
+	var dns *net.DNSError
+	if errors.As(err, &dns) {
+		detail := strings.TrimSpace(dns.Err)
+		if detail == "" {
+			detail = "lookup failed"
+		}
+		return "dns lookup failed: " + detail
+	}
+	var verification *tls.CertificateVerificationError
+	if errors.As(err, &verification) {
+		return "tls: failed to verify certificate: " + transportDetail(verification.Err)
+	}
+	var authority x509.UnknownAuthorityError
+	if errors.As(err, &authority) {
+		return "certificate signed by unknown authority"
+	}
+	var hostname x509.HostnameError
+	if errors.As(err, &hostname) {
+		return "certificate is not valid for the requested host"
+	}
+	var invalid x509.CertificateInvalidError
+	if errors.As(err, &invalid) {
+		return "certificate is not valid"
+	}
+	var record tls.RecordHeaderError
+	if errors.As(err, &record) {
+		return "server did not speak TLS"
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Err != nil {
+		return transportDetail(opErr.Err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "request timed out"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "request timed out"
+	}
+	return err.Error()
+}
+
+// RequestError is returned when an HTTP request cannot be constructed, which
+// happens only for an unusable configured server address. Its text is fixed
+// because the underlying url.Error would echo that address; it has no
+// classifiable cause, so it deliberately does not unwrap.
+type RequestError struct{}
+
+func (*RequestError) Error() string { return "could not build the sync request" }
+
+// IsTLSFailure reports whether err is a TLS or certificate verification
+// failure. It is the single owner of that classification; machinecontract
+// reuses it through synctransaction.
+func IsTLSFailure(err error) bool {
+	var verification *tls.CertificateVerificationError
+	var authority x509.UnknownAuthorityError
+	var hostname x509.HostnameError
+	var invalid x509.CertificateInvalidError
+	var record tls.RecordHeaderError
+	return errors.As(err, &verification) ||
+		errors.As(err, &authority) ||
+		errors.As(err, &hostname) ||
+		errors.As(err, &invalid) ||
+		errors.As(err, &record)
+}
+
+// MissingTokenError is returned when cloud.json has no usable sync token.
+type MissingTokenError struct{}
+
+func (*MissingTokenError) Error() string {
+	return "cloud token is not configured (run: ssm login)"
 }
 
 func parseError(resp *http.Response) error {
@@ -352,18 +469,14 @@ func parseError(resp *http.Response) error {
 		Error string `json:"error"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("server error (%d)", resp.StatusCode)
+		return &HTTPStatusError{StatusCode: resp.StatusCode}
 	}
-	msg := strings.TrimSpace(result.Error)
-	if msg == "" {
-		return fmt.Errorf("server error (%d)", resp.StatusCode)
-	}
-	return fmt.Errorf("%s", msg)
+	return &HTTPStatusError{StatusCode: resp.StatusCode, Message: strings.TrimSpace(result.Error)}
 }
 
 func requireToken(cfg *CloudConfig) error {
 	if cfg == nil || strings.TrimSpace(cfg.Token) == "" {
-		return fmt.Errorf("cloud token is not configured (run: ssm login)")
+		return &MissingTokenError{}
 	}
 	return nil
 }
