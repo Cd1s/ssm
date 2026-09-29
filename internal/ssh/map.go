@@ -17,6 +17,7 @@ type MapJob struct {
 	Input          string
 	RiskCommand    string
 	Interpreter    string
+	NonShell       bool
 	Secrets        map[string]string
 	Mode           string
 	Preflight      bool
@@ -77,7 +78,7 @@ func runMapJob(v *config.Vault, job MapJob, noReuse bool) RunResult {
 		return result
 	}
 	if job.Input != "" && job.Preflight {
-		script := ScriptSpec{Label: job.ScriptLabel, Body: job.Input, Interpreter: job.Interpreter}
+		script := ScriptSpec{Label: job.ScriptLabel, Body: job.Input, Interpreter: job.Interpreter, NonShell: job.NonShell}
 		preflight := RunScriptPreflight(c, v, script, noReuse, job.RequestedAlias, resolved)
 		if !preflight.OK {
 			return preflight
@@ -127,6 +128,7 @@ func ExpandMapJobs(aliases []string, command string, scripts []ScriptSpec, secre
 				Input:          s.Body,
 				RiskCommand:    s.Body,
 				Interpreter:    s.Interpreter,
+				NonShell:       s.NonShell,
 				Secrets:        secrets,
 				Mode:           "script",
 				Preflight:      preflight,

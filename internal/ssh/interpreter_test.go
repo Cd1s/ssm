@@ -3,6 +3,9 @@ package ssh
 import (
 	"strings"
 	"testing"
+
+	"ssm/internal/config"
+	"ssm/internal/machinecontract"
 )
 
 func TestParseInterpreterAcceptsOnlyPlainProgramForms(t *testing.T) {
@@ -135,5 +138,47 @@ func TestShebangHonoredAndNonShellShebangHintsInterpreter(t *testing.T) {
 	_, err = PrepareScript("t", []byte("#!/opt/x/we$ird\n"), "", nil)
 	if err == nil || !strings.Contains(err.Error(), "--interpreter <program>") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestSyntaxRunnerRejectsNonShellInterpreter(t *testing.T) {
+	py, err := PrepareScriptWithInterpreter("t.py", []byte("print(1)\n"), "", "python3", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command, err := BuildScriptSyntaxRunner(py); err == nil || command != "" {
+		t.Fatalf("command=%q err=%v", command, err)
+	}
+	sh, err := PrepareScript("t.sh", []byte("true\n"), "sh", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command, err := BuildScriptSyntaxRunner(sh)
+	if err != nil || !strings.HasSuffix(command, "exec 'sh' '-n' '-s' '--'") {
+		t.Fatalf("command=%q err=%v", command, err)
+	}
+}
+
+func TestRunScriptPreflightRefusesNonShellWithoutConnecting(t *testing.T) {
+	py, err := PrepareScriptWithInterpreter("t.py", []byte("print(1)\n"), "", "python3", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The unroutable documentation address proves no dial is attempted: the
+	// call returns immediately with a classified argument failure.
+	res := RunScriptPreflight(config.Connection{Name: "x", Host: "192.0.2.1", Port: 22, User: "root"}, &config.Vault{}, py, false, "x", "x")
+	if res.OK || res.Preflight != "failed" || res.Error != machinecontract.CodeInvalidArgs || res.Exit != 2 {
+		t.Fatalf("res = %+v", res)
+	}
+}
+
+func TestExpandMapJobsCarriesNonShell(t *testing.T) {
+	py, err := PrepareScriptWithInterpreter("t.py", []byte("print(1)\n"), "", "python3", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs := ExpandMapJobs([]string{"h1"}, "", []ScriptSpec{py}, nil, "script", false)
+	if len(jobs) != 1 || !jobs[0].NonShell || !strings.Contains(jobs[0].Command, "'python3' '-'") {
+		t.Fatalf("jobs = %+v", jobs)
 	}
 }

@@ -241,12 +241,18 @@ func BuildScriptRunner(spec ScriptSpec) string {
 // BuildScriptSyntaxRunner parses the same normalized stdin body with the same
 // remote interpreter without executing it. The body remains on stdin and is
 // sent again only when the caller proceeds with the real runner.
-func BuildScriptSyntaxRunner(spec ScriptSpec) string {
+//
+// Only shells have a "-n" syntax-check mode, so a non-shell interpreter is
+// rejected instead of being given shell flags.
+func BuildScriptSyntaxRunner(spec ScriptSpec) (string, error) {
+	if spec.NonShell {
+		return "", fmt.Errorf("syntax preflight only supports shell interpreters, not %q", spec.Interpreter)
+	}
 	words := []string{spec.Interpreter, "-n", "-s", "--"}
 	quoted := JoinRemoteArgv(words)
 	name := ShellQuote(spec.Interpreter)
 	marker := ShellQuote(machinecontract.InterpreterNotFoundDiagnostic(spec.Interpreter))
-	return "command -v " + name + " >/dev/null 2>&1 || { printf '%s\\n' " + marker + " >&2; exit 127; }; exec " + quoted
+	return "command -v " + name + " >/dev/null 2>&1 || { printf '%s\\n' " + marker + " >&2; exit 127; }; exec " + quoted, nil
 }
 
 // ScriptDigest identifies normalized script input without exposing its body.

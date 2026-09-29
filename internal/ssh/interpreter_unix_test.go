@@ -3,10 +3,23 @@
 package ssh
 
 import (
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
 )
+
+// requireInterpreter skips when a real interpreter is missing locally, but
+// fails on GitHub Actions so acceptance tests cannot be silently skipped there.
+func requireInterpreter(t *testing.T, name string) {
+	t.Helper()
+	if _, err := exec.LookPath(name); err != nil {
+		if os.Getenv("GITHUB_ACTIONS") == "true" {
+			t.Fatalf("%s is required on CI but was not found: %v", name, err)
+		}
+		t.Skipf("%s is not installed on this host", name)
+	}
+}
 
 func runGeneratedScript(t *testing.T, script ScriptSpec) (string, error) {
 	t.Helper()
@@ -17,11 +30,7 @@ func runGeneratedScript(t *testing.T, script ScriptSpec) (string, error) {
 }
 
 func TestNonShellRunnerExecutesPythonFromStdinWithExactArgs(t *testing.T) {
-	// The interpreter is only skipped where it is absent (for example a
-	// minimal Windows/macOS CI image); Windows never reaches this Unix file.
-	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 is not installed on this host")
-	}
+	requireInterpreter(t, "python3")
 	body := "import sys\nprint(sys.argv[1:])\nprint(len(sys.argv))\n"
 	for _, interpreter := range []string{"python3", "env python3"} {
 		script, err := PrepareScriptWithInterpreter("t.py", []byte(body), "", interpreter, []string{"a", "b c", "it's", "-x", "--"})
@@ -69,9 +78,7 @@ func TestInterpreterValueCannotInjectCommands(t *testing.T) {
 }
 
 func TestShebangBashScriptRunsWithBash(t *testing.T) {
-	if _, err := exec.LookPath("bash"); err != nil {
-		t.Skip("bash is not installed on this host")
-	}
+	requireInterpreter(t, "bash")
 	script, err := PrepareScript("t.sh", []byte("#!/usr/bin/env bash\r\narr=(x y)\r\necho \"${arr[1]}-$1\"\r\n"), "", []string{"z"})
 	if err != nil {
 		t.Fatal(err)
@@ -79,5 +86,25 @@ func TestShebangBashScriptRunsWithBash(t *testing.T) {
 	out, err := runGeneratedScript(t, script)
 	if err != nil || out != "y-z\n" {
 		t.Fatalf("err=%v out=%q", err, out)
+	}
+}
+
+func TestNonShellRunnerPassesSecretsToPythonEnvironment(t *testing.T) {
+	requireInterpreter(t, "python3")
+	body := "import os\nprint('token=<%s>' % os.environ['TOKEN'])\nprint('arg=<%s>' % os.environ.get('ARGV1', 'none'))\n"
+	script, err := PrepareScriptWithInterpreter("t.py", []byte(body), "", "python3", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets := map[string]string{"TOKEN": "secret with ' quote and $x"}
+	remote := BuildScriptRemoteCommand(BuildScriptRunner(script), secrets)
+	cmd := exec.Command("sh", "-c", remote) //nolint:gosec // fixed Unix test runner exercising generated quoting
+	cmd.Stdin = strings.NewReader(script.Body)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("runner failed: %v\n%s", err, out)
+	}
+	if want := "token=<secret with ' quote and $x>\narg=<none>\n"; string(out) != want {
+		t.Fatalf("output = %q, want %q", out, want)
 	}
 }
