@@ -59,6 +59,7 @@ const (
 	RemoteCommandFailed                 Kind = "remote_command_failed"
 	InterpreterNotFound                 Kind = "interpreter_not_found"
 	RemoteScriptFailed                  Kind = "remote_script_failed"
+	RunInterrupted                      Kind = "run_interrupted"
 	ScriptSyntaxFailed                  Kind = "script_syntax_failed"
 	HostInvalidArguments                Kind = "host_invalid_arguments"
 	HostApplyInvalidArguments           Kind = "host_apply_invalid_arguments"
@@ -219,6 +220,7 @@ const (
 	CodeSyncPull       = "sync_pull_failed"
 	CodeSyncPush       = "sync_push_failed"
 	CodeInternal       = "internal"
+	CodeInterrupted    = "interrupted"
 )
 
 // CodeHostKeyTypeChanged means known_hosts has entries for the endpoint but
@@ -347,6 +349,10 @@ var failurePolicies = map[Kind]failurePolicy{
 	RemoteScriptFailed: {
 		Code: CodeRemoteScript, Stage: "remote_execution",
 		Hint: "the script reached the remote interpreter but exited non-zero; inspect stderr", Exit: 1, Human: humanScript,
+	},
+	RunInterrupted: {
+		Code: CodeInterrupted, Stage: "remote_execution",
+		Hint: "a local signal stopped sshctl; it was forwarded to the remote command, which may still be running", Exit: 130,
 	},
 	ScriptSyntaxFailed: {
 		Code: CodeScriptSyntax, Stage: "syntax_preflight",

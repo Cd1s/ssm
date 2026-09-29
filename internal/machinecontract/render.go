@@ -21,6 +21,8 @@ import (
 // per stdout or stderr stream while an operation's outcome is unknown. The
 // 8 MiB bound limits temporary-file use and failure-redaction memory while
 // retaining enough diagnostic context for ordinary SSH commands and transfers.
+// Bytes beyond the bound are drained and discarded, and Replay reports
+// ErrDiagnosticOutputTooLarge.
 const DiagnosticSpoolByteLimit int64 = 8 << 20
 
 var (
@@ -619,6 +621,9 @@ type RedactingWriter struct {
 	structured      strings.Builder
 	inPrivateBlock  bool
 	sensitiveValues []string
+	// streaming also releases lines at carriage returns and bounds held
+	// bytes by StreamingLineLimit; see NewStreamingRedactingWriter.
+	streaming bool
 }
 
 // DiagnosticSpool holds transport diagnostics until the caller knows whether
@@ -633,6 +638,7 @@ type DiagnosticSpool struct {
 	replayed        bool
 	size            int64
 	limit           int64
+	overflowed      bool
 	terminalErr     error
 	remove          func(string) error
 }
@@ -652,7 +658,10 @@ func newDiagnosticSpoolWithLimit(output io.Writer, directory string, limit int64
 	if limit < 0 {
 		return nil, fmt.Errorf("diagnostic spool byte limit must be non-negative")
 	}
-	file, err := os.CreateTemp(directory, ".ssm-diagnostic-*")
+	if directory == "" {
+		SweepStaleDiagnosticSpools()
+	}
+	file, err := os.CreateTemp(directory, diagnosticSpoolPattern)
 	if err != nil {
 		return nil, fmt.Errorf("create private diagnostic spool: %w", err)
 	}
@@ -681,18 +690,26 @@ func (s *DiagnosticSpool) Write(data []byte) (int, error) {
 		}
 		return 0, fmt.Errorf("machine contract diagnostic spool already replayed")
 	}
+	if s.overflowed {
+		return len(data), nil
+	}
 	if int64(len(data)) > s.limit-s.size {
+		// Keep accepting and discarding bytes so an SSH session feeding this
+		// spool continues to drain its channel and can report its exit
+		// status. Replay reports the overflow instead of partial output.
 		file := s.file
 		s.file = nil
-		s.replayed = true
-		s.terminalErr = fmt.Errorf("diagnostic output exceeds %d-byte limit", s.limit)
-		cleanupErr := file.Close()
+		s.overflowed = true
+		s.terminalErr = fmt.Errorf("%w (%d bytes)", ErrDiagnosticOutputTooLarge, s.limit)
+		if err := file.Close(); err != nil {
+			s.terminalErr = errors.Join(s.terminalErr, err)
+		}
 		if removeErr := s.remove(s.path); removeErr != nil {
-			cleanupErr = errors.Join(cleanupErr, removeErr)
+			s.terminalErr = errors.Join(s.terminalErr, removeErr)
 		} else {
 			s.path = ""
 		}
-		return 0, errors.Join(s.terminalErr, cleanupErr)
+		return len(data), nil
 	}
 	n, err := s.file.Write(data)
 	s.size += int64(n)
@@ -702,7 +719,8 @@ func (s *DiagnosticSpool) Write(data []byte) (int, error) {
 func (s *DiagnosticSpool) Replay(success bool) (resultErr error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.replayed {
+	if s.replayed || s.overflowed {
+		s.replayed = true
 		return s.terminalErr
 	}
 	s.replayed = true
@@ -800,15 +818,26 @@ func (w *RedactingWriter) Write(data []byte) (int, error) {
 	defer w.mu.Unlock()
 
 	w.pending.Write(data)
+	lineBreaks := "\n"
+	if w.streaming {
+		lineBreaks = "\n\r"
+	}
 	for {
 		value := w.pending.String()
-		lineEnd := strings.IndexByte(value, '\n')
+		lineEnd := strings.IndexAny(value, lineBreaks)
 		if lineEnd < 0 {
 			break
 		}
 		line := value[:lineEnd+1]
 		w.pending.Reset()
 		w.pending.WriteString(value[lineEnd+1:])
+		if err := w.writeLine(line); err != nil {
+			return len(data), err
+		}
+	}
+	if w.streaming && w.pending.Len() > StreamingLineLimit {
+		line := w.pending.String()
+		w.pending.Reset()
 		if err := w.writeLine(line); err != nil {
 			return len(data), err
 		}
@@ -842,6 +871,9 @@ func (w *RedactingWriter) writeLine(line string) error {
 		if hasIncompleteSensitiveStructure(safe) {
 			w.structured.Reset()
 			w.structured.WriteString(safe)
+			if w.streaming && w.structured.Len() > StreamingLineLimit {
+				return w.flushStructured()
+			}
 			return nil
 		}
 		w.structured.Reset()

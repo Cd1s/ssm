@@ -74,6 +74,7 @@ not prove SSH transport failure.
 - Regular-file upload: use typed `put`; add `resume:"v1"` only when requested and `sha256:true` when integrity verification is required.
 - Download: v1 uses direct `sshctl get`; v2 may use direct get or request schema v1 `op:"get"`.
 - Fleet work: use `sshctl map` with explicit argv or scripts and inspect every result.
+- Large or long-running output (byte pipes, logs, archives): use human-mode `sshctl run <exact-alias> --argv ...`, which streams without a size limit and exits with the remote exit status; `--json` holds the whole output in memory. Streamed output masks explicit `--secret` values as `***`; a local SIGINT/SIGTERM is forwarded to the remote command and exits with `error:interrupted`.
 - If a field or flag is uncertain, run the relevant command help or read the selected schema. Never guess.
 
 When a typed request is required, create JSON with a file-writing API and run:
