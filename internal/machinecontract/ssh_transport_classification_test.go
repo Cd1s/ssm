@@ -123,6 +123,15 @@ func TestClassifyTransferKeepsTransportStageAndExit(t *testing.T) {
 		if got.Error != CodeHandshakeFailed || got.Stage != "handshake" || got.Outcome != "" || got.Exit != ExitConnectionFailed || ProcessExit(got) != ExitConnectionFailed {
 			t.Fatalf("%s handshake = %+v", name, got)
 		}
+		for _, kind := range []Kind{TransferTimedOut, ResumeTimedOut} {
+			for _, cause := range []error{io.EOF, &gossh.ExitMissingError{}} {
+				timeout := Classify(kind, Details{Cause: cause})
+				got = classify(&testTransferFailureCarrier{failure: timeout, cause: cause}, timeout)
+				if got.Error != "transfer_timeout" || got.Stage != "timeout" || got.Outcome != "" || got.Exit != 1 || ProcessExit(got) != 1 {
+					t.Fatalf("%s %s with %v = %+v, want transfer_timeout/exit 1/no outcome", name, kind, cause, got)
+				}
+			}
+		}
 		carried := Classify(TransferRemoteWriteFailed, Details{Cause: io.EOF})
 		got = classify(fmt.Errorf("transfer: %w", &gossh.ExitMissingError{}), carried)
 		if got.Error != CodeConnectionLost || got.Stage != "remote_execution" || got.Outcome != "unknown" || got.Exit != ExitConnectionFailed || ProcessExit(got) != ExitConnectionFailed {

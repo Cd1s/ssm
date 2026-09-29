@@ -186,6 +186,36 @@ func TestCompiledGetClassifiesConnectionLostMidTransfer(t *testing.T) {
 	}
 }
 
+// A --timeout abort is sshctl closing its own session; the EOF that follows
+// must not be reclassified as connection_lost.
+func TestCompiledPutTimeoutStaysTransferTimeout(t *testing.T) {
+	cli := newCompiledCLIHarness(t)
+	server := newCompiledSSHFixture(t, compiledSSHFixtureOptions{Password: transportErrorsPassword, HangAfterExec: true})
+	cli.TrustSSHHost(t, server)
+	cli.SaveVault(t, &config.Vault{Connections: []config.Connection{server.Connection("hang", transportErrorsPassword)}})
+	source := filepath.Join(cli.temp, "put-source")
+	if err := os.WriteFile(source, []byte("payload\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	machine := cli.Run(t, "sshctl", nil, "--offline", "--json", "put", "hang", source, "/remote/dest", "--timeout", "1s")
+	if machine.ProcessExit != 1 || machine.Stderr != "" {
+		t.Fatalf("json put exit=%d stderr=%q stdout=%q, want exit 1", machine.ProcessExit, machine.Stderr, machine.Stdout)
+	}
+	document := decodeExactlyOneJSONObject(t, machine.Stdout)
+	if document["error"] != "transfer_timeout" || document["stage"] != "timeout" || document["exit"] != float64(1) || document["direction"] != "put" {
+		t.Fatalf("json put document = %s", machine.Stdout)
+	}
+	if _, present := document["outcome"]; present {
+		t.Fatalf("transfer_timeout must not carry outcome: %s", machine.Stdout)
+	}
+
+	human := cli.Run(t, "sshctl", nil, "--offline", "put", "hang", source, "/remote/dest", "--timeout", "1s")
+	if human.ProcessExit != 1 || human.Stdout != "" || !strings.Contains(human.Stderr, "error=transfer_timeout") || strings.Contains(human.Stderr, "connection_lost") {
+		t.Fatalf("human put exit=%d stdout=%q stderr=%q, want exit 1 transfer_timeout", human.ProcessExit, human.Stdout, human.Stderr)
+	}
+}
+
 func TestCompiledPutClassifiesHandshakeFailure(t *testing.T) {
 	h := newTransportErrorsHarness(t)
 	source := filepath.Join(h.cli.temp, "put-source")

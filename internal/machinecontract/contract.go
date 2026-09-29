@@ -1405,6 +1405,12 @@ func ClassifyTransferOperation(err error, context SSHContext, carried Failure) F
 	if err == nil {
 		return Failure{}
 	}
+	if isSelfAbortedTransfer(carried) {
+		// sshctl closed the session itself when --timeout expired, so the EOF
+		// or missing exit status that follows is a consequence, not a lost
+		// connection. The carried tuple (transfer_timeout, exit 1) is final.
+		return carried
+	}
 	transportContext := context
 	transportContext.ExecPhase = true
 	human := ClassifySSH(err, transportContext)
@@ -1435,6 +1441,13 @@ func ClassifyTransferOperation(err error, context SSHContext, carried Failure) F
 	return failure
 }
 
+// isSelfAbortedTransfer reports a carried failure produced by sshctl closing
+// its own session (the --timeout timer), whose classification must never be
+// replaced by a transport-loss code derived from the resulting EOF.
+func isSelfAbortedTransfer(carried Failure) bool {
+	return carried.Error == "transfer_timeout"
+}
+
 // ClassifyDownload preserves the generic pre-BC-7 download failure envelope,
 // which omits stage even when its SSH classification has one.
 func ClassifyDownload(err error, context SSHContext) Failure {
@@ -1442,6 +1455,11 @@ func ClassifyDownload(err error, context SSHContext) Failure {
 	classifyContext.Stage = ""
 	classifyContext.ExecPhase = true
 	failure := ClassifySSH(err, classifyContext)
+	if carried, ok := FailureFromError(err); ok && isSelfAbortedTransfer(carried) {
+		carried.Alias = RedactString(context.Alias)
+		carried.humanAlias = RedactString(context.ResolvedAlias)
+		return carried
+	}
 	if policyOwnsStage(failure.Error) {
 		failure.Alias = RedactString(context.Alias)
 		failure.humanAlias = RedactString(context.ResolvedAlias)

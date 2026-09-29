@@ -268,6 +268,8 @@ PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
 
 `map` 以第一个失败结果的退出码退出；数组里每个结果各自带 `error`。`put`/`get` 传输中途断开时与 `run` 一样返回 `connection_lost` 和 255，因为这是传输层失败，而不是传输专属错误。
 
+**契约变化。** `put`/`get` 传输中途断开，原来报 `remote_write_failed`（下载为 `remote_read_failed`）和退出码 1，现在报 `connection_lost`，退出码 255，并带 `outcome:"unknown"`。sshctl 自己因 `--timeout` 中止文件 `put` 的行为不变：`transfer_timeout`、退出码 1、没有 `outcome`。`host` 子命令的 `alias_not_found` 在 JSON 中 `exit` 为 255，进程退出码为 1；请以 `error` 字段为准。
+
 是否可以安全重试，取决于命令有没有发出：
 
 - 可以重试：`dial_timeout`、`dial_refused`、`dial_network`；`handshake_failed`（`stage:handshake`，TCP 已连上但 SSH 握手失败，例如 EOF、connection reset 或协议错误，命令没有发出）；以及 `stage:session` 的 `session_failed`（会话没能打开，命令没有发出）。`no common algorithm` 这类确定性的握手失败每次都会同样失败，重试没有意义，应修正算法或服务器配置。`auth_failed` 和 `host_key_*` 保持各自的错误码，需要修复而不是重试。
