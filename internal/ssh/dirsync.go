@@ -299,7 +299,14 @@ func uploadDirTarStream(c config.Connection, v *config.Vault, tarPath, localDir,
 // status after the local tar has already ended.
 const remoteExitGrace = 15 * time.Second
 
-func waitSessionBounded(session *gossh.Session, grace time.Duration) error {
+// sessionWaiter is the part of *gossh.Session the bounded wait needs; it is a
+// seam so the remote-exited-first logic can be tested without a live server.
+type sessionWaiter interface {
+	Wait() error
+	Close() error
+}
+
+func waitSessionBounded(session sessionWaiter, grace time.Duration) error {
 	done := make(chan error, 1)
 	go func() { done <- session.Wait() }()
 	timer := time.NewTimer(grace)
