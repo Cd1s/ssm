@@ -1,14 +1,18 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
 
 	"ssm/internal/config"
+	"ssm/internal/synctransaction"
 )
 
 const syncCauseMessagePrefix = "sync refresh failed: remote refresh did not commit: "
@@ -22,65 +26,73 @@ func TestCompiledSyncFailureCauseIsStableAndDistinct(t *testing.T) {
 	const offlineHint = " or retry explicitly with --offline"
 	tests := []struct {
 		name      string
-		configure func(t *testing.T, cli *compiledCLIHarness)
+		configure func(t *testing.T, cli *compiledCLIHarness) string
 		cause     string
 		hint      string
 	}{
 		{
 			name: "connection refused",
-			configure: func(t *testing.T, cli *compiledCLIHarness) {
+			configure: func(t *testing.T, cli *compiledCLIHarness) string {
 				refused := newCompiledRefusedTCPPort(t)
-				cli.SaveCloud(t, "http://"+net.JoinHostPort(refused.host, strconv.Itoa(refused.port)), token)
+				server := "http://" + net.JoinHostPort(refused.host, strconv.Itoa(refused.port))
+				cli.SaveCloud(t, server, token)
+				return server
 			},
 			cause: "connect_refused",
 			hint:  "sync server refused the connection; check the service is running," + offlineHint,
 		},
 		{
 			name: "unauthorized",
-			configure: func(t *testing.T, cli *compiledCLIHarness) {
+			configure: func(t *testing.T, cli *compiledCLIHarness) string {
 				sync := newCompiledSyncFixture(t)
 				sync.SetStatus(t, http.MethodHead, http.StatusUnauthorized)
 				cli.SaveCloud(t, sync.URL(), token)
+				return sync.URL()
 			},
 			cause: "auth",
 			hint:  "sync token rejected; re-authenticate with ssm login, then retry",
 		},
 		{
 			name: "forbidden",
-			configure: func(t *testing.T, cli *compiledCLIHarness) {
+			configure: func(t *testing.T, cli *compiledCLIHarness) string {
 				sync := newCompiledSyncFixture(t)
 				sync.SetStatus(t, http.MethodHead, http.StatusForbidden)
 				cli.SaveCloud(t, sync.URL(), token)
+				return sync.URL()
 			},
 			cause: "auth",
 			hint:  "sync token rejected; re-authenticate with ssm login, then retry",
 		},
 		{
 			name: "service unavailable",
-			configure: func(t *testing.T, cli *compiledCLIHarness) {
+			configure: func(t *testing.T, cli *compiledCLIHarness) string {
 				sync := newCompiledSyncFixture(t)
 				sync.SetStatus(t, http.MethodHead, http.StatusServiceUnavailable)
 				cli.SaveCloud(t, sync.URL(), token)
+				return sync.URL()
 			},
 			cause: "http_5xx",
 			hint:  "sync server returned a 5xx error; retry later" + offlineHint,
 		},
 		{
 			name: "untrusted tls certificate",
-			configure: func(t *testing.T, cli *compiledCLIHarness) {
+			configure: func(t *testing.T, cli *compiledCLIHarness) string {
 				server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.WriteHeader(http.StatusOK)
 				}))
 				t.Cleanup(server.Close)
 				cli.SaveCloud(t, server.URL, token)
+				return server.URL
 			},
 			cause: "tls",
 			hint:  "sync server certificate verification failed; fix the server certificate or trust chain," + offlineHint,
 		},
 		{
 			name: "dns failure",
-			configure: func(t *testing.T, cli *compiledCLIHarness) {
-				cli.SaveCloud(t, "http://sync-cause.invalid", token)
+			configure: func(t *testing.T, cli *compiledCLIHarness) string {
+				server := "http://sync-cause-unique-host.invalid:48213"
+				cli.SaveCloud(t, server, token)
+				return server
 			},
 			cause: "dns",
 			hint:  "sync server name did not resolve; check the configured server and DNS," + offlineHint,
@@ -92,7 +104,7 @@ func TestCompiledSyncFailureCauseIsStableAndDistinct(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			cli := newCompiledCLIHarness(t)
 			cli.SaveVault(t, &config.Vault{})
-			test.configure(t, cli)
+			server := test.configure(t, cli)
 
 			result := cli.Run(t, "sshctl", nil, "--json", "list")
 			assertNoCompiledCanaryLeak(t, result, map[string]string{
@@ -106,6 +118,24 @@ func TestCompiledSyncFailureCauseIsStableAndDistinct(t *testing.T) {
 			message, _ := document["message"].(string)
 			if !strings.HasPrefix(message, syncCauseMessagePrefix) || len(message) == len(syncCauseMessagePrefix) {
 				t.Fatalf("message does not carry the underlying error; output=%s", compiledOutputIdentity(result))
+			}
+			parsed, parseErr := url.Parse(server)
+			if parseErr != nil {
+				t.Fatal(parseErr)
+			}
+			for _, forbidden := range []string{server, parsed.Host, parsed.Hostname(), parsed.Port(), "/sync"} {
+				if strings.Contains(result.Stdout, forbidden) || strings.Contains(result.Stderr, forbidden) {
+					t.Fatalf("machine output exposes the sync server address fragment %q; output=%s", forbidden, compiledOutputIdentity(result))
+				}
+			}
+			humanResult := cli.Run(t, "sshctl", nil, "list")
+			for _, forbidden := range []string{server, parsed.Host, parsed.Hostname(), parsed.Port(), "/sync"} {
+				if strings.Contains(humanResult.Stdout, forbidden) || strings.Contains(humanResult.Stderr, forbidden) {
+					t.Fatalf("human output exposes the sync server address fragment %q; output=%s", forbidden, compiledOutputIdentity(humanResult))
+				}
+			}
+			if !strings.Contains(humanResult.Stderr, "cause="+test.cause) {
+				t.Fatalf("human output lacks cause; output=%s", compiledOutputIdentity(humanResult))
 			}
 			if test.cause == "auth" && strings.Contains(test.hint, "--offline") {
 				t.Fatalf("auth hint suggests --offline: %q", test.hint)
@@ -153,4 +183,19 @@ func TestCompiledSyncFailureCauseHumanLineAndStream(t *testing.T) {
 		Cause: "auth", Hint: "sync token rejected; re-authenticate with ssm login, then retry",
 		Cardinality: "one_line",
 	})
+}
+
+func TestHostPushFailureCarriesSyncCause(t *testing.T) {
+	err := fmt.Errorf("%w: %w", synctransaction.ErrPushRejected, &synctransaction.HTTPStatusError{StatusCode: http.StatusUnauthorized})
+	failure, document := hostPushFailureFor(hostMutationResult{}, err)
+	if failure.SyncCause != "auth" || document.Cause != "auth" {
+		t.Fatalf("host push failure cause = %q / document %q, want auth", failure.SyncCause, document.Cause)
+	}
+	encoded, marshalErr := json.Marshal(document)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	if !strings.Contains(string(encoded), `"cause":"auth"`) {
+		t.Fatalf("host push document lacks cause: %s", encoded)
+	}
 }

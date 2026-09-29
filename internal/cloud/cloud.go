@@ -2,13 +2,18 @@ package cloud
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,7 +87,7 @@ func Register(server, email, password string) (string, error) {
 
 	resp, err := postJSON(server+"/auth/register", body)
 	if err != nil {
-		return "", fmt.Errorf("connection failed: %w", err)
+		return "", &TransportError{Err: err}
 	}
 	defer resp.Body.Close()
 
@@ -98,7 +103,7 @@ func Login(server, email, password string) (string, error) {
 
 	resp, err := postJSON(server+"/auth/login", body)
 	if err != nil {
-		return "", fmt.Errorf("connection failed: %w", err)
+		return "", &TransportError{Err: err}
 	}
 	defer resp.Body.Close()
 
@@ -140,7 +145,7 @@ func PushBlobObserved(cfg *CloudConfig, data []byte) (string, bool, error) {
 	if err != nil {
 		config.Debug("push: connection failed: %v", err)
 		return "", false, &pushFailure{
-			err:       fmt.Errorf("connection failed: %w", err),
+			err:       &TransportError{Err: err},
 			ambiguous: true,
 		}
 	}
@@ -173,7 +178,7 @@ func Pull(cfg *CloudConfig) (string, error) {
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		config.Debug("pull: connection failed: %v", err)
-		return "", fmt.Errorf("connection failed: %w", err)
+		return "", &TransportError{Err: err}
 	}
 	defer resp.Body.Close()
 
@@ -227,7 +232,7 @@ func PullExpected(cfg *CloudConfig, expected string) (string, error) {
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("connection failed: %w", err)
+		return "", &TransportError{Err: err}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -280,7 +285,7 @@ func InspectRemoteBlob(cfg *CloudConfig) (RemoteBlobIdentity, error) {
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return RemoteBlobIdentity{}, fmt.Errorf("connection failed: %w", err)
+		return RemoteBlobIdentity{}, &TransportError{Err: err}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -360,6 +365,71 @@ func (e *HTTPStatusError) Error() string {
 		return e.Message
 	}
 	return fmt.Sprintf("server error (%d)", e.StatusCode)
+}
+
+// TransportError wraps a failure to complete an HTTP exchange with the sync
+// service. Error() renders only address-free detail (the sync server address
+// belongs to cloud.json and must not reach diagnostics), while Unwrap keeps
+// the full chain for errors.As classification.
+type TransportError struct{ Err error }
+
+func (e *TransportError) Error() string { return transportDetail(e.Err) }
+func (e *TransportError) Unwrap() error { return e.Err }
+
+// transportDetail describes a transport error without URLs, hosts, ports or
+// resolver addresses.
+func transportDetail(err error) string {
+	for err != nil {
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+			continue
+		}
+		break
+	}
+	if err == nil {
+		return "request failed"
+	}
+	var dns *net.DNSError
+	if errors.As(err, &dns) {
+		detail := strings.TrimSpace(dns.Err)
+		if detail == "" {
+			detail = "lookup failed"
+		}
+		return "dns lookup failed: " + detail
+	}
+	var verification *tls.CertificateVerificationError
+	if errors.As(err, &verification) {
+		return "tls: failed to verify certificate: " + transportDetail(verification.Err)
+	}
+	var authority x509.UnknownAuthorityError
+	if errors.As(err, &authority) {
+		return "certificate signed by unknown authority"
+	}
+	var hostname x509.HostnameError
+	if errors.As(err, &hostname) {
+		return "certificate is not valid for the requested host"
+	}
+	var invalid x509.CertificateInvalidError
+	if errors.As(err, &invalid) {
+		return "certificate is not valid"
+	}
+	var record tls.RecordHeaderError
+	if errors.As(err, &record) {
+		return "server did not speak TLS"
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Err != nil {
+		return transportDetail(opErr.Err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "request timed out"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "request timed out"
+	}
+	return err.Error()
 }
 
 // MissingTokenError is returned when cloud.json has no usable sync token.

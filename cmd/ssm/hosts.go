@@ -482,10 +482,10 @@ func hostVerificationFailureFor(result hostMutationResult) (machinecontract.Fail
 }
 
 func hostPushFailureFor(result hostMutationResult, err error) (machinecontract.Failure, hostPushFailure) {
-	failure := machinecontract.Classify(machinecontract.HostPushFailed, machinecontract.Details{
+	failure := machinecontract.WithSyncCause(machinecontract.Classify(machinecontract.HostPushFailed, machinecontract.Details{
 		Cause: err,
 		Alias: result.Host.Name,
-	})
+	}), err)
 	document := hostPushFailure{
 		OK: false, Metadata: failure.Metadata(), Action: result.Action,
 		Changed: result.Changed, Applied: true, Pushed: false, Host: result.Host,
