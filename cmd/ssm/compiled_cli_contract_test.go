@@ -2031,9 +2031,8 @@ func TestCompiledStreamedHumanRunKeepsStdoutBytesAndSanitizesStderr(t *testing.T
 	if result.ProcessExit != 23 {
 		t.Fatalf("failed human run exit=%d, want 23; output=%s", result.ProcessExit, compiledOutputIdentity(result))
 	}
-	wantStdout := strings.Replace(runFailureStdout, "known short value: abc", "known short value: ***", 1)
-	if result.Stdout != wantStdout {
-		t.Fatalf("streamed stdout = %q, want remote bytes with only the explicit secret masked %q", result.Stdout, wantStdout)
+	if result.Stdout != runFailureStdout {
+		t.Fatalf("streamed stdout = %q, want the remote bytes unchanged %q", result.Stdout, runFailureStdout)
 	}
 	assertNoCompiledCanaryLeak(t, compiledCLIResult{Stderr: result.Stderr}, runFailureStderrCanaries)
 	if !strings.Contains(result.Stderr, "ssm: error=remote_script_failed script=<stdin> exit=23\n") {

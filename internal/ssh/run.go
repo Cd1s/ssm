@@ -458,7 +458,7 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 }
 
 // secretValues lists the explicit --secret values, which streamed human
-// output masks and failure rendering redacts.
+// stderr masks and failure rendering redacts.
 func secretValues(secrets map[string]string) []string {
 	values := make([]string, 0, len(secrets)+1)
 	for _, value := range secrets {

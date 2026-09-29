@@ -36,11 +36,11 @@ func bufferedRunOutputRequested() bool {
 	return strings.EqualFold(strings.TrimSpace(os.Getenv(RunOutputEnv)), "buffered")
 }
 
-// streamingRunOutput forwards remote output as it arrives. Stdout bytes are
-// unchanged except explicit secret values; stderr is additionally sanitized
-// line by line because it carries diagnostics.
+// streamingRunOutput forwards remote output as it arrives. Stdout bytes pass
+// through unchanged, keeping byte pipes and caller-echoed values intact as
+// the success contract requires; stderr carries diagnostics, so explicit
+// secret values are masked and credential-shaped lines are sanitized.
 type streamingRunOutput struct {
-	stdout       *machinecontract.KnownValueStream
 	stderrValues *machinecontract.KnownValueStream
 	stderrLines  *machinecontract.RedactingWriter
 	stderr       io.Writer
@@ -56,7 +56,6 @@ func newStreamingRunOutput(stdout, stderr io.Writer, secrets []string, interpret
 		stdoutSink: &abortingWriter{output: stdout, abort: stop},
 		stderrSink: &abortingWriter{output: stderr, abort: stop},
 	}
-	output.stdout = machinecontract.NewKnownValueStream(output.stdoutSink, secrets...)
 	output.stderrLines = machinecontract.NewStreamingRedactingWriter(output.stderrSink)
 	output.stderrValues = machinecontract.NewKnownValueStream(output.stderrLines, secrets...)
 	output.stderr = output.stderrValues
@@ -67,7 +66,7 @@ func newStreamingRunOutput(stdout, stderr io.Writer, secrets []string, interpret
 	return output
 }
 
-func (o *streamingRunOutput) Stdout() io.Writer { return o.stdout }
+func (o *streamingRunOutput) Stdout() io.Writer { return o.stdoutSink }
 func (o *streamingRunOutput) Stderr() io.Writer { return o.stderr }
 
 func (o *streamingRunOutput) InterpreterMarkerSeen() (bool, error) {
@@ -78,7 +77,7 @@ func (o *streamingRunOutput) InterpreterMarkerSeen() (bool, error) {
 }
 
 func (o *streamingRunOutput) Finish(bool) error {
-	return errors.Join(o.stdout.Flush(), o.stderrValues.Flush(), o.stderrLines.Flush())
+	return errors.Join(o.stderrValues.Flush(), o.stderrLines.Flush())
 }
 
 func (o *streamingRunOutput) FinishFailure(bool) string { return "failed to write remote output" }

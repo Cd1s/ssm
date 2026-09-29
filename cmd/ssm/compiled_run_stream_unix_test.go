@@ -412,7 +412,7 @@ func TestCompiledHumanRunStopsWhenLocalStdoutCloses(t *testing.T) {
 	}
 }
 
-func TestCompiledHumanRunMasksExplicitSecretsInStreamedOutput(t *testing.T) {
+func TestCompiledHumanRunKeepsStdoutAndMasksSecretsOnStderr(t *testing.T) {
 	cli, _ := newCompiledExecRunHarness(t, "stream-secret")
 	secretPath := filepath.Join(cli.temp, "stream-secret")
 	if err := os.WriteFile(secretPath, []byte("STREAM_SECRET_CANARY\n"), 0o600); err != nil {
@@ -420,7 +420,9 @@ func TestCompiledHumanRunMasksExplicitSecretsInStreamedOutput(t *testing.T) {
 	}
 	result := cli.Run(t, "sshctl", nil, "--offline", "run", "stream-secret", "--secret", "TOKEN=@"+secretPath,
 		"--argv", "sh", "-c", `printf 'out=%s\n' "$TOKEN"; printf 'err=%s\n' "$TOKEN" >&2`)
-	if result.ProcessExit != 0 || result.Stdout != "out=***\n" || result.Stderr != "err=***\n" {
+	// Stdout keeps caller-echoed values byte for byte (the success contract
+	// scripts/ssh_matrix_test.sh also pins); stderr diagnostics mask them.
+	if result.ProcessExit != 0 || result.Stdout != "out=STREAM_SECRET_CANARY\n" || result.Stderr != "err=***\n" {
 		t.Fatalf("secret masking exit=%d stdout=%q stderr=%q", result.ProcessExit, result.Stdout, result.Stderr)
 	}
 }
