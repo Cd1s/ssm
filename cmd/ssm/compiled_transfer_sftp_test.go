@@ -503,6 +503,9 @@ func TestCompiledSFTPPutRejectsDirectoryDestination(t *testing.T) {
 // A deadline that expires mid-upload closes the transfer's sftp client; the
 // temporary file must still be cleaned up (over a fresh sftp session).
 func TestCompiledSFTPPutTimeoutCleansTemporaryFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the in-process sftp server addresses the local file system with POSIX paths")
+	}
 	cli := newCompiledCLIHarness(t)
 	server := newCompiledSSHFixture(t, compiledSSHFixtureOptions{
 		Password: issue80Password, SFTP: true, RejectExec: true, SFTPReadDelay: 40 * time.Millisecond,

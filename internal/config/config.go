@@ -10,11 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-<<<<<<< HEAD
-	"sync"
-=======
 	"strings"
->>>>>>> 6e25821 (feat(transfer): SFTP transfer for non-POSIX targets and remote_shell_unsupported (#87))
+	"sync"
 	"time"
 
 	"ssm/internal/vault"

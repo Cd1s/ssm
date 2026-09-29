@@ -436,20 +436,53 @@ func sftpSiblingName(remotePath, label string) (string, error) {
 	return remotePath + "." + label + "." + hex.EncodeToString(random[:]), nil
 }
 
+// sftpCleanupBound caps the retry on a fresh sftp session. It is deliberately
+// independent of --timeout: after a timeout the connection may be stalled, and
+// cleanup must not defeat the caller's deadline.
+const sftpCleanupBound = 5 * time.Second
+
+// sftpRemover is the part of an sftp client the cleanup retry needs.
+type sftpRemover interface {
+	Remove(string) error
+	Close() error
+}
+
 // sftpRemoveTemp removes the temporary upload file. After a timeout the
 // transfer's sftp client is already closed, so it retries once on a fresh sftp
-// session over the same SSH connection. It reports whether the file is gone.
+// session over the same SSH connection, bounded by sftpCleanupBound. It reports
+// whether the file is gone.
 func sftpRemoveTemp(sc *sftpSession, tmpPath string) bool {
 	if err := sc.Remove(tmpPath); err == nil || errors.Is(err, os.ErrNotExist) {
 		return true
 	}
-	fresh, err := sftp.NewClient(sc.ssh)
-	if err != nil {
+	return removeOnFreshSession(func() (sftpRemover, error) {
+		return sftp.NewClient(sc.ssh)
+	}, tmpPath, sftpCleanupBound)
+}
+
+// removeOnFreshSession opens a session with open and removes tmpPath, giving
+// up after bound. A stalled handshake or remove is abandoned (its goroutine
+// ends when the connection does) and reported as not removed.
+func removeOnFreshSession(open func() (sftpRemover, error), tmpPath string, bound time.Duration) bool {
+	done := make(chan bool, 1)
+	go func() {
+		fresh, err := open()
+		if err != nil {
+			done <- false
+			return
+		}
+		defer func() { _ = fresh.Close() }()
+		err = fresh.Remove(tmpPath)
+		done <- err == nil || errors.Is(err, os.ErrNotExist)
+	}()
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	case removed := <-done:
+		return removed
+	case <-timer.C:
 		return false
 	}
-	defer func() { _ = fresh.Close() }()
-	err = fresh.Remove(tmpPath)
-	return err == nil || errors.Is(err, os.ErrNotExist)
 }
 
 // annotateLeftoverTemp adds the path of a temporary file that could not be

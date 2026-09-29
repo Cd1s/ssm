@@ -1125,7 +1125,9 @@ func executeCompiledSSHTransferFault(channel io.ReadWriter, stderr io.Writer, co
 // drained after the archive end marker.
 type compiledNoDrainReader struct{ io.Reader }
 
-// compiledSlowReader delays every read of a transport.
+// compiledSlowReader delays every read of a transport. The sleep is
+// intentionally unconditional: it also slows the handshake, which the tests
+// that use it tolerate.
 type compiledSlowReader struct {
 	io.ReadWriteCloser
 	delay time.Duration
