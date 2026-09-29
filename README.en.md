@@ -122,6 +122,25 @@ sshctl --json run my-server --argv uname -sr
 
 After the alias, `--argv`, `--`, or the first non-option word starts the remote command. Everything after it, including `-h`, `--help`, and `--json`, goes to the remote program untouched (`sshctl run my-server --argv df -h` runs `df -h`). `-h/--help` and `--json` are sshctl options only before that boundary. The same rule applies to `exec`, `plan`, and `map`, and script arguments after `--` in `-f`/`-s`/`--scripts` mode.
 
+#### Local stdin forwarding
+
+`sshctl run` follows explicit rules for forwarding local stdin to the remote command:
+
+- `--stdin`: forward local stdin in every mode (human and `--json`) and close the remote stdin at EOF. `printf 'a\nb\n' | sshctl --json run my-server --stdin --argv cat` returns `"a\nb\n"` in `stdout`.
+- `--no-stdin` (like `ssh -n`): do not forward.
+- `--stdin-file <path>`: same as `< path`, in every mode; request JSON accepts it as `stdin_file`.
+- With none of these: human mode forwards a non-terminal stdin directly (it no longer probes for ready data, so slow upstreams such as `pg_dump | sshctl run ...` are not dropped); `--json` still does not forward by default. When stdin is then a pipe or file (not a terminal or `/dev/null`), the JSON result carries `"stdin_forwarded": false` and a `warning` that points to `--stdin`; when forwarding happens it carries `"stdin_forwarded": true`.
+- `SSM_FORWARD_STDIN=1` turns forwarding on by default (including `--json`) and `SSM_FORWARD_STDIN=0` is the same as `--no-stdin`; an explicit option beats the environment variable.
+- The body of `-s`, `-f`, and `--scripts` already uses the remote stdin, so combining them with `--stdin`/`--stdin-file` fails with `invalid_arguments`; `map` and `run --stream` also reject `--stdin`/`--stdin-file`.
+
+Because the probe is gone, a default human run whose stdin is a never-ending pipe (common when CI or an agent inherits stdin) waits forever if the remote command reads stdin; add `--no-stdin` or `</dev/null` in that case.
+
+Inside loops such as `while read h; do ...; done < hosts.txt`, give every call `--no-stdin` (or `</dev/null`); otherwise the first call forwards the remaining input to the remote command:
+
+```bash
+while read -r h; do sshctl run "$h" --no-stdin --argv uptime; done < hosts.txt
+```
+
 For repeated simple commands, reuse one process and connection; send one JSON argv array per line:
 
 ```bash

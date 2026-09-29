@@ -650,6 +650,13 @@ func executeCompiledSSHCommand(stdinStdout io.ReadWriter, stderr io.Writer, comm
 	if len(argv) == 1 && argv[0] == "true" {
 		return 0
 	}
+	if len(argv) == 1 && argv[0] == "cat" {
+		// Echo the forwarded stdin byte for byte until the client closes it.
+		if _, err := io.Copy(stdinStdout, stdinStdout); err != nil {
+			return 1
+		}
+		return 0
+	}
 	if len(argv) == 3 && argv[0] == "sh" && argv[1] == "-c" && argv[2] == "exit 255" {
 		return 255
 	}

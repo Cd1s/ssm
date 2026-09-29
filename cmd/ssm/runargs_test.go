@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ssm/internal/ssh"
 )
 
 func TestParseRemoteRunArgsSinglePassthrough(t *testing.T) {
@@ -242,5 +244,68 @@ func TestParseRemoteRunArgsMissingCommand(t *testing.T) {
 	_, err := parseRemoteRunArgs(nil)
 	if err == nil {
 		t.Fatal("expected missing command error")
+	}
+}
+
+func TestParseRemoteRunArgsStdinOptions(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "in.txt")
+	if err := os.WriteFile(file, []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		args     []string
+		mode     ssh.StdinMode
+		wantFile string
+	}{
+		"default":         {[]string{"--argv", "cat"}, ssh.StdinDefault, ""},
+		"stdin":           {[]string{"--stdin", "--argv", "cat"}, ssh.StdinForward, ""},
+		"no-stdin":        {[]string{"--no-stdin", "--argv", "cat"}, ssh.StdinDisable, ""},
+		"stdin-file":      {[]string{"--stdin-file", file, "--argv", "cat"}, ssh.StdinForward, file},
+		"stdin-file=":     {[]string{"--stdin-file=" + file, "--argv", "cat"}, ssh.StdinForward, file},
+		"after argv only": {[]string{"--argv", "cat", "--stdin"}, ssh.StdinDefault, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			spec, err := parseRemoteRunArgs(tc.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if spec.Stdin != tc.mode || spec.StdinFile != tc.wantFile {
+				t.Fatalf("Stdin=%v StdinFile=%q, want %v %q", spec.Stdin, spec.StdinFile, tc.mode, tc.wantFile)
+			}
+		})
+	}
+}
+
+func TestParseRemoteRunArgsStdinOptionConflicts(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "in.txt")
+	script := filepath.Join(dir, "s.sh")
+	for _, path := range []string{file, script} {
+		if err := os.WriteFile(path, []byte("true\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, args := range map[string][]string{
+		"stdin and no-stdin":      {"--stdin", "--no-stdin", "--argv", "cat"},
+		"stdin-file and stdin":    {"--stdin-file", file, "--stdin", "--argv", "cat"},
+		"stdin-file and no-stdin": {"--stdin-file", file, "--no-stdin", "--argv", "cat"},
+		"stdin-file twice":        {"--stdin-file", file, "--stdin-file", file, "--argv", "cat"},
+		"stdin-file missing path": {"--stdin-file"},
+		"stdin-file empty equals": {"--stdin-file=", "--argv", "cat"},
+		"stdin-file absent":       {"--stdin-file", filepath.Join(dir, "absent"), "--argv", "cat"},
+		"stdin-file directory":    {"--stdin-file", dir, "--argv", "cat"},
+		"script -s with --stdin":  {"-s", "--stdin"},
+		"script -f with --stdin":  {"-f", script, "--stdin"},
+		"script with stdin-file":  {"--scripts", script, "--stdin-file", file},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseRemoteRunArgs(args); err == nil {
+				t.Fatal("accepted conflicting stdin options")
+			}
+		})
+	}
+	// --no-stdin is harmless with a script source.
+	if _, err := parseRemoteRunArgs([]string{"-f", script, "--no-stdin"}); err != nil {
+		t.Fatalf("--no-stdin with a script source: %v", err)
 	}
 }

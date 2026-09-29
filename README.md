@@ -122,6 +122,25 @@ sshctl --json run my-server --argv uname -sr
 
 别名之后，`--argv`、`--` 或第一个非选项参数即开始远端命令；其后的全部内容（包括 `-h`、`--help`、`--json`）原样交给远端程序（`sshctl run my-server --argv df -h` 会真的执行 `df -h`）。`-h/--help` 和 `--json` 只在这个边界之前才是 sshctl 的选项。`exec`、`plan`、`map` 以及 `-f`/`-s`/`--scripts` 模式下 `--` 之后的脚本参数同样适用。
 
+#### 本地 stdin 的转发规则
+
+`sshctl run` 把本地 stdin 转发给远端命令的规则是显式的：
+
+- `--stdin`：任何模式（human、`--json`）都转发本地 stdin，EOF 时关闭远端 stdin。`printf 'a\nb\n' | sshctl --json run my-server --stdin --argv cat` 的 `stdout` 为 `"a\nb\n"`。
+- `--no-stdin`（等价 `ssh -n`）：不转发。
+- `--stdin-file <path>`：等价 `< path`，任何模式都生效，也可用于 request JSON 的 `stdin_file`。
+- 都未指定时：human 模式在 stdin 不是终端时直接转发（不再探测数据是否已就绪，所以慢速上游如 `pg_dump | sshctl run ...` 不会被丢弃）；`--json` 默认仍不转发。此时若 stdin 是管道或文件（不是终端或 `/dev/null`），JSON 结果带 `"stdin_forwarded": false` 和一条 `warning`，提示加 `--stdin`；转发时带 `"stdin_forwarded": true`。
+- `SSM_FORWARD_STDIN=1` 等价默认开启转发（含 `--json`），`SSM_FORWARD_STDIN=0` 等价 `--no-stdin`；显式选项优先于环境变量。
+- `-s`、`-f`、`--scripts` 的脚本正文已经占用远端 stdin，与 `--stdin`/`--stdin-file` 同用返回 `invalid_arguments`；`map` 与 `run --stream` 同样拒绝 `--stdin`/`--stdin-file`。
+
+去掉探测后，human 默认模式下若 stdin 是永不结束的管道（CI 或 agent 继承的 stdin 常见如此）且远端命令会读取 stdin，命令会一直等待；此时加 `--no-stdin` 或 `</dev/null`。
+
+在 `while read h; do ...; done < hosts.txt` 这类循环里，务必给循环内的每次调用加 `--no-stdin`（或 `</dev/null`），否则第一次调用会把剩余的输入转发给远端：
+
+```bash
+while read -r h; do sshctl run "$h" --no-stdin --argv uptime; done < hosts.txt
+```
+
 需要连续执行多条简单命令时，可以复用同一进程和连接；每行输入一个 JSON argv 数组：
 
 ```bash

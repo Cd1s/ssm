@@ -55,6 +55,8 @@ func parseRunStreamArgs(args []string) (runStreamOptions, bool, error) {
 				return opts, true, err
 			}
 			opts.refresh = refresh
+		case filtered[i] == "--stdin", filtered[i] == "--stdin-file", strings.HasPrefix(filtered[i], "--stdin-file="):
+			return opts, true, fmt.Errorf("%s is not supported with --stream: stdin carries the argv lines", strings.SplitN(filtered[i], "=", 2)[0])
 		default:
 			return opts, true, fmt.Errorf("unknown stream option %q", filtered[i])
 		}
