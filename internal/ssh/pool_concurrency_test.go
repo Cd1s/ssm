@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -55,4 +56,19 @@ func TestClosePoolBlocksReplacementUntilEveryPriorEntryIsClosed(t *testing.T) {
 		t.Fatal("replacement acquisition reused the closed pool entry")
 	}
 	replacement.mu.Unlock()
+}
+
+func TestSessionLimitErrorsAreRetriedWithoutEvictingHealthyPool(t *testing.T) {
+	for _, message := range []string{
+		"ssh: rejected: administratively prohibited",
+		"ssh: channel open failed: open failed",
+		"remote MaxSessions limit reached",
+	} {
+		if !isSessionLimitError(errors.New(message)) {
+			t.Errorf("isSessionLimitError(%q) = false", message)
+		}
+	}
+	if isSessionLimitError(errors.New("ssh: connection reset by peer")) {
+		t.Fatal("connection loss must trigger eviction and redial")
+	}
 }

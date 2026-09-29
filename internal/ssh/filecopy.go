@@ -113,7 +113,7 @@ func UploadFileWithOptions(c config.Connection, v *config.Vault, localPath, remo
 	}
 	defer releaseClient(client, false)
 
-	session, err := client.NewSession()
+	session, err := newSessionRetry(client)
 	if err != nil {
 		return result, transferError(machinecontract.TransferSessionOpenFailed, 0, err)
 	}
@@ -282,7 +282,7 @@ func downloadFileWithOptions(c config.Connection, v *config.Vault, remotePath, l
 		result.RemoteSHA256 = remoteDigest
 	}
 
-	session, err := client.NewSession()
+	session, err := newSessionRetry(client)
 	if err != nil {
 		result.Stage = "session"
 		return result, ClassifyError(err, c)
@@ -383,7 +383,7 @@ func fileSHA256(path string) (string, error) {
 // remoteFileSHA256 asks the remote host for the SHA-256 of a regular file using
 // the shared sha256sum -> shasum -> openssl probe.
 func remoteFileSHA256(client *gossh.Client, remotePath string, active *sessionSet) (string, error) {
-	session, err := client.NewSession()
+	session, err := newSessionRetry(client)
 	if err != nil {
 		return "", transferError(machinecontract.TransferSessionOpenFailed, 0, err)
 	}

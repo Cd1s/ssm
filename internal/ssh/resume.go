@@ -81,7 +81,7 @@ func uploadFileResumable(c config.Connection, v *config.Vault, localPath, remote
 		return result, transferError(machinecontract.ResumeSourceSeekFailed, 0, err)
 	}
 
-	session, err := client.NewSession()
+	session, err := newSessionRetry(client)
 	if err != nil {
 		return result, transferError(machinecontract.TransferSessionOpenFailed, 0, err)
 	}
@@ -187,7 +187,7 @@ func resumePaths(remotePath, digest string) (partial, metadata, cleanupPattern s
 }
 
 func probeResumeState(client *gossh.Client, partial, metadata, cleanupPattern string, size int64, digest string) (resumeState, error) {
-	session, err := client.NewSession()
+	session, err := newSessionRetry(client)
 	if err != nil {
 		return resumeState{}, transferError(machinecontract.ResumeProbeSessionFailed, 0, err)
 	}
