@@ -372,6 +372,11 @@ func renderStandardHuman(output io.Writer, failure Failure) error {
 			return err
 		}
 	}
+	if failure.Outcome != "" {
+		if _, err := fmt.Fprintf(output, " outcome=%s", failure.Outcome); err != nil {
+			return err
+		}
+	}
 	alias := failure.Alias
 	if failure.humanAlias != "" {
 		alias = failure.humanAlias

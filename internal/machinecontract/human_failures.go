@@ -27,6 +27,7 @@ type RunFailureView struct {
 	Message         string
 	Hint            string
 	Stage           string
+	Outcome         string
 	Stdout          string
 	SensitiveValues []string
 }
@@ -91,6 +92,7 @@ type MapResultView struct {
 	Exit            int
 	LatencyMS       int64
 	Error           string
+	Outcome         string
 	Stdout          string
 	Stderr          string
 	SensitiveValues []string
@@ -180,6 +182,7 @@ func RenderRunFailure(streams Streams, view RunFailureView) error {
 		{"message", view.Message},
 		{"hint", view.Hint},
 		{"stage", view.Stage},
+		{"outcome", view.Outcome},
 	} {
 		if field.value != "" {
 			if _, err := fmt.Fprintf(output, "%s=%s\n", field.name, field.value); err != nil {
@@ -357,6 +360,11 @@ func RenderMapFailure(streams Streams, views []MapResultView) error {
 		}
 		if code != "" {
 			if _, err := fmt.Fprintf(stdout, "\terror=%s", code); err != nil {
+				return err
+			}
+		}
+		if view.Outcome != "" {
+			if _, err := fmt.Fprintf(stdout, "\toutcome=%s", view.Outcome); err != nil {
 				return err
 			}
 		}

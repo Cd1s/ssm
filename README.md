@@ -252,6 +252,29 @@ PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
 
 写错命令时 sshctl 会给出提示而不是当作别名：第一个词不是已知子命令时仍按 `sshctl <alias> <command>` 简写处理，别名不存在才判断它是不是命令。`ssm` 独有的命令（如 `keys`、`login`）、与子命令只差一两个字符的拼写（如 `stauts`、`hostkey`）返回 `unknown_command`（退出码 2），`hint` 给出正确的入口或命令，相近的命令名放在 `candidates`；`ssm` 入口对 sshctl 独有命令和拼写错误同样提示（human 模式下有建议时返回 `unknown_command` 和退出码 2；没有建议时保持旧的 `Unknown command` 输出，退出码不变）。别名与命令同样接近（平局）或更近，包括 redirect 的旧名，则按别名处理，返回 `alias_not_found`。其余情况仍是 `alias_not_found`（退出码 255），`candidates` 是编辑距离最近的别名，只是候选，绝不会自动选择或执行。`run`/`exec`/`plan`/`map` 的未知选项返回 `invalid_arguments`（退出码 2），`hint` 会给出建议，例如 `--script-file` 提示 `-f`、`--fetch` 提示 `get`，其余按真实选项表的编辑距离匹配。
 
+#### 退出码与传输错误
+
+`--json` 模式下以 `error` 字段为准，不要看进程退出码：远端程序可以返回任意退出码（包括 1、2、255），而 `2>&1 | tail` 这类管道还会丢掉退出码。
+
+| 退出码 | 含义 |
+|---|---|
+| 0 | 成功。 |
+| 1 | sshctl 自身失败（`internal`、同步、vault、更新），或远端命令返回 1（`remote_failed`、`remote_script_failed`）。请读 `error`。 |
+| 2 | 参数或 request 无效（`invalid_arguments`、`invalid_request`），或远端命令返回 2。 |
+| 127 | 远端脚本解释器不存在（`interpreter_not_found`），或远端命令返回 127。 |
+| 128 + 信号编号 | 本地 SIGINT/SIGTERM/SIGHUP 中断了 `run`（`interrupted`；130、143、129）。信号已转发，远端命令可能仍在运行。 |
+| 255 | sshctl 传输层失败：`dial_timeout`、`dial_refused`、`dial_network`、`handshake_failed`、`host_key_*`、`auth_failed`、`no_auth_configured`、`session_failed`、`connection_lost`、`alias_not_found`。远端命令本身也可能返回 255。 |
+| 其它值 | 远端命令自己的退出码，原样透传。 |
+
+`map` 以第一个失败结果的退出码退出；数组里每个结果各自带 `error`。
+
+两个传输错误码的处理方式不同：
+
+- `handshake_failed`（`stage:handshake`）：TCP 已连上但 SSH 握手失败（EOF、connection reset、协议或密钥交换错误），命令没有发出，重试安全。认证失败（`auth_failed`）和 host key 错误（`host_key_*`）保持各自的错误码。
+- `connection_lost`（`stage:remote_execution`，并带 `outcome:"unknown"`）：命令发出后连接中断，例如主机重启或执行了 `sysupgrade`。远端命令可能仍在运行，也可能已经结束。先去主机上确认进程状态；重试不安全。
+
+`outcome` 是加性字段，只出现在 `connection_lost` 上。
+
 动态或不可信参数、脚本、secret 文件路径、传输和主机变更使用 schema version 1 的[request-v1 schema](skills/agent-ssm/references/request-v1.schema.json)：
 
 ```json

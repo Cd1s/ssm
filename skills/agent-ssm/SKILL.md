@@ -159,6 +159,22 @@ Incompatible, corrupt, or ambiguous state returns a classified partial-state
 error and never replaces the destination. See [import and recovery guidance](references/import-json.md)
 for the related guarded recovery rules.
 
+## Exit codes
+
+In `--json` mode decide by the `error` field, not the exit code: a remote program can exit with any code, and pipes such as `2>&1 | tail` lose it.
+
+| Exit | Meaning |
+|---|---|
+| 0 | Success. |
+| 1 | sshctl's own failure (`internal`, sync, vault, update), or a remote command that exited 1. Read `error`. |
+| 2 | Invalid arguments or request, or a remote command that exited 2. |
+| 127 | Remote interpreter missing (`interpreter_not_found`), or a remote command that exited 127. |
+| 128 + signal | A local signal stopped `run` (`interrupted`; 130, 143, 129); the remote command may still be running. |
+| 255 | Transport failure: `dial_*`, `handshake_failed`, `host_key_*`, `auth_failed`, `no_auth_configured`, `session_failed`, `connection_lost`, `alias_not_found`. A remote command can also exit 255. |
+| other | The remote command's own exit status, passed through. |
+
+`map` exits with the first failed result's code; every result carries its own `error`.
+
 ## Failure rules
 
 - `alias_not_found`: list/search and ask for an exact alias if needed; never execute a suggestion.
@@ -166,6 +182,8 @@ for the related guarded recovery rules.
 - `invalid_arguments` from `run|exec|plan|map` with an unknown option: the `hint` suggests the real option (`--script-file` -> `-f`, `--fetch` -> `get`); fix the option, do not guess more.
 - `sync_push_failed`: preserve the verified pending mutation and retry the same scoped transaction ID.
 - `dial_*|auth_failed`: diagnose network or credentials, not quoting.
+- `handshake_failed` (`stage:handshake`): TCP connected but the SSH handshake failed before any command was sent; retrying is safe.
+- `connection_lost` (`stage:remote_execution`, `outcome:"unknown"`): the connection dropped after the command was sent; the remote command may still be running or may have finished. Check the process state on the host first; retrying is not safe.
 - `remote_failed|remote_script_failed`: transport succeeded; preserve remote exit and structured stderr.
 - `interpreter_not_found|script_syntax_error`: correct interpreter or syntax before execution.
 - `transfer_timeout|partial_state_*|integrity_failed`: do not publish or append ambiguous data.

@@ -7,9 +7,11 @@ package machinecontract
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
+	"syscall"
 
 	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -60,6 +62,8 @@ const (
 	InterpreterNotFound                 Kind = "interpreter_not_found"
 	RemoteScriptFailed                  Kind = "remote_script_failed"
 	RunInterrupted                      Kind = "run_interrupted"
+	ConnectionLost                      Kind = "connection_lost"
+	HandshakeFailed                     Kind = "handshake_failed"
 	ScriptSyntaxFailed                  Kind = "script_syntax_failed"
 	HostInvalidArguments                Kind = "host_invalid_arguments"
 	HostApplyInvalidArguments           Kind = "host_apply_invalid_arguments"
@@ -228,6 +232,18 @@ const (
 	CodeInterrupted    = "interrupted"
 )
 
+// CodeConnectionLost means the SSH connection broke after the command was
+// sent; the remote command's outcome is unknown and retrying is not safe.
+const CodeConnectionLost = "connection_lost"
+
+// CodeHandshakeFailed means TCP connected but the SSH handshake failed, so no
+// command was sent and retrying is safe.
+const CodeHandshakeFailed = "handshake_failed"
+
+// OutcomeUnknown is the value of the additive outcome field on failures that
+// cannot say whether the remote command ran.
+const OutcomeUnknown = "unknown"
+
 // CodeHostKeyTypeChanged means known_hosts has entries for the endpoint but
 // none of the observed key's type.
 const CodeHostKeyTypeChanged = "host_key_type_changed"
@@ -275,6 +291,7 @@ type failurePolicy struct {
 	HintFromCause   bool
 	HintFromDetails bool
 	SuppressMessage bool
+	Outcome         string
 }
 
 var failurePolicies = map[Kind]failurePolicy{
@@ -361,6 +378,16 @@ var failurePolicies = map[Kind]failurePolicy{
 	RunInterrupted: {
 		Code: CodeInterrupted, Stage: "remote_execution",
 		Hint: "a local signal stopped sshctl; it was forwarded to the remote command, which may still be running", Exit: 130,
+	},
+	ConnectionLost: {
+		Code: CodeConnectionLost, Stage: "remote_execution", Outcome: OutcomeUnknown,
+		Hint: "the connection dropped after the command was sent; the remote command may still be running or may have finished. Check the process state on the host before retrying; do not retry blindly",
+		Exit: ExitConnectionFailed,
+	},
+	HandshakeFailed: {
+		Code: CodeHandshakeFailed, Stage: "handshake",
+		Hint: "TCP connected but the SSH handshake failed before any command was sent, so retrying is safe; check that sshd is healthy and not rate limiting connections (MaxStartups, fail2ban)",
+		Exit: ExitConnectionFailed,
 	},
 	ScriptSyntaxFailed: {
 		Code: CodeScriptSyntax, Stage: "syntax_preflight",
@@ -852,6 +879,7 @@ type Failure struct {
 	Hint       string   `json:"hint,omitempty"`
 	Stage      string   `json:"stage,omitempty"`
 	SyncCause  string   `json:"cause,omitempty"`
+	Outcome    string   `json:"outcome,omitempty"`
 	Alias      string   `json:"alias,omitempty"`
 	Exit       int      `json:"exit"`
 	Candidates []string `json:"candidates,omitempty"`
@@ -957,6 +985,7 @@ func Classify(kind Kind, details Details) Failure {
 		Message:           RedactString(message),
 		Hint:              RedactString(policy.Hint),
 		Stage:             policy.Stage,
+		Outcome:           policy.Outcome,
 		Alias:             RedactString(details.Alias),
 		Exit:              exit,
 		Candidates:        candidates,
@@ -1020,10 +1049,11 @@ type ResultMetadata struct {
 	Hint    string `json:"hint,omitempty"`
 	Stage   string `json:"stage,omitempty"`
 	Cause   string `json:"cause,omitempty"`
+	Outcome string `json:"outcome,omitempty"`
 }
 
 func (f Failure) ResultMetadata() ResultMetadata {
-	return ResultMetadata{Error: f.Error, Message: f.Message, Hint: f.Hint, Stage: f.Stage, Cause: f.SyncCause}
+	return ResultMetadata{Error: f.Error, Message: f.Message, Hint: f.Hint, Stage: f.Stage, Cause: f.SyncCause, Outcome: f.Outcome}
 }
 
 // Metadata is embedded by typed command failures that serialize exit together
@@ -1035,10 +1065,11 @@ type Metadata struct {
 	Exit    int    `json:"exit"`
 	Stage   string `json:"stage,omitempty"`
 	Cause   string `json:"cause,omitempty"`
+	Outcome string `json:"outcome,omitempty"`
 }
 
 func (f Failure) Metadata() Metadata {
-	return Metadata{Error: f.Error, Message: f.Message, Hint: f.Hint, Exit: f.Exit, Stage: f.Stage, Cause: f.SyncCause}
+	return Metadata{Error: f.Error, Message: f.Message, Hint: f.Hint, Exit: f.Exit, Stage: f.Stage, Cause: f.SyncCause, Outcome: f.Outcome}
 }
 
 // TransferMetadata preserves the pre-BC-7 transfer failure field order and
@@ -1182,7 +1213,7 @@ func ClassifySSH(err error, context SSHContext) Failure {
 	var classified *ClassifiedError
 	if errors.As(err, &classified) {
 		failure := classified.Failure
-		if context.Stage != "" {
+		if context.Stage != "" && !policyOwnsStage(failure.Error) {
 			failure.Stage = context.Stage
 		}
 		if failure.Error == CodeInternal && isDialFailure(err, context) {
@@ -1240,7 +1271,11 @@ func ClassifySSH(err error, context SSHContext) Failure {
 			strings.Contains(lower, "connect: "):
 			kind = DialNetwork
 			details.Message = fmt.Sprintf("network error dialing %s: %s", address, message)
-		case strings.Contains(lower, "session"):
+		case isHandshakeError(err, lower, context):
+			kind = HandshakeFailed
+		case isConnectionBreak(err, lower) && !context.SessionAcquisition:
+			kind = ConnectionLost
+		case isSessionRejection(err, lower):
 			kind = SessionFailed
 		}
 	}
@@ -1249,7 +1284,7 @@ func ClassifySSH(err error, context SSHContext) Failure {
 		kind = SessionAcquisitionFailed
 	}
 	failure := Classify(kind, details)
-	if context.Stage != "" {
+	if context.Stage != "" && !policyOwnsStage(failure.Error) {
 		failure.Stage = context.Stage
 	}
 	if failure.Error == CodeInternal && isDialFailure(err, context) {
@@ -1257,6 +1292,57 @@ func ClassifySSH(err error, context SSHContext) Failure {
 		failure.processExit = ExitConnectionFailed
 	}
 	return failure
+}
+
+// policyOwnsStage reports whether a code's stage is part of its meaning, so a
+// caller's generic stage (dial, session) must not overwrite it. handshake and
+// remote_execution tell an agent whether the command was ever sent.
+func policyOwnsStage(code string) bool {
+	return code == CodeHandshakeFailed || code == CodeConnectionLost
+}
+
+// isHandshakeError recognizes a failure after TCP connected but before the SSH
+// session was established: x/crypto wraps every such error as "ssh: handshake
+// failed: ...". A connection break reported by the dial stage itself also
+// happened during the handshake, since no command can be sent yet.
+func isHandshakeError(err error, lower string, context SSHContext) bool {
+	if strings.Contains(lower, "handshake failed") ||
+		strings.Contains(lower, "reading version string") ||
+		strings.Contains(lower, "no common algorithm") {
+		return true
+	}
+	return context.Stage == "dial" && isConnectionBreak(err, lower)
+}
+
+// isConnectionBreak recognizes an established SSH connection that ended
+// unexpectedly: EOF, reset, broken pipe, a closed socket, an ssh disconnect
+// message, or a session that ended without an exit status.
+func isConnectionBreak(err error, lower string) bool {
+	var exitMissing *gossh.ExitMissingError
+	switch {
+	case errors.As(err, &exitMissing),
+		errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF),
+		errors.Is(err, net.ErrClosed),
+		errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.ECONNABORTED), errors.Is(err, syscall.EPIPE):
+		return true
+	}
+	for _, marker := range []string{
+		"remote command exited without exit status",
+		"connection reset", "connection was forcibly closed", "connection abort",
+		"broken pipe", "use of closed network connection", "connection closed",
+		"ssh: disconnect", "unexpected eof",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return lower == "eof" || strings.HasSuffix(lower, ": eof")
+}
+
+// isSessionRejection recognizes a peer refusing to open the session channel.
+func isSessionRejection(err error, lower string) bool {
+	var openFailed *gossh.OpenChannelError
+	return errors.As(err, &openFailed) || strings.Contains(lower, "session")
 }
 
 func isTimeoutErrorMessage(message string) bool {

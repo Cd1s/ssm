@@ -31,7 +31,22 @@ func TestMachineContractMatrix(t *testing.T) {
 		processExit int
 		alias       string
 		candidates  []string
+		outcome     string
 	}{
+		{
+			name: "connection lost", kind: ConnectionLost,
+			details: Details{Message: "wait: remote command exited without exit status or exit signal", Alias: "lost"},
+			code:    "connection_lost", stage: "remote_execution", outcome: "unknown",
+			hint: "the connection dropped after the command was sent; the remote command may still be running or may have finished. Check the process state on the host before retrying; do not retry blindly",
+			exit: 255, alias: "lost",
+		},
+		{
+			name: "handshake failed", kind: HandshakeFailed,
+			details: Details{Message: "ssh: handshake failed: EOF", Alias: "hs"},
+			code:    "handshake_failed", stage: "handshake",
+			hint: "TCP connected but the SSH handshake failed before any command was sent, so retrying is safe; check that sshd is healthy and not rate limiting connections (MaxStartups, fail2ban)",
+			exit: 255, alias: "hs",
+		},
 		{
 			name: "internal", kind: InternalFailure,
 			details: Details{Message: "unexpected failure"},
@@ -908,7 +923,7 @@ func TestMachineContractMatrix(t *testing.T) {
 			t.Parallel()
 			got := Classify(test.kind, test.details)
 			if got.OK || got.Error != test.code || got.Stage != test.stage || got.Hint != test.hint ||
-				got.Exit != test.exit || got.Alias != test.alias {
+				got.Exit != test.exit || got.Alias != test.alias || got.Outcome != test.outcome {
 				t.Fatalf("Classify(%q) = %+v", test.kind, got)
 			}
 			if strings.Join(got.Candidates, "\x00") != strings.Join(test.candidates, "\x00") {

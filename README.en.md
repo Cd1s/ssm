@@ -250,6 +250,29 @@ Read the [official Agent Skill](skills/agent-ssm/SKILL.md) and [version compatib
 
 Normal `--json` commands emit one JSON value; explicit `run --stream` emits line-oriented NDJSON. Agents should classify `ok`, `error`, `stage`, `exit`, and `hint`; a remote program can itself exit 255, so the exit code alone cannot identify an SSH transport failure.
 
+#### Exit codes and transport errors
+
+In `--json` mode, decide by the `error` field, not the process exit code: a remote program can exit with any code, including 1, 2, and 255, and you often lose the code through pipes such as `2>&1 | tail`.
+
+| Exit | Meaning |
+|---|---|
+| 0 | Success. |
+| 1 | sshctl's own failure (`internal`, sync, vault, update), or a remote command that exited 1 (`remote_failed`, `remote_script_failed`). Read `error`. |
+| 2 | Invalid arguments or request (`invalid_arguments`, `invalid_request`), or a remote command that exited 2. |
+| 127 | The remote script interpreter is missing (`interpreter_not_found`), or a remote command that exited 127. |
+| 128 + signal | A local SIGINT/SIGTERM/SIGHUP stopped `run` (`interrupted`; 130, 143, 129). The signal was forwarded and the remote command may still be running. |
+| 255 | An sshctl transport failure: `dial_timeout`, `dial_refused`, `dial_network`, `handshake_failed`, `host_key_*`, `auth_failed`, `no_auth_configured`, `session_failed`, `connection_lost`, `alias_not_found`. A remote command can also exit 255. |
+| any other | The remote command's own exit status, passed through unchanged. |
+
+`map` exits with the first failed result's exit code; each result in the array carries its own `error`.
+
+Two transport codes need different handling:
+
+- `handshake_failed` (`stage:handshake`): TCP connected but the SSH handshake failed (EOF, connection reset, protocol or key-exchange error). No command was sent, so retrying is safe. Authentication (`auth_failed`) and host-key (`host_key_*`) failures keep their own codes.
+- `connection_lost` (`stage:remote_execution`, plus `outcome:"unknown"`): the connection dropped after the command was sent, for example when the host rebooted or `sysupgrade` ran. The remote command may still be running or may have finished. Check the process state on the host first; retrying is not safe.
+
+`outcome` is an additive field that appears only on `connection_lost`.
+
 Use schema version 1 for dynamic or untrusted arguments, scripts, secret-file paths, transfers, and host changes. The [v2 request-v1 schema](skills/agent-ssm/references/request-v1.schema.json) supports `op:get`:
 
 ```json

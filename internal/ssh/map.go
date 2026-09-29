@@ -167,7 +167,7 @@ func WriteMapResults(results []RunResult, asJSON bool) {
 			for i, item := range results {
 				views[i] = machinecontract.MapResultView{
 					OK: item.OK, Alias: item.Alias, Script: item.ScriptLabel,
-					Exit: item.Exit, LatencyMS: item.LatencyMS, Error: item.Error,
+					Exit: item.Exit, LatencyMS: item.LatencyMS, Error: item.Error, Outcome: item.Outcome,
 					Stdout: item.Stdout, Stderr: item.Stderr, SensitiveValues: item.sensitiveValues,
 				}
 			}
