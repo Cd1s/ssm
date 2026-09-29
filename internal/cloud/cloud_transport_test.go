@@ -144,9 +144,11 @@ func TestRequestConstructionFailuresNeverExposeServerAddress(t *testing.T) {
 	_, pullErr := Pull(cfg)
 	_, expectedErr := PullExpected(cfg, "identity")
 	_, pushErr := PushBlob(cfg, []byte("blob"))
+	_, registerErr := Register(server, "user@example.invalid", "PASSWORD_CANARY")
+	_, loginErr := Login(server, "user@example.invalid", "PASSWORD_CANARY")
 	for name, err := range map[string]error{
 		"RemoteETag": remoteErr, "InspectRemoteBlob": inspectErr, "Pull": pullErr,
-		"PullExpected": expectedErr, "PushBlob": pushErr,
+		"PullExpected": expectedErr, "PushBlob": pushErr, "Register": registerErr, "Login": loginErr,
 	} {
 		t.Run(name, func(t *testing.T) {
 			assertNoAddress(t, err, "http://sync-unique-host.invalid:48213")
