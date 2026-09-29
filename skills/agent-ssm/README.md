@@ -70,8 +70,11 @@ the v1 bridge does not. Use direct `run --argv` for a fixed one-shot,
 dynamic argv, scripts, transfers, or host mutations.
 
 For online streams, positive --refresh is required; `--refresh=0` is valid only
-with explicit global `--offline`. Inspect every NDJSON result and stop on
-refresh failure. Never silently switch to stale inventory.
+with explicit global `--offline`. Inspect every NDJSON result. Sync is
+local-first by default, so sync failures do not stop a stream; judge trust from
+`sshctl --json status` (`remote_state`, `last_sync_error`, `inventory_stale`).
+With `sync_mode: strict` a refresh failure is terminal; never silently switch
+to stale inventory there.
 
 ## Safe mutations and publication
 

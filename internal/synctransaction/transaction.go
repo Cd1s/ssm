@@ -43,6 +43,7 @@ type RemoteState string
 const (
 	RemoteChecked          RemoteState = "checked"
 	RemoteNotChecked       RemoteState = "not_checked"
+	RemoteUnreachable      RemoteState = "unreachable"
 	RemoteNotConfigured    RemoteState = "not_configured"
 	RemoteAutoSyncDisabled RemoteState = "auto_sync_disabled"
 )
@@ -166,18 +167,43 @@ type Facts struct {
 	RemoteETag    string
 	Conflict      *SyncConflict
 	Changed       bool
+
+	// Local-first facts. They describe the last background or explicit sync
+	// outcome recorded in sync-state.json; they are empty in strict mode.
+	LastSuccess string
+	NextAttempt string
+	LastError   *SyncError
+	Stale       bool
+	// Unsynced is set when sync is configured but no pull, push or background
+	// check has ever confirmed the local inventory.
+	Unsynced bool
 }
 
 type Options struct {
 	Offline    bool
 	Invalidate func()
 	Now        func() time.Time
+	// SpawnBackground starts the detached background sync process. It is
+	// called only in local-first mode, only when an automatic attempt is due
+	// and this process won the atomic claim. Nil disables background sync.
+	SpawnBackground func(claimToken string) error
+	// DescribeFailure classifies a sync failure into a stable cause and a
+	// redacted, address-free message for the recorded last_error.
+	DescribeFailure func(error) (cause, message string)
+	// Observe receives the facts of every successful inventory-read Refresh.
+	Observe func(Facts)
 }
 
 type Transaction struct {
 	offline    bool
 	invalidate func()
 	now        func() time.Time
+	spawn      func(claimToken string) error
+	describe   func(error) (string, string)
+	observe    func(Facts)
+	// claim is the background claim token this process acts for ("" in the
+	// foreground).
+	claim string
 }
 
 // Stream owns synchronization policy for one run --stream process lifetime.
@@ -189,6 +215,11 @@ type Stream struct {
 	interval    time.Duration
 	nextRefresh time.Time
 	initialized bool
+	// baseline is the local encrypted-blob identity the stream last observed
+	// in local-first mode; a change means a background pull (or another
+	// process) replaced the vault and the caller must reload its snapshot.
+	baseline    string
+	baselineSet bool
 }
 
 func New(opts Options) *Transaction {
@@ -196,7 +227,16 @@ func New(opts Options) *Transaction {
 	if now == nil {
 		now = time.Now
 	}
-	return &Transaction{offline: opts.Offline, invalidate: opts.Invalidate, now: now}
+	return &Transaction{
+		offline: opts.Offline, invalidate: opts.Invalidate, now: now,
+		spawn: opts.SpawnBackground, describe: opts.DescribeFailure, observe: opts.Observe,
+	}
+}
+
+// LocalFirst reports whether inventory reads use the local vault without
+// waiting for the sync service. strict restores refresh-before-read.
+func (t *Transaction) LocalFirst() bool {
+	return config.LoadSettings().EffectiveSyncMode() == config.SyncModeLocalFirst
 }
 
 // Offline reports whether this transaction is forbidden from consulting sync
@@ -254,6 +294,17 @@ func (s *Stream) refresh() (Facts, error) {
 	if err != nil {
 		return facts, err
 	}
+	if s.transaction.LocalFirst() {
+		if identity, identityErr := localOpaqueIdentity(); identityErr == nil {
+			if s.baselineSet && identity != s.baseline && !facts.Changed {
+				facts.Changed = true
+				if s.transaction.invalidate != nil {
+					s.transaction.invalidate()
+				}
+			}
+			s.baseline, s.baselineSet = identity, true
+		}
+	}
 	s.nextRefresh = s.transaction.now().Add(s.interval)
 	return facts, nil
 }
@@ -304,12 +355,28 @@ func (t *Transaction) InspectLocal() (Facts, error) {
 // cloud configuration or transport. Missing configuration retains the
 // unconfigured behavior; every present invalid configuration is fatal.
 func (t *Transaction) Refresh() (Facts, error) {
-	return t.refresh(false)
+	facts, err := t.refresh(false)
+	if err == nil && t.observe != nil {
+		t.observe(facts)
+	}
+	return facts, err
 }
 
 // Sync performs an explicit refresh even when automatic sync is disabled.
 func (t *Transaction) Sync() (Facts, error) {
-	return t.refresh(true)
+	facts, err := t.refresh(true)
+	t.recordExplicitOutcome(err)
+	return facts, err
+}
+
+// recordExplicitOutcome updates sync-state.json after an explicit sync, pull,
+// or publication step in local-first mode. strict mode does not use the state
+// file, so its behavior (including clock reads) is exactly v2.0.2.
+func (t *Transaction) recordExplicitOutcome(err error) {
+	if t.offline || !t.LocalFirst() {
+		return
+	}
+	t.recordOutcome(err)
 }
 
 func (t *Transaction) refresh(explicit bool) (Facts, error) {
@@ -330,11 +397,48 @@ func (t *Transaction) refresh(explicit bool) (Facts, error) {
 		}
 		return facts, nil
 	}
-	if !explicit && !config.LoadSettings().AutoSync {
+	settings := config.LoadSettings()
+	if !explicit && !settings.AutoSync {
 		facts.Remote = RemoteAutoSyncDisabled
 		return facts, nil
 	}
+	if !explicit && settings.EffectiveSyncMode() == config.SyncModeLocalFirst {
+		return t.refreshLocalFirst(facts, settings), nil
+	}
 	return t.refreshConfigured(cfg, facts, false)
+}
+
+// refreshLocalFirst answers from local facts only: it never contacts the sync
+// service. When an automatic attempt is due it claims that attempt atomically
+// in sync-state.json and starts one detached background process. Failure to
+// claim or spawn never affects the calling command.
+func (t *Transaction) refreshLocalFirst(facts Facts, settings *config.Settings) Facts {
+	now := t.now()
+	state := LoadSyncState()
+	if t.spawn == nil || !state.due(now) {
+		return t.decorateLocalFirst(facts, settings, state)
+	}
+	if token, claimed := t.claimBackground(now); claimed {
+		if err := t.spawn(token); err != nil {
+			config.Debug("background sync: spawn failed")
+			t.releaseClaim()
+		}
+	}
+	return t.decorateLocalFirst(facts, settings, LoadSyncState())
+}
+
+// decorateLocalFirst adds the recorded sync outcome and staleness to facts for
+// a configured, auto-sync-enabled local-first inventory read.
+func (t *Transaction) decorateLocalFirst(facts Facts, settings *config.Settings, state SyncState) Facts {
+	facts.Remote = remoteStateFromState(state)
+	facts.LastSuccess = state.LastSuccessAt
+	facts.NextAttempt = state.NextAttemptAt
+	facts.LastError = state.LastError
+	facts.LastSync, facts.CacheAge = cacheAge(settings, t.now(), state.LastSuccessAt)
+	facts.Unsynced = facts.LastSync == ""
+	facts.Stale = facts.LastSync != "" &&
+		time.Duration(facts.CacheAge)*time.Second > settings.EffectiveStaleAfter()
+	return facts
 }
 
 func (t *Transaction) refreshConfigured(cfg *cloud.CloudConfig, facts Facts, forcePull bool) (Facts, error) {
@@ -342,32 +446,136 @@ func (t *Transaction) refreshConfigured(cfg *cloud.CloudConfig, facts Facts, for
 	if err != nil {
 		return facts, fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err)
 	}
+	return t.applyRemoteIdentity(cfg, facts, remote, forcePull, pullRefresh)
+}
+
+// pullMode selects how a downloaded vault is installed.
+type pullMode int
+
+const (
+	// pullRefresh is ordinary refresh, sync and pull: divergence fails closed.
+	pullRefresh pullMode = iota
+	// pullBackground is the detached background sync: additionally it leaves
+	// local state alone while a publication awaits reconciliation, waits for
+	// no one, and refuses a malformed download.
+	pullBackground
+	// pullAdopt is reviewed recovery: the caller already verified the exact
+	// identity and deliberately replaces divergent local state.
+	pullAdopt
+)
+
+// vaultLockWait bounds every wait for the vault write lock. Holders keep it
+// only for identity comparison and file replacement.
+var vaultLockWait = 5 * time.Second
+
+// beforeVaultLock is a test hook invoked just before a vault write lock
+// acquisition, with the stage ("decision" or "install"), to inject a
+// concurrent local change at exactly that point.
+var beforeVaultLock func(stage string)
+
+func (t *Transaction) lockVault(stage string, mode pullMode) (*config.FileLock, error) {
+	if beforeVaultLock != nil {
+		beforeVaultLock(stage)
+	}
+	lock, err := config.AcquireFileLock(config.VaultWriteLockName, vaultLockWait)
+	if err != nil {
+		if mode == pullBackground {
+			return nil, errBackgroundSkipped
+		}
+		if errors.Is(err, config.ErrLockBusy) {
+			return nil, fmt.Errorf("%w: vault is busy: another ssm process holds the vault write lock; retry", ErrRefresh)
+		}
+		return nil, fmt.Errorf("%w: vault write lock unavailable: %w", ErrRefresh, err)
+	}
+	if mode == pullBackground && (publishingIntentPending() || !t.claimStillValid()) {
+		_ = lock.Close()
+		return nil, errBackgroundSkipped
+	}
+	return lock, nil
+}
+
+func publishingIntentPending() bool {
+	_, err := os.Lstat(config.PublishingIntentPath())
+	return err == nil
+}
+
+// conflictError records divergence evidence and returns the conflict error.
+func (t *Transaction) conflictError(facts Facts, remote string) (Facts, error) {
+	conflict := SyncConflict{
+		DetectedAt: t.now().UTC().Format(time.RFC3339),
+		LocalETag:  facts.LocalETag, RemoteETag: remote, CachedETag: facts.RemoteETag,
+	}
+	if err := preserveConflict(conflict); err != nil {
+		return facts, fmt.Errorf("%w: conflict evidence could not be preserved", ErrRefresh)
+	}
+	facts.Conflict = &conflict
+	return facts, fmt.Errorf("%w: local and remote opaque blobs diverged", ErrConflict)
+}
+
+// applyRemoteIdentity decides between no-op, conflict and pull for an already
+// observed remote identity. Every path that replaces the local vault shares one
+// shape: download outside any lock, then take the vault write lock, re-read
+// local identity, fail closed on divergence, and only then write the vault and
+// the cached remote identity.
+func (t *Transaction) applyRemoteIdentity(cfg *cloud.CloudConfig, facts Facts, remote string, forcePull bool, mode pullMode) (Facts, error) {
 	facts.Remote = RemoteChecked
 	if !forcePull && remote != "" && remote == facts.RemoteETag {
-		facts.Remote = RemoteChecked
 		return facts, nil
 	}
-	if facts.RemoteETag != "" && remote != "" && remote != facts.RemoteETag &&
-		facts.LocalETag != "" && facts.LocalETag != facts.RemoteETag {
-		conflict := SyncConflict{
-			DetectedAt: t.now().UTC().Format(time.RFC3339),
-			LocalETag:  facts.LocalETag, RemoteETag: remote, CachedETag: facts.RemoteETag,
+	if divergedFor(mode, facts, remote) {
+		// Decide divergence before downloading, under the lock so the
+		// evidence reflects the vault as it is now.
+		lock, err := t.lockVault("decision", mode)
+		if err != nil {
+			return facts, err
 		}
-		if err := preserveConflict(conflict); err != nil {
-			return facts, fmt.Errorf("%w: conflict evidence could not be preserved", ErrRefresh)
+		current := identityFacts()
+		current.Configuration = facts.Configuration
+		if divergedFor(mode, current, remote) {
+			result, err := t.conflictError(current, remote)
+			_ = lock.Close()
+			return result, err
 		}
-		facts.Conflict = &conflict
-		return facts, fmt.Errorf("%w: local and remote opaque blobs diverged", ErrConflict)
+		_ = lock.Close()
 	}
-	committedIdentity, err := cloud.Pull(cfg)
+	data, etag, err := cloud.Fetch(cfg)
 	if err != nil {
 		return facts, fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err)
 	}
-	facts.Changed = true
+	return t.installFetched(data, etag, mode)
+}
+
+// installFetched replaces the local vault with an already downloaded blob under
+// the vault write lock. Local facts are re-read after acquiring the lock, so a
+// local mutation saved at any earlier moment is seen as divergence and kept.
+func (t *Transaction) installFetched(data []byte, etag string, mode pullMode) (Facts, error) {
+	lock, err := t.lockVault("install", mode)
+	if err != nil {
+		return Facts{}, err
+	}
+	defer func() { _ = lock.Close() }()
+	facts := identityFacts()
+	facts.Configuration = ConfigurationConfigured
+	if mode == pullBackground && !config.ValidVaultBlob(data) {
+		return facts, fmt.Errorf("%w: downloaded vault has an invalid format and was not installed", ErrRefresh)
+	}
+	if mode == pullAdopt {
+		// The adoption was reviewed against specific evidence. If the local
+		// vault changed after that evidence was recorded, the review no longer
+		// covers it: fail closed and keep the newer local state.
+		if facts.Conflict == nil || facts.LocalETag != facts.Conflict.LocalETag {
+			return facts, fmt.Errorf("%w: local vault changed after the conflict was recorded; nothing was replaced, re-check with sshctl --offline --json doctor before adopting", ErrConflict)
+		}
+	} else if divergedFor(mode, facts, etag) {
+		return t.conflictError(facts, etag)
+	}
+	if err := config.WritePrivateFile(config.Path(), data); err != nil {
+		return facts, fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err)
+	}
 	if t.invalidate != nil {
 		t.invalidate()
 	}
-	t.commitSuccess("pull", committedIdentity)
+	t.commitSuccess("pull", etag)
 	facts = t.localFacts()
 	facts.Configuration = ConfigurationConfigured
 	facts.Changed = true
@@ -375,7 +583,43 @@ func (t *Transaction) refreshConfigured(cfg *cloud.CloudConfig, facts Facts, for
 	return facts, nil
 }
 
+// identityFacts reads only the local and cached remote identities, without the
+// clock or settings, for decisions taken under the vault write lock.
+func identityFacts() Facts {
+	facts := Facts{RemoteETag: cachedRemoteIdentity(), Conflict: loadConflict()}
+	if local, err := localOpaqueIdentity(); err == nil {
+		facts.LocalETag = local
+	}
+	return facts
+}
+
+// divergedFor is diverged plus, for the unattended background sync only, the
+// case where no remote identity was ever confirmed (sync was configured after
+// the local vault existed, or the state was reset) yet a different local vault
+// exists: replacing it would silently discard hosts nobody has published. That
+// first pull is left to an explicit sync.
+func divergedFor(mode pullMode, facts Facts, remote string) bool {
+	if diverged(facts, remote) {
+		return true
+	}
+	return mode == pullBackground && facts.RemoteETag == "" && remote != "" &&
+		facts.LocalETag != "" && facts.LocalETag != remote
+}
+
+// diverged reports that both the remote and the local vault moved away from the
+// last confirmed remote identity.
+func diverged(facts Facts, remote string) bool {
+	return facts.RemoteETag != "" && remote != "" && remote != facts.RemoteETag &&
+		facts.LocalETag != "" && facts.LocalETag != facts.RemoteETag
+}
+
 func (t *Transaction) Pull() (Facts, error) {
+	facts, err := t.pull()
+	t.recordExplicitOutcome(err)
+	return facts, err
+}
+
+func (t *Transaction) pull() (Facts, error) {
 	facts := t.localFacts()
 	cfg, state, err := t.configuration()
 	facts.Configuration = state
@@ -393,9 +637,11 @@ func (t *Transaction) Pull() (Facts, error) {
 	return t.refreshConfigured(cfg, facts, true)
 }
 
-// AdoptRemote performs the explicit reviewed recovery path for an empty-ledger
-// divergence. Ordinary Pull never calls this method and therefore retains its
-// no-silent-overwrite behavior.
+// AdoptRemote performs the explicit reviewed recovery path for a preserved
+// divergence (typically an empty-ledger one). It replaces the local vault only
+// if, under the vault write lock, the local vault is still the one the conflict
+// evidence was recorded for; a later local change makes it fail closed. Ordinary Pull never calls this
+// method and therefore retains its no-silent-overwrite behavior.
 func (t *Transaction) AdoptRemote(expected BlobIdentity) (Facts, error) {
 	facts := t.localFacts()
 	cfg, state, err := t.configuration()
@@ -418,19 +664,11 @@ func (t *Transaction) AdoptRemote(expected BlobIdentity) (Facts, error) {
 	if !observed.equal(expected) {
 		return facts, fmt.Errorf("%w: reviewed remote identity changed", ErrConflict)
 	}
-	committed, err := cloud.PullExpected(cfg, expected.Value)
+	data, committed, err := cloud.FetchExpected(cfg, expected.Value)
 	if err != nil {
 		return facts, fmt.Errorf("%w: reviewed remote identity changed during pull", ErrConflict)
 	}
-	if t.invalidate != nil {
-		t.invalidate()
-	}
-	t.commitSuccess("pull", committed)
-	facts = t.localFacts()
-	facts.Configuration = ConfigurationConfigured
-	facts.Remote = RemoteChecked
-	facts.Changed = true
-	return facts, nil
+	return t.installFetched(data, committed, pullAdopt)
 }
 
 func (t *Transaction) RemoteIdentity() (string, error) {
@@ -451,7 +689,12 @@ func (t *Transaction) RemoteIdentity() (string, error) {
 // PreparePublication performs push preflight and returns only safe opaque
 // identities. Callers must durably persist their exact scope and this plan
 // before SendPublication.
-func (t *Transaction) PreparePublication(blob []byte) (PreparedPublication, error) {
+func (t *Transaction) PreparePublication(blob []byte) (_ PreparedPublication, err error) {
+	defer func() {
+		if err != nil && !errors.Is(err, ErrUnconfigured) {
+			t.recordExplicitOutcome(err)
+		}
+	}()
 	facts := t.localFacts()
 	cfg, state, err := t.configuration()
 	if err != nil {
@@ -514,7 +757,12 @@ func (t *Transaction) ObservePublicationIdentity() (BlobIdentity, error) {
 // SendPublication verifies that the prerequisite has not changed, then sends
 // the exact opaque target. It does not commit sync metadata; the inventory
 // owner does that only after target equality and local finalization.
-func (t *Transaction) SendPublication(blob []byte, prepared PreparedPublication) (BlobIdentity, error) {
+func (t *Transaction) SendPublication(blob []byte, prepared PreparedPublication) (_ BlobIdentity, err error) {
+	defer func() {
+		if err != nil {
+			t.recordExplicitOutcome(err)
+		}
+	}()
 	if opaqueIdentity(blob) != prepared.Target {
 		return BlobIdentity{}, fmt.Errorf("%w: prepared target identity changed", ErrPushNotSent)
 	}
@@ -582,6 +830,7 @@ func (t *Transaction) preservePublicationConflict(prepared PreparedPublication, 
 // owner has confirmed target equality and finalized the exact local IDs.
 func (t *Transaction) ConfirmPublication(target string) {
 	t.commitSuccess("push", target)
+	t.recordExplicitOutcome(nil)
 }
 
 func (t *Transaction) PushBlob(blob []byte) (Facts, error) {
@@ -644,10 +893,18 @@ func (t *Transaction) Facts() Facts {
 	case ConfigurationUnconfigured:
 		facts.Remote = RemoteNotConfigured
 	case ConfigurationConfigured:
-		if config.LoadSettings().AutoSync {
-			facts.Remote = RemoteChecked
-		} else {
+		settings := config.LoadSettings()
+		switch {
+		case !settings.AutoSync:
 			facts.Remote = RemoteAutoSyncDisabled
+			if settings.EffectiveSyncMode() == config.SyncModeLocalFirst {
+				facts = t.decorateLocalFirst(facts, settings, LoadSyncState())
+				facts.Remote = RemoteAutoSyncDisabled
+			}
+		case settings.EffectiveSyncMode() == config.SyncModeLocalFirst:
+			facts = t.decorateLocalFirst(facts, settings, LoadSyncState())
+		default:
+			facts.Remote = RemoteChecked
 		}
 	case ConfigurationInvalid:
 		facts.Remote = RemoteNotChecked
@@ -764,9 +1021,9 @@ func clearConflict() error {
 	return err
 }
 
-func cacheAge(settings *config.Settings, now time.Time) (string, int64) {
+func cacheAge(settings *config.Settings, now time.Time, confirmations ...string) (string, int64) {
 	var latest time.Time
-	for _, raw := range []string{settings.LastPull, settings.LastPush} {
+	for _, raw := range append([]string{settings.LastPull, settings.LastPush}, confirmations...) {
 		if parsed, err := time.Parse(time.RFC3339, raw); err == nil && parsed.After(latest) {
 			latest = parsed
 		}

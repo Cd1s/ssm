@@ -68,7 +68,7 @@ not prove SSH transport failure.
 - Fixed, reviewed literal argv: `sshctl --json run <exact-alias> --argv <command> [args...]`.
   Remote argv boundary: after the alias, `--argv`, `--`, or the first non-option word starts the remote command; everything after it (`-h`, `--help`, `--json`, ...) reaches the remote program untouched. Put sshctl options such as `--json`, `--timeout`, or `--help` before that boundary. The same holds for `exec`, `plan`, `map`, and script arguments after `--`.
 - Local stdin: `--stdin` forwards it in every mode including `--json` (`printf 'a\n' | sshctl --json run <exact-alias> --stdin --argv cat`), `--no-stdin` never forwards (like `ssh -n`), and `--stdin-file <path>` is `< path` (request v1 `stdin_file`). Without them, human mode forwards a non-terminal stdin directly and `--json` does not; an unforwarded piped stdin adds `stdin_forwarded:false` plus a `warning` to the JSON result, and forwarding adds `stdin_forwarded:true`. `SSM_FORWARD_STDIN=1` forwards by default (including `--json`), `SSM_FORWARD_STDIN=0` equals `--no-stdin`, and explicit flags win. `-s`, `-f`, `--scripts`, `map`, and `run --stream` reject `--stdin`/`--stdin-file` with `invalid_arguments`. A default human run whose stdin is a never-ending pipe (common when CI or an agent inherits stdin) waits forever if the remote command reads stdin: add `--no-stdin` or `</dev/null`. In `while read` loops always pass `--no-stdin` (or `</dev/null`) so a call does not consume the loop's input.
-- Repeated simple argv on one exact alias: keep `sshctl run <exact-alias> --stream` open and send one JSON string array per line. Online streams require a positive --refresh interval (30s by default); `--refresh=0` is valid only with explicit global `--offline`. Inspect every NDJSON result and stop on refresh failure.
+- Repeated simple argv on one exact alias: keep `sshctl run <exact-alias> --stream` open and send one JSON string array per line. Online streams require a positive --refresh interval (30s by default); `--refresh=0` is valid only with explicit global `--offline`. Inspect every NDJSON result. In the default local_first mode sync failures never stop the stream; in `sync_mode: strict` a refresh failure is terminal.
 - Dynamic, untrusted, or data-dependent argv: use request schema version 1 with `op:"run"` and the schema selected above.
 - Shell syntax or a generated script: use `script_file` with optional `script_args` and `shell`; use preflight where supported.
 - Non-shell script (Python, Perl, Ruby): `sshctl --json run <exact-alias> -f script.py --interpreter python3 -- args...` or request `script_file` plus `interpreter`. The script still travels over stdin and runs as `<interpreter> - args...`. `interpreter` is one program name, an absolute path, or `env <name>`; without it a non-shell shebang returns `invalid_arguments`. `preflight` is shell-only and is rejected with a non-shell interpreter.
@@ -112,9 +112,33 @@ while missing or divergent identities return `error:"sync_conflict"` and
 preserve both sides. Follow [guarded empty-ledger recovery](references/import-json.md)
 for pull, reviewed `--merge`, and a new scoped transaction.
 
-Never silently switch to offline inventory. Stop on `sync_pull_failed` unless
-the caller explicitly accepts stale data with `--offline`. Sync failures carry
-a stable top-level `cause` (also `cause=` in human output); branch on it:
+Sync is local-first by default: read commands use the local inventory, never
+wait for the sync service, and start a detached background sync when one is due.
+Decide whether the inventory can be trusted from `sshctl --json status`, not
+from a command failure: `remote_state` (`checked`, `unreachable`, `not_checked`,
+`not_configured`, `auto_sync_disabled`), `last_successful_sync`,
+`last_sync_error` (`cause`, redacted `message`, `at`), `next_sync_attempt`,
+`cache_age_seconds`, and `inventory_stale`. `run` JSON results carry
+`inventory_stale:true` when the cache is older than `stale_after` (7 days by
+default). Do not add `--offline` to work around an unreachable service; local
+reads already work. `--offline` is deprecated for reads (accepted for
+compatibility) and now only suppresses background sync, as does
+`SSM_OFFLINE=1`. `run` JSON results add `inventory_unsynced:true` (sync configured
+but never confirmed) and `inventory_sync_error:"<cause>"` (the most recent sync
+attempt failed) so an agent can see it without calling `status`; human mode does
+not warn about a failed attempt. In `strict` mode and for explicit `sync`/`pull`
+a concurrent local writer can cause a "vault is busy" failure (retry), and
+`pull --adopt-remote <sha256> --yes` is refused if the local vault changed after
+the conflict evidence was recorded (re-check the conflict). When `remote_state` is `unreachable` or `inventory_stale` is
+true, tell the caller before relying on host details that may have changed;
+run `sshctl --json sync` to force a strict pull. Explicit `sync`, `pull`, and
+`push` stay strict, and setting `sync_mode: strict` (or `SSM_SYNC_MODE=strict`)
+restores refresh-before-read, where `sync_pull_failed` fails the command and
+must not be bypassed silently. `ssm login` fetches the inventory once right after authenticating (the explicit
+`sync` path); run `sshctl sync` only if its stderr warned that the initial pull
+failed. Sync failures carry
+a stable top-level `cause` (also `cause=` in human output, and in
+`last_sync_error`); branch on it:
 `auth` (HTTP 401/403) and `missing_token` need a human to run `ssm login`,
 so do not retry and do not add `--offline`; `tls` needs a human to inspect the
 certificate, never bypass verification; `dns`, `connect_refused`, `timeout`,

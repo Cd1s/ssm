@@ -1,6 +1,6 @@
 //go:build windows
 
-package inventorytransaction
+package config
 
 import (
 	"errors"
@@ -9,15 +9,12 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func tryPublicationFileLock(file *os.File) (bool, error) {
+func tryFileLock(file *os.File) (bool, error) {
 	var overlapped windows.Overlapped
 	err := windows.LockFileEx(
 		windows.Handle(file.Fd()),
 		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
-		0,
-		1,
-		0,
-		&overlapped,
+		0, 1, 0, &overlapped,
 	)
 	switch {
 	case err == nil:
@@ -29,7 +26,7 @@ func tryPublicationFileLock(file *os.File) (bool, error) {
 	}
 }
 
-func unlockPublicationFile(file *os.File) error {
+func unlockFile(file *os.File) error {
 	var overlapped windows.Overlapped
 	return windows.UnlockFileEx(windows.Handle(file.Fd()), 0, 1, 0, &overlapped)
 }

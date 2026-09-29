@@ -89,3 +89,11 @@ func Decrypt(data []byte, password string) ([]byte, error) {
 
 	return plaintext, nil
 }
+
+// ValidBlob reports whether data has the shape of an encrypted vault (known
+// version byte and at least a header plus an authentication tag). It does not
+// and cannot authenticate the contents; it keeps an obviously malformed
+// download from replacing the only local copy.
+func ValidBlob(data []byte) bool {
+	return len(data) >= headerLen+16 && data[0] == byte(version)
+}

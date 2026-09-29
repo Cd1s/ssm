@@ -655,8 +655,11 @@ var reviewedCommandPolicyBoundaries = map[string]bool{
 	// These are the command's reviewed invocation roots. A root may invoke an
 	// owner directly; policy-bearing helpers and closures below it are still
 	// rejected by the graph.
-	"runArgvStream":     true,
-	"runAgentRequest":   true,
+	"runArgvStream":   true,
+	"runAgentRequest": true,
+	// The detached local-first sync process; it composes the sync transaction
+	// with the publication lock and owns no refresh policy itself.
+	"runBackgroundSync": true,
 	"runCheck":          true,
 	"runDoctor":         true,
 	"runExecSpec":       true,
@@ -666,6 +669,7 @@ var reviewedCommandPolicyBoundaries = map[string]bool{
 	"runHostCommand":    true,
 	"runHostKeyCommand": true,
 	"runKeysList":       true,
+	"runLogin":          true,
 	"runKeysRemove":     true,
 	"runList":           true,
 	"runMap":            true,
@@ -910,7 +914,11 @@ func assertSyncTransactionDepth(t *testing.T, packageAST astPackage) {
 	t.Helper()
 	assertPolicyPaths(t, packageAST, "sync transaction", []policyPath{
 		{function: "configuration", calls: []string{"ReadFile", "json.Unmarshal"}},
-		{function: "refreshConfigured", calls: []string{"RemoteETag", "Pull", "commitSuccess"}},
+		{function: "refreshConfigured", calls: []string{"RemoteETag", "applyRemoteIdentity"}},
+		{function: "applyRemoteIdentity", calls: []string{"lockVault", "Fetch", "installFetched"}},
+		{function: "installFetched", calls: []string{"lockVault", "WritePrivateFile", "commitSuccess", "conflictError"}},
+		{function: "conflictError", calls: []string{"preserveConflict"}},
+		{function: "BackgroundSync", calls: []string{"RemoteETag", "applyRemoteIdentity", "recordSuccess"}},
 		{function: "PreparePublication", calls: []string{"InspectRemoteBlob", "preserveConflict"}},
 		{function: "SendPublication", calls: []string{"ObservePublicationIdentity", "PushBlobObserved"}},
 		{function: "Facts", calls: []string{"configuration", "localFacts"}},
@@ -922,9 +930,10 @@ func assertSyncTransactionDepth(t *testing.T, packageAST astPackage) {
 func assertInventoryTransactionDepth(t *testing.T, packageAST astPackage) {
 	t.Helper()
 	assertPolicyPaths(t, packageAST, "inventory transaction", []policyPath{
-		{function: "ApplyHost", calls: []string{"buildHostCandidate", "config.Save"}},
-		{function: "RemoveSavedKey", calls: []string{"removeKeyByName", "config.Save"}},
-		{function: "ApplyImport", calls: []string{"validateImportInventory", "config.Save"}},
+		{function: "ApplyHost", calls: []string{"buildHostCandidate", "saveLoadedVault"}},
+		{function: "RemoveSavedKey", calls: []string{"removeKeyByName", "saveLoadedVault"}},
+		{function: "ApplyImport", calls: []string{"validateImportInventory", "saveLoadedVault"}},
+		{function: "saveLoadedVault", calls: []string{"lockVaultWrite", "CurrentBlobIdentity", "config.Save"}},
 		{function: "Publish", calls: []string{"project", "SendPublication", "finalizePublishingIntent"}},
 		{function: "ReconcilePublishingIntent", calls: []string{"reconcilePublishingIntent"}},
 		{function: "Preflight", calls: []string{"dependencies"}},

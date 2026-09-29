@@ -1,11 +1,16 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"ssm/internal/vault"
@@ -129,15 +134,59 @@ func Exists() bool {
 	return err == nil
 }
 
+// absentBlobIdentity stands for a vault file that does not exist.
+const absentBlobIdentity = "absent"
+
+var (
+	loadedBlobMu       sync.Mutex
+	loadedBlobIdentity string
+	loadedBlobKnown    bool
+)
+
+func blobIdentity(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func recordLoadedBlob(identity string) {
+	loadedBlobMu.Lock()
+	loadedBlobIdentity, loadedBlobKnown = identity, true
+	loadedBlobMu.Unlock()
+}
+
+// LoadedBlobIdentity returns the identity of the encrypted vault bytes this
+// process most recently loaded or saved. Local mutation commands compare it to
+// CurrentBlobIdentity under the vault write lock so a vault replaced in the
+// meantime (for example by a background pull) is never overwritten.
+func LoadedBlobIdentity() (string, bool) {
+	loadedBlobMu.Lock()
+	defer loadedBlobMu.Unlock()
+	return loadedBlobIdentity, loadedBlobKnown
+}
+
+// CurrentBlobIdentity reads the identity of the vault file as it is now.
+func CurrentBlobIdentity() (string, error) {
+	data, err := os.ReadFile(Path())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return absentBlobIdentity, nil
+		}
+		return "", err
+	}
+	return blobIdentity(data), nil
+}
+
 func Load(masterPass string) (*Vault, error) {
 	_ = EnsurePrivateDir(Dir())
 	data, err := os.ReadFile(Path())
 	if err != nil {
 		if os.IsNotExist(err) {
+			recordLoadedBlob(absentBlobIdentity)
 			return &Vault{}, nil
 		}
 		return nil, err
 	}
+	recordLoadedBlob(blobIdentity(data))
 
 	plaintext, err := vault.Decrypt(data, masterPass)
 	if err != nil {
@@ -164,7 +213,11 @@ func Save(v *Vault, masterPass string) error {
 		return err
 	}
 
-	return WritePrivateFile(Path(), encrypted)
+	if err := WritePrivateFile(Path(), encrypted); err != nil {
+		return err
+	}
+	recordLoadedBlob(blobIdentity(encrypted))
+	return nil
 }
 
 func EncryptVault(v *Vault, masterPass string) ([]byte, error) {
@@ -255,4 +308,34 @@ func LoadMergeReport() MergeReport {
 		report.Conflicts = []MergeConflict{}
 	}
 	return report
+}
+
+// ValidVaultBlob reports whether data has the shape of an encrypted vault, so a
+// malformed download never replaces the only local copy.
+func ValidVaultBlob(data []byte) bool { return vault.ValidBlob(data) }
+
+var vaultCreateLockWait = 5 * time.Second
+
+// CreateVaultIfAbsent writes an initial vault only if none exists, under the
+// vault write lock shared with every other vault writer, and reports whether it
+// created one. An existing vault (for example one just pulled) is never
+// replaced.
+func CreateVaultIfAbsent(v *Vault, masterPass string) (bool, error) {
+	lock, err := AcquireFileLock(VaultWriteLockName, vaultCreateLockWait)
+	if err != nil {
+		if errors.Is(err, ErrLockBusy) {
+			return false, errors.New("vault write lock is busy; retry the command")
+		}
+		return false, err
+	}
+	defer func() { _ = lock.Close() }()
+	if _, statErr := os.Stat(Path()); statErr == nil {
+		return false, nil
+	} else if !errors.Is(statErr, fs.ErrNotExist) {
+		return false, statErr
+	}
+	if err := Save(v, masterPass); err != nil {
+		return false, err
+	}
+	return true, nil
 }

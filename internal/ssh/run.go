@@ -70,6 +70,14 @@ type RunResult struct {
 	// piped stdin was left unread (see Warning).
 	StdinForwarded *bool  `json:"stdin_forwarded,omitempty"`
 	Warning        string `json:"warning,omitempty"`
+	// InventoryStale is set when the inventory used for this run came from a
+	// local cache older than the configured stale_after.
+	InventoryStale bool `json:"inventory_stale,omitempty"`
+	// InventoryUnsynced: sync is configured but has never confirmed this
+	// inventory. InventorySyncError is the cause (stable sync-failure
+	// taxonomy) of the most recent failed sync attempt, when there was one.
+	InventoryUnsynced  bool   `json:"inventory_unsynced,omitempty"`
+	InventorySyncError string `json:"inventory_sync_error,omitempty"`
 
 	failure         machinecontract.Failure
 	sensitiveValues []string

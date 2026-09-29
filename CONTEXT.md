@@ -11,9 +11,10 @@ plans and speculative APIs live elsewhere.
 - **Vault**: The local encrypted store containing SSH host information and
   credentials. Synchronization transfers encrypted vault data; SSH connections
   originate on the current machine.
-- **Inventory**: The host data read from the vault. Online operations refresh
-  configured remote state before using it unless the caller explicitly chooses
-  `--offline`.
+- **Inventory**: The host data read from the vault. In `local_first` mode
+  (the default) reads use the local vault and report its freshness; in
+  `strict` mode online operations refresh configured remote state before using
+  it unless the caller explicitly chooses `--offline`.
 - **Host**: A saved SSH connection target and its non-secret metadata plus a
   reference to authentication material.
 - **Alias**: The exact name used to address a host. Searches and suggestions
@@ -34,12 +35,30 @@ plans and speculative APIs live elsewhere.
   remote identity.
 - **Sync**: Pulling or pushing encrypted vault state against the configured
   synchronization endpoint.
+- **Sync mode**: The `sync_mode` setting (`SSM_SYNC_MODE` overrides it for one
+  process). `local_first` is the default: the sync service is a replication
+  channel and never stands in front of a command. `strict` is the v2.0.2
+  behavior: every inventory read refreshes online first and a refresh failure
+  fails the command.
+- **Background sync**: In `local_first` mode, a detached `sshctl sync
+  --background` process started by an inventory read whose automatic sync is
+  due. It pulls only when the remote identity changed, never publishes, never
+  overwrites divergent local state, and records its outcome in
+  `sync-state.json`.
+- **Sync state**: `sync-state.json` in the private configuration directory:
+  last attempt and success, next scheduled attempt, consecutive failures,
+  the last classified failure (`cause`, redacted `message`, time), and the
+  atomic claim that lets exactly one command start a background sync.
+- **Inventory staleness**: Local-first inventory whose last confirmed sync
+  (pull, push, or successful background check) is older than `stale_after`
+  (default 7 days).
 - **Sync configuration state**: Sync is **unconfigured** only when its
   configuration is absent. A present but invalid or unreadable configuration
   is a distinct failure state.
-- **Offline inventory**: Explicit use of cached local state with `--offline`;
-  cloud configuration is not parsed, no network access occurs, remote state is
-  not checked, and freshness metadata is reported.
+- **Offline inventory**: Explicit use of cached local state with `--offline`
+  or `SSM_OFFLINE=1`; cloud configuration is not parsed, no network access
+  occurs, no background sync starts, remote state is not checked, and
+  freshness metadata is reported.
 - **Host-key inspection**: Observation of an SSH host key as `new`, `mismatch`,
   or `trusted` before explicit acceptance of the exact fingerprint.
 - **Transfer outcome**: A machine-readable transfer result that identifies its
@@ -81,12 +100,34 @@ plans and speculative APIs live elsewhere.
 
 ### Inventory freshness and publication scope
 
-- Refresh failures stop online inventory operations. Cached inventory is never
-  selected silently.
+- In `strict` mode refresh failures stop online inventory operations, and
+  cached inventory is never selected silently.
+- In `local_first` mode (the default) an inventory read never sends a sync
+  request and is never stopped by the sync service. Using local inventory is
+  not silent: `status` reports `remote_state`, `last_successful_sync`,
+  `last_sync_error`, `next_sync_attempt`, and `cache_age_seconds`; stale
+  inventory adds `inventory_stale` to `status` and `run` JSON and a one-line
+  stderr warning to human reads. Automatic sync failures never fail a command
+  and back off exponentially (30 seconds to one hour); a divergence is
+  recorded with `cause=conflict` and never resolved automatically.
+- Explicit `sync`, `pull`, and `push` are strict in every mode: failure is
+  failure, and the outcome is recorded in the sync state.
 - A missing sync configuration means sync is not configured. An invalid or
-  unreadable sync configuration stops every online inventory read or mutation.
-- Offline inventory requires an explicit `--offline` choice that accepts stale
-  local state.
+  unreadable sync configuration stops every inventory read or mutation in both
+  modes.
+- Local vault mutations, publication finalization, and every pull (background,
+  explicit `sync`/`pull`, strict refresh, reviewed adoption) share one bounded
+  cross-process vault write lock that is never held across network I/O. A
+  mutation saves only if the vault file is still the version it loaded; a pull
+  downloads first, then re-reads local identity under the lock and fails closed
+  on divergence, so neither can overwrite the other.
+- Configured sync that has never confirmed the inventory is reported
+  (`inventory_unsynced` in `status`, one stderr line for human reads).
+- An unrecognized `sync_mode` runs as `local_first` and is reported once on
+  stderr by `status` and human reads.
+- `auto_sync: false` disables automatic sync in both modes.
+- In `strict` mode offline inventory requires an explicit `--offline` (or
+  `SSM_OFFLINE=1`) choice that accepts stale local state.
 - Online streams require a positive refresh interval. A zero interval is valid
   only with explicit offline inventory and therefore uses one fixed cached
   snapshot.
@@ -115,8 +156,10 @@ plans and speculative APIs live elsewhere.
   initialization, each consumed non-empty input line emits exactly one ordered
   result. Empty lines emit nothing, and there are no ready, summary, or footer
   records.
-- A stream refresh failure is the triggering input line's only terminal result
-  and stops further processing.
+- In `strict` mode a stream refresh failure is the triggering input line's only
+  terminal result and stops further processing. In `local_first` mode sync
+  failures never stop a stream; a due refresh reloads the local snapshot when
+  the vault changed and starts a background sync.
 - Public CLI behavior, help output, stable JSON fields, canonical `error`,
   `stage`, `exit`, and `hint` values, and cross-platform behavior are
   compatibility boundaries.

@@ -35,6 +35,7 @@ func runRegister(args []string) {
 		if err := cloud.SaveCloud(cfg); err != nil {
 			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 		}
+		resetSyncState()
 		fmt.Println("Account registered.")
 		return
 	}
@@ -60,7 +61,25 @@ func runLogin(args []string) {
 		if err := cloud.SaveCloud(cfg); err != nil {
 			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{Cause: err}))
 		}
+		resetSyncState()
 		fmt.Println("Logged in.")
+		if !offlineMode {
+			// Fetch the inventory now, through exactly the path of an explicit
+			// sync (strict semantics, vault write lock, conflict evidence on
+			// divergence). A failure never fails the login: the account is
+			// authenticated and the configuration saved.
+			if _, err := syncTransaction(false).Pull(); errors.Is(err, cloud.ErrNoVaultOnServer) {
+				// A new account has nothing to fetch yet; that is not a
+				// failure, and the attempt must not linger as one.
+				resetSyncState()
+				fmt.Println("No vault on the server yet; it is created by the first publication (sshctl --json push --only <transaction-id>).")
+			} else if err != nil {
+				// The fixed-phrase description, never error text: transport
+				// errors embed the sync server address.
+				cause, message := machinecontract.DescribeSyncFailure(err)
+				fmt.Fprintf(os.Stderr, "ssm: warning: logged in, but the initial vault pull failed (cause=%s): %s; run sshctl sync\n", cause, message)
+			}
+		}
 		return
 	}
 	os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.LoginArgumentsInvalid, machinecontract.Details{Message: "login requires explicit flags"}))
@@ -131,6 +150,7 @@ func runLogout() {
 			Cause: err, Tool: "legacy_message", Script: "logout",
 		}))
 	}
+	resetSyncState()
 	fmt.Println("Logged out.")
 }
 
@@ -401,14 +421,30 @@ func runPull(args []string) {
 }
 
 func syncTransaction(commandOffline bool) *synctransaction.Transaction {
-	return synctransaction.New(synctransaction.Options{
-		Offline:    offlineMode || commandOffline,
-		Invalidate: invalidateInventory,
-		Now:        syncTransactionClock(),
-	})
+	offline := offlineMode || commandOffline
+	options := synctransaction.Options{
+		Offline:         offline,
+		Invalidate:      invalidateInventory,
+		Now:             syncTransactionClock(),
+		DescribeFailure: machinecontract.DescribeSyncFailure,
+		Observe:         noteInventoryFreshness,
+	}
+	if !offline {
+		options.SpawnBackground = spawnBackgroundSync
+	}
+	return synctransaction.New(options)
 }
 
 func invalidateInventory() {
 	ssh.ClosePool()
 	invalidateVaultCache()
+}
+
+// resetSyncState clears the recorded sync outcome after login, register or
+// logout and says so if it could not, because a stale schedule or claim would
+// then describe the previous service.
+func resetSyncState() {
+	if err := synctransaction.ResetSyncState(); err != nil {
+		fmt.Fprintf(os.Stderr, "ssm: warning: %v; run again if sync status looks stale\n", err)
+	}
 }

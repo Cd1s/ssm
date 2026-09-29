@@ -148,7 +148,7 @@ func main() {
 		}
 		os.Exit(machinecontract.WriteClassified(machineJSON, kind, machinecontract.Details{Cause: err}))
 	}
-	if !offlineMode && !isInformationalInvocationFor(sshctlInvocation, rawArgs) {
+	if !offlineMode && !isInformationalInvocationFor(sshctlInvocation, rawArgs) && !isBackgroundSyncInvocation(args) {
 		if err := checkUpdate(); err != nil {
 			failure := machinecontract.Classify(
 				updateFailureKind(err, machinecontract.UpdateFailed),
@@ -599,6 +599,12 @@ func parseGlobalArgs(args []string) ([]string, error) {
 		masterPassFile = os.Getenv("SSM_MASTER_PASS_FILE")
 	}
 
+	if os.Getenv("SSM_OFFLINE") == "1" {
+		// Equivalent to the global --offline flag: no sync configuration is
+		// read and no background sync is started.
+		offlineMode = true
+	}
+
 	out := make([]string, 0, len(args))
 	seenCommand := false
 	for i := 0; i < len(args); i++ {
@@ -681,13 +687,17 @@ func unlockVault() (machinecontract.Failure, bool) {
 		}
 
 		if !config.Exists() {
-			masterPass = pass
-			unlockedVault = &config.Vault{}
-			if err := config.Save(unlockedVault, masterPass); err != nil {
-				unlockedVault = nil
+			// Creation takes the vault write lock and never replaces an
+			// existing file, so a pull that lands first is kept and loaded.
+			created, err := config.CreateVaultIfAbsent(&config.Vault{}, pass)
+			if err != nil {
 				return machinecontract.Classify(machinecontract.VaultCreateFailed, machinecontract.Details{Cause: err}), true
 			}
-			return machinecontract.Failure{}, false
+			if created {
+				masterPass = pass
+				unlockedVault = &config.Vault{}
+				return machinecontract.Failure{}, false
+			}
 		}
 
 		v, err := config.Load(pass)

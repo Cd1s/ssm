@@ -58,7 +58,19 @@ func PushFailureIsAmbiguous(err error) bool {
 	return errors.As(err, &failure) && failure.ambiguous
 }
 
+// ErrNoVaultOnServer reports that the account has no published vault yet (for
+// example a freshly registered one). It is not a transport failure.
+var ErrNoVaultOnServer = errors.New("no vault found on server; review pending mutations, then choose sshctl --json push --only <transaction-id> or sshctl --json push --all")
+
 var httpClient = &http.Client{Timeout: 15 * time.Second}
+
+// SetRequestTimeout bounds every later sync-service request in this process.
+// The detached background sync uses a shorter bound than interactive commands.
+func SetRequestTimeout(timeout time.Duration) {
+	if timeout > 0 {
+		httpClient.Timeout = timeout
+	}
+}
 
 var maxPullBlobBytes int64 = 64 << 20
 
@@ -160,90 +172,86 @@ func PushBlobObserved(cfg *CloudConfig, data []byte) (string, bool, error) {
 	return etag, etag != "", nil
 }
 
-// Pull atomically replaces the local encrypted vault with opaque response
-// bytes and returns the identity confirmed by that GET. Sync policy and
-// metadata commits belong to internal/synctransaction.
-func Pull(cfg *CloudConfig) (string, error) {
+// Fetch downloads the opaque encrypted vault and its confirmed identity
+// without touching local state. There is deliberately no function here that
+// writes the vault: every pull is installed by the sync transaction, which
+// takes the vault write lock, re-reads local identity, and fails closed on
+// divergence.
+func Fetch(cfg *CloudConfig) ([]byte, string, error) {
 	if err := requireToken(cfg); err != nil {
-		return "", err
+		return nil, "", err
 	}
 	server := strings.TrimRight(cfg.Server, "/")
 	req, err := http.NewRequest("GET", server+"/sync", nil)
 	if err != nil {
 		config.Debug("pull: request error: %v", err)
-		return "", &RequestError{}
+		return nil, "", &RequestError{}
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		config.Debug("pull: connection failed: %v", err)
-		return "", &TransportError{Err: err}
+		return nil, "", &TransportError{Err: err}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == 404 {
 		config.Debug("pull: no vault on server (404)")
-		return "", fmt.Errorf("no vault found on server; review pending mutations, then choose sshctl --json push --only <transaction-id> or sshctl --json push --all")
+		return nil, "", ErrNoVaultOnServer
 	}
 	if resp.StatusCode != 200 {
 		config.Debug("pull: server error %d", resp.StatusCode)
-		return "", parseError(resp)
+		return nil, "", parseError(resp)
 	}
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxPullBlobBytes+1))
 	if err != nil {
 		config.Debug("pull: read body error: %v", err)
-		return "", &TransportError{Err: err}
+		return nil, "", &TransportError{Err: err}
 	}
 	if int64(len(data)) > maxPullBlobBytes {
 		config.Debug("pull: sync blob too large")
-		return "", fmt.Errorf("sync blob too large")
+		return nil, "", fmt.Errorf("sync blob too large")
 	}
 	if len(data) == 0 {
 		config.Debug("pull: empty sync blob")
-		return "", fmt.Errorf("sync blob is empty")
-	}
-
-	if err := config.WritePrivateFile(config.Path(), data); err != nil {
-		config.Debug("pull: write vault error: %v", err)
-		return "", err
+		return nil, "", fmt.Errorf("sync blob is empty")
 	}
 	etag := strings.Trim(resp.Header.Get("ETag"), `"`)
 	if etag == "" {
 		etag = hashBytes(data)
 	}
-	config.Debug("pull: success")
-	return etag, nil
+	return data, etag, nil
 }
 
-// PullExpected atomically replaces the local encrypted vault only after the
-// GET body and returned identity both match the expected opaque identity. It is
+// FetchExpected downloads the vault and verifies that both the response
+// identity and the body match expected, without touching local state. It is
 // used by explicit reviewed recovery, never by ordinary pull.
-func PullExpected(cfg *CloudConfig, expected string) (string, error) {
+func FetchExpected(cfg *CloudConfig, expected string) ([]byte, string, error) {
 	if err := requireToken(cfg); err != nil {
-		return "", err
+		return nil, "", err
 	}
 	server := strings.TrimRight(cfg.Server, "/")
 	req, err := http.NewRequest("GET", server+"/sync", nil)
 	if err != nil {
-		return "", &RequestError{}
+		return nil, "", &RequestError{}
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return "", &TransportError{Err: err}
+		return nil, "", &TransportError{Err: err}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", parseError(resp)
+		return nil, "", parseError(resp)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxPullBlobBytes+1))
 	if err != nil {
-		return "", &TransportError{Err: err}
+		return nil, "", &TransportError{Err: err}
 	}
 	if int64(len(data)) > maxPullBlobBytes || len(data) == 0 {
-		return "", fmt.Errorf("sync blob is invalid")
+		return nil, "", fmt.Errorf("sync blob is invalid")
 	}
 	bodyIdentity := hashBytes(data)
 	responseIdentity := strings.Trim(resp.Header.Get("ETag"), `"`)
@@ -251,12 +259,9 @@ func PullExpected(cfg *CloudConfig, expected string) (string, error) {
 		responseIdentity = bodyIdentity
 	}
 	if responseIdentity != expected || bodyIdentity != expected {
-		return "", fmt.Errorf("remote identity changed during reviewed pull")
+		return nil, "", fmt.Errorf("remote identity changed during reviewed pull")
 	}
-	if err := config.WritePrivateFile(config.Path(), data); err != nil {
-		return "", err
-	}
-	return expected, nil
+	return data, expected, nil
 }
 
 func RemoteETag(cfg *CloudConfig) (string, error) {
@@ -265,7 +270,7 @@ func RemoteETag(cfg *CloudConfig) (string, error) {
 		return "", err
 	}
 	if !identity.Exists {
-		return "", fmt.Errorf("no vault found on server; review pending mutations, then choose sshctl --json push --only <transaction-id> or sshctl --json push --all")
+		return "", ErrNoVaultOnServer
 	}
 	return identity.Value, nil
 }

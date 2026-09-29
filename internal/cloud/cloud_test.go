@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"ssm/internal/config"
 	"ssm/internal/privatepath"
 )
 
@@ -54,7 +55,7 @@ func TestPullWritesOpaqueVaultPrivatelyAndReturnsConfirmedIdentity(t *testing.T)
 	}))
 	defer srv.Close()
 
-	etag, err := Pull(&CloudConfig{Server: srv.URL, Token: "token"})
+	etag, err := pullForTest(&CloudConfig{Server: srv.URL, Token: "token"})
 	if err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
@@ -84,7 +85,7 @@ func TestPullRejectsEmptyBlobWithoutOverwritingVault(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := Pull(&CloudConfig{Server: srv.URL, Token: "token"})
+	_, err := pullForTest(&CloudConfig{Server: srv.URL, Token: "token"})
 	if err == nil {
 		t.Fatal("expected empty sync blob error")
 	}
@@ -112,7 +113,7 @@ func TestPullRejectsOversizedBlobWithoutWritingVault(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := Pull(&CloudConfig{Server: srv.URL, Token: "token"})
+	_, err := pullForTest(&CloudConfig{Server: srv.URL, Token: "token"})
 	if err == nil {
 		t.Fatal("expected oversized sync blob error")
 	}
@@ -202,7 +203,7 @@ func TestCloudRequestsRequireToken(t *testing.T) {
 			return err
 		},
 		"pull": func() error {
-			_, err := Pull(cfg)
+			_, err := pullForTest(cfg)
 			return err
 		},
 		"remote-etag": func() error {
@@ -240,4 +241,26 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+// pullForTest downloads and writes the vault the way the removed production
+// helper did. It exists only so transport tests can observe Fetch end to end;
+// production code installs through the sync transaction under the vault lock.
+func pullForTest(cfg *CloudConfig) (string, error) {
+	data, etag, err := Fetch(cfg)
+	if err != nil {
+		return "", err
+	}
+	if err := config.WritePrivateFile(config.Path(), data); err != nil {
+		return "", err
+	}
+	return etag, nil
+}
+
+func pullExpectedForTest(cfg *CloudConfig, expected string) error {
+	data, _, err := FetchExpected(cfg, expected)
+	if err != nil {
+		return err
+	}
+	return config.WritePrivateFile(config.Path(), data)
 }
