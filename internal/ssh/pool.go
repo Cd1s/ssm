@@ -14,6 +14,37 @@ import (
 	"ssm/internal/config"
 )
 
+const sessionOpenRetryInterval = 50 * time.Millisecond
+
+func isSessionLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "administratively prohibited") ||
+		strings.Contains(lower, "open failed") ||
+		strings.Contains(lower, "maxsessions") ||
+		strings.Contains(lower, "session limit")
+}
+
+// newSessionRetry keeps a healthy pooled connection alive when sshd refuses a
+// channel because its session limit is temporarily full. Existing sessions
+// can then finish and make room; other errors still return immediately so the
+// caller can evict and redial a genuinely dead connection.
+func newSessionRetry(client *gossh.Client) (*gossh.Session, error) {
+	deadline := time.Now().Add(DialTimeout())
+	for {
+		session, err := client.NewSession()
+		if err == nil || !isSessionLimitError(err) {
+			return session, err
+		}
+		if time.Now().After(deadline) {
+			return nil, err
+		}
+		time.Sleep(sessionOpenRetryInterval)
+	}
+}
+
 // Session reuse: keep *ssh.Client open and open a new channel per command.
 // Disable with SSM_REUSE=0/off/false or RunOptions.NoReuse.
 
@@ -109,10 +140,13 @@ func getPooledClient(c config.Connection, v *config.Vault) (*gossh.Client, error
 	defer entry.mu.Unlock()
 
 	if entry.client != nil {
-		sess, err := entry.client.NewSession()
+		sess, err := newSessionRetry(entry.client)
 		if err == nil {
 			_ = sess.Close()
 			entry.lastUsed = time.Now()
+			return entry.client, nil
+		}
+		if isSessionLimitError(err) {
 			return entry.client, nil
 		}
 		_ = entry.client.Close()
@@ -139,7 +173,7 @@ func acquireSSHSession(c config.Connection, v *config.Vault, noReuse bool) (*gos
 		if err != nil {
 			return nil, nil, "dial", err
 		}
-		session, err := client.NewSession()
+		session, err := newSessionRetry(client)
 		if err != nil {
 			_ = client.Close()
 			return nil, nil, "session", err
@@ -151,10 +185,13 @@ func acquireSSHSession(c config.Connection, v *config.Vault, noReuse bool) (*gos
 	defer entry.mu.Unlock()
 
 	if entry.client != nil {
-		session, err := entry.client.NewSession()
+		session, err := newSessionRetry(entry.client)
 		if err == nil {
 			entry.lastUsed = time.Now()
 			return entry.client, session, "", nil
+		}
+		if isSessionLimitError(err) {
+			return entry.client, nil, "session", err
 		}
 		_ = entry.client.Close()
 		entry.client = nil
@@ -164,7 +201,7 @@ func acquireSSHSession(c config.Connection, v *config.Vault, noReuse bool) (*gos
 	if err != nil {
 		return nil, nil, "dial", err
 	}
-	session, err := client.NewSession()
+	session, err := newSessionRetry(client)
 	if err != nil {
 		_ = client.Close()
 		return nil, nil, "session", err

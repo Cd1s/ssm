@@ -94,7 +94,7 @@ func remoteIsDir(c config.Connection, v *config.Vault, remotePath string) (bool,
 	}
 	defer releaseClient(client, false)
 
-	session, err := client.NewSession()
+	session, err := newSessionRetry(client)
 	if err != nil {
 		return false, err
 	}
@@ -175,7 +175,7 @@ func uploadDirTarStream(c config.Connection, v *config.Vault, tarPath, localDir,
 	}
 	defer releaseClient(client, false)
 
-	session, err := client.NewSession()
+	session, err := newSessionRetry(client)
 	if err != nil {
 		return ClassifyError(err, c)
 	}
@@ -356,7 +356,7 @@ func remoteMkdir(c config.Connection, v *config.Vault, remoteDir string, dirMode
 		return err
 	}
 	defer releaseClient(client, false)
-	session, err := client.NewSession()
+	session, err := newSessionRetry(client)
 	if err != nil {
 		return ClassifyError(err, c)
 	}
@@ -451,7 +451,7 @@ func downloadDirTar(c config.Connection, v *config.Vault, remoteDir, localDir st
 	}
 	defer releaseClient(client, false)
 
-	session, err := client.NewSession()
+	session, err := newSessionRetry(client)
 	if err != nil {
 		return ClassifyError(err, c)
 	}
