@@ -183,7 +183,9 @@ type markerWatcher struct {
 func (w *markerWatcher) Write(data []byte) (int, error) {
 	w.mu.Lock()
 	if !w.seen {
-		window := append(w.tail, data...)
+		window := make([]byte, 0, len(w.tail)+len(data))
+		window = append(window, w.tail...)
+		window = append(window, data...)
 		if bytes.Contains(window, w.marker) {
 			w.seen = true
 			w.tail = nil
