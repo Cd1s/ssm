@@ -4532,7 +4532,7 @@ func TestWindowsReplacementChildProcess(t *testing.T) {
 			t.Fatal("descriptor application failure reported replacement success")
 		}
 		if applyCalls != 2 {
-			t.Fatalf("security descriptor apply calls = %d, want 2", applyCalls)
+			t.Fatalf("security descriptor apply calls = %d, want 2: replacement error = %v", applyCalls, err)
 		}
 		if !strings.Contains(err.Error(), "apply preserved Windows security descriptor") {
 			t.Fatalf("replacement did not fail at canonical descriptor application: %v", err)
