@@ -12,11 +12,14 @@ maintainer gates.
 
 This is a v2 minor release. It fixes the agent-experience issues from the
 2026-09 usage audit (tracking issue #89) and **changes some default
-behavior**; each change is listed below together with its compatibility
-switch. The official exact-tag release workflow creates the stable v2.1.0
+behavior and some error codes**. Only some of the changes have a
+compatibility switch; the lists below say which. The official exact-tag release workflow creates the stable v2.1.0
 Release with `make_latest=false`; v2.0.2 remains GitHub latest until
 published-asset canaries pass and a separate explicit latest-promotion
-decision is made. Ordinary `ssm update` stays within v2.
+decision is made. Ordinary `ssm update` stays within v2, and once v2.1.0 is
+promoted, same-major `ssm update` (including automatic update) adopts these
+defaults on existing installs. If a fleet needs the old behavior, pin
+`sync_mode: strict` and `SSM_RUN_OUTPUT=buffered` first.
 
 ### Default behavior changes (read before upgrading)
 
@@ -49,17 +52,47 @@ decision is made. Ordinary `ssm update` stays within v2.
   authentication; legacy `--timeout` on run/exec/plan/map/`--stream` is a
   deprecated alias of it (last flag wins; flags beat `SSM_CONNECT_TIMEOUT` /
   `SSM_TIMEOUT`). `put`/`get`/`cp` keep `--timeout` as the transfer timeout.
-  A handshake that stalls after TCP connected now fails as
-  `handshake_failed` (stage `handshake`) instead of `dial_timeout`. CLI
-  duration flags reject integers with trailing text (`30abc`).
+  See the lists below for the resulting error-code changes.
 - **SSH keepalive on by default (#73).** `keepalive@openssh.com` every 15s;
   the connection is closed after 3 unanswered probes (`connection_lost`).
   `SSM_KEEPALIVE=0` disables it; `SSM_KEEPALIVE=<duration>` changes it and an
   invalid value falls back to 15s.
-- **Error classification (#79, #85).** Transport failures that used to be
-  `internal` are now `connection_lost` or `handshake_failed`; on Windows a
-  refused connection is `dial_refused` (was `internal`). A session-limit
-  wait that gives up is `session_limit` (was `session_failed`, #76).
+
+### Error-code changes (affects automation that matches `error`)
+
+These replace codes that were too generic (`internal`) or split out a specific
+cause. None has a compatibility switch. Exit 255 is the transport-failure exit
+(`dial_*`, `connection_lost`, `handshake_failed`, `session_limit`).
+
+- A dropped connection after the command was sent: `connection_lost`
+  (stage `remote_execution`, exit 255, additive `outcome:"unknown"`) instead
+  of `internal` (exit 1); a `put`/`get` whose connection breaks midway is
+  `connection_lost` (exit 255) instead of `remote_write_failed` /
+  `remote_read_failed` (exit 1) (#79).
+- A handshake failure or stall after TCP connected: `handshake_failed` (stage
+  `handshake`, exit 255) instead of `internal` or `dial_timeout` (#73, #79).
+- Windows refused connection: `dial_refused` (stage `dial`, exit 255) instead
+  of `internal` (exit 1) (#85).
+- A session-limit wait that gives up: `session_limit` (stage `session`, exit
+  255) instead of `session_failed` (#76).
+- New codes: `exec_timeout` (exit 124), `remote_shell_unsupported`,
+  `sftp_unavailable`, `proxy_jump_invalid` (exit 2); `error` values that
+  v2.0.2 never produced.
+
+### Changes without a compatibility switch
+
+Besides the error codes above:
+
+- `--connect-timeout` (and request `timeout` on run requests, `--timeout` on
+  run/exec/plan/map) now also covers the SSH handshake and authentication,
+  not only TCP connect. Mitigation: pass a larger `--connect-timeout`.
+- CLI duration flags reject integers with trailing text (`30abc`) and other
+  malformed values.
+
+Changes that do have a switch: `sync_mode: strict` / `SSM_SYNC_MODE=strict`
+(local-first reads), `SSM_RUN_OUTPUT=buffered` (streaming `run` output),
+`SSM_KEEPALIVE=0` (keepalive), `--no-stdin` / `SSM_FORWARD_STDIN=0`
+(stdin forwarding stays as before by default).
 
 ### New features
 
@@ -106,8 +139,31 @@ decision is made. Ordinary `ssm update` stays within v2.
 - Help, README and agent skill aligned with the actual flags and environment
   variables, enforced by a contract test (#83).
 
-No protocol or schema breaking change: all JSON fields are additive; v2
-compatibility behavior remains available through the switches listed above.
+### Maintenance
+
+- The test suite no longer requires the pinned toolchain, CI triggers were
+  cleaned up, and a weekly `govulncheck` runs (#84, #88).
+
+### Request schema (request v1, version stays 1)
+
+Compared with v2.0.2, every change is additive, and no request that v2.0.2
+accepted is now rejected (v2.0.2 already rejected unknown fields):
+
+- New `run`/`plan` fields: `interpreter`, `exec_timeout`, `stdin_file`
+  (`stdin_file` is not valid with `script_file`; `interpreter` only with
+  `script_file`; `preflight:true` is invalid with a non-shell interpreter).
+- New `put`/`get` fields: `transfer` (`auto|shell|sftp`); `dir_mode` on
+  `put`. `get` now also accepts `sha256` and `timeout` (v2.0.2 rejected them).
+- New `host` fields: `transfer` and `proxy_jump` (empty string clears it).
+- Run-only fields (`interpreter`, `stdin_file`, `exec_timeout`) stay invalid
+  on `put`/`get`; `transfer` is invalid on run, check, doctor and host ops.
+- `op:get` itself is not new; it was added in v2.0.0.
+
+There is no request-schema or JSON-field breaking change: new result fields
+(`inventory_*`, `stdin_forwarded`, `via`, `outcome`, `timed_out`,
+`dial_attempts`) are additive. The behavior changes are the default changes
+and the error-code changes listed above; v2 compatibility behavior remains
+available only through the switches named there.
 
 ## v2.0.2
 

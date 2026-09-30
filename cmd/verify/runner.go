@@ -395,7 +395,9 @@ func validateReleaseNotes(repoRoot, version string) error {
 			"make_latest=false",
 			"v2.0.2 remains github latest",
 			"exact-tag release workflow",
-			"no protocol or schema breaking change",
+			"error-code changes (affects automation that matches `error`)",
+			"changes without a compatibility switch",
+			"no request-schema or json-field breaking change",
 		} {
 			if !strings.Contains(lower, required) {
 				return fmt.Errorf("release-note section %q omits v2.1.0 minor contract %q", header, required)
