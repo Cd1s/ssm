@@ -371,6 +371,11 @@ func TestCompiledWaitUntilTCPKeepsPureTCPSemantics(t *testing.T) {
 
 	result := h.Run(t, "sshctl", nil, "--offline", "--json", "wait", "tcp", "--until", "tcp", "--timeout", "5s", "--interval", "1s")
 	doc := waitRetryJSON(t, result)
+	// A pure TCP probe connects and closes at once; the fixture's accept loop
+	// may count it only after the CLI has exited.
+	for deadline := time.Now().Add(3 * time.Second); server.AcceptedConnections() < 1 && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+	}
 	if result.ProcessExit != 0 || doc["ok"] != true || server.AuthAttempts() != 0 || server.AcceptedConnections() != 1 {
 		t.Fatalf("exit=%d doc=%s auth=%d accepted=%d, want ready via one TCP connection and no auth", result.ProcessExit, result.Stdout, server.AuthAttempts(), server.AcceptedConnections())
 	}
