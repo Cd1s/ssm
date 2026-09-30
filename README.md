@@ -190,7 +190,7 @@ sshctl put my-server ./notes.txt /tmp/notes.txt --sha256 --json
 sshctl get my-server /tmp/notes.txt ./notes.txt --sha256 --timeout 30s --json
 ```
 
-`--sha256` 只适用于需要完整性核验的普通文件；目录传输的保证与普通文件不同，详见[进阶契约](#进阶--给-agent-与自动化)。远端依次探测 `sha256sum`、`shasum -a 256`、`openssl dgst -sha256`，三者都没有时返回 `error:integrity_tool_unavailable`（去掉 `--sha256` 即可）。`put` 自动创建的父目录默认权限为 `0755`，可用 `--dir-mode <八进制>`（如 `--dir-mode 0750`）覆盖；文件本身仍通过私有临时文件加 rename 写入，权限语义不变。`get` 与 `put` 接受同样位置无关的 `--json`、`--timeout`、`--sha256`（下载后在本地计算并与远端摘要比对，不一致则失败且不替换目标）；`get` 不支持 `--resume`。
+`--sha256` 只适用于需要完整性核验的普通文件；目录传输的保证与普通文件不同，详见[进阶契约](#进阶--给-agent-与自动化)。远端依次探测 `sha256sum`、`shasum -a 256`、`openssl dgst -sha256`，三者都没有时返回 `error:integrity_tool_unavailable`（去掉 `--sha256` 即可）。`put` 自动创建的父目录默认权限为 `0755`，可用 `--dir-mode <八进制>`（如 `--dir-mode 0750`）覆盖，取值须不超过 `0777` 且保留属主写和执行位（包含 `0300`），否则连接前就会被拒绝；文件本身仍通过私有临时文件加 rename 写入，权限语义不变。`get` 与 `put` 接受同样位置无关的 `--json`、`--timeout`、`--sha256`（下载后在本地计算并与远端摘要比对，不一致则失败且不替换目标）；`get` 不支持 `--resume`。
 
 #### 没有 POSIX shell 的目标（SFTP）
 
@@ -317,18 +317,26 @@ PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
 
 ### 结构化输出与 request
 
-### 环境变量与连接复用
-
-`SSM_TIMEOUT` 是兼容的连接超时别名；`SSM_DIAL_TIMEOUT` 和
-`SSM_CONNECT_TIMEOUT` 也只限制 TCP 建连与 SSH 握手，不限制远端命令执行。
-`SSM_REUSE=0|off|false|no` 关闭连接池，连接复用范围始终是单个进程
-（`status` 显示 `reuse_scope=process`）；跨进程不会复用连接。`SSM_FORWARD_STDIN=1|0`
-控制 stdin 默认转发，`SSM_RUN_OUTPUT=buffered` 恢复缓冲输出，
-`SSM_CONFIG_DIR` 指定配置目录，`SSM_MASTER_PASS_FILE` 指向受保护的密码文件。
-
 普通 `--json` 调用输出一个 JSON 值；显式 `run --stream` 输出逐行 NDJSON。Agent 应按 `ok`、`error`、`stage`、`exit` 和 `hint` 分类；远端程序本身也可能退出 255，不能只看退出码判断 SSH 是否失败。
 
 写错命令时 sshctl 会给出提示而不是当作别名：第一个词不是已知子命令时仍按 `sshctl <alias> <command>` 简写处理，别名不存在才判断它是不是命令。`ssm` 独有的命令（如 `keys`、`login`）、与子命令只差一两个字符的拼写（如 `stauts`、`hostkey`）返回 `unknown_command`（退出码 2），`hint` 给出正确的入口或命令，相近的命令名放在 `candidates`；`ssm` 入口对 sshctl 独有命令和拼写错误同样提示（human 模式下有建议时返回 `unknown_command` 和退出码 2；没有建议时保持旧的 `Unknown command` 输出，退出码不变）。别名与命令同样接近（平局）或更近，包括 redirect 的旧名，则按别名处理，返回 `alias_not_found`。其余情况仍是 `alias_not_found`（退出码 255），`candidates` 是编辑距离最近的别名，只是候选，绝不会自动选择或执行。`run`/`exec`/`plan`/`map` 的未知选项返回 `invalid_arguments`（退出码 2），`hint` 会给出建议，例如 `--script-file` 提示 `-f`、`--fetch` 提示 `get`，其余按真实选项表的编辑距离匹配。
+
+动态或不可信参数、脚本、secret 文件路径、传输和主机变更使用 schema version 1 的[request-v1 schema](skills/agent-ssm/references/request-v1.schema.json)：
+
+```json
+{
+  "version": 1,
+  "op": "run",
+  "alias": "my-server",
+  "argv": ["printf", "%s\\n", "literal value"]
+}
+```
+
+```bash
+sshctl request --file ./request.json
+```
+
+v2 的 request schema 支持 `op:get`；v1.4.3/v1.4.4 必须使用[兼容桥接 schema](skills/agent-ssm/references/request-v1-bridge.schema.json)，不能假设 v2-only 字段。
 
 #### 退出码与传输错误
 
@@ -374,22 +382,50 @@ PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
 
 **Keepalive。** 默认开启：每 15 秒对每条 SSH 连接发一次 `keepalive@openssh.com`（要求回复）；连续 3 次没有回复就关闭连接，此时正在运行的命令报 `connection_lost`（`outcome:"unknown"`）。连接池里复用的连接同样受益。`SSM_KEEPALIVE=0` 关闭；无法解析的值会回退到默认的 15 秒；`SSM_KEEPALIVE=<时长>`（如 `5s`）修改间隔。sshctl 因 `--exec-timeout` 自己关闭 session 后得到的 EOF 不会被报成 `connection_lost`。
 
-动态或不可信参数、脚本、secret 文件路径、传输和主机变更使用 schema version 1 的[request-v1 schema](skills/agent-ssm/references/request-v1.schema.json)：
+### 环境变量与连接复用
 
-```json
-{
-  "version": 1,
-  "op": "run",
-  "alias": "my-server",
-  "argv": ["printf", "%s\\n", "literal value"]
-}
-```
+`SSM_CONNECT_TIMEOUT` 与 `--connect-timeout` 等价，只限制 TCP 建连加 SSH 握手，不限制远端命令执行。
+`SSM_TIMEOUT` 是已弃用的兼容别名（`run` 上的 `--timeout` 同样已弃用），优先级低于 `SSM_CONNECT_TIMEOUT`；
+`SSM_DIAL_TIMEOUT` 是更早的名字，作用相同，最后读取。
+`SSM_REUSE=0|off|false|no` 关闭连接池，连接复用范围始终是单个进程
+（`status` 显示 `reuse_scope=process`）；跨进程不会复用连接。`SSM_FORWARD_STDIN=1|0`
+控制 stdin 默认转发，`SSM_RUN_OUTPUT=buffered` 恢复缓冲输出，
+`SSM_CONFIG_DIR` 指定配置目录，`SSM_MASTER_PASS_FILE` 指向受保护的密码文件（等价于全局 `--master-pass-file <路径>`）。
 
-```bash
-sshctl request --file ./request.json
-```
+`SSM_TRACE=1`（也接受 `true`、`yes`、`on`）等价于 `--trace`/`-v`：执行前把脱敏后的远端命令（脚本模式还有脚本摘要）写到 stderr。
 
-v2 的 request schema 支持 `op:get`；v1.4.3/v1.4.4 必须使用[兼容桥接 schema](skills/agent-ssm/references/request-v1-bridge.schema.json)，不能假设 v2-only 字段。
+`SSM_UPDATE_REPO=<owner/repo>|off` 指定 `ssm update` 读取发布的 GitHub 仓库，默认 `Cd1s/ssm`；它用于测试和 fork 自己的发布流程。优先级高于配置目录里的 `update_repo` 文件和 `settings.json` 的 `update_repo`；`off`、`none`、`disabled` 关闭更新。它不会绕过 SHA-256 和 provenance 校验：provenance 始终固定验证 `Cd1s/ssm` 的发布工作流身份，所以另一个仓库的发布没有 `Cd1s/ssm` 签发的凭证就无法安装。但它决定去哪里查版本，所以只应在可信的环境里设置（被人改掉可以让更新检查失败或停在旧版本），不要把它当作安装第三方构建的入口。
+
+### 选项速查
+
+`run`/`exec`/`plan`/`map` 的选项写在别名（`map` 是目标列表）之后、远端命令边界之前：
+
+| 选项 | 说明 |
+|---|---|
+| `--argv` | 之后的全部内容是远端 argv，逐词字面传递，不经本地 shell 拼接。 |
+| `--raw` | 用单个空格连接各词且不加引号，由远端 shell 解析；仅为兼容，有引号和展开风险。不能与 `--argv` 或脚本选项合用。 |
+| `--plan`、`--dry-run` | 只解析并显示 `remote_command` 与风险，不连接也不执行；`plan` 命令等同 `run --plan`。 |
+| `-j`、`--jobs`、`--parallel <n>` | `map` 的并发 worker 数（默认 8）；单主机 `run` 不使用它。 |
+| `--trace`、`-v` | 等同 `SSM_TRACE=1`，见上。 |
+| `--no-reuse` | 本次调用不使用连接池，等同 `SSM_REUSE=0`。 |
+| `-f`、`--file <路径>`（可重复）、`--scripts a.sh,b.sh`、`-s`、`--script` | 脚本来源：`-f`/`--scripts` 读本地文件，`-s`/`--script` 从本地 stdin 读脚本；脚本正文经 stdin 发给远端。`map` 的 `--scripts` 对每台主机并行运行每个脚本。 |
+| `--shell <名称>`、`--interpreter <程序>` | 选择运行脚本的 shell 或非 shell 解释器，见“运行脚本”。 |
+| `--preflight`、`--no-preflight` | 先做 shell 语法检查；`--no-preflight` 把它关掉，后出现的生效。 |
+| `--secret`、`-e NAME=@文件` | 把 `NAME` 作为环境变量传给远端命令，值从文件读取（也接受 `NAME=值`，但值会出现在命令行里，不建议）；输出中会被脱敏。 |
+| `--retry-dial N[:backoff]` | 拨号重试，规则见“等待主机就绪（`wait`）与拨号重试（`--retry-dial`）”。 |
+| `--connect-timeout`、`--exec-timeout`、`--timeout` | 见“超时与 keepalive”。 |
+| `--stdin`、`--no-stdin`、`--stdin-file` | 见“本地 stdin 的转发规则”。 |
+| `--stream`、`--refresh <时长>` | `run <alias> --stream` 的常驻 argv 流及其在线刷新间隔。 |
+
+其它命令的选项：
+
+- 全局：`--json`、`--offline`（读命令已弃用，仅抑制后台同步）、`--master-pass-file <路径>`、`--version`。
+- `host add|update|upsert`：`--host`、`--port`、`--user`、`--group`、`--transfer auto|shell|sftp`、`--proxy-jump <alias>`、三选一的认证 `--key <名称>` / `--key-file <路径>`（可加 `--key-name <名称>` 给新密钥起名）/ `--password-file <路径>`，以及 `--verify`（先连接验证再保存，验证失败不保存）、`--push`（需与 `--verify` 合用，保存后立即发布该事务）。`host search` 可写 `--filter <查询>` 代替位置参数；`host remove` 需要 `--yes`，`--prune-key` 同时删除不再被引用的已存密钥。
+- `import-json <路径>`：`--merge` 或 `--replace --yes`；`--manifest <路径>` 为没有 alias 的条目提供 alias；`--expect-count <n>` 在条目数不是 n 时失败（0 表示不检查）。
+- `wait <alias>`：`--timeout`、`--interval`、`--until ssh|tcp` 见“等待主机就绪（`wait`）与拨号重试（`--retry-dial`）”。
+- `put`/`get`/`cp`：见“上传或下载文件”。`--dir-mode` 必须是不超过 `0777` 的八进制权限，并且保留属主的写和执行位（即包含 `0300`，如 `0700`、`0750`、`0755`）；`0500`、`0644` 这类会让嵌套目录无法创建的值会在连接之前被拒绝。
+- 同步服务：`ssm login`/`register` 用 `--server`、`--email`、`--password-file`，`ssm server` 用 `--listen`、`--data-dir`。
+- `ssm update [--major [--yes]]`：见“更新与回滚”。
 
 ### 传输、resume 和公开字段
 

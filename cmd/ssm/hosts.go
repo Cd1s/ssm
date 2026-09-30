@@ -531,7 +531,7 @@ func hasJSONFlag(args []string) bool {
 func hostCommandUsage() {
 	fmt.Print(`Usage:
   sshctl host list [--json] [--offline]
-  sshctl host search <query> [--json] [--offline]
+  sshctl host search (<query> | --filter <query>) [--json] [--offline]
   sshctl host show <alias> [--json] [--offline]
   sshctl host add <alias> --host <address> --user <user> [--port 22] [--group <name>] [--transfer auto|shell|sftp] [--proxy-jump <alias>] <auth> [--verify] [--push] [--json] [--offline]
   sshctl host update <alias> [--host ...] [--user ...] [--port ...] [--group ...] [--transfer ...] [--proxy-jump <alias>|""] [<auth>] [--verify] [--push] [--json] [--offline]

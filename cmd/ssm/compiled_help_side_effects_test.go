@@ -16,19 +16,21 @@ import (
 	"ssm/internal/config"
 )
 
-// helpSubcommands lists every subcommand of each entrypoint. A new subcommand
-// must be added here so its --help is proven side-effect free.
+// helpSubcommands lists every subcommand of each entrypoint, derived from the
+// command tables in help.go (which TestCommandSetsMatchDispatchSwitches keeps
+// in step with the dispatch switches), so a new subcommand is covered without
+// editing this file and its --help is proven side-effect free.
 var helpSubcommands = map[string][]string{
-	"sshctl": {
-		"request", "sync", "pull", "push", "list", "host", "hosts", "host-key", "known-hosts",
-		"run", "exec", "plan", "map", "check", "doctor", "put", "get", "redirect", "alias-link",
-		"shell", "status",
-	},
-	"ssm": {
-		"update", "host", "hosts", "remove", "keys", "list", "ls", "exec", "run", "plan", "map",
-		"check", "doctor", "redirect", "alias-link", "put", "get", "import-json", "server",
-		"register", "login", "logout", "push", "pull", "pull-if-changed", "remote-hash",
-	},
+	"sshctl": concatCommands(sharedCommands, sshctlOnlyCommands),
+	"ssm":    concatCommands(sharedCommands, ssmOnlyCommands),
+}
+
+func concatCommands(groups ...[]string) []string {
+	var all []string
+	for _, group := range groups {
+		all = append(all, group...)
+	}
+	return all
 }
 
 // snapshotTree records every path under root with a content digest so a test
