@@ -125,17 +125,56 @@ func dialSSHFresh(c config.Connection, v *config.Vault) (*gossh.Client, error) {
 	}
 
 	address := net.JoinHostPort(c.Host, strconv.Itoa(port))
-	client, err := gossh.Dial("tcp", address, &gossh.ClientConfig{
+	client, err := dialSSHClient(address, &gossh.ClientConfig{
 		User:              c.User,
 		Auth:              auth,
 		HostKeyCallback:   buildHostKeyCallback(),
 		HostKeyAlgorithms: hostKeyAlgorithmsFor(KnownHostsPath(), address),
-		Timeout:           DialTimeout(),
 	})
 	if err != nil {
 		return nil, ClassifyError(err, c)
 	}
+	startKeepalive(client)
 	return client, nil
+}
+
+// dialConnectDeadline opens the TCP connection and arms one deadline covering
+// TCP connect plus the SSH handshake. gossh.ClientConfig.Timeout only limits
+// the TCP connect, so a server that accepts the connection and never speaks
+// SSH would otherwise hang the caller forever. The caller clears the deadline
+// with conn.SetDeadline(time.Time{}) once the handshake succeeded.
+func dialConnectDeadline(address string) (net.Conn, error) {
+	deadline := time.Now().Add(DialTimeout())
+	dialer := net.Dialer{Deadline: deadline}
+	conn, err := dialer.Dial("tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+// dialSSHClient connects and completes the SSH handshake under the connect
+// deadline, then removes the deadline so the established session is bounded
+// only by exec timeouts and keepalive.
+func dialSSHClient(address string, config *gossh.ClientConfig) (*gossh.Client, error) {
+	conn, err := dialConnectDeadline(address)
+	if err != nil {
+		return nil, err
+	}
+	sshConn, channels, requests, err := gossh.NewClientConn(conn, address, config)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		_ = sshConn.Close()
+		return nil, err
+	}
+	return gossh.NewClient(sshConn, channels, requests), nil
 }
 
 func getPooledClient(c config.Connection, v *config.Vault) (*gossh.Client, error) {

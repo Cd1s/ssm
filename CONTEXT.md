@@ -171,6 +171,30 @@ plans and speculative APIs live elsewhere.
   underlying protocol supplies the guarantee or explicitly reports it as
   unavailable or false.
 
+### Remote execution and connection bounds
+
+- `--connect-timeout` bounds TCP connect plus the SSH handshake as one budget;
+  the deprecated `--timeout` alias keeps that connection-only meaning for
+  `run`/`exec`/`plan`/`map` and `run --stream`. Both flags set one value (the
+  last on the command line wins) and beat an inherited `SSM_CONNECT_TIMEOUT` or
+  `SSM_TIMEOUT`. A stalled handshake fails as
+  `handshake_failed` (stage `handshake`, exit 255) before any command is
+  sent; only a TCP connect that never completed stays `dial_timeout`. A
+  handshake timeout used to classify as `dial_timeout`; consumers that matched
+  that tuple must also accept `handshake_failed`.
+- `--exec-timeout` bounds each remote command. At expiry sshctl sends SIGTERM,
+  allows a five-second grace period, then closes the session and reports
+  `exec_timeout` (stage `remote_execution`) with `timed_out:true` and exit
+  124. Once sshctl has sent SIGTERM because the deadline passed the result is
+  `exec_timeout` even if the command traps TERM and exits 0 during the grace
+  period; only a command that completed before the signal was sent reports its
+  real result. The bound applies to
+  `run`, `exec`, `plan`, `map`, and every line of `run --stream`.
+- `put`/`get` retain their separate transfer `--timeout` meaning. SSH
+  keepalive probes use `keepalive@openssh.com` every 15 seconds by default;
+  three unanswered probes close the connection and classify an in-flight
+  command as `connection_lost`. `SSM_KEEPALIVE=0` disables the probes.
+
 ### Update authorization and trust
 
 - Ordinary automatic replacement is limited to the current major version.

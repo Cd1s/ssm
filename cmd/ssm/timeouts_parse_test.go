@@ -1,0 +1,216 @@
+package main
+
+import (
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"ssm/internal/ssh"
+)
+
+func TestParseRemoteRunArgsConnectAndExecTimeouts(t *testing.T) {
+	spec, err := parseRemoteRunArgs([]string{"--connect-timeout", "5s", "--exec-timeout", "2m", "--argv", "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.ConnectTimeout != 5*time.Second || spec.ExecTimeout != 2*time.Minute || !strings.Contains(spec.Command, "true") {
+		t.Fatalf("spec = %+v", spec)
+	}
+	spec, err = parseRemoteRunArgs([]string{"--connect-timeout=7", "--exec-timeout=90", "hostname"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.ConnectTimeout != 7*time.Second || spec.ExecTimeout != 90*time.Second {
+		t.Fatalf("spec = %+v", spec)
+	}
+	// --timeout remains the compatible connect-timeout alias.
+	spec, err = parseRemoteRunArgs([]string{"--timeout", "10s", "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.ConnectTimeout != 10*time.Second || spec.ExecTimeout != 0 {
+		t.Fatalf("--timeout alias spec = %+v", spec)
+	}
+}
+
+func TestParseRemoteRunArgsRejectsBadTimeouts(t *testing.T) {
+	for _, test := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--exec-timeout"}, "--exec-timeout requires a duration"},
+		{[]string{"--exec-timeout", "0", "true"}, "--exec-timeout"},
+		{[]string{"--exec-timeout=-5s", "true"}, "--exec-timeout must be positive"},
+		{[]string{"--exec-timeout", "-5s", "true"}, "--exec-timeout must be positive"},
+		{[]string{"--connect-timeout=0", "true"}, "--connect-timeout must be positive"},
+		{[]string{"--timeout", "-1m", "true"}, "--timeout must be positive"},
+		{[]string{"--exec-timeout", "soon", "true"}, "invalid --exec-timeout"},
+		{[]string{"--connect-timeout"}, "--connect-timeout requires a duration"},
+		{[]string{"--connect-timeout=nope", "true"}, "invalid --connect-timeout"},
+	} {
+		_, err := parseRemoteRunArgs(test.args)
+		if err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Fatalf("parseRemoteRunArgs(%q) error = %v, want %q", test.args, err, test.want)
+		}
+	}
+}
+
+func TestRunOptionTableRegistersTimeoutOptions(t *testing.T) {
+	for _, option := range []string{"--connect-timeout", "--exec-timeout", "--timeout"} {
+		if !runOptionTakesValue(option) {
+			t.Fatalf("%s must consume its value in remoteArgvStart", option)
+		}
+	}
+	// Values of the new options must not be mistaken for the remote argv.
+	if got := remoteArgvStart([]string{"--exec-timeout", "5s", "--connect-timeout", "3s", "--argv", "x"}); got != 4 {
+		t.Fatalf("remoteArgvStart = %d, want 4", got)
+	}
+	// After --argv the words belong to the remote program untouched.
+	spec, err := parseRemoteRunArgs([]string{"--argv", "sleep", "--exec-timeout", "5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.ExecTimeout != 0 || !strings.Contains(spec.Command, "--exec-timeout") {
+		t.Fatalf("remote argv option was parsed by sshctl: %+v", spec)
+	}
+}
+
+func TestApplyRunSpecEnvExportsConnectTimeout(t *testing.T) {
+	t.Setenv("SSM_CONNECT_TIMEOUT", "")
+	t.Setenv("SSM_TIMEOUT", "")
+	applyRunSpecEnv(remoteRunSpec{ConnectTimeout: 4 * time.Second})
+	if got := os.Getenv("SSM_CONNECT_TIMEOUT"); got != "4s" {
+		t.Fatalf("SSM_CONNECT_TIMEOUT = %q", got)
+	}
+}
+
+func TestParseRunStreamArgsTimeouts(t *testing.T) {
+	options, stream, err := parseRunStreamArgs([]string{"--stream", "--exec-timeout", "3s", "--connect-timeout=4s", "--refresh", "0"})
+	if err != nil || !stream {
+		t.Fatalf("stream=%v err=%v", stream, err)
+	}
+	if options.execTimeout != 3*time.Second || options.connectTimeout != 4*time.Second || options.refresh != 0 {
+		t.Fatalf("options = %+v", options)
+	}
+	if _, _, err := parseRunStreamArgs([]string{"--stream", "--exec-timeout", "0"}); err == nil {
+		t.Fatal("zero --exec-timeout must be rejected")
+	}
+	options, stream, err = parseRunStreamArgs([]string{"--stream", "--timeout", "6s"})
+	if err != nil || !stream || options.connectTimeout != 6*time.Second {
+		t.Fatalf("legacy stream --timeout: stream=%v options=%+v err=%v", stream, options, err)
+	}
+	options, stream, err = parseRunStreamArgs([]string{"--stream", "--timeout=7s"})
+	if err != nil || !stream || options.connectTimeout != 7*time.Second {
+		t.Fatalf("legacy stream --timeout=: stream=%v options=%+v err=%v", stream, options, err)
+	}
+}
+
+func TestRequestRunSpecExecTimeout(t *testing.T) {
+	spec, err := requestRunSpec(agentRequest{Version: 1, Op: "run", Alias: "a", Argv: []string{"true"}, ExecTimeout: "45s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.ExecTimeout != 45*time.Second {
+		t.Fatalf("spec = %+v", spec)
+	}
+	if _, err := requestRunSpec(agentRequest{Version: 1, Op: "run", Alias: "a", Argv: []string{"true"}, ExecTimeout: "-1s"}); err == nil {
+		t.Fatal("negative exec_timeout accepted")
+	}
+	if !hasRunRequestFields(agentRequest{ExecTimeout: "5s"}) {
+		t.Fatal("exec_timeout must count as a run field so check/host requests reject it")
+	}
+}
+
+func TestParseRunStreamArgsRejectsNonPositiveTimeouts(t *testing.T) {
+	for _, args := range [][]string{
+		{"--stream", "--exec-timeout=-5s"},
+		{"--stream", "--exec-timeout", "-5s"},
+		{"--stream", "--connect-timeout", "0"},
+		{"--stream", "--timeout=-1s"},
+	} {
+		_, _, err := parseRunStreamArgs(args)
+		if err == nil || !strings.Contains(err.Error(), "must be positive") {
+			t.Fatalf("parseRunStreamArgs(%q) error = %v, want must be positive", args, err)
+		}
+	}
+	if _, _, err := parseRunStreamArgs([]string{"--stream", "--exec-timeout"}); err == nil || !strings.Contains(err.Error(), "--exec-timeout requires a duration") {
+		t.Fatalf("missing value error = %v", err)
+	}
+}
+
+func TestRequestExecTimeoutIsRunOnlyAndPutKeepsTransferTimeout(t *testing.T) {
+	if !putRequestHasRunFields(agentRequest{ExecTimeout: "5s"}) {
+		t.Fatal("put must reject exec_timeout")
+	}
+	if putRequestHasRunFields(agentRequest{Timeout: "2m", Resume: "v1", SHA256: true}) {
+		t.Fatal("put must keep accepting timeout as the transfer timeout")
+	}
+}
+
+func TestRequestV1PublishedSchemaExecTimeoutIsRunOnly(t *testing.T) {
+	data, err := os.ReadFile("../../skills/agent-ssm/references/request-v1.schema.json") //nolint:gosec // repository-owned public schema fixture
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, `"exec_timeout": {"type": "string", "minLength": 1}`) {
+		t.Error("schema does not declare exec_timeout")
+	}
+	if got := strings.Count(text, `{"required": ["exec_timeout"]}`); got != 2 {
+		t.Errorf("exec_timeout exclusions = %d, want 2 (put, get)", got)
+	}
+}
+
+func TestTimeoutAliasAndConnectTimeoutResolveLastWins(t *testing.T) {
+	for _, test := range []struct {
+		args []string
+		want time.Duration
+	}{
+		{[]string{"--timeout", "5", "--connect-timeout", "30", "true"}, 30 * time.Second},
+		{[]string{"--connect-timeout", "30", "--timeout", "5", "true"}, 5 * time.Second},
+		{[]string{"--connect-timeout=30", "--timeout=5", "true"}, 5 * time.Second},
+	} {
+		spec, err := parseRemoteRunArgs(test.args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if spec.ConnectTimeout != test.want {
+			t.Fatalf("parseRemoteRunArgs(%q) connect timeout = %v, want %v", test.args, spec.ConnectTimeout, test.want)
+		}
+	}
+	options, _, err := parseRunStreamArgs([]string{"--stream", "--connect-timeout", "30", "--timeout", "5"})
+	if err != nil || options.connectTimeout != 5*time.Second {
+		t.Fatalf("stream last wins: %+v %v", options, err)
+	}
+}
+
+func TestTimeoutFlagBeatsInheritedConnectTimeoutEnv(t *testing.T) {
+	t.Setenv("SSM_CONNECT_TIMEOUT", "5s")
+	t.Setenv("SSM_TIMEOUT", "")
+	spec, err := parseRemoteRunArgs([]string{"--timeout", "30", "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyRunSpecEnv(spec)
+	if got := ssh.DialTimeout(); got != 30*time.Second {
+		t.Fatalf("DialTimeout = %v, want the --timeout flag to beat inherited SSM_CONNECT_TIMEOUT", got)
+	}
+}
+
+func TestParseCLIDurationIntegerSecondsAreStrict(t *testing.T) {
+	for _, value := range []string{"30abc", "30 s", "3.5", "-5", "1e3"} {
+		if d, err := parseCLIDuration("--exec-timeout", value); err == nil {
+			t.Fatalf("parseCLIDuration(%q) = %v, want error", value, d)
+		}
+	}
+	for _, test := range []struct {
+		value string
+		want  time.Duration
+	}{{"30", 30 * time.Second}, {" 45 ", 45 * time.Second}, {"1m30s", 90 * time.Second}} {
+		d, err := parseCLIDuration("--timeout", test.value)
+		if err != nil || d != test.want {
+			t.Fatalf("parseCLIDuration(%q) = %v, %v; want %v", test.value, d, err, test.want)
+		}
+	}
+}

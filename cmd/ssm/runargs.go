@@ -18,7 +18,6 @@ const maxSecretBytes = 1 << 20
 type remoteRunSpec struct {
 	Command   string
 	Trace     bool
-	Timeout   time.Duration
 	JSON      bool
 	Plan      bool
 	NoReuse   bool
@@ -30,10 +29,12 @@ type remoteRunSpec struct {
 	Preflight bool
 	// Stdin and StdinFile carry the stdin forwarding choice. Only run/exec
 	// honor them; the zero value never forwards (map jobs, argv streams).
-	Stdin        ssh.StdinMode
-	StdinFile    string
-	RetryDial    int
-	RetryBackoff time.Duration
+	Stdin          ssh.StdinMode
+	StdinFile      string
+	RetryDial      int
+	RetryBackoff   time.Duration
+	ConnectTimeout time.Duration
+	ExecTimeout    time.Duration
 }
 
 // runValueOptions are the sshctl run/exec/plan/map options that consume the
@@ -44,7 +45,7 @@ type remoteRunSpec struct {
 var (
 	runValueOptions = []string{
 		"--jobs", "-j", "--parallel", "--timeout", "--secret", "-e",
-		"--shell", "--interpreter", "-f", "--file", "--scripts", "--refresh", "--retry-dial",
+		"--shell", "--interpreter", "-f", "--file", "--scripts", "--refresh", "--retry-dial", "--connect-timeout", "--exec-timeout",
 		"--stdin-file",
 	}
 	runFlagOptions = []string{
@@ -129,7 +130,6 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		fromStdin    bool
 		filePaths    []string
 		trace        bool
-		timeout      time.Duration
 		jsonOut      = machineJSON
 		plan         bool
 		noReuse      bool
@@ -147,6 +147,8 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		retryDial    int
 		retryBackoff time.Duration
 		retryErr     error
+		connectTo    time.Duration
+		execTo       time.Duration
 	)
 
 	for i := 0; i < len(args); i++ {
@@ -197,22 +199,19 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 				return remoteRunSpec{}, fmt.Errorf("invalid --jobs value")
 			}
 			workers = n
-		case arg == "--timeout":
-			if i+1 >= len(args) {
-				return remoteRunSpec{}, fmt.Errorf("--timeout requires a duration (e.g. 10s or 30)")
-			}
-			i++
-			d, err := parseCLITimeout(args[i])
+		case isDurationFlag(arg, "--timeout", "--connect-timeout", "--exec-timeout"):
+			flag, d, next, err := consumeDurationFlag(args, i, "--timeout", "--connect-timeout", "--exec-timeout")
 			if err != nil {
 				return remoteRunSpec{}, err
 			}
-			timeout = d
-		case strings.HasPrefix(arg, "--timeout="):
-			d, err := parseCLITimeout(strings.TrimPrefix(arg, "--timeout="))
-			if err != nil {
-				return remoteRunSpec{}, err
+			i = next
+			if flag == "--exec-timeout" {
+				execTo = d
+			} else {
+				// --timeout is the deprecated alias of --connect-timeout:
+				// both resolve into one value and the last one wins.
+				connectTo = d
 			}
-			timeout = d
 		case arg == "--retry-dial":
 			if i+1 >= len(args) {
 				return remoteRunSpec{}, fmt.Errorf("--retry-dial requires N[:backoff]")
@@ -405,7 +404,6 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 	return remoteRunSpec{
 		Command:   cmd,
 		Trace:     trace,
-		Timeout:   timeout,
 		JSON:      jsonOut,
 		Plan:      plan,
 		NoReuse:   noReuse,
@@ -418,7 +416,45 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		Stdin:     stdinMode,
 		StdinFile: stdinFile,
 		RetryDial: retryDial, RetryBackoff: retryBackoff,
+		ConnectTimeout: connectTo, ExecTimeout: execTo,
 	}, nil
+}
+
+// isDurationFlag reports whether arg is one of the named duration flags in
+// either the "--flag value" or "--flag=value" form.
+func isDurationFlag(arg string, names ...string) bool {
+	for _, name := range names {
+		if arg == name || strings.HasPrefix(arg, name+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+// consumeDurationFlag parses the duration flag at args[i] (see isDurationFlag)
+// and returns the flag name, the parsed duration, and the index of the last
+// argument it consumed. run/exec/map and run --stream share it so every
+// timeout flag reports errors the same way in both forms.
+func consumeDurationFlag(args []string, i int, names ...string) (string, time.Duration, int, error) {
+	arg := args[i]
+	for _, name := range names {
+		var value string
+		switch {
+		case arg == name:
+			if i+1 >= len(args) {
+				return name, 0, i, fmt.Errorf("%s requires a duration (e.g. 10s or 30)", name)
+			}
+			i++
+			value = args[i]
+		case strings.HasPrefix(arg, name+"="):
+			value = strings.TrimPrefix(arg, name+"=")
+		default:
+			continue
+		}
+		d, err := parseCLIDuration(name, value)
+		return name, d, i, err
+	}
+	return "", 0, i, fmt.Errorf("unrecognized duration flag %q", arg)
 }
 
 func parseRetryDial(value string) (int, time.Duration, error) {
@@ -520,29 +556,36 @@ func readLimitedFile(path string, limit int64) ([]byte, error) {
 }
 
 func parseCLITimeout(v string) (time.Duration, error) {
+	return parseCLIDuration("--timeout", v)
+}
+
+// parseCLIDuration parses a positive Go duration or integer seconds for the
+// named flag. Zero and negative values report "<flag> must be positive".
+func parseCLIDuration(flag, v string) (time.Duration, error) {
 	v = strings.TrimSpace(v)
 	if v == "" {
-		return 0, fmt.Errorf("--timeout requires a duration (e.g. 10s or 30)")
+		return 0, fmt.Errorf("%s requires a duration (e.g. 10s or 30)", flag)
 	}
 	if d, err := time.ParseDuration(v); err == nil {
 		if d <= 0 {
-			return 0, fmt.Errorf("--timeout must be positive")
+			return 0, fmt.Errorf("%s must be positive", flag)
 		}
 		return d, nil
 	}
-	var sec int
-	if _, err := fmt.Sscanf(v, "%d", &sec); err == nil && sec > 0 {
+	if sec, err := strconv.Atoi(v); err == nil && sec > 0 {
 		return time.Duration(sec) * time.Second, nil
 	}
-	return 0, fmt.Errorf("invalid --timeout %q (use 10s, 1m, or integer seconds)", v)
+	return 0, fmt.Errorf("invalid %s %q (use 10s, 1m, or integer seconds)", flag, v)
 }
 
 func applyRunSpecEnv(spec remoteRunSpec) {
 	if spec.Trace {
 		_ = os.Setenv("SSM_TRACE", "1")
 	}
-	if spec.Timeout > 0 {
-		_ = os.Setenv("SSM_TIMEOUT", spec.Timeout.String())
+	// SSM_CONNECT_TIMEOUT is read before the legacy SSM_TIMEOUT, so exporting
+	// the resolved flag value makes an explicit flag beat inherited variables.
+	if spec.ConnectTimeout > 0 {
+		_ = os.Setenv("SSM_CONNECT_TIMEOUT", spec.ConnectTimeout.String())
 	}
 	if spec.NoReuse {
 		_ = os.Setenv("SSM_REUSE", "0")

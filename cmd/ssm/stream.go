@@ -21,7 +21,9 @@ const (
 )
 
 type runStreamOptions struct {
-	refresh time.Duration
+	refresh        time.Duration
+	connectTimeout time.Duration
+	execTimeout    time.Duration
 }
 
 // parseRunStreamArgs recognizes only the dedicated stream form. A remote
@@ -55,6 +57,18 @@ func parseRunStreamArgs(args []string) (runStreamOptions, bool, error) {
 				return opts, true, err
 			}
 			opts.refresh = refresh
+		case isDurationFlag(filtered[i], "--timeout", "--connect-timeout", "--exec-timeout"):
+			// --timeout is the deprecated alias of --connect-timeout.
+			flag, d, next, err := consumeDurationFlag(filtered, i, "--timeout", "--connect-timeout", "--exec-timeout")
+			if err != nil {
+				return opts, true, err
+			}
+			i = next
+			if flag == "--exec-timeout" {
+				opts.execTimeout = d
+			} else {
+				opts.connectTimeout = d
+			}
 		case filtered[i] == "--stdin", filtered[i] == "--stdin-file", strings.HasPrefix(filtered[i], "--stdin-file="):
 			return opts, true, fmt.Errorf("%s is not supported with --stream: stdin carries the argv lines", strings.SplitN(filtered[i], "=", 2)[0])
 		default:
@@ -78,7 +92,11 @@ func parseStreamRefresh(value string) (time.Duration, error) {
 // runArgvStream reads one JSON argv array per line and writes one compact JSON
 // result per line. Sync, vault decryption, and SSH setup are amortized across
 // the stream; a bounded refresh keeps long sessions from silently going stale.
-func runArgvStream(alias string, stream *synctransaction.Stream, input io.Reader, output io.Writer) int {
+func runArgvStream(alias string, stream *synctransaction.Stream, input io.Reader, output io.Writer, options ...runStreamOptions) int {
+	var streamOptions runStreamOptions
+	if len(options) > 0 {
+		streamOptions = options[0]
+	}
 	defer ssh.ClosePool()
 
 	_, err := stream.Initialize()
@@ -123,11 +141,13 @@ func runArgvStream(alias string, stream *synctransaction.Stream, input io.Reader
 			continue
 		}
 		spec := remoteRunSpec{
-			Command:  ssh.JoinRemoteArgv(argv),
-			JSON:     true,
-			Secrets:  map[string]string{},
-			FromArgs: true,
-			Mode:     "argv",
+			Command:        ssh.JoinRemoteArgv(argv),
+			JSON:           true,
+			Secrets:        map[string]string{},
+			FromArgs:       true,
+			Mode:           "argv",
+			ConnectTimeout: streamOptions.connectTimeout,
+			ExecTimeout:    streamOptions.execTimeout,
 		}
 		result := executeRunSpec(v, alias, spec)
 		if err := ssh.WriteRunResultNDJSON(output, result); err != nil {
@@ -180,9 +200,9 @@ func decodeArgvStreamLine(line []byte) ([]string, error) {
 	return argv, nil
 }
 
-func exitRunArgvStream(alias string, stream *synctransaction.Stream) {
+func exitRunArgvStream(alias string, stream *synctransaction.Stream, options runStreamOptions) {
 	machineJSON = true
-	os.Exit(runArgvStream(alias, stream, os.Stdin, os.Stdout))
+	os.Exit(runArgvStream(alias, stream, os.Stdin, os.Stdout, options))
 }
 
 func exitStreamFailure(failure machinecontract.Failure) {

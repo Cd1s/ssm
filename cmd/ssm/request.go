@@ -28,6 +28,7 @@ type agentRequest struct {
 	Interpreter  string                     `json:"interpreter,omitempty"`
 	SecretFiles  map[string]string          `json:"secret_files,omitempty"`
 	Timeout      string                     `json:"timeout,omitempty"`
+	ExecTimeout  string                     `json:"exec_timeout,omitempty"`
 	NoReuse      bool                       `json:"no_reuse,omitempty"`
 	Preflight    *bool                      `json:"preflight,omitempty"`
 	StdinFile    string                     `json:"stdin_file,omitempty"`
@@ -113,7 +114,7 @@ func runAgentRequest(args []string) {
 		if err := validateRequestAlias(req); err != nil {
 			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestAlias, machinecontract.Details{Cause: err, Alias: req.Alias}))
 		}
-		if req.Host != nil || req.Deep || req.Argv != nil || req.ShellCommand != nil || req.ScriptFile != "" || len(req.ScriptArgs) > 0 || req.Shell != "" || req.Interpreter != "" || len(req.SecretFiles) > 0 || req.NoReuse || req.Preflight != nil || req.StdinFile != "" {
+		if putRequestHasRunFields(req) {
 			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestPutFields, machinecontract.Details{
 				Message: "put accepts only alias, local_path, remote_path, resume, sha256, timeout, dir_mode, and transfer", Alias: req.Alias,
 			}))
@@ -359,7 +360,14 @@ func requestRunSpec(req agentRequest) (remoteRunSpec, error) {
 		if err != nil {
 			return remoteRunSpec{}, err
 		}
-		spec.Timeout = timeout
+		spec.ConnectTimeout = timeout
+	}
+	if req.ExecTimeout != "" {
+		execTimeout, err := parseCLIDuration("exec_timeout", req.ExecTimeout)
+		if err != nil {
+			return remoteRunSpec{}, err
+		}
+		spec.ExecTimeout = execTimeout
 	}
 	for _, name := range sortedRequestKeys(req.SecretFiles) {
 		path := req.SecretFiles[name]
@@ -437,9 +445,16 @@ func validateRequestAlias(req agentRequest) error {
 	return nil
 }
 
+// putRequestHasRunFields reports run-only fields on a put request. timeout is
+// deliberately absent: on put it is the transfer timeout. exec_timeout is
+// run-only.
+func putRequestHasRunFields(req agentRequest) bool {
+	return req.Host != nil || req.Deep || req.Argv != nil || req.ShellCommand != nil || req.ScriptFile != "" || len(req.ScriptArgs) > 0 || req.Shell != "" || req.Interpreter != "" || len(req.SecretFiles) > 0 || req.ExecTimeout != "" || req.NoReuse || req.Preflight != nil || req.StdinFile != ""
+}
+
 func hasRunRequestFields(req agentRequest) bool {
 	return req.Argv != nil || req.ShellCommand != nil || req.ScriptFile != "" || len(req.ScriptArgs) > 0 ||
-		req.Shell != "" || req.Interpreter != "" || len(req.SecretFiles) > 0 || req.Timeout != "" || req.NoReuse || req.Preflight != nil || req.StdinFile != "" ||
+		req.Shell != "" || req.Interpreter != "" || len(req.SecretFiles) > 0 || req.Timeout != "" || req.ExecTimeout != "" || req.NoReuse || req.Preflight != nil || req.StdinFile != "" ||
 		req.LocalPath != "" || req.RemotePath != "" || req.Resume != "" || req.SHA256 || req.Transfer != ""
 }
 

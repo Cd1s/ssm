@@ -157,6 +157,7 @@ func executeRunSpec(v *config.Vault, name string, spec remoteRunSpec) ssh.RunRes
 		Capture:        spec.JSON || spec.Plan,
 		PlanOnly:       spec.Plan,
 		NoReuse:        spec.NoReuse,
+		ExecTimeout:    spec.ExecTimeout,
 		RequestedAlias: name,
 		ResolvedAlias:  resolved,
 		Mode:           spec.Mode,
@@ -215,6 +216,9 @@ func runMap(targetPatterns []string, spec remoteRunSpec) {
 		workers = ssh.DefaultMapWorkers()
 	}
 	jobs := ssh.ExpandMapJobs(aliases, spec.Command, spec.Scripts, spec.Secrets, spec.Mode, spec.Preflight)
+	for i := range jobs {
+		jobs[i].ExecTimeout = spec.ExecTimeout
+	}
 	if len(jobs) == 0 {
 		os.Exit(machinecontract.WriteClassified(machineJSON || spec.JSON, machinecontract.InvalidSSHCTLArguments, machinecontract.Details{
 			Message: "sshctl map: nothing to run", Tool: "legacy_message", Script: "map_empty",

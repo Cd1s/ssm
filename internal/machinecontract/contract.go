@@ -64,6 +64,7 @@ const (
 	RunInterrupted                      Kind = "run_interrupted"
 	ConnectionLost                      Kind = "connection_lost"
 	HandshakeFailed                     Kind = "handshake_failed"
+	ExecTimedOut                        Kind = "exec_timed_out"
 	ScriptSyntaxFailed                  Kind = "script_syntax_failed"
 	HostInvalidArguments                Kind = "host_invalid_arguments"
 	HostApplyInvalidArguments           Kind = "host_apply_invalid_arguments"
@@ -252,6 +253,16 @@ const CodeConnectionLost = "connection_lost"
 // command was sent and retrying is safe.
 const CodeHandshakeFailed = "handshake_failed"
 
+// CodeExecTimeout means --exec-timeout expired: sshctl sent SIGTERM, then
+// closed the session after a grace period. The command started, so retrying is
+// not automatically safe, but the cause is the local deadline, not a lost
+// connection.
+const CodeExecTimeout = "exec_timeout"
+
+// ExitExecTimeout is the exec_timeout exit status. It matches GNU timeout(1),
+// which agents already know as "the command timed out".
+const ExitExecTimeout = 124
+
 // OutcomeUnknown is the value of the additive outcome field on failures that
 // cannot say whether the remote command ran.
 const OutcomeUnknown = "unknown"
@@ -401,8 +412,13 @@ var failurePolicies = map[Kind]failurePolicy{
 	},
 	HandshakeFailed: {
 		Code: CodeHandshakeFailed, Stage: "handshake",
-		Hint: "TCP connected but the SSH handshake failed before any command was sent, so retrying is safe; check that sshd is healthy and not rate limiting connections (MaxStartups, fail2ban)",
+		Hint: "TCP connected but the SSH handshake failed before any command was sent, so retrying is safe; check that sshd is healthy and not rate limiting connections (MaxStartups, fail2ban); if the server is only slow, raise --connect-timeout",
 		Exit: ExitConnectionFailed,
+	},
+	ExecTimedOut: {
+		Code: CodeExecTimeout, Stage: "remote_execution",
+		Hint: "sshctl stopped the command after --exec-timeout: it sent SIGTERM and closed the session after a grace period, so the remote command may still be running; stdout and stderr hold what arrived before the deadline. Check the process state on the host, raise --exec-timeout, or run long work in the background on the host",
+		Exit: ExitExecTimeout,
 	},
 	ScriptSyntaxFailed: {
 		Code: CodeScriptSyntax, Stage: "syntax_preflight",
@@ -1306,6 +1322,14 @@ func ClassifySSH(err error, context SSHContext) Failure {
 	default:
 		var networkError net.Error
 		switch {
+		case errors.As(err, &networkError) && networkError.Timeout() && isHandshakeError(lower):
+			// A connect deadline that expires after TCP connected surfaces as a
+			// typed timeout wrapped in "ssh: handshake failed: ...". TCP reached
+			// the server and no command was sent, which is what handshake_failed
+			// (stage handshake) says; it is not a dial timeout. Untyped messages
+			// keep the historical dial_timeout tuple that agent-headless-sync
+			// consumers match on.
+			kind = HandshakeFailed
 		case errors.As(err, &networkError) && networkError.Timeout():
 			kind = DialTimeout
 			details.Message = fmt.Sprintf("dial tcp %s: i/o timeout", address)
@@ -1347,7 +1371,7 @@ func ClassifySSH(err error, context SSHContext) Failure {
 // caller's generic stage (dial, session) must not overwrite it. handshake and
 // remote_execution tell an agent whether the command was ever sent.
 func policyOwnsStage(code string) bool {
-	return code == CodeHandshakeFailed || code == CodeConnectionLost
+	return code == CodeHandshakeFailed || code == CodeConnectionLost || code == CodeExecTimeout
 }
 
 // isHandshakeError recognizes a failure after TCP connected but before the SSH

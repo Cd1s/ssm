@@ -212,6 +212,7 @@ In `--json` mode decide by the `error` field, not the exit code: a remote progra
 | 0 | Success. |
 | 1 | An sshctl failure that is not an SSH transport failure: `internal`, vault, sync and update errors, every `host` and `host-key` subcommand failure (including `alias_not_found` there), `script_syntax_error`, and `put`/`get` transfer errors (`remote_write_failed`, `transfer_timeout`, `integrity_failed`, `partial_state_*`, `local_read_failed`); or a remote command that exited 1. Read `error`. |
 | 2 | Invalid arguments or request (`invalid_arguments`, `invalid_request`), or a remote command that exited 2. |
+| 124 | `--exec-timeout` expired in `run` or `map` (`exec_timeout`): SIGTERM was sent and the session closed after a grace period. Same status as GNU `timeout`; a remote command can also exit 124, so read `error`. |
 | 127 | The remote script interpreter is missing (`interpreter_not_found`), or a remote command that exited 127. |
 | 128 + signal | A local SIGINT/SIGTERM/SIGHUP stopped `run` (`interrupted`; 130, 143, 129). The signal was forwarded and the remote command may still be running. |
 | 255 | An SSH transport failure in `run`, `map`, `check`, `doctor`, `put`, or `get`: `dial_timeout`, `dial_refused`, `dial_network`, `handshake_failed`, `host_key_unknown`/`host_key_mismatch`/`host_key_type_changed` (the connection was refused), `auth_failed`, `no_auth_configured`, `session_failed`, `connection_lost`; also `alias_not_found` from `run`, `map`, `check`, and `doctor`. A remote command can also exit 255. |
@@ -228,9 +229,20 @@ Whether a retry is safe depends on whether the command was sent:
 command after `connection_lost` or a remote execution failure.
 
 - Safe to retry: `dial_timeout`, `dial_refused`, `dial_network`, and `handshake_failed` (`stage:handshake`: TCP connected but the SSH handshake failed, for example EOF, connection reset, or a protocol error, and no command was sent), and `session_failed` at `stage:session` when the session could not be opened, because the command was never sent. A deterministic handshake failure such as `no common algorithm` fails the same way every time, so retrying is pointless; fix the algorithm or server configuration instead. `auth_failed` and `host_key_*` keep their own codes and need a fix, not a retry.
+- Do not retry blindly: `exec_timeout` (`stage:remote_execution`, with `timed_out:true`). The command ran until `--exec-timeout`; the remote process may still be running after SIGTERM and the session close. Check the host first.
 - Not safe to retry: `connection_lost` (`stage:remote_execution`, plus `outcome:"unknown"`). The connection dropped after the command was sent, for example when the host rebooted or `sysupgrade` ran, so the remote command may still be running or may have finished. Check the process state on the host first.
 
 `outcome` is an additive field that appears only on `connection_lost`.
+
+## Timeouts and keepalive (releases after v2.0.2)
+
+Check `sshctl --help` for `--exec-timeout` before relying on these; v2.0.2 and older only have `--timeout`.
+
+- `--connect-timeout <duration>`: TCP connect plus SSH handshake (default 15s). Expiry is `handshake_failed` (`stage:handshake`, safe to retry) or `dial_timeout` if TCP never connected. `SSM_CONNECT_TIMEOUT` is the environment form.
+- Deprecated `--timeout <duration>` on `run`/`exec`/`plan`/`map` (and `run --stream`): compatible alias of `--connect-timeout` (both set one value, the last on the command line wins, and either beats an inherited `SSM_CONNECT_TIMEOUT`/`SSM_TIMEOUT`). It is a connection timeout, not an execution timeout; older agents used it as an execution limit and it never was one.
+- `--exec-timeout <duration>` (also `map`, `run --stream`, and `exec_timeout` in request v1 run/plan): the command's run limit. SIGTERM at the deadline, session closed after a 5s grace period, result `exec_timeout` with exit 124 (even if the command traps TERM and exits 0 once SIGTERM was sent), `timed_out:true`, and the `stdout`/`stderr` received so far. Use it instead of wrapping sshctl in an outer `timeout`, which loses buffered output.
+- `put`/`get` `--timeout`: the file-transfer timeout (`transfer_timeout`), unchanged.
+- Keepalive: `keepalive@openssh.com` every 15s, connection closed after 3 unanswered probes (a running command then fails as `connection_lost`). `SSM_KEEPALIVE=0` disables it, an unparseable value falls back to 15s; `SSM_KEEPALIVE=<duration>` sets the interval.
 
 ## Failure rules
 
@@ -240,6 +252,7 @@ command after `connection_lost` or a remote execution failure.
 - `sync_push_failed`: preserve the verified pending mutation and retry the same scoped transaction ID.
 - `dial_*|auth_failed`: diagnose network or credentials, not quoting.
 - `handshake_failed` (`stage:handshake`): no command was sent, so retrying is safe, except deterministic failures such as `no common algorithm`, which need a configuration fix. `session_failed` at `stage:session` (session could not be opened) is also safe to retry.
+- `exec_timeout` (`stage:remote_execution`, `timed_out:true`, exit 124): `--exec-timeout` expired; received output is in the result; the remote process may still be running, so check the host before rerunning, then raise `--exec-timeout` or move long work to the background on the host.
 - `connection_lost` (`stage:remote_execution`, `outcome:"unknown"`): the command was sent and may still be running or may have finished; check the process state on the host first; retrying is not safe.
 - `remote_failed|remote_script_failed`: transport succeeded; preserve remote exit and structured stderr.
 - `interpreter_not_found|script_syntax_error`: correct interpreter or syntax before execution.

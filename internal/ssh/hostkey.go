@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -67,12 +66,11 @@ func InspectHostKey(c config.Connection) (HostKeyInspection, error) {
 		KnownHostsPath: KnownHostsPath(),
 	}
 
-	conn, err := net.DialTimeout("tcp", address, DialTimeout())
+	conn, err := dialConnectDeadline(address)
 	if err != nil {
 		return report, ClassifyError(err, c)
 	}
 	defer func() { _ = conn.Close() }()
-	_ = conn.SetDeadline(time.Now().Add(DialTimeout()))
 	remote := conn.RemoteAddr()
 
 	var observed gossh.PublicKey
@@ -84,7 +82,6 @@ func InspectHostKey(c config.Connection) (HostKeyInspection, error) {
 			return stop
 		},
 		HostKeyAlgorithms: hostKeyAlgorithmsFor(report.KnownHostsPath, address),
-		Timeout:           DialTimeout(),
 	}
 	_, _, _, handshakeErr := gossh.NewClientConn(conn, address, cfg)
 	if observed == nil {
@@ -216,12 +213,11 @@ func scanObservedKey(c config.Connection) (gossh.PublicKey, error) {
 		port = 22
 	}
 	address := net.JoinHostPort(c.Host, strconv.Itoa(port))
-	conn, err := net.DialTimeout("tcp", address, DialTimeout())
+	conn, err := dialConnectDeadline(address)
 	if err != nil {
 		return nil, ClassifyError(err, c)
 	}
 	defer func() { _ = conn.Close() }()
-	_ = conn.SetDeadline(time.Now().Add(DialTimeout()))
 	var observed gossh.PublicKey
 	stop := errors.New("ssm host key captured")
 	_, _, _, err = gossh.NewClientConn(conn, address, &gossh.ClientConfig{
@@ -231,7 +227,6 @@ func scanObservedKey(c config.Connection) (gossh.PublicKey, error) {
 			return stop
 		},
 		HostKeyAlgorithms: hostKeyAlgorithmsFor(KnownHostsPath(), address),
-		Timeout:           DialTimeout(),
 	})
 	if observed == nil {
 		message := "SSH handshake ended before a host key was received"

@@ -79,15 +79,15 @@ func TestParseRemoteRunArgsTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.Timeout != 10*time.Second || spec.Command != "true" {
+	if spec.ConnectTimeout != 10*time.Second || spec.Command != "true" {
 		t.Fatalf("spec = %+v", spec)
 	}
 	spec, err = parseRemoteRunArgs([]string{"--timeout=30", "hostname"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.Timeout != 30*time.Second {
-		t.Fatalf("timeout = %v", spec.Timeout)
+	if spec.ConnectTimeout != 30*time.Second {
+		t.Fatalf("timeout = %v", spec.ConnectTimeout)
 	}
 }
 

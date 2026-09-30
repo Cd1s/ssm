@@ -67,7 +67,13 @@ func TestClassifySSHTransportErrorsNeverFallBackToInternal(t *testing.T) {
 		{"auth failure", errors.New("ssh: handshake failed: ssh: unable to authenticate, attempted methods [none password], no supported methods remain"), dialContext, CodeAuth, "dial", ""},
 		{"no auth configured", errors.New("no authentication configured"), dialContext, CodeNoAuth, "dial", ""},
 		{"host key mismatch text", errors.New("ssh: handshake failed: knownhosts: key mismatch"), dialContext, CodeHostKey, "dial", ""},
-		{"handshake timeout", errors.New("ssh: handshake failed: timeout"), dialContext, CodeDialTimeout, "dial", ""},
+		// #73: a handshake that stalls until the connect deadline is a
+		// handshake failure (TCP connected, no command sent), not a dial
+		// timeout. Only the typed deadline error moves; the untyped text stays
+		// pinned to the historical dial_timeout tuple below.
+		{"handshake timeout text stays historical", errors.New("ssh: handshake failed: timeout"), dialContext, CodeDialTimeout, "dial", ""},
+		{"handshake deadline typed", fmt.Errorf("ssh: handshake failed: %w", &net.OpError{Op: "read", Net: "tcp", Err: handshakeDeadlineError{}}), dialContext, CodeHandshakeFailed, "handshake", ""},
+		{"tcp dial timeout stays dial_timeout", &net.OpError{Op: "dial", Net: "tcp", Err: handshakeDeadlineError{}}, dialContext, CodeDialTimeout, "dial", ""},
 		{"connection refused", errors.New("dial tcp 192.0.2.1:22: connect: connection refused"), dialContext, CodeDialRefused, "dial", ""},
 		{"no route", errors.New("dial tcp 192.0.2.1:22: connect: no route to host"), dialContext, CodeDialNetwork, "dial", ""},
 	}
@@ -266,5 +272,27 @@ func TestClassifySSHTransportOutcomeSerialization(t *testing.T) {
 	}
 	if !strings.HasPrefix(human.String(), "ssm: error=connection_lost stage=remote_execution outcome=unknown alias=prod") {
 		t.Fatalf("connection_lost human = %q", human.String())
+	}
+}
+
+type handshakeDeadlineError struct{}
+
+func (handshakeDeadlineError) Error() string   { return "i/o timeout" }
+func (handshakeDeadlineError) Timeout() bool   { return true }
+func (handshakeDeadlineError) Temporary() bool { return true }
+
+// TestExecTimeoutClassificationIsNotOverwritten pins that an exec_timeout the
+// run layer produced keeps its code, stage and exit when it passes through the
+// SSH classifier again, so the EOF that follows sshctl closing its own session
+// can never be reported as connection_lost.
+func TestExecTimeoutClassificationIsNotOverwritten(t *testing.T) {
+	t.Parallel()
+	timeout := Classify(ExecTimedOut, Details{Message: "command exceeded --exec-timeout 2s", Alias: "prod"})
+	got := ClassifySSH(NewClassifiedError(timeout), SSHContext{Alias: "prod", Host: "192.0.2.1", Port: 22, Stage: "session", ExecPhase: true})
+	if got.Error != "exec_timeout" || got.Stage != "remote_execution" || got.Exit != 124 || got.Outcome != "" {
+		t.Fatalf("classified exec_timeout = %+v", got)
+	}
+	if ProcessExit(got) != 124 {
+		t.Fatalf("process exit = %d, want 124", ProcessExit(got))
 	}
 }
