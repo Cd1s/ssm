@@ -50,10 +50,13 @@ func buildAuth(c config.Connection, v *config.Vault) ([]gossh.AuthMethod, error)
 func trackedHostKeyCallback(reached *atomic.Bool, abort *dialAbort) gossh.HostKeyCallback {
 	callback := buildHostKeyCallback()
 	return func(hostname string, remote net.Addr, key gossh.PublicKey) error {
+		// Store before checking abort: if the check below passes (and
+		// credentials may follow), the store happened before abort(), so
+		// the abandoning side, which reads the flag after abort(), sees it.
+		reached.Store(true)
 		if abort.aborted() {
 			return errDialAbandoned
 		}
-		reached.Store(true)
 		return callback(hostname, remote, key)
 	}
 }

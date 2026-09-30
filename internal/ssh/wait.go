@@ -173,8 +173,10 @@ func waitChainProbe(c config.Connection, v *config.Vault, timeout time.Duration)
 	select {
 	case result = <-done:
 	case <-timer.C:
-		pastKey := abort.currentReached()
+		// Abort first, then read: a host-key callback that was not refused
+		// stored its flag before abort() (see trackedHostKeyCallback).
 		abort.abort()
+		pastKey := abort.currentReached()
 		select {
 		case r := <-done:
 			if r.client != nil {
