@@ -141,6 +141,13 @@ func TestMachineContractMatrix(t *testing.T) {
 			exit: 255, alias: "timeout",
 		},
 		{
+			name: "wait timeout", kind: WaitTimeout,
+			details: Details{Message: "host \"w\" did not become ready within 5m0s; last cause: dial_refused", Alias: "w"},
+			code:    "wait_timeout", stage: "wait",
+			hint: "the host did not become reachable in time; check the host or increase --timeout (authentication and host-key failures stop wait immediately instead)",
+			exit: 1, alias: "w",
+		},
+		{
 			name: "dial refused", kind: DialRefused,
 			details: Details{Message: "connection refused by 127.0.0.1:22", Alias: "refused"},
 			code:    "dial_refused", stage: "dial", hint: "sshd not listening or wrong port; not an ssm quote bug",

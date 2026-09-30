@@ -2220,7 +2220,7 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 	reviewedNames := []string{
 		"unknown_sshctl", "unknown_ssm", "invalid_request_unknown_field", "unlock_file_required",
 		"exact_alias_miss", "sync_etag_conflict", "transfer_local_read", "host_key_unknown",
-		"dial_refused", "dial_refused_windows", "auth_failed", "session_failed", "remote_exit_255", "stream_refresh_failed",
+		"dial_refused", "auth_failed", "session_failed", "remote_exit_255", "stream_refresh_failed",
 	}
 	if len(reviewed) != len(reviewedNames) {
 		t.Fatalf("reviewed compiled CLI matrix rows = %d, want %d", len(reviewed), len(reviewedNames))
@@ -2404,11 +2404,9 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		cli.SaveVault(t, &config.Vault{Connections: []config.Connection{{
 			Name: "refused", Host: refused.host, Port: refused.port, User: "runner", Password: dialLeakCanary,
 		}}})
-		contractName := "dial_refused"
-		if runtime.GOOS == "windows" {
-			contractName = "dial_refused_windows"
-		}
-		contract := reviewedCompiledMachineContract(t, contractName)
+		// Windows reports a refused dial as a typed Winsock error, which is
+		// classified dial_refused like every other platform.
+		contract := reviewedCompiledMachineContract(t, "dial_refused")
 		result := cli.RunReviewed(t, contract, nil, nil)
 		assertNoCompiledCanaryLeak(t, result, map[string]string{"host_auth": dialLeakCanary})
 		assertCompiledMachineContract(t, result, contract)

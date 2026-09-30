@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -581,37 +580,53 @@ func runCheck(name string, asJSON bool) {
 	}
 }
 
+const (
+	waitMinInterval   = time.Second
+	waitAttemptBudget = 5 * time.Second
+)
+
+// runWait blocks until the host is reachable. It only keeps waiting while the
+// failure is a transport-level "not reachable yet"; authentication, host-key,
+// credential and configuration failures stop it immediately with the real
+// classified error, because every extra login attempt against a host running
+// fail2ban brings a ban closer. Each iteration uses exactly one connection.
 func runWait(args []string) {
+	usage := func(message string) {
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.InvalidSSHCTLArguments, machinecontract.Details{Message: message}))
+	}
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.InvalidSSHCTLArguments, machinecontract.Details{Message: "wait requires an exact host alias"}))
+		usage("wait requires an exact host alias")
 	}
 	name := args[0]
 	timeout, interval := 5*time.Minute, 5*time.Second
 	until := "ssh"
 	for i := 1; i < len(args); i++ {
 		if i+1 >= len(args) {
-			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.InvalidSSHCTLArguments, machinecontract.Details{Message: fmt.Sprintf("%s requires a value", args[i])}))
+			usage(fmt.Sprintf("%s requires a value", args[i]))
 		}
 		switch args[i] {
 		case "--timeout", "--interval":
 			d, err := time.ParseDuration(args[i+1])
 			if err != nil || d <= 0 {
-				os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.InvalidSSHCTLArguments, machinecontract.Details{Message: fmt.Sprintf("invalid %s", args[i])}))
+				usage(fmt.Sprintf("invalid %s", args[i]))
 			}
 			if args[i] == "--timeout" {
 				timeout = d
 			} else {
+				if d < waitMinInterval {
+					usage(fmt.Sprintf("--interval must be at least %s to avoid hammering the host", waitMinInterval))
+				}
 				interval = d
 			}
 		case "--until":
 			until = args[i+1]
 		default:
-			os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.InvalidSSHCTLArguments, machinecontract.Details{Message: fmt.Sprintf("unknown wait option %q", args[i])}))
+			usage(fmt.Sprintf("unknown wait option %q", args[i]))
 		}
 		i++
 	}
 	if until != "ssh" && until != "tcp" {
-		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.InvalidSSHCTLArguments, machinecontract.Details{Message: "--until supports ssh or tcp"}))
+		usage("--until must be ssh or tcp (--until cmd: is not implemented yet)")
 	}
 	if _, err := syncTransaction(false).Refresh(); err != nil {
 		os.Exit(machinecontract.WriteFailure(machineJSON, machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullFailed), machinecontract.Failure{}))
@@ -624,31 +639,32 @@ func runWait(args []string) {
 	if !ok {
 		connectionNotFound(name, v)
 	}
-	deadline := time.Now().Add(timeout)
+	if until == "tcp" && strings.TrimSpace(c.ProxyJump) != "" {
+		usage("--until tcp is not supported for a proxy_jump alias: the target is only reachable through its jump host (use --until ssh)")
+	}
+	if until == "ssh" {
+		if failure, bad := ssh.WaitPreflight(c, v); bad {
+			os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+		}
+	}
+	start := time.Now()
+	deadline := start.Add(timeout)
 	attempts := 0
+	lastCause := ""
 	for {
 		attempts++
-		ready := false
-		if until == "tcp" {
-			port := c.Port
-			if port == 0 {
-				port = 22
-			}
-			conn, dialErr := net.DialTimeout("tcp", net.JoinHostPort(c.Host, strconv.Itoa(port)), minDuration(interval, time.Second*5))
-			if dialErr == nil {
-				_ = conn.Close()
-				ready = true
-			}
-		} else {
-			ready = ssh.Check(c, v).OK
+		budget := minDuration(waitAttemptBudget, time.Until(deadline))
+		if budget < 200*time.Millisecond {
+			budget = 200 * time.Millisecond
 		}
+		failure, ready := waitProbe(c, v, until, budget)
 		if ready {
 			result := struct {
 				OK        bool   `json:"ok"`
 				Alias     string `json:"alias"`
 				Attempts  int    `json:"attempts"`
 				ElapsedMS int64  `json:"elapsed_ms"`
-			}{true, name, attempts, (timeout - time.Until(deadline)).Milliseconds()}
+			}{true, name, attempts, time.Since(start).Milliseconds()}
 			if machineJSON {
 				writeMachineValue(result)
 			} else {
@@ -656,12 +672,35 @@ func runWait(args []string) {
 			}
 			return
 		}
-		if time.Now().After(deadline) {
-			failure := machinecontract.Failure{Error: "wait_timeout", Message: fmt.Sprintf("host %q did not become ready within %s", name, timeout), Hint: "check the host or increase --timeout", Exit: 1, Stage: "wait"}
+		if !ssh.RetryableTransportFailure(failure) {
 			os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
 		}
-		time.Sleep(interval)
+		lastCause = failure.Error
+		if failure.Message != "" {
+			lastCause += " (" + failure.Message + ")"
+		}
+		remaining := time.Until(deadline)
+		if remaining > 0 {
+			time.Sleep(minDuration(ssh.RetryDelay(interval, attempts), remaining))
+		}
+		if !time.Now().Before(deadline) {
+			timeoutFailure := machinecontract.Classify(machinecontract.WaitTimeout, machinecontract.Details{
+				Alias:   name,
+				Message: fmt.Sprintf("host %q did not become ready within %s after %d attempt(s); last cause: %s", name, timeout, attempts, lastCause),
+			})
+			os.Exit(machinecontract.WriteFailure(machineJSON, timeoutFailure, timeoutFailure))
+		}
 	}
+}
+
+// waitProbe runs one bounded readiness probe over a single connection. The
+// ssh probe is the real handshake (version exchange, host key, one
+// authentication), never a separate banner connection.
+func waitProbe(c config.Connection, v *config.Vault, until string, budget time.Duration) (machinecontract.Failure, bool) {
+	if until == "tcp" {
+		return ssh.WaitTCP(c, budget)
+	}
+	return ssh.WaitAuthProbe(c, v, budget)
 }
 
 func minDuration(a, b time.Duration) time.Duration {

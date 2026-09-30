@@ -466,6 +466,9 @@ func parseRetryDial(value string) (int, time.Duration, error) {
 	if err != nil || n < 0 {
 		return 0, 0, fmt.Errorf("invalid --retry-dial %q (N must be non-negative)", value)
 	}
+	if n > ssh.MaxRetryDial {
+		return 0, 0, fmt.Errorf("invalid --retry-dial %q (N must be at most %d)", value, ssh.MaxRetryDial)
+	}
 	backoff := 250 * time.Millisecond
 	if len(parts) == 2 {
 		backoff, err = time.ParseDuration(parts[1])

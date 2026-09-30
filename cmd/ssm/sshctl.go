@@ -487,6 +487,7 @@ func sshctlUsage() {
 	  sshctl host-key inspect <alias> [--json]
 	  sshctl host-key accept <alias> --fingerprint SHA256:... --yes [--json]
   sshctl status [--offline]
+  sshctl wait <alias> [--timeout 5m] [--interval 5s] [--until ssh|tcp]  # never retries auth/host-key failures
   sshctl check <alias> [--json]
 	  sshctl doctor [alias] [--deep] [--json]
 	  sshctl request [--file <request.json>|-]
@@ -499,6 +500,7 @@ func sshctlUsage() {
   sshctl run <alias> --secret NAME=@file ...
   sshctl run <alias> --connect-timeout 10s ...
   sshctl run <alias> --exec-timeout 2m ...
+  sshctl run <alias> --retry-dial 3[:250ms] ...  # retry pre-key-exchange dial/handshake failures only (max 10)
 	  sshctl run <alias> --no-reuse ...
 	  sshctl run <alias> --preflight -f script.sh
   sshctl run <alias> --argv <command> [args...]  # force literal argv mode
@@ -526,7 +528,7 @@ func sshctlUsage() {
   # Remote argv boundary: after the alias, "--argv", "--", or the first non-option
   # word starts the remote command; everything after it (-h, --help, --json, ...)
   # goes to the remote program untouched. -h/--help are honored only before it.
-  # Only in sshctl: request, host-key, status, sync. Only in ssm: keys, remove,
+  # Only in sshctl: request, host-key, status, wait, sync. Only in ssm: keys, remove,
   # import-json, update, login, register, logout, server, pull-if-changed, remote-hash.
 Env: SSM_TRACE=1  SSM_TIMEOUT=10s  SSM_DIAL_TIMEOUT=10s  SSM_CONNECT_TIMEOUT=10s
      SSM_REUSE=0|off|false|no  SSM_FORWARD_STDIN=1|0  SSM_RUN_OUTPUT=buffered

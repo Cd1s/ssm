@@ -267,7 +267,7 @@ func TestClassifyHopNeverRendersPortZero(t *testing.T) {
 	jump := config.Connection{Name: "jump", Host: "192.0.2.10", User: "u", Password: "pw"} // Port unset: default 22
 	target := config.Connection{Name: "target", Host: "192.0.2.11", Port: 22, User: "u", Password: "pw"}
 	for _, err := range []error{errors.New("connection refused"), errors.New("ssh: handshake failed: EOF")} {
-		failure, ok := machinecontract.FailureFromError(classifyHop(err, target, jump, true))
+		failure, ok := machinecontract.FailureFromError(classifyHop(err, target, jump, true, nil, false))
 		if !ok || failure.Via != "jump" {
 			t.Fatalf("failure = %+v", failure)
 		}

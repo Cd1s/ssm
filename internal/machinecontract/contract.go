@@ -66,6 +66,7 @@ const (
 	ConnectionLost                      Kind = "connection_lost"
 	HandshakeFailed                     Kind = "handshake_failed"
 	ExecTimedOut                        Kind = "exec_timed_out"
+	WaitTimeout                         Kind = "wait_timeout"
 	ScriptSyntaxFailed                  Kind = "script_syntax_failed"
 	HostInvalidArguments                Kind = "host_invalid_arguments"
 	HostApplyInvalidArguments           Kind = "host_apply_invalid_arguments"
@@ -376,6 +377,10 @@ var failurePolicies = map[Kind]failurePolicy{
 	},
 	DialNetwork: {
 		Code: CodeDialNetwork, Stage: "dial", Hint: "routing/DNS/firewall issue; not an ssm quote bug", Exit: ExitConnectionFailed,
+	},
+	WaitTimeout: {
+		Code: "wait_timeout", Stage: "wait",
+		Hint: "the host did not become reachable in time; check the host or increase --timeout (authentication and host-key failures stop wait immediately instead)", Exit: 1,
 	},
 	HostKeyUnknown: {
 		Code: CodeHostKeyUnknown, Stage: "dial",
@@ -974,7 +979,11 @@ type Failure struct {
 	// chain and is omitted otherwise.
 	Via string `json:"via,omitempty"`
 
-	Address           string `json:"-"`
+	Address string `json:"-"`
+	// PastKeyExchange marks a transport failure that happened after the
+	// server's host key was received, so credentials may already have been
+	// sent. Such failures are never retried automatically.
+	PastKeyExchange   bool   `json:"-"`
 	Script            string `json:"-"`
 	VerificationError string `json:"-"`
 	HumanHint         string `json:"-"`
@@ -1280,6 +1289,9 @@ type SSHContext struct {
 	Port               int
 	Stage              string
 	SessionAcquisition bool
+	// Tunneled marks a hop reached through an earlier hop's channel: its
+	// errors are not local connect errnos, so typed errno mapping is skipped.
+	Tunneled bool
 	// ExecPhase marks an error from an established connection after a command
 	// or transfer was started, where a bare EOF means the connection was lost.
 	ExecPhase bool
@@ -1401,6 +1413,13 @@ func ClassifySSH(err error, context SSHContext) Failure {
 		details.Message = "SSH authentication failed"
 	default:
 		var networkError net.Error
+		// Typed connect errnos describe a dial only: on an established
+		// session (exec phase or session acquisition) the same errno is a
+		// broken connection, not a failure to reach the host.
+		typed := Kind("")
+		if !context.SessionAcquisition && !context.ExecPhase && !context.Tunneled && context.Stage != "session" {
+			typed = dialErrnoKind(err)
+		}
 		switch {
 		case errors.As(err, &networkError) && networkError.Timeout() && isHandshakeError(lower):
 			// A connect deadline that expires after TCP connected surfaces as a
@@ -1410,6 +1429,15 @@ func ClassifySSH(err error, context SSHContext) Failure {
 			// keep the historical dial_timeout tuple that agent-headless-sync
 			// consumers match on.
 			kind = HandshakeFailed
+		case typed == DialRefused && !isHandshakeError(lower):
+			kind = DialRefused
+			details.Message = fmt.Sprintf("connection refused by %s", address)
+		case typed == DialTimeout && !isHandshakeError(lower):
+			kind = DialTimeout
+			details.Message = fmt.Sprintf("dial tcp %s: i/o timeout", address)
+		case typed == DialNetwork && !isHandshakeError(lower):
+			kind = DialNetwork
+			details.Message = fmt.Sprintf("network error dialing %s: %s", address, message)
 		case errors.As(err, &networkError) && networkError.Timeout():
 			kind = DialTimeout
 			details.Message = fmt.Sprintf("dial tcp %s: i/o timeout", address)
@@ -1447,6 +1475,23 @@ func ClassifySSH(err error, context SSHContext) Failure {
 		failure.processExit = ExitConnectionFailed
 	}
 	return failure
+}
+
+// dialErrnoKind recognizes connect failures by their typed errno, so the
+// classification does not depend on the platform's error text (Windows
+// reports "connectex: No connection could be made because the target machine
+// actively refused it", with Winsock error numbers that differ from
+// syscall.ECONNREFUSED). Message matching in ClassifySSH stays as a fallback.
+func dialErrnoKind(err error) Kind {
+	switch {
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return DialRefused
+	case errors.Is(err, syscall.ETIMEDOUT):
+		return DialTimeout
+	case errors.Is(err, syscall.EHOSTUNREACH), errors.Is(err, syscall.ENETUNREACH):
+		return DialNetwork
+	}
+	return platformDialErrnoKind(err)
 }
 
 // policyOwnsStage reports whether a code's stage is part of its meaning, so a
