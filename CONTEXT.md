@@ -175,7 +175,9 @@ plans and speculative APIs live elsewhere.
 
 - `--connect-timeout` bounds TCP connect plus the SSH handshake as one budget;
   the deprecated `--timeout` alias keeps that connection-only meaning for
-  `run`/`exec`/`plan`/`map` and `run --stream`. A stalled handshake fails as
+  `run`/`exec`/`plan`/`map` and `run --stream`. Both flags set one value (the
+  last on the command line wins) and beat an inherited `SSM_CONNECT_TIMEOUT` or
+  `SSM_TIMEOUT`. A stalled handshake fails as
   `handshake_failed` (stage `handshake`, exit 255) before any command is
   sent; only a TCP connect that never completed stays `dial_timeout`. A
   handshake timeout used to classify as `dial_timeout`; consumers that matched
@@ -183,8 +185,10 @@ plans and speculative APIs live elsewhere.
 - `--exec-timeout` bounds each remote command. At expiry sshctl sends SIGTERM,
   allows a five-second grace period, then closes the session and reports
   `exec_timeout` (stage `remote_execution`) with `timed_out:true` and exit
-  124. A command that exits successfully on its own just as the deadline fires
-  is not reported as `exec_timeout`. The bound applies to
+  124. Once sshctl has sent SIGTERM because the deadline passed the result is
+  `exec_timeout` even if the command traps TERM and exits 0 during the grace
+  period; only a command that completed before the signal was sent reports its
+  real result. The bound applies to
   `run`, `exec`, `plan`, `map`, and every line of `run --stream`.
 - `put`/`get` retain their separate transfer `--timeout` meaning. SSH
   keepalive probes use `keepalive@openssh.com` every 15 seconds by default;

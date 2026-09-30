@@ -525,7 +525,7 @@ func sshctlUsage() {
   # import-json, update, login, register, logout, server, pull-if-changed, remote-hash.
 Env: SSM_TRACE=1  SSM_TIMEOUT=10s  SSM_DIAL_TIMEOUT=10s  SSM_CONNECT_TIMEOUT=10s
      SSM_REUSE=0|off|false|no  SSM_FORWARD_STDIN=1|0  SSM_RUN_OUTPUT=buffered
-     SSM_CONFIG_DIR=<dir>  SSM_MASTER_PASS_FILE=<protected-file>  SSM_KEEPALIVE=0|<duration>
+     SSM_CONFIG_DIR=<dir>  SSM_MASTER_PASS_FILE=<protected-file>  SSM_KEEPALIVE=0|<duration> (invalid: 15s)
      SSM_OFFLINE=1  SSM_SYNC_MODE=strict|local_first
      --offline is deprecated for reads: accepted for compatibility; reads are local by default and it now only suppresses background sync
 `, "\t", "  "))

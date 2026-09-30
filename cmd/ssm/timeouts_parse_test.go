@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ssm/internal/ssh"
 )
 
 func TestParseRemoteRunArgsConnectAndExecTimeouts(t *testing.T) {
@@ -12,7 +14,7 @@ func TestParseRemoteRunArgsConnectAndExecTimeouts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.ConnectTimeout != 5*time.Second || spec.ExecTimeout != 2*time.Minute || spec.Timeout != 0 || !strings.Contains(spec.Command, "true") {
+	if spec.ConnectTimeout != 5*time.Second || spec.ExecTimeout != 2*time.Minute || !strings.Contains(spec.Command, "true") {
 		t.Fatalf("spec = %+v", spec)
 	}
 	spec, err = parseRemoteRunArgs([]string{"--connect-timeout=7", "--exec-timeout=90", "hostname"})
@@ -27,7 +29,7 @@ func TestParseRemoteRunArgsConnectAndExecTimeouts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.Timeout != 10*time.Second || spec.ExecTimeout != 0 {
+	if spec.ConnectTimeout != 10*time.Second || spec.ExecTimeout != 0 {
 		t.Fatalf("--timeout alias spec = %+v", spec)
 	}
 }
@@ -80,10 +82,6 @@ func TestApplyRunSpecEnvExportsConnectTimeout(t *testing.T) {
 	applyRunSpecEnv(remoteRunSpec{ConnectTimeout: 4 * time.Second})
 	if got := os.Getenv("SSM_CONNECT_TIMEOUT"); got != "4s" {
 		t.Fatalf("SSM_CONNECT_TIMEOUT = %q", got)
-	}
-	applyRunSpecEnv(remoteRunSpec{Timeout: 6 * time.Second})
-	if got := os.Getenv("SSM_TIMEOUT"); got != "6s" {
-		t.Fatalf("SSM_TIMEOUT = %q", got)
 	}
 }
 
@@ -161,5 +159,58 @@ func TestRequestV1PublishedSchemaExecTimeoutIsRunOnly(t *testing.T) {
 	}
 	if got := strings.Count(text, `{"required": ["exec_timeout"]}`); got != 2 {
 		t.Errorf("exec_timeout exclusions = %d, want 2 (put, get)", got)
+	}
+}
+
+func TestTimeoutAliasAndConnectTimeoutResolveLastWins(t *testing.T) {
+	for _, test := range []struct {
+		args []string
+		want time.Duration
+	}{
+		{[]string{"--timeout", "5", "--connect-timeout", "30", "true"}, 30 * time.Second},
+		{[]string{"--connect-timeout", "30", "--timeout", "5", "true"}, 5 * time.Second},
+		{[]string{"--connect-timeout=30", "--timeout=5", "true"}, 5 * time.Second},
+	} {
+		spec, err := parseRemoteRunArgs(test.args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if spec.ConnectTimeout != test.want {
+			t.Fatalf("parseRemoteRunArgs(%q) connect timeout = %v, want %v", test.args, spec.ConnectTimeout, test.want)
+		}
+	}
+	options, _, err := parseRunStreamArgs([]string{"--stream", "--connect-timeout", "30", "--timeout", "5"})
+	if err != nil || options.connectTimeout != 5*time.Second {
+		t.Fatalf("stream last wins: %+v %v", options, err)
+	}
+}
+
+func TestTimeoutFlagBeatsInheritedConnectTimeoutEnv(t *testing.T) {
+	t.Setenv("SSM_CONNECT_TIMEOUT", "5s")
+	t.Setenv("SSM_TIMEOUT", "")
+	spec, err := parseRemoteRunArgs([]string{"--timeout", "30", "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyRunSpecEnv(spec)
+	if got := ssh.DialTimeout(); got != 30*time.Second {
+		t.Fatalf("DialTimeout = %v, want the --timeout flag to beat inherited SSM_CONNECT_TIMEOUT", got)
+	}
+}
+
+func TestParseCLIDurationIntegerSecondsAreStrict(t *testing.T) {
+	for _, value := range []string{"30abc", "30 s", "3.5", "-5", "1e3"} {
+		if d, err := parseCLIDuration("--exec-timeout", value); err == nil {
+			t.Fatalf("parseCLIDuration(%q) = %v, want error", value, d)
+		}
+	}
+	for _, test := range []struct {
+		value string
+		want  time.Duration
+	}{{"30", 30 * time.Second}, {" 45 ", 45 * time.Second}, {"1m30s", 90 * time.Second}} {
+		d, err := parseCLIDuration("--timeout", test.value)
+		if err != nil || d != test.want {
+			t.Fatalf("parseCLIDuration(%q) = %v, %v; want %v", test.value, d, err, test.want)
+		}
 	}
 }

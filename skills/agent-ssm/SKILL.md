@@ -239,10 +239,10 @@ command after `connection_lost` or a remote execution failure.
 Check `sshctl --help` for `--exec-timeout` before relying on these; v2.0.2 and older only have `--timeout`.
 
 - `--connect-timeout <duration>`: TCP connect plus SSH handshake (default 15s). Expiry is `handshake_failed` (`stage:handshake`, safe to retry) or `dial_timeout` if TCP never connected. `SSM_CONNECT_TIMEOUT` is the environment form.
-- Deprecated `--timeout <duration>` on `run`/`exec`/`plan`/`map` (and `run --stream`): compatible alias of `--connect-timeout`. It is a connection timeout, not an execution timeout; older agents used it as an execution limit and it never was one.
-- `--exec-timeout <duration>` (also `map`, `run --stream`, and `exec_timeout` in request v1 run/plan): the command's run limit. SIGTERM at the deadline, session closed after a 5s grace period, result `exec_timeout` with exit 124, `timed_out:true`, and the `stdout`/`stderr` received so far. Use it instead of wrapping sshctl in an outer `timeout`, which loses buffered output.
+- Deprecated `--timeout <duration>` on `run`/`exec`/`plan`/`map` (and `run --stream`): compatible alias of `--connect-timeout` (both set one value, the last on the command line wins, and either beats an inherited `SSM_CONNECT_TIMEOUT`/`SSM_TIMEOUT`). It is a connection timeout, not an execution timeout; older agents used it as an execution limit and it never was one.
+- `--exec-timeout <duration>` (also `map`, `run --stream`, and `exec_timeout` in request v1 run/plan): the command's run limit. SIGTERM at the deadline, session closed after a 5s grace period, result `exec_timeout` with exit 124 (even if the command traps TERM and exits 0 once SIGTERM was sent), `timed_out:true`, and the `stdout`/`stderr` received so far. Use it instead of wrapping sshctl in an outer `timeout`, which loses buffered output.
 - `put`/`get` `--timeout`: the file-transfer timeout (`transfer_timeout`), unchanged.
-- Keepalive: `keepalive@openssh.com` every 15s, connection closed after 3 unanswered probes (a running command then fails as `connection_lost`). `SSM_KEEPALIVE=0` disables it; `SSM_KEEPALIVE=<duration>` sets the interval.
+- Keepalive: `keepalive@openssh.com` every 15s, connection closed after 3 unanswered probes (a running command then fails as `connection_lost`). `SSM_KEEPALIVE=0` disables it, an unparseable value falls back to 15s; `SSM_KEEPALIVE=<duration>` sets the interval.
 
 ## Failure rules
 

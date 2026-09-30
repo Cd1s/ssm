@@ -313,15 +313,15 @@ PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
 | 选项 | 管什么 | 默认 |
 |---|---|---|
 | `--connect-timeout <时长>` | TCP 建连 **加上** SSH 握手（含认证）的总时限。到期报 `handshake_failed`（`stage:handshake`，命令没有发出，可以安全重试，提示可调大 `--connect-timeout`）；TCP 都没连上仍报 `dial_timeout`。 | 15s |
-| `--timeout <时长>`（`run`/`exec`/`plan`/`map`，已弃用） | `--connect-timeout` 的兼容别名。它是连接超时，**不是执行超时**。 | 15s |
-| `--exec-timeout <时长>` | 远端命令最长运行多久（`run`/`exec`/`plan`、`map`、`run --stream` 的每一行；request 用 `exec_timeout`）。到期先发 `SIGTERM`，5 秒宽限期后关闭 session，返回 `exec_timeout`，退出码 124，JSON 带 `timed_out:true` 与已收到的 `stdout`/`stderr`；human 模式已流式输出的内容保留，最后打印分类行。 | 不限制 |
+| `--timeout <时长>`（`run`/`exec`/`plan`/`map`，已弃用） | `--connect-timeout` 的兼容别名。它是连接超时，**不是执行超时**。两者写进同一个值，命令行上后出现的生效，并且都优先于继承来的 `SSM_CONNECT_TIMEOUT`/`SSM_TIMEOUT`。 | 15s |
+| `--exec-timeout <时长>` | 远端命令最长运行多久（`run`/`exec`/`plan`、`map`、`run --stream` 的每一行；request 用 `exec_timeout`）。到期先发 `SIGTERM`，5 秒宽限期后关闭 session，返回 `exec_timeout`（只要 SIGTERM 已经发出，即使命令捕获 TERM 并在宽限期内以 0 退出，也报 `exec_timeout`；命令在信号发出之前就已结束时才返回它的真实结果），退出码 124，JSON 带 `timed_out:true` 与已收到的 `stdout`/`stderr`；human 模式已流式输出的内容保留，最后打印分类行。 | 不限制 |
 | `put`/`get` 的 `--timeout` | 文件传输超时（`transfer_timeout`）。语义不变。 | 不限制 |
 
 环境变量 `SSM_CONNECT_TIMEOUT` 等价于 `--connect-timeout`（`SSM_TIMEOUT` 是旧别名）。没有任何选项时握手期限也生效，取默认 15s。
 
 **契约变化。** `--timeout` 过去只限制 TCP 建连，握手阶段可以无限期挂住；现在它覆盖 TCP 建连加握手。这是对挂死行为的收紧：能正常握手的连接不受影响；握手卡住的连接会在期限内以 `handshake_failed` 失败，而不再无限等待。超时的握手（TCP 已连上）归为 `handshake_failed` 而不是 `dial_timeout`，因为命令没有发出、可以安全重试，且卡住的原因是 sshd（限流、OOM、半开）而不是网络不可达。
 
-**Keepalive。** 默认开启：每 15 秒对每条 SSH 连接发一次 `keepalive@openssh.com`（要求回复）；连续 3 次没有回复就关闭连接，此时正在运行的命令报 `connection_lost`（`outcome:"unknown"`）。连接池里复用的连接同样受益。`SSM_KEEPALIVE=0` 关闭；`SSM_KEEPALIVE=<时长>`（如 `5s`）修改间隔。sshctl 因 `--exec-timeout` 自己关闭 session 后得到的 EOF 不会被报成 `connection_lost`。
+**Keepalive。** 默认开启：每 15 秒对每条 SSH 连接发一次 `keepalive@openssh.com`（要求回复）；连续 3 次没有回复就关闭连接，此时正在运行的命令报 `connection_lost`（`outcome:"unknown"`）。连接池里复用的连接同样受益。`SSM_KEEPALIVE=0` 关闭；无法解析的值会回退到默认的 15 秒；`SSM_KEEPALIVE=<时长>`（如 `5s`）修改间隔。sshctl 因 `--exec-timeout` 自己关闭 session 后得到的 EOF 不会被报成 `connection_lost`。
 
 动态或不可信参数、脚本、secret 文件路径、传输和主机变更使用 schema version 1 的[request-v1 schema](skills/agent-ssm/references/request-v1.schema.json)：
 

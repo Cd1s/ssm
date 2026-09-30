@@ -360,7 +360,7 @@ func requestRunSpec(req agentRequest) (remoteRunSpec, error) {
 		if err != nil {
 			return remoteRunSpec{}, err
 		}
-		spec.Timeout = timeout
+		spec.ConnectTimeout = timeout
 	}
 	if req.ExecTimeout != "" {
 		execTimeout, err := parseCLIDuration("exec_timeout", req.ExecTimeout)

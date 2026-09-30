@@ -18,7 +18,6 @@ const maxSecretBytes = 1 << 20
 type remoteRunSpec struct {
 	Command   string
 	Trace     bool
-	Timeout   time.Duration
 	JSON      bool
 	Plan      bool
 	NoReuse   bool
@@ -131,7 +130,6 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 		fromStdin    bool
 		filePaths    []string
 		trace        bool
-		timeout      time.Duration
 		jsonOut      = machineJSON
 		plan         bool
 		noReuse      bool
@@ -207,13 +205,12 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 				return remoteRunSpec{}, err
 			}
 			i = next
-			switch flag {
-			case "--timeout":
-				timeout = d
-			case "--connect-timeout":
-				connectTo = d
-			default:
+			if flag == "--exec-timeout" {
 				execTo = d
+			} else {
+				// --timeout is the deprecated alias of --connect-timeout:
+				// both resolve into one value and the last one wins.
+				connectTo = d
 			}
 		case arg == "--retry-dial":
 			if i+1 >= len(args) {
@@ -407,7 +404,6 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 	return remoteRunSpec{
 		Command:   cmd,
 		Trace:     trace,
-		Timeout:   timeout,
 		JSON:      jsonOut,
 		Plan:      plan,
 		NoReuse:   noReuse,
@@ -576,8 +572,7 @@ func parseCLIDuration(flag, v string) (time.Duration, error) {
 		}
 		return d, nil
 	}
-	var sec int
-	if _, err := fmt.Sscanf(v, "%d", &sec); err == nil && sec > 0 {
+	if sec, err := strconv.Atoi(v); err == nil && sec > 0 {
 		return time.Duration(sec) * time.Second, nil
 	}
 	return 0, fmt.Errorf("invalid %s %q (use 10s, 1m, or integer seconds)", flag, v)
@@ -587,9 +582,8 @@ func applyRunSpecEnv(spec remoteRunSpec) {
 	if spec.Trace {
 		_ = os.Setenv("SSM_TRACE", "1")
 	}
-	if spec.Timeout > 0 {
-		_ = os.Setenv("SSM_TIMEOUT", spec.Timeout.String())
-	}
+	// SSM_CONNECT_TIMEOUT is read before the legacy SSM_TIMEOUT, so exporting
+	// the resolved flag value makes an explicit flag beat inherited variables.
 	if spec.ConnectTimeout > 0 {
 		_ = os.Setenv("SSM_CONNECT_TIMEOUT", spec.ConnectTimeout.String())
 	}

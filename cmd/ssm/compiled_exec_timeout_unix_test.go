@@ -92,6 +92,25 @@ func TestCompiledExecTimeoutClosesSessionWhenRemoteIgnoresTerm(t *testing.T) {
 	}
 }
 
+func TestCompiledExecTimeoutReportsTimeoutWhenRemoteTrapsTermAndExitsZero(t *testing.T) {
+	cli, fixture := newCompiledExecRunHarness(t, "exec-trap")
+	result := runCompiledWithin(t, 40*time.Second, func() compiledCLIResult {
+		return cli.Run(t, "sshctl", nil, "--offline", "--json", "run", "exec-trap", "--exec-timeout", "1s",
+			"trap 'echo got-term; exit 0' TERM; echo ready; while :; do sleep 0.1; done")
+	})
+	if result.ProcessExit != 124 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q, want 124", result.ProcessExit, result.Stdout, result.Stderr)
+	}
+	document := decodeExactlyOneJSONObject(t, result.Stdout)
+	assertExecTimeoutDocument(t, document)
+	if out, _ := document["stdout"].(string); !strings.Contains(out, "ready") {
+		t.Fatalf("stdout = %v", document["stdout"])
+	}
+	if signals := fixture.Signals(); strings.Join(signals, ",") != "TERM" {
+		t.Fatalf("remote signals = %q, want TERM", signals)
+	}
+}
+
 func TestCompiledExecTimeoutHumanKeepsStreamedOutputAndClassifies(t *testing.T) {
 	cli, fixture := newCompiledExecRunHarness(t, "exec-human")
 	result := runCompiledWithin(t, 40*time.Second, func() compiledCLIResult {

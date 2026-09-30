@@ -66,7 +66,7 @@ func TestParseRemoteRunArgsArgvIsABoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !spec.JSON || spec.Timeout != 0 || spec.Command != "'--timeout' '5' 'sleep'" {
+	if !spec.JSON || spec.ConnectTimeout != 0 || spec.Command != "'--timeout' '5' 'sleep'" {
 		t.Fatalf("spec = %+v", spec)
 	}
 	spec, err = parseRemoteRunArgs([]string{"--argv", "--", "df", "-h"})
