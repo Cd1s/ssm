@@ -75,9 +75,9 @@ cause. None has a compatibility switch. Exit 255 is the transport-failure exit
   of `internal` (exit 1) (#85).
 - A session-limit wait that gives up: `session_limit` (stage `session`, exit
   255) instead of `session_failed` (#76).
-- New codes: `exec_timeout` (exit 124), `remote_shell_unsupported`,
-  `sftp_unavailable`, `proxy_jump_invalid` (exit 2); `error` values that
-  v2.0.2 never produced.
+- New codes: `exec_timeout` (exit 124), `remote_shell_unsupported` (exit 1),
+  `sftp_unavailable` (exit 1) and `proxy_jump_invalid` (exit 2); `error`
+  values that v2.0.2 never produced.
 
 ### Changes without a compatibility switch
 
