@@ -527,12 +527,12 @@ func TestStreamRefreshClosesPool(t *testing.T) {
 				name: "saved key material",
 				vaults: func(active config.Connection) (*config.Vault, *config.Vault) {
 					return &config.Vault{
-						Connections: []config.Connection{active},
-						Keys:        []config.SSHKey{{Name: "unused-key", PrivateKey: "ISSUE21_OLD_KEY_CANARY"}},
-					}, &config.Vault{
-						Connections: []config.Connection{active},
-						Keys:        []config.SSHKey{{Name: "unused-key", PrivateKey: "ISSUE21_NEW_KEY_CANARY"}},
-					}
+							Connections: []config.Connection{active},
+							Keys:        []config.SSHKey{{Name: "unused-key", PrivateKey: "ISSUE21_OLD_KEY_CANARY"}},
+						}, &config.Vault{
+							Connections: []config.Connection{active},
+							Keys:        []config.SSHKey{{Name: "unused-key", PrivateKey: "ISSUE21_NEW_KEY_CANARY"}},
+						}
 				},
 			},
 			{

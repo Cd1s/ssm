@@ -40,6 +40,9 @@ func TestParseRemoteRunArgsRejectsBadTimeouts(t *testing.T) {
 		{[]string{"--exec-timeout"}, "--exec-timeout requires a duration"},
 		{[]string{"--exec-timeout", "0", "true"}, "--exec-timeout"},
 		{[]string{"--exec-timeout=-5s", "true"}, "--exec-timeout must be positive"},
+		{[]string{"--exec-timeout", "-5s", "true"}, "--exec-timeout must be positive"},
+		{[]string{"--connect-timeout=0", "true"}, "--connect-timeout must be positive"},
+		{[]string{"--timeout", "-1m", "true"}, "--timeout must be positive"},
 		{[]string{"--exec-timeout", "soon", "true"}, "invalid --exec-timeout"},
 		{[]string{"--connect-timeout"}, "--connect-timeout requires a duration"},
 		{[]string{"--connect-timeout=nope", "true"}, "invalid --connect-timeout"},
@@ -118,5 +121,45 @@ func TestRequestRunSpecExecTimeout(t *testing.T) {
 	}
 	if !hasRunRequestFields(agentRequest{ExecTimeout: "5s"}) {
 		t.Fatal("exec_timeout must count as a run field so check/host requests reject it")
+	}
+}
+
+func TestParseRunStreamArgsRejectsNonPositiveTimeouts(t *testing.T) {
+	for _, args := range [][]string{
+		{"--stream", "--exec-timeout=-5s"},
+		{"--stream", "--exec-timeout", "-5s"},
+		{"--stream", "--connect-timeout", "0"},
+		{"--stream", "--timeout=-1s"},
+	} {
+		_, _, err := parseRunStreamArgs(args)
+		if err == nil || !strings.Contains(err.Error(), "must be positive") {
+			t.Fatalf("parseRunStreamArgs(%q) error = %v, want must be positive", args, err)
+		}
+	}
+	if _, _, err := parseRunStreamArgs([]string{"--stream", "--exec-timeout"}); err == nil || !strings.Contains(err.Error(), "--exec-timeout requires a duration") {
+		t.Fatalf("missing value error = %v", err)
+	}
+}
+
+func TestRequestExecTimeoutIsRunOnlyAndPutKeepsTransferTimeout(t *testing.T) {
+	if !putRequestHasRunFields(agentRequest{ExecTimeout: "5s"}) {
+		t.Fatal("put must reject exec_timeout")
+	}
+	if putRequestHasRunFields(agentRequest{Timeout: "2m", Resume: "v1", SHA256: true}) {
+		t.Fatal("put must keep accepting timeout as the transfer timeout")
+	}
+}
+
+func TestRequestV1PublishedSchemaExecTimeoutIsRunOnly(t *testing.T) {
+	data, err := os.ReadFile("../../skills/agent-ssm/references/request-v1.schema.json") //nolint:gosec // repository-owned public schema fixture
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, `"exec_timeout": {"type": "string", "minLength": 1}`) {
+		t.Error("schema does not declare exec_timeout")
+	}
+	if got := strings.Count(text, `{"required": ["exec_timeout"]}`); got != 2 {
+		t.Errorf("exec_timeout exclusions = %d, want 2 (put, get)", got)
 	}
 }

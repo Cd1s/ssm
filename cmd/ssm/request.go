@@ -114,7 +114,7 @@ func runAgentRequest(args []string) {
 		if err := validateRequestAlias(req); err != nil {
 			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestAlias, machinecontract.Details{Cause: err, Alias: req.Alias}))
 		}
-		if req.Host != nil || req.Deep || req.Argv != nil || req.ShellCommand != nil || req.ScriptFile != "" || len(req.ScriptArgs) > 0 || req.Shell != "" || req.Interpreter != "" || len(req.SecretFiles) > 0 || req.Timeout != "" || req.ExecTimeout != "" || req.NoReuse || req.Preflight != nil || req.StdinFile != "" {
+		if putRequestHasRunFields(req) {
 			os.Exit(machinecontract.WriteClassified(true, machinecontract.InvalidRequestPutFields, machinecontract.Details{
 				Message: "put accepts only alias, local_path, remote_path, resume, sha256, timeout, dir_mode, and transfer", Alias: req.Alias,
 			}))
@@ -443,6 +443,13 @@ func validateRequestAlias(req agentRequest) error {
 		return fmt.Errorf("exact alias is required")
 	}
 	return nil
+}
+
+// putRequestHasRunFields reports run-only fields on a put request. timeout is
+// deliberately absent: on put it is the transfer timeout. exec_timeout is
+// run-only.
+func putRequestHasRunFields(req agentRequest) bool {
+	return req.Host != nil || req.Deep || req.Argv != nil || req.ShellCommand != nil || req.ScriptFile != "" || len(req.ScriptArgs) > 0 || req.Shell != "" || req.Interpreter != "" || len(req.SecretFiles) > 0 || req.ExecTimeout != "" || req.NoReuse || req.Preflight != nil || req.StdinFile != ""
 }
 
 func hasRunRequestFields(req agentRequest) bool {

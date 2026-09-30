@@ -104,14 +104,14 @@
       "if": {"properties": {"op": {"const": "put"}}},
       "then": {
         "required": ["alias", "local_path", "remote_path"],
-        "not": {"anyOf": [{"required": ["argv"]}, {"required": ["shell_command"]}, {"required": ["script_file"]}, {"required": ["script_args"]}, {"required": ["shell"]}, {"required": ["interpreter"]}, {"required": ["secret_files"]}, {"required": ["no_reuse"]}, {"required": ["preflight"]}, {"required": ["stdin_file"]}, {"required": ["deep"]}, {"required": ["host"]}]}
+        "not": {"anyOf": [{"required": ["argv"]}, {"required": ["shell_command"]}, {"required": ["script_file"]}, {"required": ["script_args"]}, {"required": ["shell"]}, {"required": ["interpreter"]}, {"required": ["secret_files"]}, {"required": ["no_reuse"]}, {"required": ["preflight"]}, {"required": ["stdin_file"]}, {"required": ["exec_timeout"]}, {"required": ["deep"]}, {"required": ["host"]}]}
       }
     },
     {
       "if": {"properties": {"op": {"const": "get"}}},
       "then": {
         "required": ["alias", "local_path", "remote_path"],
-        "not": {"anyOf": [{"required": ["argv"]}, {"required": ["shell_command"]}, {"required": ["script_file"]}, {"required": ["script_args"]}, {"required": ["shell"]}, {"required": ["interpreter"]}, {"required": ["secret_files"]}, {"required": ["no_reuse"]}, {"required": ["preflight"]}, {"required": ["stdin_file"]}, {"required": ["deep"]}, {"required": ["resume"]}, {"required": ["dir_mode"]}, {"required": ["host"]}]}
+        "not": {"anyOf": [{"required": ["argv"]}, {"required": ["shell_command"]}, {"required": ["script_file"]}, {"required": ["script_args"]}, {"required": ["shell"]}, {"required": ["interpreter"]}, {"required": ["secret_files"]}, {"required": ["no_reuse"]}, {"required": ["preflight"]}, {"required": ["stdin_file"]}, {"required": ["exec_timeout"]}, {"required": ["deep"]}, {"required": ["resume"]}, {"required": ["dir_mode"]}, {"required": ["host"]}]}
       }
     }
   ]

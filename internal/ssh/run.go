@@ -451,7 +451,7 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 			return res
 		}
 	}
-	if execDeadline.expired() {
+	if execDeadline.timeoutApplies(err) {
 		// sshctl ended the command itself, so any EOF or missing exit status
 		// is a consequence of that, not a lost connection.
 		if !opts.Capture {

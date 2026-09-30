@@ -201,48 +201,20 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 				return remoteRunSpec{}, fmt.Errorf("invalid --jobs value")
 			}
 			workers = n
-		case arg == "--timeout":
-			if i+1 >= len(args) {
-				return remoteRunSpec{}, fmt.Errorf("--timeout requires a duration (e.g. 10s or 30)")
-			}
-			i++
-			d, err := parseCLITimeout(args[i])
+		case isDurationFlag(arg, "--timeout", "--connect-timeout", "--exec-timeout"):
+			flag, d, next, err := consumeDurationFlag(args, i, "--timeout", "--connect-timeout", "--exec-timeout")
 			if err != nil {
 				return remoteRunSpec{}, err
 			}
-			timeout = d
-		case strings.HasPrefix(arg, "--timeout="):
-			d, err := parseCLITimeout(strings.TrimPrefix(arg, "--timeout="))
-			if err != nil {
-				return remoteRunSpec{}, err
-			}
-			timeout = d
-		case arg == "--connect-timeout", arg == "--exec-timeout":
-			if i+1 >= len(args) {
-				return remoteRunSpec{}, fmt.Errorf("%s requires a duration", arg)
-			}
-			i++
-			d, err := parseCLIDuration(arg, args[i]) //nolint:gosec // i+1 was bounds-checked immediately above
-			if err != nil {
-				return remoteRunSpec{}, err
-			}
-			if arg == "--connect-timeout" {
+			i = next
+			switch flag {
+			case "--timeout":
+				timeout = d
+			case "--connect-timeout":
 				connectTo = d
-			} else {
+			default:
 				execTo = d
 			}
-		case strings.HasPrefix(arg, "--connect-timeout="):
-			d, err := parseCLIDuration("--connect-timeout", strings.TrimPrefix(arg, "--connect-timeout="))
-			if err != nil {
-				return remoteRunSpec{}, err
-			}
-			connectTo = d
-		case strings.HasPrefix(arg, "--exec-timeout="):
-			d, err := parseCLIDuration("--exec-timeout", strings.TrimPrefix(arg, "--exec-timeout="))
-			if err != nil {
-				return remoteRunSpec{}, err
-			}
-			execTo = d
 		case arg == "--retry-dial":
 			if i+1 >= len(args) {
 				return remoteRunSpec{}, fmt.Errorf("--retry-dial requires N[:backoff]")
@@ -452,15 +424,41 @@ func parseRemoteRunArgs(args []string) (remoteRunSpec, error) {
 	}, nil
 }
 
-func parseCLIDuration(flag, value string) (time.Duration, error) {
-	value = strings.TrimSpace(value)
-	if d, err := time.ParseDuration(value); err == nil && d > 0 {
-		return d, nil
+// isDurationFlag reports whether arg is one of the named duration flags in
+// either the "--flag value" or "--flag=value" form.
+func isDurationFlag(arg string, names ...string) bool {
+	for _, name := range names {
+		if arg == name || strings.HasPrefix(arg, name+"=") {
+			return true
+		}
 	}
-	if sec, err := strconv.Atoi(value); err == nil && sec > 0 {
-		return time.Duration(sec) * time.Second, nil
+	return false
+}
+
+// consumeDurationFlag parses the duration flag at args[i] (see isDurationFlag)
+// and returns the flag name, the parsed duration, and the index of the last
+// argument it consumed. run/exec/map and run --stream share it so every
+// timeout flag reports errors the same way in both forms.
+func consumeDurationFlag(args []string, i int, names ...string) (string, time.Duration, int, error) {
+	arg := args[i]
+	for _, name := range names {
+		var value string
+		switch {
+		case arg == name:
+			if i+1 >= len(args) {
+				return name, 0, i, fmt.Errorf("%s requires a duration (e.g. 10s or 30)", name)
+			}
+			i++
+			value = args[i]
+		case strings.HasPrefix(arg, name+"="):
+			value = strings.TrimPrefix(arg, name+"=")
+		default:
+			continue
+		}
+		d, err := parseCLIDuration(name, value)
+		return name, d, i, err
 	}
-	return 0, fmt.Errorf("invalid %s %q", flag, value)
+	return "", 0, i, fmt.Errorf("unrecognized duration flag %q", arg)
 }
 
 func parseRetryDial(value string) (int, time.Duration, error) {
@@ -562,13 +560,19 @@ func readLimitedFile(path string, limit int64) ([]byte, error) {
 }
 
 func parseCLITimeout(v string) (time.Duration, error) {
+	return parseCLIDuration("--timeout", v)
+}
+
+// parseCLIDuration parses a positive Go duration or integer seconds for the
+// named flag. Zero and negative values report "<flag> must be positive".
+func parseCLIDuration(flag, v string) (time.Duration, error) {
 	v = strings.TrimSpace(v)
 	if v == "" {
-		return 0, fmt.Errorf("--timeout requires a duration (e.g. 10s or 30)")
+		return 0, fmt.Errorf("%s requires a duration (e.g. 10s or 30)", flag)
 	}
 	if d, err := time.ParseDuration(v); err == nil {
 		if d <= 0 {
-			return 0, fmt.Errorf("--timeout must be positive")
+			return 0, fmt.Errorf("%s must be positive", flag)
 		}
 		return d, nil
 	}
@@ -576,7 +580,7 @@ func parseCLITimeout(v string) (time.Duration, error) {
 	if _, err := fmt.Sscanf(v, "%d", &sec); err == nil && sec > 0 {
 		return time.Duration(sec) * time.Second, nil
 	}
-	return 0, fmt.Errorf("invalid --timeout %q (use 10s, 1m, or integer seconds)", v)
+	return 0, fmt.Errorf("invalid %s %q (use 10s, 1m, or integer seconds)", flag, v)
 }
 
 func applyRunSpecEnv(spec remoteRunSpec) {

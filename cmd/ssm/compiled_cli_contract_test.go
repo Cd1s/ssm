@@ -1555,22 +1555,22 @@ func compiledLegacyPendingLedger() (*config.InventorySnapshot, []config.PendingM
 		Name: "legacy-ledger-pending-key", PrivateKey: "ISSUE17_LEGACY_LEDGER_PENDING_PRIVATE_KEY_CANARY",
 	}
 	return &config.InventorySnapshot{
-		Connections: []config.Connection{baseConnection},
-		Keys:        []config.SSHKey{baseKey},
-	}, []config.PendingMutation{
-		{
-			ID: "tx_legacy_ledger_alpha", Alias: updatedConnection.Name,
-			Operation: "updated", CreatedAt: "2026-01-04T00:00:00Z",
-			Before: &baseConnection, After: &updatedConnection,
-			KeysBefore: []config.SSHKey{baseKey}, KeysAfter: []config.SSHKey{baseKey},
-		},
-		{
-			ID: "tx_legacy_ledger_beta", Alias: createdConnection.Name,
-			Operation: "created", CreatedAt: "2026-01-04T00:00:01Z",
-			After:      &createdConnection,
-			KeysBefore: []config.SSHKey{baseKey}, KeysAfter: []config.SSHKey{baseKey, pendingKey},
-		},
-	}
+			Connections: []config.Connection{baseConnection},
+			Keys:        []config.SSHKey{baseKey},
+		}, []config.PendingMutation{
+			{
+				ID: "tx_legacy_ledger_alpha", Alias: updatedConnection.Name,
+				Operation: "updated", CreatedAt: "2026-01-04T00:00:00Z",
+				Before: &baseConnection, After: &updatedConnection,
+				KeysBefore: []config.SSHKey{baseKey}, KeysAfter: []config.SSHKey{baseKey},
+			},
+			{
+				ID: "tx_legacy_ledger_beta", Alias: createdConnection.Name,
+				Operation: "created", CreatedAt: "2026-01-04T00:00:01Z",
+				After:      &createdConnection,
+				KeysBefore: []config.SSHKey{baseKey}, KeysAfter: []config.SSHKey{baseKey, pendingKey},
+			},
+		}
 }
 
 func compiledOutputIdentity(result compiledCLIResult) string {

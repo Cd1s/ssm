@@ -57,39 +57,18 @@ func parseRunStreamArgs(args []string) (runStreamOptions, bool, error) {
 				return opts, true, err
 			}
 			opts.refresh = refresh
-		case filtered[i] == "--timeout" || filtered[i] == "--connect-timeout" || filtered[i] == "--exec-timeout":
-			if i+1 >= len(filtered) {
-				return opts, true, fmt.Errorf("%s requires a duration", filtered[i])
-			}
-			flag := filtered[i]
-			i++
-			d, err := parseCLIDuration(flag, filtered[i])
+		case isDurationFlag(filtered[i], "--timeout", "--connect-timeout", "--exec-timeout"):
+			// --timeout is the deprecated alias of --connect-timeout.
+			flag, d, next, err := consumeDurationFlag(filtered, i, "--timeout", "--connect-timeout", "--exec-timeout")
 			if err != nil {
 				return opts, true, err
 			}
+			i = next
 			if flag == "--exec-timeout" {
 				opts.execTimeout = d
 			} else {
 				opts.connectTimeout = d
 			}
-		case strings.HasPrefix(filtered[i], "--timeout="):
-			d, err := parseCLIDuration("--timeout", strings.TrimPrefix(filtered[i], "--timeout="))
-			if err != nil {
-				return opts, true, err
-			}
-			opts.connectTimeout = d
-		case strings.HasPrefix(filtered[i], "--connect-timeout="):
-			d, err := parseCLIDuration("--connect-timeout", strings.TrimPrefix(filtered[i], "--connect-timeout="))
-			if err != nil {
-				return opts, true, err
-			}
-			opts.connectTimeout = d
-		case strings.HasPrefix(filtered[i], "--exec-timeout="):
-			d, err := parseCLIDuration("--exec-timeout", strings.TrimPrefix(filtered[i], "--exec-timeout="))
-			if err != nil {
-				return opts, true, err
-			}
-			opts.execTimeout = d
 		case filtered[i] == "--stdin", filtered[i] == "--stdin-file", strings.HasPrefix(filtered[i], "--stdin-file="):
 			return opts, true, fmt.Errorf("%s is not supported with --stream: stdin carries the argv lines", strings.SplitN(filtered[i], "=", 2)[0])
 		default:

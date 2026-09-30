@@ -95,3 +95,11 @@ func (w *execWatch) expired() bool {
 	defer w.mu.Unlock()
 	return w.timedOut
 }
+
+// timeoutApplies reports whether a Run that returned err was ended by the exec
+// deadline. The timer can fire just before a command finishes on its own; if
+// Run returned success the command completed normally and SIGTERM (or the
+// session close) had no effect, so it is not an exec_timeout.
+func (w *execWatch) timeoutApplies(err error) bool {
+	return err != nil && w.expired()
+}
