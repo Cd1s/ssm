@@ -249,7 +249,7 @@ func MapExitCode(results []RunResult) int {
 	return machinecontract.AggregateResultExit(states)
 }
 
-// DefaultMapWorkers returns concurrency from env or default 8.
+// DefaultMapWorkers returns the default map concurrency (8); -j/--jobs/--parallel override it.
 func DefaultMapWorkers() int {
 	return 8
 }

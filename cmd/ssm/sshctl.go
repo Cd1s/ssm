@@ -530,10 +530,13 @@ func sshctlUsage() {
   # goes to the remote program untouched. -h/--help are honored only before it.
   # Only in sshctl: request, host-key, status, wait, sync. Only in ssm: keys, remove,
   # import-json, update, login, register, logout, server, pull-if-changed, remote-hash.
-Env: SSM_TRACE=1  SSM_TIMEOUT=10s  SSM_DIAL_TIMEOUT=10s  SSM_CONNECT_TIMEOUT=10s
+Global options: --json, --offline, --master-pass-file <protected-file>, --version, -h/--help
+Env: SSM_TRACE=1  SSM_CONNECT_TIMEOUT=10s (same as --connect-timeout)
+     SSM_TIMEOUT=10s (deprecated compatibility alias of SSM_CONNECT_TIMEOUT)  SSM_DIAL_TIMEOUT=10s (older name, read last)
      SSM_REUSE=0|off|false|no  SSM_FORWARD_STDIN=1|0  SSM_RUN_OUTPUT=buffered
      SSM_CONFIG_DIR=<dir>  SSM_MASTER_PASS_FILE=<protected-file>  SSM_KEEPALIVE=0|<duration> (invalid: 15s)
      SSM_OFFLINE=1  SSM_SYNC_MODE=strict|local_first
+     SSM_UPDATE_REPO=<owner/repo>|off  release repository that ssm update reads (ssm update only) (for tests and forks; provenance stays pinned to Cd1s/ssm)
      --offline is deprecated for reads: accepted for compatibility; reads are local by default and it now only suppresses background sync
 `, "\t", "  "))
 }

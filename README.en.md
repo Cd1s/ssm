@@ -190,7 +190,7 @@ sshctl put my-server ./notes.txt /tmp/notes.txt --sha256 --json
 sshctl get my-server /tmp/notes.txt ./notes.txt --sha256 --timeout 30s --json
 ```
 
-`--sha256` is for regular-file integrity verification. Directory transfers provide different guarantees; see [Advanced / for agents and automation](#advanced--for-agents-and-automation). The remote host is probed for `sha256sum`, then `shasum -a 256`, then `openssl dgst -sha256`; if none exists the result is `error:integrity_tool_unavailable` (retry without `--sha256`). Parent directories that `put` creates default to mode `0755`; override with `--dir-mode <octal>` (for example `--dir-mode 0750`). The file itself is still written through a private temporary file and renamed, so file permission semantics are unchanged. `get` accepts the same position-independent `--json`, `--timeout`, and `--sha256` as `put` (the download is hashed locally and compared with the remote digest; a mismatch fails and does not replace the destination). `get` does not support `--resume`.
+`--sha256` is for regular-file integrity verification. Directory transfers provide different guarantees; see [Advanced / for agents and automation](#advanced--for-agents-and-automation). The remote host is probed for `sha256sum`, then `shasum -a 256`, then `openssl dgst -sha256`; if none exists the result is `error:integrity_tool_unavailable` (retry without `--sha256`). Parent directories that `put` creates default to mode `0755`; override with `--dir-mode <octal>` (for example `--dir-mode 0750`; the mode must be at most `0777` and keep owner write and execute, i.e. include `0300`, or it is rejected before connecting). The file itself is still written through a private temporary file and renamed, so file permission semantics are unchanged. `get` accepts the same position-independent `--json`, `--timeout`, and `--sha256` as `put` (the download is hashed locally and compared with the remote digest; a mismatch fails and does not replace the destination). `get` does not support `--resume`.
 
 #### Targets without a POSIX shell (SFTP)
 
@@ -317,19 +317,26 @@ Read the [official Agent Skill](skills/agent-ssm/SKILL.md) and [version compatib
 
 ### Structured output and requests
 
-### Environment variables and connection reuse
-
-`SSM_TIMEOUT` is the compatibility connection-timeout alias; `SSM_DIAL_TIMEOUT`
-and `SSM_CONNECT_TIMEOUT` also bound only TCP connect plus the SSH handshake,
-not remote command execution. `SSM_REUSE=0|off|false|no` disables the
-connection pool. Reuse is always process-local (`status` reports
-`reuse_scope=process`); connections are never reused across processes.
-`SSM_FORWARD_STDIN=1|0` controls default stdin forwarding,
-`SSM_RUN_OUTPUT=buffered` restores buffered output, `SSM_CONFIG_DIR` selects
-the configuration directory, and `SSM_MASTER_PASS_FILE` names a protected
-password file.
-
 Normal `--json` commands emit one JSON value; explicit `run --stream` emits line-oriented NDJSON. Agents should classify `ok`, `error`, `stage`, `exit`, and `hint`; a remote program can itself exit 255, so the exit code alone cannot identify an SSH transport failure.
+
+Use schema version 1 for dynamic or untrusted arguments, scripts, secret-file paths, transfers, and host changes. The [v2 request-v1 schema](skills/agent-ssm/references/request-v1.schema.json) supports `op:get`:
+
+```json
+{
+  "version": 1,
+  "op": "run",
+  "alias": "my-server",
+  "argv": ["printf", "%s\\n", "literal value"]
+}
+```
+
+```bash
+sshctl request --file ./request.json
+```
+
+v1.4.3/v1.4.4 must use the [compatibility bridge schema](skills/agent-ssm/references/request-v1-bridge.schema.json) and must not assume v2-only fields.
+
+Mistyped commands get a hint instead of being treated as an alias. A first word that is not a known subcommand still uses the `sshctl <alias> <command>` shorthand, and only when the alias does not exist is it checked as a command. Commands that exist only in `ssm` (such as `keys` or `login`) and spellings within one or two edits of a subcommand (such as `stauts` or `hostkey`) return `unknown_command` (exit 2) with a `hint` naming the right entrypoint or command and the close command names in `candidates`; the `ssm` entrypoint gives the same hints for sshctl-only commands and typos (in human mode a suggestion returns `unknown_command` with exit 2; without a suggestion the legacy `Unknown command` output and its exit code are unchanged). When an alias or redirect key is as close as the command, or closer, the word is treated as an alias and returns `alias_not_found`. Everything else stays `alias_not_found` (exit 255) with the nearest aliases in `candidates`, which are suggestions only and are never selected or executed. Unknown `run`/`exec`/`plan`/`map` options return `invalid_arguments` (exit 2) with a suggestion in `hint`: `--script-file` suggests `-f`, `--fetch` suggests `get`, and other options are matched by edit distance against the real option table.
 
 #### Exit codes and transport errors
 
@@ -375,24 +382,68 @@ The environment variable `SSM_CONNECT_TIMEOUT` is equivalent to `--connect-timeo
 
 **Keepalive.** On by default: every 15 seconds each SSH connection gets a `keepalive@openssh.com` request that wants a reply; after 3 consecutive unanswered probes the connection is closed and a running command fails as `connection_lost` (`outcome:"unknown"`). Pooled, reused connections benefit too. `SSM_KEEPALIVE=0` turns it off; an unparseable value falls back to the 15 second default; `SSM_KEEPALIVE=<duration>` (for example `5s`) sets the interval. The EOF that follows sshctl closing its own session after `--exec-timeout` is never reported as `connection_lost`.
 
-Use schema version 1 for dynamic or untrusted arguments, scripts, secret-file paths, transfers, and host changes. The [v2 request-v1 schema](skills/agent-ssm/references/request-v1.schema.json) supports `op:get`:
+### Environment variables and connection reuse
 
-```json
-{
-  "version": 1,
-  "op": "run",
-  "alias": "my-server",
-  "argv": ["printf", "%s\\n", "literal value"]
-}
-```
+`SSM_CONNECT_TIMEOUT` is the environment form of `--connect-timeout`: it bounds
+only TCP connect plus the SSH handshake, not remote command execution.
+`SSM_TIMEOUT` is a deprecated compatibility alias (the `--timeout` flag on
+`run` is deprecated too) that ranks below `SSM_CONNECT_TIMEOUT`;
+`SSM_DIAL_TIMEOUT` is an older name with the same effect, read last.
+`SSM_REUSE=0|off|false|no` disables the
+connection pool. Reuse is always process-local (`status` reports
+`reuse_scope=process`); connections are never reused across processes.
+`SSM_FORWARD_STDIN=1|0` controls default stdin forwarding,
+`SSM_RUN_OUTPUT=buffered` restores buffered output, `SSM_CONFIG_DIR` selects
+the configuration directory, and `SSM_MASTER_PASS_FILE` names a protected
+password file (the same as the global `--master-pass-file <path>`).
 
-```bash
-sshctl request --file ./request.json
-```
+`SSM_TRACE=1` (`true`, `yes`, and `on` also work) is the same as `--trace`/`-v`:
+before running, the redacted remote command (plus the script digest in script
+mode) is written to stderr.
 
-v1.4.3/v1.4.4 must use the [compatibility bridge schema](skills/agent-ssm/references/request-v1-bridge.schema.json) and must not assume v2-only fields.
+`SSM_UPDATE_REPO=<owner/repo>|off` chooses the GitHub repository `ssm update`
+reads releases from. The default is `Cd1s/ssm`; the variable exists for tests
+and for forks that publish their own releases. It ranks above the `update_repo`
+file in the config directory and the `update_repo` key of `settings.json`;
+`off`, `none`, and `disabled` turn updates off. It does not bypass the SHA-256
+or provenance checks: provenance always verifies the `Cd1s/ssm` release
+workflow identity, so a release from another repository cannot be installed
+without a credential issued for `Cd1s/ssm`. It does decide where versions are
+looked up, so set it only in a trusted environment (someone who can change it
+can make update checks fail or stall on an older version) and never use it as a
+way to install third-party builds.
 
-Mistyped commands get a hint instead of being treated as an alias. A first word that is not a known subcommand still uses the `sshctl <alias> <command>` shorthand, and only when the alias does not exist is it checked as a command. Commands that exist only in `ssm` (such as `keys` or `login`) and spellings within one or two edits of a subcommand (such as `stauts` or `hostkey`) return `unknown_command` (exit 2) with a `hint` naming the right entrypoint or command and the close command names in `candidates`; the `ssm` entrypoint gives the same hints for sshctl-only commands and typos (in human mode a suggestion returns `unknown_command` with exit 2; without a suggestion the legacy `Unknown command` output and its exit code are unchanged). When an alias or redirect key is as close as the command, or closer, the word is treated as an alias and returns `alias_not_found`. Everything else stays `alias_not_found` (exit 255) with the nearest aliases in `candidates`, which are suggestions only and are never selected or executed. Unknown `run`/`exec`/`plan`/`map` options return `invalid_arguments` (exit 2) with a suggestion in `hint`: `--script-file` suggests `-f`, `--fetch` suggests `get`, and other options are matched by edit distance against the real option table.
+### Option reference
+
+`run`/`exec`/`plan`/`map` options go after the alias (the target list for
+`map`) and before the remote-command boundary:
+
+| Option | Meaning |
+|---|---|
+| `--argv` | Everything after it is the remote argv, passed word by word with no local shell joining. |
+| `--raw` | Join the words with single spaces and never quote them; the remote shell parses the result. Compatibility only, with quoting and expansion risk. Cannot be combined with `--argv` or a script option. |
+| `--plan`, `--dry-run` | Resolve and show `remote_command` and the risk without connecting or running; the `plan` command is the same as `run --plan`. |
+| `-j`, `--jobs`, `--parallel <n>` | Worker count for `map` (default 8); a single-host `run` does not use it. |
+| `--trace`, `-v` | Same as `SSM_TRACE=1`, see above. |
+| `--no-reuse` | Do not use the connection pool for this call; same as `SSM_REUSE=0`. |
+| `-f`, `--file <path>` (repeatable), `--scripts a.sh,b.sh`, `-s`, `--script` | Script sources: `-f`/`--scripts` read local files, `-s`/`--script` read the script from local stdin; the script body travels to the remote over stdin. `map --scripts` runs every script on every host in parallel. |
+| `--shell <name>`, `--interpreter <program>` | Pick the shell or non-shell interpreter that runs a script, see "Run a script". |
+| `--preflight`, `--no-preflight` | Check shell syntax first; `--no-preflight` turns it off again and the last one wins. |
+| `--secret`, `-e NAME=@file` | Set `NAME` in the remote command's environment from a file (`NAME=value` is accepted, but then the value sits on the command line, so avoid it); the value is redacted from output. |
+| `--retry-dial N[:backoff]` | Dial retries; rules are in "Wait for a host (`wait`) and retry dialing (`--retry-dial`)". |
+| `--connect-timeout`, `--exec-timeout`, `--timeout` | See "Timeouts and keepalive". |
+| `--stdin`, `--no-stdin`, `--stdin-file` | See "Local stdin forwarding". |
+| `--stream`, `--refresh <duration>` | The long-lived argv stream of `run <alias> --stream` and its online refresh interval. |
+
+Options of other commands:
+
+- Global: `--json`, `--offline` (deprecated for reads; it only suppresses background sync), `--master-pass-file <path>`, `--version`.
+- `host add|update|upsert`: `--host`, `--port`, `--user`, `--group`, `--transfer auto|shell|sftp`, `--proxy-jump <alias>`, exactly one of the auth options `--key <name>` / `--key-file <path>` (optionally with `--key-name <name>` to name the new key) / `--password-file <path>`, plus `--verify` (connect and verify before saving; a failed verification saves nothing) and `--push` (requires `--verify`; publishes the resulting transaction right after saving). `host search` accepts `--filter <query>` instead of the positional query; `host remove` needs `--yes`, and `--prune-key` also deletes saved keys nothing references any more.
+- `import-json <path>`: `--merge` or `--replace --yes`; `--manifest <path>` supplies aliases for entries that have none; `--expect-count <n>` fails when the file does not yield exactly n hosts (0 disables the check).
+- `wait <alias>`: `--timeout`, `--interval`, and `--until ssh|tcp` are described in "Wait for a host (`wait`) and retry dialing (`--retry-dial`)".
+- `put`/`get`/`cp`: see "Upload or download files". `--dir-mode` must be an octal permission of at most `0777` that keeps owner write and execute (it includes `0300`, for example `0700`, `0750`, `0755`); values such as `0500` or `0644`, which would make creating nested directories fail, are rejected before connecting.
+- Sync service: `ssm login`/`register` use `--server`, `--email`, `--password-file`; `ssm server` uses `--listen`, `--data-dir`.
+- `ssm update [--major [--yes]]`: see "Updates and rollback".
 
 ### Transfer, resume, and public fields
 

@@ -75,7 +75,7 @@ not prove SSH transport failure.
 - Non-shell script (Python, Perl, Ruby): `sshctl --json run <exact-alias> -f script.py --interpreter python3 -- args...` or request `script_file` plus `interpreter`. The script still travels over stdin and runs as `<interpreter> - args...`. `interpreter` is one program name, an absolute path, or `env <name>`; without it a non-shell shebang returns `invalid_arguments`. `preflight` is shell-only and is rejected with a non-shell interpreter.
 - Secrets: use `secret_files` or credential file options. Values are paths, never secret contents.
 - Host changes: use typed `host.add|host.update|host.upsert|host.remove`; verify first, then publish only a changed result's exact `transaction_id`.
-- Regular-file upload: use typed `put`; add `resume:"v1"` only when requested and `sha256:true` when integrity verification is required. Auto-created parent directories default to 0755; use `dir_mode` (or `--dir-mode`) to override.
+- Regular-file upload: use typed `put`; add `resume:"v1"` only when requested and `sha256:true` when integrity verification is required. Auto-created parent directories default to 0755; use `dir_mode` (or `--dir-mode`) to override (an octal mode of at most 0777 that keeps owner write and execute, i.e. includes 0300; 0500 or 0644 are rejected before connecting).
 - Download: v1 uses direct `sshctl get`; v2 may use direct get or request schema v1 `op:"get"` (`sha256`, `timeout`, `transfer` allowed; no `resume`). Direct get accepts `--json`, `--timeout`, `--sha256`, `--sftp` in any position.
 - Target without a POSIX shell (Windows OpenSSH, appliances, SFTP-only accounts): when `put`/`get` return `remote_shell_unsupported`, retry the single file with `--sftp` (or `transfer:"sftp"` in the request; request `shell`/`sftp` override the host setting for that operation, `auto` or omitted keeps it), or set the host once with `host update <alias> --transfer sftp` (`host.transfer` in a host request). Never switch protocol silently; never send directories or `resume` over SFTP.
 - Host behind a bastion: set `host update <alias> --proxy-jump <jump-alias>` (`host.proxy_jump` in a host request; empty clears; chains up to 5 jump hosts, no cycles). Everything (`run`, `map`, `put`, `get`, `cp`, `check`, `doctor`, `host-key`) then works on the target alias. Each hop verifies its own host key locally and authenticates with its own credentials; nothing is forwarded. A failure names the failing hop in `via` (jump alias or the target itself): fix or trust that alias, not the target. `host-key inspect|accept <target>` handles the target's key only; trust every jump alias first. Older clients (v2.0.2 and earlier) ignore `proxy_jump` and drop it when they re-save the synced vault, so upgrade every client before using it; each target behind a jump opens its own jump connection. `proxy_jump_invalid` (exit 2, `stage:validate`) means a missing alias, a cycle, or more than 5 jump hosts and nothing was dialed.
@@ -282,13 +282,43 @@ Check `sshctl --help` for `--exec-timeout` before relying on these; v2.0.2 and o
 
 ## Environment variables and connection reuse
 
-`SSM_TIMEOUT` is the deprecated connection-timeout alias; `SSM_DIAL_TIMEOUT`
-and `SSM_CONNECT_TIMEOUT` bound TCP connect plus SSH handshake only.
+`SSM_CONNECT_TIMEOUT` is the environment form of `--connect-timeout`; `SSM_TIMEOUT` is its deprecated compatibility alias (ranked below it) and
+`SSM_DIAL_TIMEOUT` an older name read last. All three bound TCP connect plus SSH handshake only.
 `SSM_REUSE=0|off|false|no` disables the process-local connection pool;
 `status` reports `reuse_scope=process`, and no connection is reused across
 processes. `SSM_FORWARD_STDIN=1|0` controls default stdin forwarding,
 `SSM_RUN_OUTPUT=buffered` restores buffered output, `SSM_CONFIG_DIR` selects
-the config directory, and `SSM_MASTER_PASS_FILE` points to a protected file.
+the config directory, and `SSM_MASTER_PASS_FILE` points to a protected file (same as the global `--master-pass-file <path>`).
+`SSM_TRACE=1` is the same as `--trace`/`-v`: the redacted remote command (and
+script digest) is written to stderr before running. `SSM_UPDATE_REPO=<owner/repo>|off`
+chooses the GitHub repository `ssm update` reads releases from (default
+`Cd1s/ssm`; for tests and forks; it ranks above the `update_repo` config file and
+`settings.json` key, and `off` disables updates). It does not bypass the SHA-256
+or provenance checks, and provenance stays pinned to the `Cd1s/ssm` release
+workflow identity, so another repository's release cannot be installed without a
+credential issued for `Cd1s/ssm`; it only decides where versions are looked up, so
+set it in trusted environments only and never to install third-party builds.
+
+## Option reference
+
+`run`/`exec`/`plan`/`map` options (before the remote-command boundary):
+
+- `--argv`: the rest is the literal remote argv. `--raw`: join words with single spaces, no quoting, remote shell parsing (compatibility only; not with `--argv` or script options).
+- `--plan`/`--dry-run`: show `remote_command` and risk without connecting or running (`plan` is `run --plan`).
+- `-j`/`--jobs`/`--parallel <n>`: `map` worker count (default 8); a single-host `run` ignores it.
+- `--trace`/`-v`: same as `SSM_TRACE=1`. `--no-reuse`: no connection pool for this call (`SSM_REUSE=0`).
+- Scripts: `-f`/`--file <path>` (repeatable) and `--scripts a.sh,b.sh` read local files, `-s`/`--script` reads the script from local stdin; `--shell <name>` or `--interpreter <program>` picks the runner; `--preflight` checks shell syntax first and `--no-preflight` turns it off again (the last one wins).
+- `--secret`/`-e NAME=@file`: set `NAME` in the remote environment from a file (`NAME=value` works but exposes the value on the command line; output is redacted).
+- `--retry-dial N[:backoff]`: pre-command dial retries; rules are in the failure-retry notes above (`dial_attempts`).
+- `--stream` with `--refresh <duration>`: the long-lived argv stream of `run <alias> --stream`.
+
+Other commands:
+
+- Global: `--json`, `--offline` (deprecated for reads), `--master-pass-file <path>`, `--version`.
+- `host add|update|upsert`: `--host`, `--port`, `--user`, `--group`, `--transfer auto|shell|sftp`, `--proxy-jump <alias>`, exactly one of `--key <name>`, `--key-file <path>` (with optional `--key-name <name>`), or `--password-file <path>`, plus `--verify` (verify before saving; a failed verification saves nothing) and `--push` (requires `--verify`). `host search --filter <query>` replaces the positional query; `host remove` needs `--yes` and optionally `--prune-key`.
+- `import-json <path>`: `--merge` or `--replace --yes`, `--manifest <path>` (aliases for entries that have none), `--expect-count <n>` (fail unless the file yields exactly n hosts; 0 disables the check).
+- `wait <alias>`: `--timeout`, `--interval`, `--until ssh|tcp`; see "Choose the smallest safe operation".
+- Sync service (human-run, not for agents): `ssm login`/`register` take `--server`, `--email`, `--password-file`; `ssm server` takes `--listen` and `--data-dir`.
 
 ## Updates and rollback
 
