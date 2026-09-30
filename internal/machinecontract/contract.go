@@ -58,6 +58,7 @@ const (
 	AuthenticationFailed                Kind = "authentication_failed"
 	NoAuthenticationConfigured          Kind = "no_authentication_configured"
 	SessionFailed                       Kind = "session_failed"
+	SessionLimit                        Kind = "session_limit"
 	RemoteCommandFailed                 Kind = "remote_command_failed"
 	InterpreterNotFound                 Kind = "interpreter_not_found"
 	RemoteScriptFailed                  Kind = "remote_script_failed"
@@ -239,6 +240,7 @@ const (
 	CodeAuth           = "auth_failed"
 	CodeNoAuth         = "no_auth_configured"
 	CodeSession        = "session_failed"
+	CodeSessionLimit   = "session_limit"
 	CodeRemote         = "remote_failed"
 	CodeRemoteWrite    = "remote_write_failed"
 	CodeInterpreter    = "interpreter_not_found"
@@ -399,6 +401,11 @@ var failurePolicies = map[Kind]failurePolicy{
 	},
 	SessionFailed: {
 		Code: CodeSession, Stage: "session", Hint: "SSH connected but session failed; remote sshd or resources may be unhealthy", Exit: ExitConnectionFailed,
+	},
+	SessionLimit: {
+		Code: CodeSessionLimit, Stage: "session",
+		Hint: "the SSH server refused a new session because its per-connection session limit stayed full; the command was not sent, so it is safe to retry. Lower the parallelism (-j) or raise sshd MaxSessions on the host",
+		Exit: ExitConnectionFailed,
 	},
 	RemoteCommandFailed: {
 		Code: CodeRemote, Stage: "remote_execution", Hint: "inspect stdout/stderr; SSH transport succeeded", Exit: 1,
@@ -1421,6 +1428,8 @@ func ClassifySSH(err error, context SSHContext) Failure {
 			kind = HandshakeFailed
 		case !context.SessionAcquisition && isConnectionBreak(err, lower, context.ExecPhase || context.Stage == "session"):
 			kind = ConnectionLost
+		case IsSessionLimit(err):
+			kind = SessionLimit
 		case isSessionRejection(err, lower):
 			kind = SessionFailed
 		}
@@ -1486,6 +1495,15 @@ func isConnectionBreak(err error, lower string, execPhase bool) bool {
 	}
 	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
 		strings.Contains(lower, "unexpected eof") || lower == "eof" || strings.HasSuffix(lower, ": eof")
+}
+
+// IsSessionLimit recognizes sshd refusing a session channel because the
+// connection's MaxSessions is full. OpenSSH answers with the typed
+// administratively-prohibited channel-open failure, so the reason code is the
+// signal; error text is not matched because other refusals share "open failed".
+func IsSessionLimit(err error) bool {
+	var openFailed *gossh.OpenChannelError
+	return errors.As(err, &openFailed) && openFailed.Reason == gossh.Prohibited
 }
 
 // isSessionRejection recognizes a peer refusing to open the session channel.

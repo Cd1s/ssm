@@ -61,6 +61,10 @@ func TestClassifySSHTransportErrorsNeverFallBackToInternal(t *testing.T) {
 
 		{"session channel rejected typed", &gossh.OpenChannelError{Reason: gossh.ResourceShortage, Message: "open failed"}, bareContext, CodeSession, "", ""},
 		{"session channel rejected pinned text", errors.New(`ssh: rejected: resource shortage ("fixture session rejected")`), bareContext, CodeSession, "", ""},
+		{"session limit typed", &gossh.OpenChannelError{Reason: gossh.Prohibited, Message: "open failed"}, acquireContext, CodeSessionLimit, "session", ""},
+		{"session limit typed wrapped", fmt.Errorf("session: %w", &gossh.OpenChannelError{Reason: gossh.Prohibited, Message: "open failed"}), acquireContext, CodeSessionLimit, "session", ""},
+		{"other open failed text is not a session limit", errors.New("ssh: rejected: connect failed (open failed)"), acquireContext, CodeSession, "session", ""},
+		{"unknown channel type is not a session limit", &gossh.OpenChannelError{Reason: gossh.UnknownChannelType, Message: "open failed"}, acquireContext, CodeSession, "session", ""},
 		{"session acquisition EOF keeps session_failed", io.EOF, acquireContext, CodeSession, "session", ""},
 
 		// Classifications that predate #79 keep priority over the new branches.

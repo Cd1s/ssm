@@ -172,6 +172,13 @@ func TestMachineContractMatrix(t *testing.T) {
 			exit: 255, alias: "session",
 		},
 		{
+			name: "session limit", kind: SessionLimit,
+			details: Details{Message: "ssh: rejected: administratively prohibited (open failed)", Alias: "busy"},
+			code:    "session_limit", stage: "session",
+			hint: "the SSH server refused a new session because its per-connection session limit stayed full; the command was not sent, so it is safe to retry. Lower the parallelism (-j) or raise sshd MaxSessions on the host",
+			exit: 255, alias: "busy",
+		},
+		{
 			name: "remote exit 255", kind: RemoteCommandFailed,
 			details: Details{Message: "remote command exited non-zero", Alias: "remote-255", Exit: 255},
 			code:    "remote_failed", stage: "remote_execution", hint: "inspect stdout/stderr; SSH transport succeeded",

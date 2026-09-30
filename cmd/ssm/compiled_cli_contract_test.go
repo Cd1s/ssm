@@ -2440,6 +2440,22 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		assertCompiledMachineContract(t, result, contract)
 	})
 
+	t.Run("session limit that never frees has its own class", func(t *testing.T) {
+		password := "ISSUE76_SESSION_LIMIT_PASSWORD_CANARY" //nolint:gosec // test-only fake credential canary
+		server := newCompiledSSHFixture(t, compiledSSHFixtureOptions{Password: password, RejectSessionsAsLimit: true})
+		cli.TrustSSHHost(t, server)
+		cli.SaveVault(t, &config.Vault{Connections: []config.Connection{server.Connection("session-limit", password)}})
+		result := cli.RunWithEnv(t, "sshctl", nil, map[string]string{"SSM_TIMEOUT": "300ms"}, "--offline", "--json", "run", "session-limit", "--argv", "true")
+		assertNoCompiledCanaryLeak(t, result, map[string]string{"password": password})
+		document := decodeExactlyOneJSONObject(t, result.Stdout)
+		hint, _ := document["hint"].(string)
+		if result.ProcessExit != 255 || result.Stderr != "" || document["ok"] != false || document["error"] != "session_limit" ||
+			document["stage"] != "session" || document["exit"] != float64(255) || document["alias"] != "session-limit" ||
+			!strings.Contains(hint, "-j") || !strings.Contains(hint, "MaxSessions") {
+			t.Fatalf("session_limit run exit=%d stderr=%q stdout=%s", result.ProcessExit, result.Stderr, result.Stdout)
+		}
+	})
+
 	t.Run("remote process exit 255 is not a connection failure", func(t *testing.T) {
 		password := "ISSUE17_REMOTE_EXIT_PASSWORD_CANARY"
 		server := newCompiledSSHFixture(t, compiledSSHFixtureOptions{Password: password})
