@@ -140,6 +140,10 @@ func runSSHCTLParsed(args []string) {
 		machineJSON = machineJSON || hasJSONFlagBeforeDash(args[1:])
 		unlock()
 		runGetArgs(args[1:])
+	case "cp":
+		machineJSON = machineJSON || commandHasJSONFlag(true, args[0], args[1:])
+		unlock()
+		runCpArgs(args[1:])
 	case "redirect", "alias-link":
 		machineJSON = machineJSON || commandHasJSONFlag(true, args[0], args[1:])
 		unlock()
@@ -517,6 +521,7 @@ func sshctlUsage() {
 
   sshctl put <alias> <local> <remote> [--resume=v1] [--sha256] [--timeout 2m] [--dir-mode 0755] [--sftp] [--json]
   sshctl get <alias> <remote> <local> [--sha256] [--timeout 2m] [--sftp] [--json]
+  sshctl cp <alias-a>:<path> <alias-b>:<path> [--timeout 2m] [--json]
   sshctl redirect list|set <old> <new>|rm <old>
   # Remote argv boundary: after the alias, "--argv", "--", or the first non-option
   # word starts the remote command; everything after it (-h, --help, --json, ...)

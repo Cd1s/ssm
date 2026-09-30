@@ -67,6 +67,7 @@
         "user": {"type": "string"},
         "group": {"type": "string"},
         "transfer": {"enum": ["auto", "shell", "sftp"]},
+        "proxy_jump": {"type": "string", "description": "Alias this host is reached through (ProxyJump); an empty string clears it."},
         "saved_key": {"type": "string"},
         "key_file": {"type": "string"},
         "key_name": {"type": "string"},

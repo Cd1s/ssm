@@ -35,6 +35,7 @@ type hostCommandOptions struct {
 	user         optionalString
 	group        optionalString
 	transfer     optionalString
+	proxyJump    optionalString
 	passwordFile optionalString
 	keyName      optionalString
 	keyFile      optionalString
@@ -147,6 +148,12 @@ func parseHostCommandArgs(args []string) (hostCommandOptions, error) {
 				return opts, newHostError(machinecontract.HostInvalidArguments, "--transfer must be auto, shell, or sftp")
 			}
 			opts.transfer = optionalString{value: value, set: true}
+		case matchesValueFlag(arg, "--proxy-jump"):
+			value, err := readFlagValue(args, &i, "--proxy-jump")
+			if err != nil {
+				return opts, err
+			}
+			opts.proxyJump = optionalString{value: value, set: true}
 		case matchesValueFlag(arg, "--password-file"):
 			value, err := readFlagValue(args, &i, "--password-file")
 			if err != nil {
@@ -285,7 +292,7 @@ func validateHostCommandOptions(opts hostCommandOptions) error {
 }
 
 func (o hostCommandOptions) hasMutationOptions() bool {
-	return o.host.set || o.port.set || o.user.set || o.group.set || o.transfer.set ||
+	return o.host.set || o.port.set || o.user.set || o.group.set || o.transfer.set || o.proxyJump.set ||
 		o.passwordFile.set || o.keyName.set || o.keyFile.set || o.newKeyName.set
 }
 
@@ -372,6 +379,7 @@ func hostChangeFromOptions(opts hostCommandOptions) inventorytransaction.HostCha
 	change.User = optionalStringPointer(opts.user)
 	change.Group = optionalStringPointer(opts.group)
 	change.Transfer = optionalStringPointer(opts.transfer)
+	change.ProxyJump = optionalStringPointer(opts.proxyJump)
 	change.PasswordFile = optionalStringPointer(opts.passwordFile)
 	change.SavedKey = optionalStringPointer(opts.keyName)
 	change.KeyFile = optionalStringPointer(opts.keyFile)
@@ -466,6 +474,9 @@ func writeHostView(h hostView, asJSON bool) {
 	if h.Transfer != "" {
 		fmt.Printf("\ttransfer=%s", h.Transfer)
 	}
+	if h.ProxyJump != "" {
+		fmt.Printf("\tproxy_jump=%s", h.ProxyJump)
+	}
 	fmt.Println()
 }
 
@@ -522,9 +533,9 @@ func hostCommandUsage() {
   sshctl host list [--json] [--offline]
   sshctl host search <query> [--json] [--offline]
   sshctl host show <alias> [--json] [--offline]
-  sshctl host add <alias> --host <address> --user <user> [--port 22] [--group <name>] [--transfer auto|shell|sftp] <auth> [--verify] [--push] [--json] [--offline]
-  sshctl host update <alias> [--host ...] [--user ...] [--port ...] [--group ...] [--transfer ...] [<auth>] [--verify] [--push] [--json] [--offline]
-  sshctl host upsert <alias> --host <address> --user <user> [--port 22] [--group <name>] [--transfer auto|shell|sftp] [<auth>] [--verify] [--push] [--json] [--offline]
+  sshctl host add <alias> --host <address> --user <user> [--port 22] [--group <name>] [--transfer auto|shell|sftp] [--proxy-jump <alias>] <auth> [--verify] [--push] [--json] [--offline]
+  sshctl host update <alias> [--host ...] [--user ...] [--port ...] [--group ...] [--transfer ...] [--proxy-jump <alias>|""] [<auth>] [--verify] [--push] [--json] [--offline]
+  sshctl host upsert <alias> --host <address> --user <user> [--port 22] [--group <name>] [--transfer auto|shell|sftp] [--proxy-jump <alias>] [<auth>] [--verify] [--push] [--json] [--offline]
   sshctl host remove <alias> --yes [--prune-key] [--json] [--offline]
 
 Auth (choose one when required):

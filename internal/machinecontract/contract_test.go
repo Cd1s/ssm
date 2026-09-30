@@ -938,6 +938,24 @@ func TestMachineContractMatrix(t *testing.T) {
 			code:    "integrity_tool_unavailable", stage: "capability",
 			hint: "the SFTP server did not allow reading the uploaded file back for verification, so nothing was published; retry without --sha256 (size is still verified)", exit: 1,
 		},
+		{
+			name: "invalid proxy jump", kind: InvalidProxyJump,
+			details: Details{Message: "proxy_jump chain has a cycle"},
+			code:    "proxy_jump_invalid", stage: "validate",
+			hint: "fix the proxy_jump chain: every jump alias must exist, chains must not loop, and at most 5 jump hosts are allowed; inspect with sshctl host show <alias> and change it with sshctl host update <alias> --proxy-jump <alias> (an empty value clears it)", exit: 2,
+		},
+		{
+			name: "copy arguments invalid", kind: CopyArgumentsInvalid,
+			details: Details{Message: "bad cp"},
+			code:    "invalid_arguments", stage: "validate",
+			hint: "use sshctl cp <alias-a>:<path> <alias-b>:<path> [--timeout <duration>] [--json]", exit: 2,
+		},
+		{
+			name: "copy directory unsupported", kind: CopyDirectoryUnsupported,
+			details: Details{Message: "is a directory"},
+			code:    "unsupported_transfer_option", stage: "validate",
+			hint: "cp copies single regular files only; copy a directory with sshctl get and sshctl put, or archive it on the source host first", exit: 1,
+		},
 	}
 
 	seen := make(map[Kind]bool, len(tests))
@@ -2556,6 +2574,36 @@ func TestClassifyDownloadCarriesSFTPTransferFailures(t *testing.T) {
 		})
 		if got.Error != test.wantError || got.Stage != test.wantStage || got.Alias != "sftp" {
 			t.Fatalf("ClassifyDownload(%s) = %+v", test.kind, got)
+		}
+	}
+}
+
+// Issue #86: a failure reached through a jump chain names the failing hop in
+// the additive via field; every failure document omits it otherwise.
+func TestFailureViaIsAdditiveAcrossDocuments(t *testing.T) {
+	plain := Classify(HostKeyUnknown, Details{Message: "untrusted", Alias: "target"})
+	via := plain
+	via.Via = "jump"
+	encode := func(value any) string {
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	for name, documents := range map[string][2]any{
+		"failure":           {plain, via},
+		"result metadata":   {plain.ResultMetadata(), via.ResultMetadata()},
+		"metadata":          {plain.Metadata(), via.Metadata()},
+		"transfer metadata": {plain.TransferMetadata(), via.TransferMetadata()},
+		"transfer outcome":  {TransferFailureOutcome(plain, TransferOutcome{}), TransferFailureOutcome(via, TransferOutcome{})},
+		"copy outcome":      {CopyFailureOutcome(plain, CopyOutcome{}), CopyFailureOutcome(via, CopyOutcome{})},
+	} {
+		if strings.Contains(encode(documents[0]), `"via"`) {
+			t.Errorf("%s without a jump carries via: %s", name, encode(documents[0]))
+		}
+		if !strings.Contains(encode(documents[1]), `"via":"jump"`) {
+			t.Errorf("%s through a jump lacks via: %s", name, encode(documents[1]))
 		}
 	}
 }

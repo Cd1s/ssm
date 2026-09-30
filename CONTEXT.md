@@ -61,6 +61,22 @@ plans and speculative APIs live elsewhere.
   freshness metadata is reported.
 - **Host-key inspection**: Observation of an SSH host key as `new`, `mismatch`,
   or `trusted` before explicit acceptance of the exact fingerprint.
+- **Jump host (`proxy_jump`)**: A host alias another host is reached
+  through. The target's SSH handshake runs over a `direct-tcpip` channel opened
+  on the jump host's own verified and authenticated connection, so every hop
+  checks its own host key against the local `known_hosts` and uses its own
+  credentials; credentials and agents are never forwarded. A chain has at most
+  five jump hosts and no cycles, and is resolved (with redirects) when it is
+  used.
+- **Via**: The additive failure field naming the alias of the hop (a jump host
+  or the target itself) that failed while connecting through a jump chain. It
+  never replaces `error`, `stage`, or `exit` and is omitted for direct
+  connections.
+- **Host-to-host copy (`cp`)**: A single regular file streamed from one host
+  through this machine to another, published only when the source digest, the
+  digest of the relayed bytes, and the destination's digest agree. A direct
+  A-to-B push is deliberately not offered because it would expose access to
+  the destination to the source host.
 - **Transfer outcome**: A machine-readable transfer result that identifies its
   direction and kind and reports only guarantees the selected transfer
   protocol actually provides.

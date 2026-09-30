@@ -53,6 +53,7 @@ type HostChange struct {
 	User         *string
 	Group        *string
 	Transfer     *string
+	ProxyJump    *string
 	PasswordFile *string
 	SavedKey     *string
 	KeyFile      *string
@@ -73,6 +74,8 @@ type HostView struct {
 	// Transfer is present only when the host opted into an explicit put/get
 	// protocol ("shell" or "sftp"); the default "auto" is omitted.
 	Transfer string `json:"transfer,omitempty"`
+	// ProxyJump is the alias this host is reached through, when set.
+	ProxyJump string `json:"proxy_jump,omitempty"`
 }
 
 // MutationReceipt is the stable secret-free result of a modern host mutation.
@@ -546,6 +549,10 @@ func buildHostCandidate(v *config.Vault, change HostChange) (*config.Vault, Muta
 		}
 		connection.Transfer = mode
 	}
+	if change.ProxyJump != nil {
+		// An empty value clears the jump host.
+		connection.ProxyJump = strings.TrimSpace(*change.ProxyJump)
+	}
 
 	keyAdded := ""
 	switch {
@@ -654,6 +661,16 @@ func validateManagedConnection(connection config.Connection, v *config.Vault) er
 	}
 	if hasControlCharacter(connection.Group) {
 		return hostError(machinecontract.HostInvalidGroup, "group must not contain control characters")
+	}
+	if connection.ProxyJump != "" {
+		// Existence, cycles and depth are checked when the chain is resolved
+		// (aliases may be added in any order); reject only what can never work.
+		if hasControlCharacter(connection.ProxyJump) || strings.ContainsAny(connection.ProxyJump, " \t") {
+			return hostError(machinecontract.HostApplyInvalidArguments, "proxy-jump must be a single host alias")
+		}
+		if connection.ProxyJump == connection.Name {
+			return hostError(machinecontract.HostApplyInvalidArguments, "proxy-jump must not point at the host itself")
+		}
 	}
 	if connection.Password == "" && connection.KeyName == "" {
 		return hostError(machinecontract.HostApplyAuthenticationRequired, "host requires password or key authentication")
@@ -789,7 +806,7 @@ func View(connection config.Connection) HostView {
 	}
 	return HostView{
 		Name: connection.Name, Host: connection.Host, Port: port, User: connection.User,
-		Group: connection.Group, Auth: auth, KeyName: connection.KeyName, Transfer: connection.Transfer,
+		Group: connection.Group, Auth: auth, KeyName: connection.KeyName, Transfer: connection.Transfer, ProxyJump: connection.ProxyJump,
 	}
 }
 
