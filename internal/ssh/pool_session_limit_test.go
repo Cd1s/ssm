@@ -408,6 +408,9 @@ func TestPooledClientProbeGivesUpOnSilentServerAndRedials(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("liveness probe blocked on a server that never answers global requests")
 	}
+	// The fixture counts a connection after its side of the handshake, which
+	// can finish after the client's; wait for the redial to be counted.
+	waitFor(t, func() bool { return srv.connections.Load() >= 2 })
 	if got := srv.connections.Load(); got != 2 {
 		t.Fatalf("SSH connections = %d, want the silent one evicted and a fresh dial", got)
 	}
