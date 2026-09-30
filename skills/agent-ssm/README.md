@@ -59,6 +59,7 @@ Always run `sshctl --json --version` first and select one branch:
 
 | Exact version | Branch | Request schema |
 | --- | --- | --- |
+| v2.1.0 (supported; not latest until promoted) | v2 compatibility branch | `references/request-v1.schema.json` |
 | v2.0.2 (current/latest) | v2 compatibility branch | `references/request-v1.schema.json` |
 | v2.0.1 (supported previous v2 patch) | v2 compatibility branch | `references/request-v1.schema.json` |
 | v2.0.0 (supported earlier v2 patch) | v2 compatibility branch | `references/request-v1.schema.json` |
