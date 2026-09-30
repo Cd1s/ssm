@@ -26,12 +26,16 @@ import (
 //     run/exec/plan/map option tables in runargs.go;
 //   - environment variables are every exact "SSM_*" string literal in the
 //     non-test source under cmd/ and internal/;
-//   - each accepted flag and variable must be mentioned (word-bounded) in
+//   - each accepted flag and variable must be mentioned (word-bounded, anywhere
+//     in the document; this is not a per-section check and short flags such as
+//     -j are covered only through the run option tables' help check) in
 //     README.md, README.en.md, and skills/agent-ssm/SKILL.md, and, unless it is a
 //     flag.FlagSet flag whose help the flag package generates, in the help
 //     output of some command (environment variables: in `sshctl --help`);
 //   - every "--flag" and "SSM_*" token in those documents and in help output
-//     must be accepted or read by the code, or be listed below.
+//     must be accepted or read by the code (there is no allowlist for the
+//     reverse direction: an external tool's flag belongs in prose, not as a
+//     bare --flag token).
 //
 // Adding a flag or variable without documenting it fails this test. An entry
 // in one of the allowlists below needs a reason; an entry that no longer
@@ -46,10 +50,6 @@ var flagsWithoutDocumentation = map[string]string{
 	"--script-file": "recognized only to suggest '-f' for a mistyped run option, never accepted",
 	"--help":        "universal; every command answers -h/--help and the docs do not repeat it per command",
 }
-
-// documentedNonFlags are "--word" tokens that appear in the documents or help
-// text but are not options of this program.
-var documentedNonFlags = map[string]string{}
 
 // internalEnv are SSM_* literals that are not user-facing environment
 // variables. Prefix entries end in "_" and match every name that starts with
@@ -72,15 +72,21 @@ var developerEnv = map[string]string{
 }
 
 var (
-	flagLiteralPattern = regexp.MustCompile(`^--[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
-	envLiteralPattern  = regexp.MustCompile(`^SSM_[A-Z0-9_]+$`)
-	flagTokenPattern   = regexp.MustCompile(`(?:^|[^A-Za-z0-9_-])(--[a-z][a-z0-9]*(?:-[a-z0-9]+)*)`)
-	envTokenPattern    = regexp.MustCompile(`SSM_[A-Z][A-Z0-9_]*[A-Z0-9]`)
+	flagLiteralPattern    = regexp.MustCompile(`^--[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
+	envLiteralPattern     = regexp.MustCompile(`^SSM_[A-Z0-9_]+$`)
+	flagTokenPattern      = regexp.MustCompile(`(?:^|[^A-Za-z0-9_-])(--[a-z][a-z0-9]*(?:-[a-z0-9]+)*)`)
+	sourceEnvTokenPattern = regexp.MustCompile(`SSM_[A-Z0-9_]*[A-Z0-9_]`)
+	envTokenPattern       = regexp.MustCompile(`SSM_[A-Z][A-Z0-9_]*[A-Z0-9]`)
 )
 
+// flagPackageMethods are the flag.FlagSet registration methods whose name
+// argument is the flag name. Var-style methods take the name second or third,
+// so the scanner uses the first string literal argument.
 var flagPackageMethods = map[string]bool{
 	"String": true, "StringVar": true, "Bool": true, "BoolVar": true, "Int": true, "IntVar": true,
-	"Duration": true, "DurationVar": true,
+	"Int64": true, "Int64Var": true, "Uint": true, "UintVar": true, "Uint64": true, "Uint64Var": true,
+	"Float64": true, "Float64Var": true, "Duration": true, "DurationVar": true,
+	"Func": true, "BoolFunc": true, "Var": true, "TextVar": true,
 }
 
 var contractDocuments = []string{"README.md", "README.en.md", filepath.Join("skills", "agent-ssm", "SKILL.md")}
@@ -162,26 +168,14 @@ func acceptedFlags(t *testing.T) (all, flagPackage map[string]bool) {
 	flagPackage = map[string]bool{}
 	stringLiterals(t, productionGoFiles(t, filepath.Join("cmd", "ssm")), func(value string, call *ast.CallExpr) {
 		if call == nil {
-			if flagLiteralPattern.MatchString(value) {
-				all[value] = true
+			if name, ok := flagFromLiteral(value); ok {
+				all[name] = true
 			}
 			return
 		}
-		selector, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || !flagPackageMethods[selector.Sel.Name] {
-			return
-		}
-		for _, argument := range call.Args {
-			literal, ok := argument.(*ast.BasicLit)
-			if !ok || literal.Kind != token.STRING {
-				continue
-			}
-			name, err := strconv.Unquote(literal.Value)
-			if err == nil && flagLiteralPattern.MatchString("--"+name) {
-				all["--"+name] = true
-				flagPackage["--"+name] = true
-			}
-			break
+		if name, ok := flagPackageName(call); ok {
+			all["--"+name] = true
+			flagPackage["--"+name] = true
 		}
 	})
 	for _, option := range append(append([]string{}, runValueOptions...), runFlagOptions...) {
@@ -190,6 +184,68 @@ func acceptedFlags(t *testing.T) (all, flagPackage map[string]bool) {
 		}
 	}
 	return all, flagPackage
+}
+
+// flagFromLiteral accepts "--flag" and the "--flag=" prefix form used with
+// strings.HasPrefix, returning the bare flag name.
+func flagFromLiteral(value string) (string, bool) {
+	value = strings.TrimSuffix(value, "=")
+	if flagLiteralPattern.MatchString(value) {
+		return value, true
+	}
+	return "", false
+}
+
+func TestContractFlagScannerHandlesEqualsFormsAndRegistrations(t *testing.T) {
+	for literal, want := range map[string]string{"--x": "--x", "--x-y=": "--x-y", "--X": "", "-x": "", "--": "", "plain": ""} {
+		if got, _ := flagFromLiteral(literal); got != want {
+			t.Errorf("flagFromLiteral(%q) = %q, want %q", literal, got, want)
+		}
+	}
+	file := filepath.Join(t.TempDir(), "sample.go")
+	source := "package p\nimport \"flag\"\nfunc f(fs *flag.FlagSet) {\n" +
+		"var b bool\nfs.Func(\"fn\", \"u\", nil)\nfs.BoolFunc(\"bf\", \"u\", nil)\nfs.Uint(\"u\", 0, \"u\")\nfs.Var(nil, \"v\", \"u\")\nfs.BoolVar(&b, \"bv\", false, \"u\")\n_ = \"--only=\"\n}\n"
+	if err := os.WriteFile(file, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	stringLiterals(t, []string{file}, func(value string, call *ast.CallExpr) {
+		if call == nil {
+			if name, ok := flagFromLiteral(value); ok {
+				found[name] = true
+			}
+			return
+		}
+		if name, ok := flagPackageName(call); ok {
+			found["--"+name] = true
+		}
+	})
+	for _, want := range []string{"--fn", "--bf", "--u", "--v", "--bv", "--only"} {
+		if !found[want] {
+			t.Errorf("scanner missed %s (found %v)", want, found)
+		}
+	}
+}
+
+// flagPackageName returns the flag name registered by a flag.FlagSet method
+// call: the first string literal argument.
+func flagPackageName(call *ast.CallExpr) (string, bool) {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || !flagPackageMethods[selector.Sel.Name] {
+		return "", false
+	}
+	for _, argument := range call.Args {
+		literal, ok := argument.(*ast.BasicLit)
+		if !ok || literal.Kind != token.STRING {
+			continue
+		}
+		name, err := strconv.Unquote(literal.Value)
+		if err == nil && flagLiteralPattern.MatchString("--"+name) {
+			return name, true
+		}
+		return "", false
+	}
+	return "", false
 }
 
 func isInternalEnv(name string) bool {
@@ -337,23 +393,13 @@ func TestContractDocumentedFlagsAreAccepted(t *testing.T) {
 	for _, name := range contractDocuments {
 		sources[name] = readContractDocument(t, name)
 	}
-	used := map[string]bool{}
 	for name, text := range sources {
 		for _, match := range flagTokenPattern.FindAllStringSubmatch(text, -1) {
 			flag := match[1]
 			if flags[flag] {
 				continue
 			}
-			if _, ok := documentedNonFlags[flag]; ok {
-				used[flag] = true
-				continue
-			}
 			t.Errorf("%s names %s, which no command accepts", name, flag)
-		}
-	}
-	for flag := range documentedNonFlags {
-		if !used[flag] {
-			t.Errorf("documentedNonFlags lists %s, which no document or help output uses", flag)
 		}
 	}
 }
@@ -365,16 +411,24 @@ func TestContractEnvironmentVariablesAreDocumented(t *testing.T) {
 	for _, name := range contractDocuments {
 		documents[name] = readContractDocument(t, name)
 	}
+	tokens := sourceEnvTokens(t)
 	for name := range internalEnv {
+		// Marker names live inside larger literals, so staleness is checked
+		// against whole SSM_* tokens in the source: SSM_RESUME is not kept
+		// alive by SSM_RESUME_ERROR, and a prefix entry needs one match.
 		if strings.HasSuffix(name, "_") {
-			continue
-		}
-		if !names[name] && !mentionsToken(joinedHelp(helpCorpus(t)), name) {
-			// Marker names may live only inside larger literals; require the
-			// source to still contain them so a stale entry is noticed.
-			if !sourceContains(t, name) {
-				t.Errorf("internalEnv lists %s, which the code no longer contains", name)
+			matched := false
+			for token := range tokens {
+				if strings.HasPrefix(token, name) {
+					matched = true
+					break
+				}
 			}
+			if !matched {
+				t.Errorf("internalEnv prefix %s matches nothing in the code", name)
+			}
+		} else if !tokens[name] {
+			t.Errorf("internalEnv lists %s, which the code no longer contains", name)
 		}
 	}
 	for name := range developerEnv {
@@ -421,18 +475,21 @@ func TestContractDocumentedEnvironmentVariablesAreRead(t *testing.T) {
 	}
 }
 
-func sourceContains(t *testing.T, needle string) bool {
+// sourceEnvTokens returns every whole SSM_* token that appears anywhere in the
+// non-test source, including inside larger string literals.
+func sourceEnvTokens(t *testing.T) map[string]bool {
 	t.Helper()
+	tokens := map[string]bool{}
 	for _, path := range productionGoFiles(t, "cmd", "internal") {
 		data, err := os.ReadFile(path) //nolint:gosec // repository source discovered by the walk above
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(data), needle) {
-			return true
+		for _, token := range sourceEnvTokenPattern.FindAllString(string(data), -1) {
+			tokens[token] = true
 		}
 	}
-	return false
+	return tokens
 }
 
 func sortedNameSet(set map[string]bool) []string {
@@ -442,4 +499,34 @@ func sortedNameSet(set map[string]bool) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// login, register, and server print flag.FlagSet help and exit, so they are
+// captured from the compiled binary (their help goes to stderr).
+func TestContractFlagSetHelpHasNoTabsOrDuplicateLines(t *testing.T) {
+	cli := newCompiledCLIHarness(t)
+	for _, command := range []string{"login", "register", "server"} {
+		result := cli.Run(t, "ssm", nil, command, "--help")
+		output := result.Stdout + result.Stderr
+		if !strings.Contains(output, "Usage") {
+			t.Fatalf("ssm %s --help printed no usage: %s", command, compiledOutputIdentity(result))
+		}
+		if strings.ContainsRune(output, '\t') {
+			// The flag package indents flag descriptions with a tab; that is
+			// its generated format, so only leading-tab runs of code are
+			// checked for duplicates, not banned.
+			output = strings.ReplaceAll(output, "\t", "  ")
+		}
+		seen := map[string]bool{}
+		for _, line := range strings.Split(output, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				continue
+			}
+			if seen[trimmed] {
+				t.Errorf("ssm %s --help repeats a line: %q", command, trimmed)
+			}
+			seen[trimmed] = true
+		}
+	}
 }
