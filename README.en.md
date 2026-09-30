@@ -189,6 +189,20 @@ Request v1 sets the host field with `host.transfer`; `put`/`get` requests accept
 - `get`: `Stat` decides the type, then the file streams into a local staging file that is published atomically (`atomic:true`). SFTP has no remote digest command, so `--sha256` hashes the received stream, checks it against the size the server reported and against the staged file, and `remote_sha256` is that stream digest; without `--sha256` the result is `integrity:not_checked`.
 - `put`: the file is written to a private temporary sibling and renamed. A server with `posix-rename@openssh.com` replaces the destination atomically (`atomic:true`); otherwise the previous destination is moved aside and restored if the rename fails, but the result says `atomic:false`. `--sha256` reads the temporary file back over SFTP and compares digests locally (`integrity:sha256_verified`); if the server does not allow reading it back the result is `integrity_tool_unavailable` (`stage:capability`, as on the shell path; `integrity:not_available`) and nothing is published. Without `--sha256` only the size is checked (`size_verified`). `--dir-mode` applies to newly created parent directories as well. A destination that is already a directory is rejected untouched. A timed-out or dropped SFTP `put` may leave a `<destination>.ssm-upload.<hex>` temporary file: cleanup is retried on a fresh SFTP session, and if it still fails the error message names the leftover path.
 
+#### Host-to-host copy (`cp`)
+
+`sshctl cp <alias-a>:<path> <alias-b>:<path>` copies one regular file from A to B, streamed through this machine and **never touching the local disk**:
+
+```bash
+sshctl cp web1:/srv/app.tgz web2:/srv/app.tgz --timeout 5m --json
+```
+
+- A is read with the `get` path (`cat` over SSH) and B is written with the `put` path (private temporary file, verified, then renamed), so B never holds a partial file; on failure or a digest mismatch B's previous destination is left untouched.
+- This machine hashes the bytes that pass through and compares three SHA-256 values: the source digest reported by A, the local one, and B's digest of its temporary file before the rename. Only if all three agree does the copy succeed. The JSON result has `direction:"cp"`, `route:"local_relay"`, `source`/`destination` (`alias`, `path`), `bytes`, `source_sha256`, `local_sha256`, `destination_sha256`, `atomic:true`, and `integrity:"sha256_verified"`; failures carry the usual `error`/`stage`/`exit`/`hint` (a digest mismatch is `integrity_failed` with `integrity:"mismatch"`).
+- Both hosts need a POSIX shell and one of `sha256sum`/`shasum`/`openssl` (otherwise `integrity_tool_unavailable`). Only single regular files are supported; a directory returns `unsupported_transfer_option` (use `get`/`put`, or archive it on the source first); hosts with `transfer: sftp` are not supported. The source's permission bits are kept when A has `stat`, otherwise `0600`.
+- `--json` prints the machine result; `--timeout <duration>` bounds the whole copy (digest probe plus transfer) and returns `transfer_timeout`. Either host may itself be reached through `proxy_jump`.
+- **`--direct` (A pushes straight to B) is deliberately not implemented.** It would need B's credentials on A or forwarding this machine's agent to A, and either lets A, and anyone who controls A, reach B, which breaks the "credentials stay on this machine" rule. Whether to offer it, and behind which explicit confirmation, needs a separate decision; passing `--direct` fails with an explicit error.
+
 ### Add or change a host
 
 Use this to add a host or change only selected fields. `--verify` checks the candidate before saving it:
@@ -203,7 +217,25 @@ sshctl host update my-server --port 2222 --verify --json
 
 `--transfer auto|shell|sftp` (`host.transfer` in request v1) sets the protocol `put`/`get` use for that host; the default `auto` is not stored in the vault. See [Upload or download files](#upload-or-download-files).
 
+`--proxy-jump <alias>` (`host.proxy_jump` in request v1, an empty value clears it) makes the host reached through another alias; see [Reaching a host through a jump host](#reaching-a-host-through-a-jump-host-proxyjump).
+
 Private keys and passwords may only be referenced with `--key-file`, `--password-file`, or a saved `--key` name; they are never inline values. A changed result is saved locally as a pending mutation and returns a reviewable `transaction_id`. An idempotent no-op returns `changed:false`, `action:"unchanged"`, and no ID; do not publish it.
+
+### Reaching a host through a jump host (ProxyJump)
+
+Point a host at another alias to be reached through it:
+
+```bash
+sshctl host update inner --proxy-jump bastion --offline --json     # another alias; chains may be several levels deep
+sshctl host update inner --proxy-jump "" --offline --json          # an empty value clears it
+sshctl run inner --argv hostname                                   # run/map/put/get/check/doctor/cp/host-key all work
+```
+
+- Connections are made hop by hop: the first hop uses the ordinary dial (host-key verification, authentication, the handshake deadline, keepalive); every later hop does its SSH handshake over a `direct-tcpip` channel opened on the previous hop, **verifying its own host key against the local `known_hosts` and authenticating with its own credentials**. No credential is ever sent to a jump host, agent forwarding is not enabled, and no hop's host-key verification is relaxed.
+- Validated at resolve time: no cycles, at most 5 jump hosts, and every referenced alias must exist (redirects apply). Otherwise the result is `error:proxy_jump_invalid` (`stage:validate`, exit 2) and no connection is made.
+- Failures gain an optional `via` field: the alias of the hop that failed (a jump host or the target itself). Classification keeps the existing `dial_*`, `handshake_failed`, `auth_failed`, and `host_key_*` codes, `stage` is unchanged, and a host-key `hint` names that hop's alias. When a hop's host key is untrusted the chain stops there: later hosts are never contacted and never see an authentication attempt.
+- `host-key inspect|accept <target-alias>` examines and records the **target's** host key; every jump host must already be trusted (run `host-key inspect`/`accept` on the jump alias first), otherwise it fails and `via` names the jump alias.
+- The connection pool is keyed by the whole chain; closing or evicting the target also closes the jump connections it owns. Request v1 uses `host.proxy_jump` (an empty string clears it).
 
 ### Publish a reviewed change
 

@@ -661,6 +661,8 @@ var reviewedCommandPolicyBoundaries = map[string]bool{
 	// with the publication lock and owns no refresh policy itself.
 	"runBackgroundSync": true,
 	"runCheck":          true,
+	"runCp":             true,
+	"runCpArgs":         true,
 	"runDoctor":         true,
 	"runExecSpec":       true,
 	"exitRunArgvStream": true,

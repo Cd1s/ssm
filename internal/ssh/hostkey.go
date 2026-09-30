@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -52,6 +53,14 @@ func hostKeyError(kind machinecontract.Kind, message string, cause error) error 
 // InspectHostKey observes the key from a fresh unauthenticated SSH handshake.
 // The callback aborts immediately after key exchange, so no credential is sent.
 func InspectHostKey(c config.Connection) (HostKeyInspection, error) {
+	return InspectHostKeyWithVault(c, nil)
+}
+
+// InspectHostKeyWithVault is InspectHostKey for connections that may use a
+// proxy_jump chain. The key observed is always the target's; every jump host
+// must already be trusted, because the tunnel is opened over fully verified
+// and authenticated jump connections.
+func InspectHostKeyWithVault(c config.Connection, v *config.Vault) (HostKeyInspection, error) {
 	port := c.Port
 	if port == 0 {
 		port = 22
@@ -66,11 +75,11 @@ func InspectHostKey(c config.Connection) (HostKeyInspection, error) {
 		KnownHostsPath: KnownHostsPath(),
 	}
 
-	conn, err := dialConnectDeadline(address)
+	conn, closeObservation, err := openObservationConn(c, v, address)
 	if err != nil {
-		return report, ClassifyError(err, c)
+		return report, err
 	}
-	defer func() { _ = conn.Close() }()
+	defer closeObservation()
 	remote := conn.RemoteAddr()
 
 	var observed gossh.PublicKey
@@ -160,7 +169,13 @@ func inspectKnownHost(path, address string, remote net.Addr, observed gossh.Publ
 // AcceptHostKey re-observes the endpoint and changes known_hosts only when the
 // caller-provided full SHA-256 fingerprint matches exactly.
 func AcceptHostKey(c config.Connection, expectedFingerprint string) (HostKeyInspection, error) {
-	report, err := InspectHostKey(c)
+	return AcceptHostKeyWithVault(c, nil, expectedFingerprint)
+}
+
+// AcceptHostKeyWithVault is AcceptHostKey for connections that may use a
+// proxy_jump chain; only the target's key is ever recorded.
+func AcceptHostKeyWithVault(c config.Connection, v *config.Vault, expectedFingerprint string) (HostKeyInspection, error) {
+	report, err := InspectHostKeyWithVault(c, v)
 	if err != nil {
 		return report, err
 	}
@@ -175,7 +190,7 @@ func AcceptHostKey(c config.Connection, expectedFingerprint string) (HostKeyInsp
 		report.Accepted = true
 		return report, nil
 	}
-	key, err := scanObservedKey(c)
+	key, err := scanObservedKey(c, v)
 	if err != nil {
 		return report, err
 	}
@@ -207,17 +222,17 @@ func AcceptHostKey(c config.Connection, expectedFingerprint string) (HostKeyInsp
 	return report, nil
 }
 
-func scanObservedKey(c config.Connection) (gossh.PublicKey, error) {
+func scanObservedKey(c config.Connection, v *config.Vault) (gossh.PublicKey, error) {
 	port := c.Port
 	if port == 0 {
 		port = 22
 	}
 	address := net.JoinHostPort(c.Host, strconv.Itoa(port))
-	conn, err := dialConnectDeadline(address)
+	conn, closeObservation, err := openObservationConn(c, v, address)
 	if err != nil {
-		return nil, ClassifyError(err, c)
+		return nil, err
 	}
-	defer func() { _ = conn.Close() }()
+	defer closeObservation()
 	var observed gossh.PublicKey
 	stop := errors.New("ssm host key captured")
 	_, _, _, err = gossh.NewClientConn(conn, address, &gossh.ClientConfig{
@@ -385,4 +400,39 @@ func knownHostToken(c config.Connection) string {
 func KnownHostsPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".ssh", "known_hosts")
+}
+
+// openObservationConn returns the connection over which the target's host key
+// is observed without authenticating: a direct TCP connection, or a tunnel
+// through the fully verified jump chain. The returned function releases the
+// connection, its deadline, and every jump connection opened for it.
+func openObservationConn(c config.Connection, v *config.Vault, address string) (net.Conn, func(), error) {
+	if strings.TrimSpace(c.ProxyJump) == "" {
+		conn, err := dialConnectDeadline(address)
+		if err != nil {
+			return nil, nil, ClassifyError(err, c)
+		}
+		return conn, func() { _ = conn.Close() }, nil
+	}
+	chain, err := config.ResolveJumpChain(v, c)
+	if err != nil {
+		return nil, nil, invalidJumpChainError(c, err)
+	}
+	last, closeJumps, err := dialJumpPrefix(chain, v)
+	if err != nil {
+		return nil, nil, err
+	}
+	deadline := time.Now().Add(DialTimeout())
+	conn, err := dialTunnel(last, address, deadline)
+	if err != nil {
+		closeJumps()
+		return nil, nil, classifyHop(err, c, c, true)
+	}
+	// Channels have no deadlines: closing the channel ends a stalled handshake.
+	timer := time.AfterFunc(time.Until(deadline), func() { _ = conn.Close() })
+	return conn, func() {
+		timer.Stop()
+		_ = conn.Close()
+		closeJumps()
+	}, nil
 }

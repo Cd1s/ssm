@@ -329,6 +329,10 @@ type compiledSSHFixtureOptions struct {
 	// download command.
 	HangAfterExec bool
 
+	// AllowForward makes the fixture a jump host: it accepts direct-tcpip
+	// channels and relays them to the requested address (issue #86).
+	AllowForward bool
+
 	dropConnection func()
 }
 
@@ -346,8 +350,12 @@ type compiledSSHFixture struct {
 	signers  map[string]gossh.Signer
 	options  compiledSSHFixtureOptions
 
-	connections atomic.Int64
-	sessions    atomic.Int64
+	connections  atomic.Int64
+	sessions     atomic.Int64
+	authAttempts *atomic.Int64
+
+	forwardsMu sync.Mutex
+	forwards   []string
 
 	commandsMu sync.Mutex
 	commands   []string
@@ -396,8 +404,10 @@ func newCompiledSSHFixture(t *testing.T, options compiledSSHFixtureOptions) *com
 	if ed, ok := signers["ed25519"]; ok {
 		signer = ed
 	}
+	authAttempts := new(atomic.Int64)
 	serverConfig := &gossh.ServerConfig{
 		PasswordCallback: func(_ gossh.ConnMetadata, password []byte) (*gossh.Permissions, error) {
+			authAttempts.Add(1)
 			if string(password) != options.Password {
 				return nil, fmt.Errorf("authentication failed")
 			}
@@ -412,12 +422,13 @@ func newCompiledSSHFixture(t *testing.T, options compiledSSHFixtureOptions) *com
 		t.Fatalf("listen for compiled CLI SSH fixture: %v", err)
 	}
 	fixture := &compiledSSHFixture{
-		listener:  listener,
-		signer:    signer,
-		signers:   signers,
-		options:   options,
-		serveDone: make(chan struct{}),
-		active:    map[net.Conn]struct{}{},
+		listener:     listener,
+		signer:       signer,
+		signers:      signers,
+		options:      options,
+		authAttempts: authAttempts,
+		serveDone:    make(chan struct{}),
+		active:       map[net.Conn]struct{}{},
 	}
 	fixture.options.record = fixture.recordCommand
 	t.Cleanup(func() { fixture.Close(t) })
@@ -442,6 +453,53 @@ func (f *compiledSSHFixture) Connection(alias, password string) config.Connectio
 	host, portText, _ := net.SplitHostPort(f.listener.Addr().String())
 	port, _ := strconv.Atoi(portText)
 	return config.Connection{Name: alias, Host: host, Port: port, User: "fixture", Password: password}
+}
+
+// AuthAttempts counts the password authentication attempts the fixture saw.
+func (f *compiledSSHFixture) AuthAttempts() int64 { return f.authAttempts.Load() }
+
+// Forwards returns the direct-tcpip targets the fixture relayed.
+func (f *compiledSSHFixture) Forwards() []string {
+	f.forwardsMu.Lock()
+	defer f.forwardsMu.Unlock()
+	return append([]string(nil), f.forwards...)
+}
+
+// forward relays one direct-tcpip channel to its requested address.
+func (f *compiledSSHFixture) forward(newChannel gossh.NewChannel) {
+	defer f.connWG.Done()
+	var request struct {
+		Host       string
+		Port       uint32
+		OriginHost string
+		OriginPort uint32
+	}
+	if err := gossh.Unmarshal(newChannel.ExtraData(), &request); err != nil {
+		_ = newChannel.Reject(gossh.ConnectionFailed, "bad direct-tcpip request")
+		return
+	}
+	target := net.JoinHostPort(request.Host, strconv.Itoa(int(request.Port)))
+	upstream, err := net.Dial("tcp", target)
+	if err != nil {
+		_ = newChannel.Reject(gossh.ConnectionFailed, err.Error())
+		return
+	}
+	channel, requests, err := newChannel.Accept()
+	if err != nil {
+		_ = upstream.Close()
+		return
+	}
+	go gossh.DiscardRequests(requests)
+	f.forwardsMu.Lock()
+	f.forwards = append(f.forwards, target)
+	f.forwardsMu.Unlock()
+	var once sync.Once
+	closeBoth := func() { _ = channel.Close(); _ = upstream.Close() }
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(upstream, channel); once.Do(closeBoth); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(channel, upstream); once.Do(closeBoth); done <- struct{}{} }()
+	<-done
+	<-done
 }
 
 func (f *compiledSSHFixture) Address() string {
@@ -533,6 +591,11 @@ func (f *compiledSSHFixture) serveConnection(raw net.Conn, serverConfig *gossh.S
 		close(requestsDone)
 	}()
 	for newChannel := range channels {
+		if newChannel.ChannelType() == "direct-tcpip" && f.options.AllowForward {
+			f.connWG.Add(1)
+			go f.forward(newChannel)
+			continue
+		}
 		if newChannel.ChannelType() != "session" {
 			_ = newChannel.Reject(gossh.UnknownChannelType, "session only")
 			continue
@@ -661,14 +724,14 @@ func executeCompiledSSHCommand(stdinStdout io.ReadWriter, stderr io.Writer, comm
 		if len(paths) < 2 {
 			return compiledSSHFixtureCommandError(stderr)
 		}
-		return receiveCompiledSSHFile(stdinStdout, stderr, paths[1])
+		return receiveCompiledSSHFile(stdinStdout, stderr, paths[1], command)
 	case strings.Contains(command, "cat > \"$tmp\"") && strings.Contains(command, "printf 'SSM_TRANSFER %s %s\\n'"):
 		applyCompiledSSHMkdir(command)
 		paths := compiledShellQuotedWords(command[strings.LastIndex(command, "mv -f -- "):])
 		if len(paths) < 1 {
 			return compiledSSHFixtureCommandError(stderr)
 		}
-		return receiveCompiledSSHFile(stdinStdout, stderr, paths[0])
+		return receiveCompiledSSHFile(stdinStdout, stderr, paths[0], command)
 	case strings.Contains(command, "tar -C ") && strings.Contains(command, " -xf -"):
 		applyCompiledSSHMkdir(command)
 		path, ok := compiledShellQuotedWordAfter(command, "tar -C ")
@@ -694,6 +757,17 @@ func executeCompiledSSHCommand(stdinStdout io.ReadWriter, stderr io.Writer, comm
 		}
 		sum := sha256.Sum256(data)
 		_, _ = fmt.Fprintf(stdinStdout, "%x\n", sum)
+		return 0
+	case strings.HasPrefix(command, "stat -c %a -- "):
+		path, ok := compiledShellQuotedWordAfter(command, "stat -c %a -- ")
+		if !ok {
+			return compiledSSHFixtureCommandError(stderr)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return 1
+		}
+		_, _ = fmt.Fprintf(stdinStdout, "%o\n", info.Mode().Perm())
 		return 0
 	case strings.HasPrefix(command, "mkdir -p ") || strings.HasPrefix(command, "(umask "):
 		applyCompiledSSHMkdir(command)
@@ -747,7 +821,7 @@ func executeCompiledSSHCommand(stdinStdout io.ReadWriter, stderr io.Writer, comm
 	return compiledSSHFixtureCommandError(stderr)
 }
 
-func receiveCompiledSSHFile(source io.ReadWriter, stderr io.Writer, path string) uint32 {
+func receiveCompiledSSHFile(source io.ReadWriter, stderr io.Writer, path string, command string) uint32 {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		_, _ = io.Copy(io.Discard, source)
 		_, _ = io.WriteString(stderr, "permission denied: compiled fixture remote parent unavailable\n")
@@ -768,7 +842,18 @@ func receiveCompiledSSHFile(source io.ReadWriter, stderr io.Writer, path string)
 		_, _ = io.WriteString(stderr, "compiled fixture remote write failed\n")
 		return 1
 	}
-	if err := os.Chmod(tempPath, 0o600); err != nil {
+	if want := compiledExpectedSHA(command); want != "" && want != fmt.Sprintf("%x", hash.Sum(nil)) {
+		// The upload script refuses to publish when its digest check fails.
+		_, _ = io.WriteString(source, "SSM_INTEGRITY_MISMATCH\n")
+		return 65
+	}
+	mode := os.FileMode(0o600)
+	if match := compiledChmodPattern.FindStringSubmatch(command); match != nil {
+		if parsed, err := strconv.ParseUint(match[1], 8, 32); err == nil {
+			mode = os.FileMode(parsed).Perm()
+		}
+	}
+	if err := os.Chmod(tempPath, mode); err != nil { //nolint:gosec // emulates the remote chmod of the upload script beneath a test-owned root
 		return 1
 	}
 	if err := os.Rename(tempPath, path); err != nil {
@@ -1096,6 +1181,20 @@ func applyCompiledSSHMkdir(command string) {
 			_ = os.Chmod(missing[index], created) //nolint:gosec // defeats the test process umask to record the requested mode
 		}
 	}
+}
+
+var (
+	compiledExpectedSHAPattern = regexp.MustCompile(`\[ "\$actual_sha" = '([0-9a-f]{64})' \]`)
+	compiledChmodPattern       = regexp.MustCompile(`chmod ([0-7]{3,4}) "\$tmp"`)
+)
+
+// compiledExpectedSHA returns the digest the upload script verifies before it
+// renames, or "" when the script has no digest check.
+func compiledExpectedSHA(command string) string {
+	if match := compiledExpectedSHAPattern.FindStringSubmatch(command); match != nil {
+		return match[1]
+	}
+	return ""
 }
 
 func compiledRemoteHasDigestTool(options compiledSSHFixtureOptions) bool {

@@ -189,6 +189,20 @@ request v1 用 `host.transfer` 设置主机字段，`put`/`get` 请求可带顶�
 - `get`：先 `Stat` 判断类型，流式写入本地 staging 再原子发布（`atomic:true`）。SFTP 没有远端摘要命令，`--sha256` 对收到的字节流计算摘要，并核对远端报告的大小和落盘文件，`remote_sha256` 即该流摘要；不加 `--sha256` 时 `integrity:not_checked`。
 - `put`：写入同目录的私有临时文件后 rename。服务器支持 `posix-rename@openssh.com` 时原子替换（`atomic:true`）；不支持时先把旧目标移到一旁再 rename，失败会还原，但结果报 `atomic:false`。`--sha256` 通过 SFTP 读回临时文件在本地比对（`integrity:sha256_verified`），服务器不允许读回时返回 `integrity_tool_unavailable`（`stage:capability`，与 shell 路径一致，`integrity:not_available`）且不发布；不加时只核对大小（`size_verified`）。`--dir-mode` 对新建父目录同样生效。目标已是目录时报错且不动它。超时或连接中断的 SFTP `put` 可能遗留 `<目标>.ssm-upload.<hex>` 临时文件：会先尝试用新的 SFTP 会话清理，清理不了时失败信息会写出该临时文件的路径。
 
+#### 主机间复制（`cp`）
+
+`sshctl cp <别名A>:<路径> <别名B>:<路径>` 把 A 上的一个普通文件复制到 B，数据经本机流式中转，**不落本机磁盘**：
+
+```bash
+sshctl cp web1:/srv/app.tgz web2:/srv/app.tgz --timeout 5m --json
+```
+
+- 读取沿用 `get` 的读路径（`cat` over SSH），写入沿用 `put` 的“私有临时文件 + 校验 + rename”，所以 B 上不会出现半成品；失败或摘要不一致时 B 的旧目标保持原样。
+- 本机对流过的字节计算 SHA-256，并与 A 端源文件摘要、B 端写后（rename 前）摘要三方比对，三者一致才成功。结果 JSON 含 `direction:"cp"`、`route:"local_relay"`、`source`/`destination`（`alias`、`path`）、`bytes`、`source_sha256`、`local_sha256`、`destination_sha256`、`atomic:true`、`integrity:"sha256_verified"`；失败结果带常规的 `error`/`stage`/`exit`/`hint`（摘要不一致为 `integrity_failed`，`integrity:"mismatch"`）。
+- 两端都需要 POSIX shell 和 `sha256sum`/`shasum`/`openssl` 之一（否则 `integrity_tool_unavailable`）；只支持单个普通文件，目录返回 `unsupported_transfer_option`（先用 `get`/`put`，或在源端打包）；`transfer: sftp` 的主机不支持 `cp`。A 有 `stat` 时保留源文件权限位，否则用 `0600`。
+- `--json` 输出机器结果；`--timeout <时长>` 限制整个复制（摘要探测 + 传输），超时返回 `transfer_timeout`。任一端都可以本身经 `proxy_jump` 连接。
+- **没有实现 `--direct`（A 直接推到 B）**，这是有意为之：它要么要把 B 的凭据放到 A 上，要么要把本机 agent 转发给 A，两者都会让 A 以及能控制 A 的人获得访问 B 的能力，违背“凭据只在本机”。是否提供、以何种显式确认提供，需要用户单独决定；传入 `--direct` 会明确报错。
+
 ### 添加或修改主机
 
 当你要新增一台主机，或只改现有 alias 的某个字段时。先用 `--verify` 检查候选配置，验证成功后才保存：
@@ -203,7 +217,25 @@ sshctl host update my-server --port 2222 --verify --json
 
 `--transfer auto|shell|sftp`（request v1 的 `host.transfer`）设置该主机 `put`/`get` 使用的协议，默认 `auto`（不写入 vault）；见[上传或下载文件](#上传或下载文件)。
 
+`--proxy-jump <别名>`（request v1 的 `host.proxy_jump`，空值清除）设置该主机经哪个别名跳转；见[经跳板主机连接](#经跳板主机连接proxyjump)。
+
 私钥和密码只能通过 `--key-file`、`--password-file` 或已保存的 `--key` 名称引用，不能作为 inline 值。变更默认只保存在本机 pending ledger；成功结果会返回一个待审查的 `transaction_id`。幂等 no-op 会返回 `changed:false`、`action:"unchanged"` 并省略 ID；do not publish 这个 no-op。
+
+### 经跳板主机连接（ProxyJump）
+
+把一台主机设为“经另一个别名跳转”：
+
+```bash
+sshctl host update inner --proxy-jump bastion --offline --json     # 值是另一个别名；链式可多级
+sshctl host update inner --proxy-jump "" --offline --json          # 空值清除
+sshctl run inner --argv hostname                                   # run/map/put/get/check/doctor/cp/host-key 都可用
+```
+
+- 逐跳建连：第一跳走普通拨号（host key 校验、认证、握手期限、keepalive）；之后每一跳通过上一跳的 `direct-tcpip` 通道做 SSH 握手，**每一跳都用本机 `known_hosts` 校验自己的 host key，并用自己的凭据认证**。任何凭据都不会发给跳板机，也不启用 agent forwarding；不放宽任何一跳的 host key 校验。
+- 解析时校验：链上不许有环，最多 5 个跳板机，被引用的别名必须存在（redirect 在解析时生效）；否则返回 `error:proxy_jump_invalid`（`stage:validate`，exit 2），不会发起任何连接。
+- 失败结果新增可选字段 `via`：出错的那一跳的别名（跳板机或目标本身），分类沿用现有的 `dial_*`、`handshake_failed`、`auth_failed`、`host_key_*`，`stage` 不变；host key 的 `hint` 指向该跳的别名。某一跳的 host key 未受信时，链在该跳终止，后面的主机不会被联系、也不会收到任何认证尝试。
+- `host-key inspect|accept <目标别名>` 检查并记录的是**目标**的 host key；跳板机必须已经单独受信（先对跳板别名 `host-key inspect`/`accept`），否则失败并在 `via` 里指明跳板别名。
+- 连接池按整条链缓存；目标连接关闭或被淘汰时，它拥有的跳板机连接一并关闭。request v1 用 `host.proxy_jump`（空字符串清除）。
 
 ### 发布已审查的变更
 

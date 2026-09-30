@@ -33,6 +33,10 @@ type Connection struct {
 	// Transfer selects the put/get protocol: "" or "auto" and "shell" use the
 	// POSIX shell path, "sftp" uses the sftp subsystem. Additive vault field.
 	Transfer string `json:"transfer,omitempty"`
+	// ProxyJump names another connection alias this host is reached through
+	// (a direct-tcpip tunnel opened over that host's SSH connection). Chains
+	// are allowed. Additive vault field, see ResolveJumpChain.
+	ProxyJump string `json:"proxy_jump,omitempty"`
 }
 
 // Transfer modes stored in Connection.Transfer.

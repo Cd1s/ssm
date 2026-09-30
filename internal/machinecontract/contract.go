@@ -213,6 +213,12 @@ const (
 	// TransferSFTPReadbackUnavailable: put --sha256 could not read the uploaded
 	// file back over SFTP.
 	TransferSFTPReadbackUnavailable Kind = "transfer_sftp_readback_unavailable"
+	// InvalidProxyJump: the proxy_jump chain of a host cannot be resolved
+	// (missing alias, cycle, or more than five jump hosts).
+	InvalidProxyJump Kind = "invalid_proxy_jump"
+	// CopyArgumentsInvalid and CopyDirectoryUnsupported belong to sshctl cp.
+	CopyArgumentsInvalid     Kind = "copy_arguments_invalid"
+	CopyDirectoryUnsupported Kind = "copy_directory_unsupported"
 )
 
 const ExitConnectionFailed = 255
@@ -879,6 +885,18 @@ var failurePolicies = map[Kind]failurePolicy{
 		Code: CodeInvalidArgs, Stage: "validate",
 		Hint: "--dir-mode must be an octal permission such as 0755 (at most 0777) that includes owner write and execute (0300)", Exit: 2,
 	},
+	InvalidProxyJump: {
+		Code: "proxy_jump_invalid", Stage: "validate",
+		Hint: "fix the proxy_jump chain: every jump alias must exist, chains must not loop, and at most 5 jump hosts are allowed; inspect with sshctl host show <alias> and change it with sshctl host update <alias> --proxy-jump <alias> (an empty value clears it)", Exit: 2,
+	},
+	CopyArgumentsInvalid: {
+		Code: CodeInvalidArgs, Stage: "validate",
+		Hint: "use sshctl cp <alias-a>:<path> <alias-b>:<path> [--timeout <duration>] [--json]", Exit: 2,
+	},
+	CopyDirectoryUnsupported: {
+		Code: "unsupported_transfer_option", Stage: "validate",
+		Hint: "cp copies single regular files only; copy a directory with sshctl get and sshctl put, or archive it on the source host first", Exit: 1,
+	},
 	IntegrityToolUnavailable: {
 		Code: "integrity_tool_unavailable", Stage: "capability",
 		Hint: "the remote host has none of sha256sum, shasum, or openssl; retry without --sha256 or install one of them", Exit: 1,
@@ -941,6 +959,10 @@ type Failure struct {
 	Alias      string   `json:"alias,omitempty"`
 	Exit       int      `json:"exit"`
 	Candidates []string `json:"candidates,omitempty"`
+	// Via is the alias of the ProxyJump hop that failed (a jump host or the
+	// target itself). It is set only for connections reached through a jump
+	// chain and is omitted otherwise.
+	Via string `json:"via,omitempty"`
 
 	Address           string `json:"-"`
 	Script            string `json:"-"`
@@ -1110,10 +1132,11 @@ type ResultMetadata struct {
 	Stage   string `json:"stage,omitempty"`
 	Cause   string `json:"cause,omitempty"`
 	Outcome string `json:"outcome,omitempty"`
+	Via     string `json:"via,omitempty"`
 }
 
 func (f Failure) ResultMetadata() ResultMetadata {
-	return ResultMetadata{Error: f.Error, Message: f.Message, Hint: f.Hint, Stage: f.Stage, Cause: f.SyncCause, Outcome: f.Outcome}
+	return ResultMetadata{Error: f.Error, Message: f.Message, Hint: f.Hint, Stage: f.Stage, Cause: f.SyncCause, Outcome: f.Outcome, Via: f.Via}
 }
 
 // Metadata is embedded by typed command failures that serialize exit together
@@ -1126,10 +1149,11 @@ type Metadata struct {
 	Stage   string `json:"stage,omitempty"`
 	Cause   string `json:"cause,omitempty"`
 	Outcome string `json:"outcome,omitempty"`
+	Via     string `json:"via,omitempty"`
 }
 
 func (f Failure) Metadata() Metadata {
-	return Metadata{Error: f.Error, Message: f.Message, Hint: f.Hint, Exit: f.Exit, Stage: f.Stage, Cause: f.SyncCause, Outcome: f.Outcome}
+	return Metadata{Error: f.Error, Message: f.Message, Hint: f.Hint, Exit: f.Exit, Stage: f.Stage, Cause: f.SyncCause, Outcome: f.Outcome, Via: f.Via}
 }
 
 // TransferMetadata preserves the pre-BC-7 transfer failure field order and
@@ -1140,10 +1164,11 @@ type TransferMetadata struct {
 	Hint    string `json:"hint"`
 	Exit    int    `json:"exit"`
 	Stage   string `json:"stage"`
+	Via     string `json:"via,omitempty"`
 }
 
 func (f Failure) TransferMetadata() TransferMetadata {
-	return TransferMetadata{Error: f.Error, Message: f.Message, Hint: f.Hint, Exit: f.Exit, Stage: f.Stage}
+	return TransferMetadata{Error: f.Error, Message: f.Message, Hint: f.Hint, Exit: f.Exit, Stage: f.Stage, Via: f.Via}
 }
 
 // TransferOutcome is the shared machine representation for put and get.
@@ -1170,13 +1195,58 @@ type TransferOutcome struct {
 	Atomic        *bool  `json:"atomic,omitempty"`
 	Resume        string `json:"resume,omitempty"`
 	BytesReused   int64  `json:"bytes_reused,omitempty"`
+	Via           string `json:"via,omitempty"`
 }
 
 func TransferFailureOutcome(f Failure, outcome TransferOutcome) TransferOutcome {
 	outcome.OK = false
+	outcome.Via = f.Via
 	outcome.Error, outcome.Message, outcome.Hint, outcome.Exit = f.Error, f.Message, f.Hint, f.Exit
 	outcome.Stage = f.Stage
 	outcome.Outcome = f.Outcome
+	return outcome
+}
+
+// CopyEndpoint names one side of sshctl cp.
+type CopyEndpoint struct {
+	Alias string `json:"alias"`
+	Path  string `json:"path"`
+}
+
+// CopyOutcome is the machine document of sshctl cp. The three digests are the
+// source file's digest reported by the source host, the digest of the bytes
+// that passed through the local machine, and the digest the destination host
+// computed over the temporary file before publishing it.
+type CopyOutcome struct {
+	OK                bool         `json:"ok"`
+	Error             string       `json:"error,omitempty"`
+	Message           string       `json:"message,omitempty"`
+	Hint              string       `json:"hint,omitempty"`
+	Exit              int          `json:"exit,omitempty"`
+	Action            string       `json:"action,omitempty"`
+	Direction         string       `json:"direction"`
+	Kind              string       `json:"kind"`
+	Route             string       `json:"route"`
+	Source            CopyEndpoint `json:"source"`
+	Destination       CopyEndpoint `json:"destination"`
+	Stage             string       `json:"stage"`
+	Outcome           string       `json:"outcome,omitempty"`
+	Via               string       `json:"via,omitempty"`
+	Bytes             *int64       `json:"bytes,omitempty"`
+	Integrity         string       `json:"integrity,omitempty"`
+	SourceSHA256      string       `json:"source_sha256,omitempty"`
+	LocalSHA256       string       `json:"local_sha256,omitempty"`
+	DestinationSHA256 string       `json:"destination_sha256,omitempty"`
+	Atomic            *bool        `json:"atomic,omitempty"`
+}
+
+// CopyFailureOutcome fills the failure tuple of a cp document.
+func CopyFailureOutcome(f Failure, outcome CopyOutcome) CopyOutcome {
+	outcome.OK = false
+	outcome.Error, outcome.Message, outcome.Hint, outcome.Exit = f.Error, f.Message, f.Hint, f.Exit
+	outcome.Stage = f.Stage
+	outcome.Outcome = f.Outcome
+	outcome.Via = f.Via
 	return outcome
 }
 
@@ -1371,7 +1441,7 @@ func ClassifySSH(err error, context SSHContext) Failure {
 // caller's generic stage (dial, session) must not overwrite it. handshake and
 // remote_execution tell an agent whether the command was ever sent.
 func policyOwnsStage(code string) bool {
-	return code == CodeHandshakeFailed || code == CodeConnectionLost || code == CodeExecTimeout
+	return code == CodeHandshakeFailed || code == CodeConnectionLost || code == CodeExecTimeout || code == "proxy_jump_invalid"
 }
 
 // isHandshakeError recognizes a failure after TCP connected but before the SSH
@@ -1507,6 +1577,9 @@ func ClassifyTransferOperation(err error, context SSHContext, carried Failure) F
 		carried.Exit = ExitForError(err)
 		carried.processExit = carried.Exit
 		carried.humanProjection = &human
+		if carried.Via == "" {
+			carried.Via = human.Via
+		}
 		return carried
 	}
 	failure := human
@@ -1548,6 +1621,9 @@ func ClassifyDownload(err error, context SSHContext) Failure {
 		carried.Alias = RedactString(context.Alias)
 		carried.humanAlias = RedactString(context.ResolvedAlias)
 		carried.humanProjection = &human
+		if carried.Via == "" {
+			carried.Via = human.Via
+		}
 		return carried
 	}
 	if failure.Stage == "" {

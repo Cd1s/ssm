@@ -79,6 +79,8 @@ not prove SSH transport failure.
 - Regular-file upload: use typed `put`; add `resume:"v1"` only when requested and `sha256:true` when integrity verification is required. Auto-created parent directories default to 0755; use `dir_mode` (or `--dir-mode`) to override.
 - Download: v1 uses direct `sshctl get`; v2 may use direct get or request schema v1 `op:"get"` (`sha256`, `timeout`, `transfer` allowed; no `resume`). Direct get accepts `--json`, `--timeout`, `--sha256`, `--sftp` in any position.
 - Target without a POSIX shell (Windows OpenSSH, appliances, SFTP-only accounts): when `put`/`get` return `remote_shell_unsupported`, retry the single file with `--sftp` (or `transfer:"sftp"` in the request; request `shell`/`sftp` override the host setting for that operation, `auto` or omitted keeps it), or set the host once with `host update <alias> --transfer sftp` (`host.transfer` in a host request). Never switch protocol silently; never send directories or `resume` over SFTP.
+- Host behind a bastion: set `host update <alias> --proxy-jump <jump-alias>` (`host.proxy_jump` in a host request; empty clears; chains up to 5 jump hosts, no cycles). Everything (`run`, `map`, `put`, `get`, `cp`, `check`, `doctor`, `host-key`) then works on the target alias. Each hop verifies its own host key locally and authenticates with its own credentials; nothing is forwarded. A failure names the failing hop in `via` (jump alias or the target itself): fix or trust that alias, not the target. `host-key inspect|accept <target>` handles the target's key only; trust every jump alias first. `proxy_jump_invalid` (exit 2, `stage:validate`) means a missing alias, a cycle, or more than 5 jump hosts and nothing was dialed.
+- Copy a file between two hosts: `sshctl cp <alias-a>:<path> <alias-b>:<path> [--timeout 5m] [--json]` streams one regular file through this machine (no local disk). It publishes on B only after the source digest, the locally computed digest, and B's digest all agree and leaves no partial file on B; the JSON result carries `source_sha256`, `local_sha256`, `destination_sha256`, `bytes`, `route:"local_relay"`. Both hosts need a POSIX shell plus `sha256sum`/`shasum`/`openssl`; directories return `unsupported_transfer_option`. `--direct` (A pushing to B) is intentionally unavailable: it would put B's credentials on A or forward the local agent to A, so anyone controlling A could reach B; adding it needs an explicit user decision, so never work around it with a hand-made `ssh` from A.
 - Fleet work: use `sshctl map` with explicit argv or scripts and inspect every result.
 - Large or long-running output (byte pipes, logs, archives): use human-mode `sshctl run <exact-alias> --argv ...`, which streams without a size limit and exits with the remote exit status; `--json` holds the whole output in memory. Streamed stdout is byte-exact; streamed stderr masks explicit `--secret` values as `***`; a local SIGINT/SIGTERM is forwarded to the remote command and exits with `error:interrupted`.
 - If a field or flag is uncertain, run the relevant command help or read the selected schema. Never guess.
@@ -197,6 +199,22 @@ A destination directory is rejected untouched. A timed-out SFTP put may leave a
 In the default shell mode `get` returns `remote_shell_unsupported` (stage
 `discovery`) when the path probe output is unparseable, the shell errors, or exec
 is refused; `put` returns it only when exec is refused.
+
+`cp` (host to host, issue #86) reads the source with the `get` path and writes
+the destination with the `put` temporary-file-plus-rename script, relaying the
+bytes in memory through this machine. The destination refuses to publish unless
+its digest of the temporary file equals the source host's digest, and the copy
+succeeds only when the source digest, the relayed bytes' digest, and the
+destination digest are equal (`integrity:"sha256_verified"`); a mismatch is
+`integrity_failed`/`integrity:"mismatch"` and leaves the previous destination
+intact. A missing SHA-256 tool on either host is `integrity_tool_unavailable`
+(`stage:capability`). Only single regular files and shell-mode hosts are
+supported; the source mode is kept when it has `stat`, otherwise `0600`.
+
+ProxyJump (`proxy_jump`, issue #86): the failure field `via` is additive and
+present only for jumped connections; it never replaces `error`, `stage`, or
+`exit`. Handshake and dial deadlines of the connect timeout apply to every hop,
+and a stalled tunnelled handshake is `handshake_failed` with `via` set.
 
 Resume is regular-file-only and must be explicitly enabled with `--resume=v1`.
 Incompatible, corrupt, or ambiguous state returns a classified partial-state

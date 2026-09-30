@@ -52,6 +52,7 @@ type agentHostRequest struct {
 	User         *string `json:"user,omitempty"`
 	Group        *string `json:"group,omitempty"`
 	Transfer     *string `json:"transfer,omitempty"`
+	ProxyJump    *string `json:"proxy_jump,omitempty"`
 	SavedKey     *string `json:"saved_key,omitempty"`
 	KeyFile      *string `json:"key_file,omitempty"`
 	KeyName      *string `json:"key_name,omitempty"`
@@ -411,6 +412,7 @@ func requestHostArgs(req agentRequest) ([]string, error) {
 	appendString("--user", host.User)
 	appendString("--group", host.Group)
 	appendString("--transfer", host.Transfer)
+	appendString("--proxy-jump", host.ProxyJump)
 	appendString("--key", host.SavedKey)
 	appendString("--key-file", host.KeyFile)
 	appendString("--key-name", host.KeyName)

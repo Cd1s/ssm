@@ -72,9 +72,9 @@ func runHostKeyCommand(args []string) {
 
 	var report ssh.HostKeyInspection
 	if opts.action == "inspect" {
-		report, err = ssh.InspectHostKey(c)
+		report, err = ssh.InspectHostKeyWithVault(c, v)
 	} else {
-		report, err = ssh.AcceptHostKey(c, opts.fingerprint)
+		report, err = ssh.AcceptHostKeyWithVault(c, v, opts.fingerprint)
 	}
 	report.Alias = opts.alias
 	if report.ResolvedAlias == opts.alias {

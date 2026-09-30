@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -114,28 +113,35 @@ func dialSSHOpts(c config.Connection, v *config.Vault, noReuse bool) (*gossh.Cli
 }
 
 func dialSSHFresh(c config.Connection, v *config.Vault) (*gossh.Client, error) {
+	if strings.TrimSpace(c.ProxyJump) != "" {
+		chain, err := config.ResolveJumpChain(v, c)
+		if err != nil {
+			return nil, invalidJumpChainError(c, err)
+		}
+		return dialChain(chain, v)
+	}
+	client, err := dialDirectHop(c, v)
+	if err != nil {
+		return nil, classifyHop(err, c, c, false)
+	}
+	startKeepalive(client)
+	return client, nil
+}
+
+// dialDirectHop dials c over TCP: host-key verification, authentication and
+// the handshake deadline apply. Errors are returned unclassified.
+func dialDirectHop(c config.Connection, v *config.Vault) (*gossh.Client, error) {
 	auth, err := buildAuth(c, v)
 	if err != nil {
-		return nil, ClassifyError(err, c)
+		return nil, err
 	}
-
-	port := c.Port
-	if port == 0 {
-		port = 22
-	}
-
-	address := net.JoinHostPort(c.Host, strconv.Itoa(port))
-	client, err := dialSSHClient(address, &gossh.ClientConfig{
+	address := hostPortOf(c)
+	return dialSSHClient(address, &gossh.ClientConfig{
 		User:              c.User,
 		Auth:              auth,
 		HostKeyCallback:   buildHostKeyCallback(),
 		HostKeyAlgorithms: hostKeyAlgorithmsFor(KnownHostsPath(), address),
 	})
-	if err != nil {
-		return nil, ClassifyError(err, c)
-	}
-	startKeepalive(client)
-	return client, nil
 }
 
 // dialConnectDeadline opens the TCP connection and arms one deadline covering
@@ -178,7 +184,7 @@ func dialSSHClient(address string, config *gossh.ClientConfig) (*gossh.Client, e
 }
 
 func getPooledClient(c config.Connection, v *config.Vault) (*gossh.Client, error) {
-	key := poolKey(c)
+	key := poolKeyChain(c, v)
 	entry := lockPoolEntry(key)
 	defer entry.mu.Unlock()
 
@@ -224,7 +230,7 @@ func acquireSSHSession(c config.Connection, v *config.Vault, noReuse bool) (*gos
 		return client, session, "", nil
 	}
 
-	entry := lockPoolEntry(poolKey(c))
+	entry := lockPoolEntry(poolKeyChain(c, v))
 	defer entry.mu.Unlock()
 
 	if entry.client != nil {
