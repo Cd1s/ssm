@@ -21,7 +21,9 @@ import (
 
 // CopyOptions controls a host-to-host copy.
 type CopyOptions struct {
-	// Timeout bounds the whole copy (digest probe and stream) when positive.
+	// Timeout, when positive, bounds the transfer (digest probe and stream)
+	// after both hosts are connected; connecting is bounded by the connect
+	// timeout.
 	Timeout time.Duration
 }
 

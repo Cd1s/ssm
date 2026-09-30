@@ -267,7 +267,7 @@ func TestCompiledCopyRefusesTheSameFile(t *testing.T) {
 	env := newCPEnv(t, compiledSSHFixtureOptions{}, compiledSSHFixtureOptions{})
 	source := filepath.Join(env.aDir, "a.bin")
 	issue80WriteFile(t, source, []byte("payload"))
-	for _, destination := range []string{source, filepath.Join(env.aDir, ".", "a.bin")} {
+	for _, destination := range []string{source, env.aDir + "/./a.bin"} {
 		result := env.cp(t, "--json", "cp", "src:"+source, "src:"+destination)
 		issue80RequireFailure(t, result, 2, "invalid_arguments", "validate")
 	}
