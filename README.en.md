@@ -32,7 +32,7 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 sshctl --json --version
 ```
 
-The version field should be `2.0.1`. If `sshctl` is not found, reopen the terminal or check that `/usr/local/bin` is on `PATH`.
+The version field should be `2.0.2`. If `sshctl` is not found, reopen the terminal or check that `/usr/local/bin` is on `PATH`.
 
 ### 3. Check status
 
@@ -263,6 +263,18 @@ PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
 Read the [official Agent Skill](skills/agent-ssm/SKILL.md) and [version compatibility matrix](skills/agent-ssm/references/version-compatibility.md) first. They define the v1.4.3/v1.4.4 compatibility branch and the v2 branch shared by supported v2.0.0 and current v2.0.2, including the schema and fields each branch may use.
 
 ### Structured output and requests
+
+### Environment variables and connection reuse
+
+`SSM_TIMEOUT` is the compatibility connection-timeout alias; `SSM_DIAL_TIMEOUT`
+and `SSM_CONNECT_TIMEOUT` also bound only TCP connect plus the SSH handshake,
+not remote command execution. `SSM_REUSE=0|off|false|no` disables the
+connection pool. Reuse is always process-local (`status` reports
+`reuse_scope=process`); connections are never reused across processes.
+`SSM_FORWARD_STDIN=1|0` controls default stdin forwarding,
+`SSM_RUN_OUTPUT=buffered` restores buffered output, `SSM_CONFIG_DIR` selects
+the configuration directory, and `SSM_MASTER_PASS_FILE` names a protected
+password file.
 
 Normal `--json` commands emit one JSON value; explicit `run --stream` emits line-oriented NDJSON. Agents should classify `ok`, `error`, `stage`, `exit`, and `hint`; a remote program can itself exit 255, so the exit code alone cannot identify an SSH transport failure.
 

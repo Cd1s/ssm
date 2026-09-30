@@ -32,7 +32,7 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 sshctl --json --version
 ```
 
-应看到版本字段为 `2.0.1`。如果 `sshctl` 不存在，重新打开终端或检查 `/usr/local/bin` 是否在 `PATH` 中。
+应看到版本字段为 `2.0.2`。如果 `sshctl` 不存在，重新打开终端或检查 `/usr/local/bin` 是否在 `PATH` 中。
 
 ### 3. 查看状态
 
@@ -263,6 +263,15 @@ PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
 先读[官方 Agent Skill](skills/agent-ssm/SKILL.md)和[版本兼容矩阵](skills/agent-ssm/references/version-compatibility.md)。它们定义了 v1.4.3/v1.4.4 兼容分支，以及受支持的 v2.0.0 与当前 v2.0.2 共用的 v2 兼容分支各自可以使用的 schema 和字段。
 
 ### 结构化输出与 request
+
+### 环境变量与连接复用
+
+`SSM_TIMEOUT` 是兼容的连接超时别名；`SSM_DIAL_TIMEOUT` 和
+`SSM_CONNECT_TIMEOUT` 也只限制 TCP 建连与 SSH 握手，不限制远端命令执行。
+`SSM_REUSE=0|off|false|no` 关闭连接池，连接复用范围始终是单个进程
+（`status` 显示 `reuse_scope=process`）；跨进程不会复用连接。`SSM_FORWARD_STDIN=1|0`
+控制 stdin 默认转发，`SSM_RUN_OUTPUT=buffered` 恢复缓冲输出，
+`SSM_CONFIG_DIR` 指定配置目录，`SSM_MASTER_PASS_FILE` 指向受保护的密码文件。
 
 普通 `--json` 调用输出一个 JSON 值；显式 `run --stream` 输出逐行 NDJSON。Agent 应按 `ok`、`error`、`stage`、`exit` 和 `hint` 分类；远端程序本身也可能退出 255，不能只看退出码判断 SSH 是否失败。
 

@@ -71,6 +71,10 @@ func reuseEnabled() bool {
 	}
 }
 
+// ReuseEnabled reports the process-local connection-pool setting used by the
+// CLI status contract. It accepts the same false spellings as the pool.
+func ReuseEnabled() bool { return reuseEnabled() }
+
 func poolKey(c config.Connection) string {
 	port := c.Port
 	if port == 0 {
