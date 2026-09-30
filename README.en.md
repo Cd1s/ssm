@@ -200,7 +200,7 @@ sshctl cp web1:/srv/app.tgz web2:/srv/app.tgz --timeout 5m --json
 - A is read with the `get` path (`cat` over SSH) and B is written with the `put` path (private temporary file, verified, then renamed), so B never holds a partial file; on failure or a digest mismatch B's previous destination is left untouched.
 - This machine hashes the bytes that pass through and compares three SHA-256 values: the source digest reported by A, the local one, and B's digest of its temporary file before the rename. Only if all three agree does the copy succeed. The JSON result has `direction:"cp"`, `route:"local_relay"`, `source`/`destination` (`alias`, `path`), `bytes`, `source_sha256`, `local_sha256`, `destination_sha256`, `atomic:true`, and `integrity:"sha256_verified"`; failures carry the usual `error`/`stage`/`exit`/`hint` (a digest mismatch is `integrity_failed` with `integrity:"mismatch"`).
 - Both hosts need a POSIX shell and one of `sha256sum`/`shasum`/`openssl` (otherwise `integrity_tool_unavailable`). Only single regular files are supported; a directory returns `unsupported_transfer_option` (use `get`/`put`, or archive it on the source first); hosts with `transfer: sftp` are not supported. The source's permission bits are kept when A has `stat`, otherwise `0600`.
-- `--json` prints the machine result; `--timeout <duration>` bounds the whole copy (digest probe plus transfer) and returns `transfer_timeout`. Either host may itself be reached through `proxy_jump`.
+- `--json` prints the machine result; `--timeout <duration>` bounds the digest probe and the transfer after connecting (connection setup follows the connect timeout) and returns `transfer_timeout`. A source and destination that resolve to the same alias and path are refused (`invalid_arguments`). Either host may itself be reached through `proxy_jump`.
 - **`--direct` (A pushes straight to B) is deliberately not implemented.** It would need B's credentials on A or forwarding this machine's agent to A, and either lets A, and anyone who controls A, reach B, which breaks the "credentials stay on this machine" rule. Whether to offer it, and behind which explicit confirmation, needs a separate decision; passing `--direct` fails with an explicit error.
 
 ### Add or change a host
@@ -235,6 +235,8 @@ sshctl run inner --argv hostname                                   # run/map/put
 - Validated at resolve time: no cycles, at most 5 jump hosts, and every referenced alias must exist (redirects apply). Otherwise the result is `error:proxy_jump_invalid` (`stage:validate`, exit 2) and no connection is made.
 - Failures gain an optional `via` field: the alias of the hop that failed (a jump host or the target itself). Classification keeps the existing `dial_*`, `handshake_failed`, `auth_failed`, and `host_key_*` codes, `stage` is unchanged, and a host-key `hint` names that hop's alias. When a hop's host key is untrusted the chain stops there: later hosts are never contacted and never see an authentication attempt.
 - `host-key inspect|accept <target-alias>` examines and records the **target's** host key; every jump host must already be trusted (run `host-key inspect`/`accept` on the jump alias first), otherwise it fails and `via` names the jump alias.
+- **Compatibility**: clients up to v2.0.2 ignore `proxy_jump` and drop it when they re-save a synced vault, turning the host into a direct dial (it fails closed through host-key verification, but the setting is lost). Upgrade every client before using `proxy_jump`.
+- Each target behind a jump host opens its own jump connection (they are not shared).
 - The connection pool is keyed by the whole chain; closing or evicting the target also closes the jump connections it owns. Request v1 uses `host.proxy_jump` (an empty string clears it).
 
 ### Publish a reviewed change
@@ -320,7 +322,7 @@ In `--json` mode, decide by the `error` field, not the process exit code: a remo
 |---|---|
 | 0 | Success. |
 | 1 | An sshctl failure that is not an SSH transport failure: `internal`, vault, sync and update errors, every `host` and `host-key` subcommand failure (including `alias_not_found` there), `script_syntax_error`, and `put`/`get` transfer errors (`remote_write_failed`, `transfer_timeout`, `integrity_failed`, `partial_state_*`, `local_read_failed`); or a remote command that exited 1. Read `error`. |
-| 2 | Invalid arguments or request (`invalid_arguments`, `invalid_request`), or a remote command that exited 2. |
+| 2 | Invalid arguments or request (`invalid_arguments`, `invalid_request`), `proxy_jump_invalid` (a jump chain with a missing alias, a cycle, or more than 5 jump hosts; nothing was dialed), or a remote command that exited 2. |
 | 124 | `--exec-timeout` expired in `run` or `map` (`exec_timeout`): sshctl sent SIGTERM to the remote command and closed the session after a grace period. Same status as GNU `timeout`; a remote command can also exit 124, so read `error`. |
 | 127 | The remote script interpreter is missing (`interpreter_not_found`), or a remote command that exited 127. |
 | 128 + signal | A local SIGINT/SIGTERM/SIGHUP stopped `run` (`interrupted`; 130, 143, 129). The signal was forwarded and the remote command may still be running. |

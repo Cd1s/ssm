@@ -333,6 +333,10 @@ type compiledSSHFixtureOptions struct {
 	// channels and relays them to the requested address (issue #86).
 	AllowForward bool
 
+	// AuthorizedKey, when set, makes the fixture accept only public-key
+	// authentication with that key (password authentication is disabled).
+	AuthorizedKey gossh.PublicKey
+
 	dropConnection func()
 }
 
@@ -353,6 +357,11 @@ type compiledSSHFixture struct {
 	connections  atomic.Int64
 	sessions     atomic.Int64
 	authAttempts *atomic.Int64
+	// rejectedAuth counts credentials the fixture refused, which is what a hop
+	// receiving another hop's secret would produce.
+	rejectedAuth  *atomic.Int64
+	passwordTries *atomic.Int64
+	keyTries      *atomic.Int64
 
 	forwardsMu sync.Mutex
 	forwards   []string
@@ -404,15 +413,28 @@ func newCompiledSSHFixture(t *testing.T, options compiledSSHFixtureOptions) *com
 	if ed, ok := signers["ed25519"]; ok {
 		signer = ed
 	}
-	authAttempts := new(atomic.Int64)
-	serverConfig := &gossh.ServerConfig{
-		PasswordCallback: func(_ gossh.ConnMetadata, password []byte) (*gossh.Permissions, error) {
+	authAttempts, rejectedAuth, passwordTries, keyTries := new(atomic.Int64), new(atomic.Int64), new(atomic.Int64), new(atomic.Int64)
+	serverConfig := &gossh.ServerConfig{}
+	if options.AuthorizedKey != nil {
+		serverConfig.PublicKeyCallback = func(_ gossh.ConnMetadata, key gossh.PublicKey) (*gossh.Permissions, error) {
 			authAttempts.Add(1)
-			if string(password) != options.Password {
+			keyTries.Add(1)
+			if string(key.Marshal()) != string(options.AuthorizedKey.Marshal()) {
+				rejectedAuth.Add(1)
 				return nil, fmt.Errorf("authentication failed")
 			}
 			return nil, nil
-		},
+		}
+	} else {
+		serverConfig.PasswordCallback = func(_ gossh.ConnMetadata, password []byte) (*gossh.Permissions, error) {
+			authAttempts.Add(1)
+			passwordTries.Add(1)
+			if string(password) != options.Password {
+				rejectedAuth.Add(1)
+				return nil, fmt.Errorf("authentication failed")
+			}
+			return nil, nil
+		}
 	}
 	for _, hostSigner := range ordered {
 		serverConfig.AddHostKey(hostSigner)
@@ -427,8 +449,9 @@ func newCompiledSSHFixture(t *testing.T, options compiledSSHFixtureOptions) *com
 		signers:      signers,
 		options:      options,
 		authAttempts: authAttempts,
-		serveDone:    make(chan struct{}),
-		active:       map[net.Conn]struct{}{},
+		rejectedAuth: rejectedAuth, passwordTries: passwordTries, keyTries: keyTries,
+		serveDone: make(chan struct{}),
+		active:    map[net.Conn]struct{}{},
 	}
 	fixture.options.record = fixture.recordCommand
 	t.Cleanup(func() { fixture.Close(t) })
@@ -457,6 +480,13 @@ func (f *compiledSSHFixture) Connection(alias, password string) config.Connectio
 
 // AuthAttempts counts the password authentication attempts the fixture saw.
 func (f *compiledSSHFixture) AuthAttempts() int64 { return f.authAttempts.Load() }
+
+// RejectedAuth counts credentials the fixture refused.
+func (f *compiledSSHFixture) RejectedAuth() int64 { return f.rejectedAuth.Load() }
+
+// PasswordTries and KeyTries count attempts per authentication method.
+func (f *compiledSSHFixture) PasswordTries() int64 { return f.passwordTries.Load() }
+func (f *compiledSSHFixture) KeyTries() int64      { return f.keyTries.Load() }
 
 // Forwards returns the direct-tcpip targets the fixture relayed.
 func (f *compiledSSHFixture) Forwards() []string {

@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
+	"encoding/pem"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -20,6 +23,25 @@ import (
 
 const proxyJumpPassword = "PROXYJUMP86_PASSWORD_CANARY" //nolint:gosec // test-only fake credential canary
 
+// newJumpKey returns a fresh ed25519 key as an authorized public key and as the
+// PEM private key a vault stores.
+func newJumpKey(t *testing.T) (gossh.PublicKey, string) {
+	t.Helper()
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := gossh.NewSignerFromKey(private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := gossh.MarshalPrivateKey(private, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signer.PublicKey(), string(pem.EncodeToMemory(block))
+}
+
 type jumpHarness struct {
 	cli          *compiledCLIHarness
 	jump, target *compiledSSHFixture
@@ -31,9 +53,13 @@ func newJumpHarness(t *testing.T, trustJump, trustTarget bool) jumpHarness {
 		t.Skip("the fake remote hosts address the local file system with POSIX paths")
 	}
 	cli := newCompiledCLIHarness(t)
+	// The hops use different credentials of different kinds: the jump host a
+	// password, the target a key. A hop that authenticated with another hop's
+	// secret would be refused and counted.
 	jump := newCompiledSSHFixture(t, compiledSSHFixtureOptions{Password: proxyJumpPassword, AllowForward: true})
+	authorized, privatePEM := newJumpKey(t)
 	target := newCompiledSSHFixture(t, compiledSSHFixtureOptions{
-		Password: proxyJumpPassword, RunCommandContains: "hostname", RunStdoutFragments: []string{"target-host\nLinux 6.1\n"},
+		AuthorizedKey: authorized, RunCommandContains: "hostname", RunStdoutFragments: []string{"target-host\nLinux 6.1\n"},
 	})
 	if trustJump {
 		cli.TrustSSHHost(t, jump)
@@ -41,9 +67,13 @@ func newJumpHarness(t *testing.T, trustJump, trustTarget bool) jumpHarness {
 	if trustTarget {
 		cli.TrustSSHHost(t, target)
 	}
-	targetConnection := target.Connection("target", proxyJumpPassword)
+	targetConnection := target.Connection("target", "")
+	targetConnection.KeyName = "target-key"
 	targetConnection.ProxyJump = "jump"
-	cli.SaveVault(t, &config.Vault{Connections: []config.Connection{jump.Connection("jump", proxyJumpPassword), targetConnection}})
+	cli.SaveVault(t, &config.Vault{
+		Connections: []config.Connection{jump.Connection("jump", proxyJumpPassword), targetConnection},
+		Keys:        []config.SSHKey{{Name: "target-key", PrivateKey: privatePEM}},
+	})
 	return jumpHarness{cli: cli, jump: jump, target: target}
 }
 
@@ -72,6 +102,12 @@ func TestCompiledProxyJumpRunPutGetCheckAndHostKeyInspect(t *testing.T) {
 	}
 	if h.target.ConnectionCount() != 1 || h.jump.ConnectionCount() != 1 {
 		t.Fatalf("connections jump=%d target=%d, want 1 each", h.jump.ConnectionCount(), h.target.ConnectionCount())
+	}
+	// Each hop saw only its own kind of credential and refused nothing.
+	if h.jump.PasswordTries() < 1 || h.jump.KeyTries() != 0 || h.target.KeyTries() < 1 || h.target.PasswordTries() != 0 ||
+		h.jump.RejectedAuth() != 0 || h.target.RejectedAuth() != 0 {
+		t.Fatalf("credentials crossed hops: jump password=%d key=%d rejected=%d, target password=%d key=%d rejected=%d",
+			h.jump.PasswordTries(), h.jump.KeyTries(), h.jump.RejectedAuth(), h.target.PasswordTries(), h.target.KeyTries(), h.target.RejectedAuth())
 	}
 
 	payload := bytes.Repeat([]byte("through-the-jump\n"), 1000)
@@ -210,16 +246,17 @@ func TestCompiledProxyJumpTwoLevelChain(t *testing.T) {
 		t.Skip("the fake remote hosts address the local file system with POSIX paths")
 	}
 	cli := newCompiledCLIHarness(t)
-	a := newCompiledSSHFixture(t, compiledSSHFixtureOptions{Password: proxyJumpPassword, AllowForward: true})
-	b := newCompiledSSHFixture(t, compiledSSHFixtureOptions{Password: proxyJumpPassword, AllowForward: true})
-	c := newCompiledSSHFixture(t, compiledSSHFixtureOptions{Password: proxyJumpPassword, RunCommandContains: "hostname", RunStdoutFragments: []string{"host-c\n"}})
+	const passwordA, passwordB, passwordC = "PJ_A_PASSWORD_CANARY", "PJ_B_PASSWORD_CANARY", "PJ_C_PASSWORD_CANARY" //nolint:gosec // test-only fake credential canaries
+	a := newCompiledSSHFixture(t, compiledSSHFixtureOptions{Password: passwordA, AllowForward: true})
+	b := newCompiledSSHFixture(t, compiledSSHFixtureOptions{Password: passwordB, AllowForward: true})
+	c := newCompiledSSHFixture(t, compiledSSHFixtureOptions{Password: passwordC, RunCommandContains: "hostname", RunStdoutFragments: []string{"host-c\n"}})
 	for _, server := range []*compiledSSHFixture{a, b, c} {
 		cli.TrustSSHHost(t, server)
 	}
-	second, third := b.Connection("b", proxyJumpPassword), c.Connection("c", proxyJumpPassword)
+	second, third := b.Connection("b", passwordB), c.Connection("c", passwordC)
 	second.ProxyJump = "a"
 	third.ProxyJump = "b"
-	cli.SaveVault(t, &config.Vault{Connections: []config.Connection{a.Connection("a", proxyJumpPassword), second, third}})
+	cli.SaveVault(t, &config.Vault{Connections: []config.Connection{a.Connection("a", passwordA), second, third}})
 
 	run := cli.Run(t, "sshctl", nil, "--offline", "--json", "run", "c", "--argv", "hostname")
 	if got := decodeExactlyOneJSONObject(t, run.Stdout); run.ProcessExit != 0 || got["ok"] != true || !strings.Contains(stringField(got, "stdout"), "host-c") {
@@ -234,6 +271,38 @@ func TestCompiledProxyJumpTwoLevelChain(t *testing.T) {
 	if len(c.Forwards()) != 0 {
 		t.Fatal("the target forwarded channels")
 	}
+	for name, server := range map[string]*compiledSSHFixture{"a": a, "b": b, "c": c} {
+		if server.RejectedAuth() != 0 || server.AuthAttempts() != 1 {
+			t.Fatalf("%s: auth attempts=%d rejected=%d, want exactly its own credential once", name, server.AuthAttempts(), server.RejectedAuth())
+		}
+	}
+
+	// put, get and host-key inspect work over the two-level chain as well.
+	payload := bytes.Repeat([]byte("two-level-chain\n"), 500)
+	local := filepath.Join(cli.temp, "chain.bin")
+	issue80WriteFile(t, local, payload)
+	remote := filepath.Join(t.TempDir(), "chain.bin")
+	put := cli.Run(t, "sshctl", nil, "--offline", "--json", "put", "c", local, remote, "--sha256")
+	if got := decodeExactlyOneJSONObject(t, put.Stdout); put.ProcessExit != 0 || got["ok"] != true {
+		t.Fatalf("put over the chain = exit %d %s", put.ProcessExit, put.Stdout)
+	}
+	fetched := filepath.Join(cli.temp, "chain-fetched.bin")
+	get := cli.Run(t, "sshctl", nil, "--offline", "--json", "get", "c", remote, fetched, "--sha256")
+	if got := decodeExactlyOneJSONObject(t, get.Stdout); get.ProcessExit != 0 || got["ok"] != true {
+		t.Fatalf("get over the chain = exit %d %s", get.ProcessExit, get.Stdout)
+	}
+	if downloaded, err := os.ReadFile(fetched); err != nil || !bytes.Equal(downloaded, payload) { //nolint:gosec // test-owned fixture path
+		t.Fatalf("chain round trip differs: %v", err)
+	}
+	inspect := cli.Run(t, "sshctl", nil, "--offline", "--json", "host-key", "inspect", "c")
+	if got := decodeExactlyOneJSONObject(t, inspect.Stdout); inspect.ProcessExit != 0 || got["fingerprint"] != gossh.FingerprintSHA256(c.signer.PublicKey()) || got["address"] != c.Address() {
+		t.Fatalf("host-key inspect over the chain = exit %d %s", inspect.ProcessExit, inspect.Stdout)
+	}
+	for name, server := range map[string]*compiledSSHFixture{"a": a, "b": b, "c": c} {
+		if server.RejectedAuth() != 0 {
+			t.Fatalf("%s refused a credential during put/get/inspect", name)
+		}
+	}
 
 	// Each hop authenticates on its own: an untrusted middle hop stops the
 	// chain there and names it.
@@ -241,12 +310,42 @@ func TestCompiledProxyJumpTwoLevelChain(t *testing.T) {
 	for _, server := range []*compiledSSHFixture{a, c} {
 		cli2.TrustSSHHost(t, server)
 	}
-	cli2.SaveVault(t, &config.Vault{Connections: []config.Connection{a.Connection("a", proxyJumpPassword), second, third}})
-	beforeC := c.ConnectionCount()
+	cli2.SaveVault(t, &config.Vault{Connections: []config.Connection{a.Connection("a", passwordA), second, third}})
+	beforeC, authC := c.ConnectionCount(), c.AuthAttempts()
 	bad := cli2.Run(t, "sshctl", nil, "--offline", "--json", "run", "c", "--argv", "hostname")
 	proxyJumpFailure(t, bad, 255, "b")
-	if c.ConnectionCount() != beforeC || c.AuthAttempts() != 1 {
-		t.Fatalf("target connections %d->%d auth attempts %d: the untrusted middle hop must stop the chain", beforeC, c.ConnectionCount(), c.AuthAttempts())
+	if c.ConnectionCount() != beforeC || c.AuthAttempts() != authC {
+		t.Fatalf("target connections %d->%d auth attempts %d->%d: the untrusted middle hop must stop the chain", beforeC, c.ConnectionCount(), authC, c.AuthAttempts())
+	}
+}
+
+func TestCompiledProxyJumpMap(t *testing.T) {
+	h := newJumpHarness(t, true, true)
+	result := h.cli.Run(t, "sshctl", nil, "--offline", "--json", "map", "target", "--argv", "hostname")
+	results, _ := decodeExactlyOneJSONValue(t, result.Stdout).([]any)
+	if result.ProcessExit != 0 || len(results) != 1 {
+		t.Fatalf("map through jump = exit %d %s", result.ProcessExit, result.Stdout)
+	}
+	first, _ := results[0].(map[string]any)
+	if first["ok"] != true || first["alias"] != "target" || !strings.Contains(stringField(first, "stdout"), "target-host") {
+		t.Fatalf("map result = %v", first)
+	}
+	if forwards := h.jump.Forwards(); len(forwards) != 1 || forwards[0] != h.target.Address() {
+		t.Fatalf("jump forwards = %v, want the target", forwards)
+	}
+	if h.jump.RejectedAuth() != 0 || h.target.RejectedAuth() != 0 {
+		t.Fatal("a hop was refused a credential")
+	}
+
+	// A failing hop is named per result.
+	untrusted := newJumpHarness(t, false, true)
+	failed := untrusted.cli.Run(t, "sshctl", nil, "--offline", "--json", "map", "target", "--argv", "hostname")
+	list, _ := decodeExactlyOneJSONValue(t, failed.Stdout).([]any)
+	if failed.ProcessExit != 255 || len(list) != 1 {
+		t.Fatalf("map with an untrusted jump = exit %d %s", failed.ProcessExit, failed.Stdout)
+	}
+	if entry, _ := list[0].(map[string]any); entry["error"] != "host_key_unknown" || entry["via"] != "jump" {
+		t.Fatalf("map failure = %v, want host_key_unknown via jump", entry)
 	}
 }
 

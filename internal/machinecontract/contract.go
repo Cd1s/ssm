@@ -255,6 +255,9 @@ const (
 // sent; the remote command's outcome is unknown and retrying is not safe.
 const CodeConnectionLost = "connection_lost"
 
+// CodeProxyJumpInvalid: the proxy_jump chain of a host cannot be resolved.
+const CodeProxyJumpInvalid = "proxy_jump_invalid"
+
 // CodeHandshakeFailed means TCP connected but the SSH handshake failed, so no
 // command was sent and retrying is safe.
 const CodeHandshakeFailed = "handshake_failed"
@@ -886,7 +889,7 @@ var failurePolicies = map[Kind]failurePolicy{
 		Hint: "--dir-mode must be an octal permission such as 0755 (at most 0777) that includes owner write and execute (0300)", Exit: 2,
 	},
 	InvalidProxyJump: {
-		Code: "proxy_jump_invalid", Stage: "validate",
+		Code: CodeProxyJumpInvalid, Stage: "validate",
 		Hint: "fix the proxy_jump chain: every jump alias must exist, chains must not loop, and at most 5 jump hosts are allowed; inspect with sshctl host show <alias> and change it with sshctl host update <alias> --proxy-jump <alias> (an empty value clears it)", Exit: 2,
 	},
 	CopyArgumentsInvalid: {
@@ -1441,7 +1444,7 @@ func ClassifySSH(err error, context SSHContext) Failure {
 // caller's generic stage (dial, session) must not overwrite it. handshake and
 // remote_execution tell an agent whether the command was ever sent.
 func policyOwnsStage(code string) bool {
-	return code == CodeHandshakeFailed || code == CodeConnectionLost || code == CodeExecTimeout || code == "proxy_jump_invalid"
+	return code == CodeHandshakeFailed || code == CodeConnectionLost || code == CodeExecTimeout || code == CodeProxyJumpInvalid
 }
 
 // isHandshakeError recognizes a failure after TCP connected but before the SSH

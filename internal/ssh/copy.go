@@ -75,7 +75,7 @@ func CopyFile(src config.Connection, srcPath string, dst config.Connection, dstP
 	defer releaseClient(clientSrc, false)
 	clientDst, err := dialSSH(dst, v)
 	if err != nil {
-		return result, copySourceError(err)
+		return result, copyDestinationError(err)
 	}
 	defer releaseClient(clientDst, false)
 
@@ -160,8 +160,11 @@ func CopyFile(src config.Connection, srcPath string, dst config.Connection, dstP
 		_ = sessionSrc.Close()
 	}
 	result.Bytes = relay.written
-	result.LocalSHA256 = hex.EncodeToString(hasher.Sum(nil))
 	sourceWaitErr := sessionSrc.Wait()
+	if copyErr == nil && sourceWaitErr == nil {
+		// The relayed digest only means something for a completed stream.
+		result.LocalSHA256 = hex.EncodeToString(hasher.Sum(nil))
+	}
 
 	if copyErr != nil || sourceWaitErr != nil {
 		// Never let the destination see a clean EOF for a stream that did not
@@ -264,6 +267,19 @@ func copySourceError(err error) error {
 		return transferClassifiedError(failure, 0, err)
 	}
 	return transferError(machinecontract.TransferDownloadRemoteRead, 0, err)
+}
+
+// copyDestinationError is copySourceError for the destination host: an
+// unclassified failure there is a write failure, never a source read failure.
+func copyDestinationError(err error) error {
+	var transferErr *TransferError
+	if errors.As(err, &transferErr) {
+		return err
+	}
+	if failure, ok := machinecontract.FailureFromError(err); ok {
+		return transferClassifiedError(failure, 0, err)
+	}
+	return transferError(machinecontract.TransferRemoteWriteFailed, 0, err)
 }
 
 // remoteFileMode reads the permission bits of a remote regular file with GNU

@@ -38,8 +38,12 @@ func classifyHop(err error, target, hop config.Connection, chained bool) *machin
 	if !chained {
 		return ClassifyError(err, target)
 	}
+	port := hop.Port
+	if port == 0 {
+		port = 22 // never render the unset port as :0
+	}
 	failure := machinecontract.ClassifySSH(err, machinecontract.SSHContext{
-		Alias: target.Name, Host: hop.Host, Port: hop.Port,
+		Alias: target.Name, Host: hop.Host, Port: port,
 	})
 	via := machinecontract.RedactString(hop.Name)
 	failure.Via = via
@@ -65,36 +69,45 @@ func invalidJumpChainError(target config.Connection, err error) *machinecontract
 	return machinecontract.NewClassifiedError(failure)
 }
 
-// dialChain connects to chain[len-1] through chain[:len-1]. The returned client
-// owns the jump clients: when it closes, for whatever reason, they are closed
-// too, so neither goroutines nor connections outlive the target connection.
-func dialChain(chain []config.Connection, v *config.Vault) (*gossh.Client, error) {
-	target := chain[len(chain)-1]
-	owned := make([]*gossh.Client, 0, len(chain)-1)
-	var previous *gossh.Client
-	for index, hop := range chain {
+// dialHops connects hops in order, each over the previous one, and returns
+// every client opened. On failure it closes what it opened and returns the
+// classified error naming the failing hop.
+func dialHops(hops []config.Connection, target config.Connection, v *config.Vault) ([]*gossh.Client, error) {
+	clients := make([]*gossh.Client, 0, len(hops))
+	for index, hop := range hops {
 		var client *gossh.Client
 		var err error
 		if index == 0 {
 			client, err = dialDirectHop(hop, v)
 		} else {
-			client, err = dialHopThrough(previous, hop, v)
+			client, err = dialHopThrough(clients[index-1], hop, v)
 		}
 		if err != nil {
-			closeClients(owned)
+			closeClients(clients)
 			return nil, classifyHop(err, target, hop, true)
 		}
-		startKeepalive(client)
-		if index < len(chain)-1 {
-			owned = append(owned, client)
-		}
-		previous = client
+		clients = append(clients, client)
 	}
-	go func(client *gossh.Client, jumps []*gossh.Client) {
-		_ = client.Wait()
+	return clients, nil
+}
+
+// dialChain connects to chain[len-1] through chain[:len-1]. The returned client
+// owns the jump clients: when it closes, for whatever reason, they are closed
+// too, so neither goroutines nor connections outlive the target connection.
+func dialChain(chain []config.Connection, v *config.Vault) (*gossh.Client, error) {
+	clients, err := dialHops(chain, chain[len(chain)-1], v)
+	if err != nil {
+		return nil, err
+	}
+	for _, client := range clients {
+		startKeepalive(client)
+	}
+	target, jumps := clients[len(clients)-1], clients[:len(clients)-1]
+	go func() {
+		_ = target.Wait()
 		closeClients(jumps)
-	}(previous, owned)
-	return previous, nil
+	}()
+	return target, nil
 }
 
 // closeClients closes clients last-opened first.
@@ -108,25 +121,11 @@ func closeClients(clients []*gossh.Client) {
 // and returns the last one together with a function that closes them all. The
 // chain must have at least two entries.
 func dialJumpPrefix(chain []config.Connection, v *config.Vault) (*gossh.Client, func(), error) {
-	target := chain[len(chain)-1]
-	var owned []*gossh.Client
-	var previous *gossh.Client
-	for index, hop := range chain[:len(chain)-1] {
-		var client *gossh.Client
-		var err error
-		if index == 0 {
-			client, err = dialDirectHop(hop, v)
-		} else {
-			client, err = dialHopThrough(previous, hop, v)
-		}
-		if err != nil {
-			closeClients(owned)
-			return nil, nil, classifyHop(err, target, hop, true)
-		}
-		owned = append(owned, client)
-		previous = client
+	clients, err := dialHops(chain[:len(chain)-1], chain[len(chain)-1], v)
+	if err != nil {
+		return nil, nil, err
 	}
-	return previous, func() { closeClients(owned) }, nil
+	return clients[len(clients)-1], func() { closeClients(clients) }, nil
 }
 
 // dialHopThrough opens a direct-tcpip channel to hop over previous and runs the

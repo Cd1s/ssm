@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -94,6 +95,12 @@ func runCp(opts cpOptions) {
 	dst, _, ok := resolveConnection(v, opts.dstAlias)
 	if !ok {
 		connectionNotFound(opts.dstAlias, v)
+	}
+
+	if src.Name == dst.Name && path.Clean(opts.srcPath) == path.Clean(opts.dstPath) {
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.CopyArgumentsInvalid, machinecontract.Details{
+			Message: fmt.Sprintf("source and destination are the same file (%s:%s)", src.Name, opts.srcPath),
+		}))
 	}
 
 	base := machinecontract.CopyOutcome{

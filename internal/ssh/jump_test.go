@@ -6,6 +6,7 @@ import (
 	"net"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -260,4 +261,33 @@ func TestInspectHostKeyThroughJumpObservesTheTarget(t *testing.T) {
 		t.Fatalf("accept = %+v err=%v", accepted, err)
 	}
 	waitUntil(t, "the jump connection to close", func() bool { return jump.active.Load() == 0 })
+}
+
+func TestClassifyHopNeverRendersPortZero(t *testing.T) {
+	jump := config.Connection{Name: "jump", Host: "192.0.2.10", User: "u", Password: "pw"} // Port unset: default 22
+	target := config.Connection{Name: "target", Host: "192.0.2.11", Port: 22, User: "u", Password: "pw"}
+	for _, err := range []error{errors.New("connection refused"), errors.New("ssh: handshake failed: EOF")} {
+		failure, ok := machinecontract.FailureFromError(classifyHop(err, target, jump, true))
+		if !ok || failure.Via != "jump" {
+			t.Fatalf("failure = %+v", failure)
+		}
+		if failure.Address != "192.0.2.10:22" || strings.Contains(failure.Message, ":0") {
+			t.Fatalf("address=%q message=%q, want the default port 22 and never :0", failure.Address, failure.Message)
+		}
+	}
+}
+
+func TestCopyErrorsAreLabeledBySide(t *testing.T) {
+	cause := errors.New("unclassified")
+	source, _ := copySourceError(cause).(*TransferError)
+	destination, _ := copyDestinationError(cause).(*TransferError)
+	if source == nil || destination == nil {
+		t.Fatal("expected transfer errors")
+	}
+	if got := source.ContractFailure().Error; got != "remote_read_failed" {
+		t.Fatalf("source error = %s, want remote_read_failed", got)
+	}
+	if got := destination.ContractFailure().Error; got != "remote_write_failed" {
+		t.Fatalf("destination error = %s, want remote_write_failed", got)
+	}
 }

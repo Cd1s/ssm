@@ -200,7 +200,7 @@ sshctl cp web1:/srv/app.tgz web2:/srv/app.tgz --timeout 5m --json
 - 读取沿用 `get` 的读路径（`cat` over SSH），写入沿用 `put` 的“私有临时文件 + 校验 + rename”，所以 B 上不会出现半成品；失败或摘要不一致时 B 的旧目标保持原样。
 - 本机对流过的字节计算 SHA-256，并与 A 端源文件摘要、B 端写后（rename 前）摘要三方比对，三者一致才成功。结果 JSON 含 `direction:"cp"`、`route:"local_relay"`、`source`/`destination`（`alias`、`path`）、`bytes`、`source_sha256`、`local_sha256`、`destination_sha256`、`atomic:true`、`integrity:"sha256_verified"`；失败结果带常规的 `error`/`stage`/`exit`/`hint`（摘要不一致为 `integrity_failed`，`integrity:"mismatch"`）。
 - 两端都需要 POSIX shell 和 `sha256sum`/`shasum`/`openssl` 之一（否则 `integrity_tool_unavailable`）；只支持单个普通文件，目录返回 `unsupported_transfer_option`（先用 `get`/`put`，或在源端打包）；`transfer: sftp` 的主机不支持 `cp`。A 有 `stat` 时保留源文件权限位，否则用 `0600`。
-- `--json` 输出机器结果；`--timeout <时长>` 限制整个复制（摘要探测 + 传输），超时返回 `transfer_timeout`。任一端都可以本身经 `proxy_jump` 连接。
+- `--json` 输出机器结果；`--timeout <时长>` 限制建立连接之后的摘要探测和传输（建连本身由连接超时管），超时返回 `transfer_timeout`。源和目标解析到同一别名且同一路径时拒绝（`invalid_arguments`）。任一端都可以本身经 `proxy_jump` 连接。
 - **没有实现 `--direct`（A 直接推到 B）**，这是有意为之：它要么要把 B 的凭据放到 A 上，要么要把本机 agent 转发给 A，两者都会让 A 以及能控制 A 的人获得访问 B 的能力，违背“凭据只在本机”。是否提供、以何种显式确认提供，需要用户单独决定；传入 `--direct` 会明确报错。
 
 ### 添加或修改主机
@@ -235,6 +235,8 @@ sshctl run inner --argv hostname                                   # run/map/put
 - 解析时校验：链上不许有环，最多 5 个跳板机，被引用的别名必须存在（redirect 在解析时生效）；否则返回 `error:proxy_jump_invalid`（`stage:validate`，exit 2），不会发起任何连接。
 - 失败结果新增可选字段 `via`：出错的那一跳的别名（跳板机或目标本身），分类沿用现有的 `dial_*`、`handshake_failed`、`auth_failed`、`host_key_*`，`stage` 不变；host key 的 `hint` 指向该跳的别名。某一跳的 host key 未受信时，链在该跳终止，后面的主机不会被联系、也不会收到任何认证尝试。
 - `host-key inspect|accept <目标别名>` 检查并记录的是**目标**的 host key；跳板机必须已经单独受信（先对跳板别名 `host-key inspect`/`accept`），否则失败并在 `via` 里指明跳板别名。
+- **兼容性**：v2.0.2 及更早的客户端不认识 `proxy_jump`，重新保存同步下来的 vault 时会丢掉它，该主机就变成直连（host key 校验会让它失败关闭，但设置已丢失）。使用 `proxy_jump` 前请先升级所有客户端。
+- 每个位于跳板机后面的目标各自打开一条自己的跳板连接（不共享）。
 - 连接池按整条链缓存；目标连接关闭或被淘汰时，它拥有的跳板机连接一并关闭。request v1 用 `host.proxy_jump`（空字符串清除）。
 
 ### 发布已审查的变更
@@ -319,7 +321,7 @@ PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
 |---|---|
 | 0 | 成功。 |
 | 1 | sshctl 的非 SSH 传输层失败：`internal`、vault、同步与更新错误，所有 `host` 与 `host-key` 子命令失败（包括其中的 `alias_not_found`），`script_syntax_error`，以及 `put`/`get` 的传输错误（`remote_write_failed`、`transfer_timeout`、`integrity_failed`、`partial_state_*`、`local_read_failed`）；或远端命令返回 1。请读 `error`。 |
-| 2 | 参数或 request 无效（`invalid_arguments`、`invalid_request`），或远端命令返回 2。 |
+| 2 | 参数或 request 无效（`invalid_arguments`、`invalid_request`），或 `proxy_jump_invalid`（跳板链缺别名、有环或超过 5 级，未发起任何连接），或远端命令返回 2。 |
 | 124 | `run`、`map` 的 `--exec-timeout` 到期（`exec_timeout`）：先向远端发 SIGTERM，宽限期后关闭 session。与 GNU `timeout` 的退出码一致；远端命令自己也可能返回 124，请读 `error`。 |
 | 127 | 远端脚本解释器不存在（`interpreter_not_found`），或远端命令返回 127。 |
 | 128 + 信号编号 | 本地 SIGINT/SIGTERM/SIGHUP 中断了 `run`（`interrupted`；130、143、129）。信号已转发，远端命令可能仍在运行。 |
