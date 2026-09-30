@@ -337,6 +337,17 @@ type compiledSSHFixtureOptions struct {
 	// authentication with that key (password authentication is disabled).
 	AuthorizedKey gossh.PublicKey
 
+	// MaxSessions, when positive, enforces an sshd-style per-connection
+	// session limit: a session channel beyond it is refused with the
+	// administratively-prohibited "open failed" reply while the connection and
+	// its running sessions stay up. Sessions then run concurrently.
+	MaxSessions int
+	// RejectSessionsAsLimit refuses every session with the same reply as a
+	// full MaxSessions, so the limit never frees.
+	RejectSessionsAsLimit bool
+	// RunDelay holds every configured run for this long before it answers.
+	RunDelay time.Duration
+
 	dropConnection func()
 }
 
@@ -365,6 +376,11 @@ type compiledSSHFixture struct {
 
 	forwardsMu sync.Mutex
 	forwards   []string
+
+	// liveSessions and peakSessions track concurrent sessions when
+	// MaxSessions is enforced.
+	liveSessions atomic.Int64
+	peakSessions atomic.Int64
 
 	commandsMu sync.Mutex
 	commands   []string
@@ -615,6 +631,7 @@ func (f *compiledSSHFixture) serveConnection(raw net.Conn, serverConfig *gossh.S
 	f.connections.Add(1)
 	options := f.options
 	options.dropConnection = func() { _ = serverConn.Close() }
+	var open atomic.Int64
 	requestsDone := make(chan struct{})
 	go func() {
 		gossh.DiscardRequests(requests)
@@ -630,8 +647,16 @@ func (f *compiledSSHFixture) serveConnection(raw net.Conn, serverConfig *gossh.S
 			_ = newChannel.Reject(gossh.UnknownChannelType, "session only")
 			continue
 		}
+		if f.options.RejectSessionsAsLimit {
+			_ = newChannel.Reject(gossh.Prohibited, "open failed")
+			continue
+		}
 		if f.options.RejectSessions {
 			_ = newChannel.Reject(gossh.ResourceShortage, "fixture session rejected")
+			continue
+		}
+		if f.options.MaxSessions > 0 && int(open.Load()) >= f.options.MaxSessions {
+			_ = newChannel.Reject(gossh.Prohibited, "open failed")
 			continue
 		}
 		channel, channelRequests, err := newChannel.Accept()
@@ -639,6 +664,18 @@ func (f *compiledSSHFixture) serveConnection(raw net.Conn, serverConfig *gossh.S
 			continue
 		}
 		f.sessions.Add(1)
+		if f.options.MaxSessions > 0 {
+			open.Add(1)
+			live := f.liveSessions.Add(1)
+			for prev := f.peakSessions.Load(); live > prev && !f.peakSessions.CompareAndSwap(prev, live); prev = f.peakSessions.Load() {
+			}
+			go func() {
+				defer open.Add(-1)
+				defer f.liveSessions.Add(-1)
+				serveCompiledSSHSession(channel, channelRequests, options)
+			}()
+			continue
+		}
 		serveCompiledSSHSession(channel, channelRequests, options)
 	}
 	_ = serverConn.Close()
@@ -712,6 +749,9 @@ func executeConfiguredCompiledSSHRun(stdout io.ReadWriter, stderr io.Writer, com
 	}
 	if options.RunDrainStdin {
 		_, _ = io.Copy(io.Discard, stdout)
+	}
+	if options.RunDelay > 0 {
+		time.Sleep(options.RunDelay)
 	}
 	for _, fragment := range options.RunStdoutFragments {
 		_, _ = io.WriteString(stdout, fragment)

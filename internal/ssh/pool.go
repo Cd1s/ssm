@@ -1,7 +1,9 @@
 package ssh
 
 import (
+	"context"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"os"
 	"strings"
@@ -11,36 +13,69 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 
 	"ssm/internal/config"
+	"ssm/internal/machinecontract"
 )
 
-const sessionOpenRetryInterval = 50 * time.Millisecond
+const (
+	sessionSlotBackoffMin = 25 * time.Millisecond
+	sessionSlotBackoffMax = 250 * time.Millisecond
+)
 
-func isSessionLimitError(err error) bool {
-	if err == nil {
-		return false
+// sessionSlotBackoff is the jittered, bounded delay before the attempt-th
+// retry (0-based) of a full session limit.
+func sessionSlotBackoff(attempt int) time.Duration {
+	delay := sessionSlotBackoffMax
+	if attempt < 4 {
+		delay = sessionSlotBackoffMin << attempt
 	}
-	lower := strings.ToLower(err.Error())
-	return strings.Contains(lower, "administratively prohibited") ||
-		strings.Contains(lower, "open failed") ||
-		strings.Contains(lower, "maxsessions") ||
-		strings.Contains(lower, "session limit")
+	half := delay / 2
+	return half + rand.N(half+1) //nolint:gosec // retry jitter, not security-sensitive
 }
 
-// newSessionRetry keeps a healthy pooled connection alive when sshd refuses a
-// channel because its session limit is temporarily full. Existing sessions
-// can then finish and make room; other errors still return immediately so the
-// caller can evict and redial a genuinely dead connection.
+// waitSessionSlot sleeps the jittered backoff for the attempt-th retry,
+// bounded by the budget's deadline and interruptible through ctx. It reports
+// false when the budget is spent (the caller gives up with the refusal) and
+// ctx.Err() when cancelled.
+func waitSessionSlot(ctx context.Context, attempt int, deadline time.Time) (bool, error) {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return false, nil
+	}
+	timer := time.NewTimer(min(sessionSlotBackoff(attempt), remaining))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-timer.C:
+		return true, nil
+	}
+}
+
+// newSessionRetry opens a session on a client the caller already holds (file
+// transfers and other non-run paths). A full session limit is waited out with
+// jittered backoff for up to DialTimeout() without closing the shared
+// connection; every other error returns immediately. No pool lock is held.
+// There is no production cancel source before a session exists (a local
+// SIGINT/SIGTERM before that point terminates the process by default), so
+// callers pass context.Background(); the context exists for tests and future
+// callers.
 func newSessionRetry(client *gossh.Client) (*gossh.Session, error) {
-	deadline := time.Now().Add(DialTimeout())
-	for {
+	return newSessionRetryContext(context.Background(), client, time.Now().Add(DialTimeout()))
+}
+
+func newSessionRetryContext(ctx context.Context, client *gossh.Client, deadline time.Time) (*gossh.Session, error) {
+	for attempt := 0; ; attempt++ {
 		session, err := client.NewSession()
-		if err == nil || !isSessionLimitError(err) {
+		if err == nil || !machinecontract.IsSessionLimit(err) {
 			return session, err
 		}
-		if time.Now().After(deadline) {
+		again, waitErr := waitSessionSlot(ctx, attempt, deadline)
+		if waitErr != nil {
+			return nil, waitErr
+		}
+		if !again {
 			return nil, err
 		}
-		time.Sleep(sessionOpenRetryInterval)
 	}
 }
 
@@ -189,13 +224,11 @@ func getPooledClient(c config.Connection, v *config.Vault) (*gossh.Client, error
 	defer entry.mu.Unlock()
 
 	if entry.client != nil {
-		sess, err := newSessionRetry(entry.client)
-		if err == nil {
-			_ = sess.Close()
+		// A global request answers whether the transport is alive without
+		// taking a session slot, so a full MaxSessions cannot look like a
+		// dead connection. Any reply, even a refusal, proves liveness.
+		if clientAlive(entry.client, livenessBound()) {
 			entry.lastUsed = time.Now()
-			return entry.client, nil
-		}
-		if isSessionLimitError(err) {
 			return entry.client, nil
 		}
 		_ = entry.client.Close()
@@ -211,18 +244,60 @@ func getPooledClient(c config.Connection, v *config.Vault) (*gossh.Client, error
 	return client, nil
 }
 
+// livenessBound is how long the pooled-connection liveness probe may wait for
+// a reply. It runs under the per-host entry lock, so it must be short.
+func livenessBound() time.Duration { return min(DialTimeout(), 5*time.Second) }
+
+// clientAlive sends one keepalive global request now and reports whether any
+// reply arrived within bound. It complements the background keepalive
+// (startKeepalive), which only notices a dead peer after several intervals;
+// this check is what stops a reused connection from serving a caller that is
+// about to use it. A silent or half-open server is reported dead; the
+// caller then closes the client, which also unblocks the probe goroutine.
+func clientAlive(client *gossh.Client, bound time.Duration) bool {
+	replied := make(chan error, 1)
+	go func() {
+		_, _, err := client.SendRequest(keepaliveRequest, true, nil)
+		replied <- err
+	}()
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	case err := <-replied:
+		return err == nil
+	case <-timer.C:
+		return false
+	}
+}
+
 // acquireSSHSession opens the session that the caller will actually use. It
 // avoids the old "probe channel, close it, open another channel" round trip on
 // every pooled command. A stale pooled connection is evicted and redialed once.
-// The per-destination lock serializes only one host's dial; different hosts can
-// still establish connections concurrently.
+// The per-destination lock serializes only one host's dial and one session
+// open attempt; it is never held while waiting for a free session slot.
+// On error the returned client and session are always nil.
 func acquireSSHSession(c config.Connection, v *config.Vault, noReuse bool) (*gossh.Client, *gossh.Session, string, error) {
+	return acquireSSHSessionContext(context.Background(), c, v, noReuse)
+}
+
+// acquireSSHSessionContext is acquireSSHSession with a cancellation path for
+// the slot wait. Production passes context.Background() because nothing can
+// cancel an acquisition before the session exists (a local signal then kills
+// the process by default).
+//
+// When the host's session limit is full the pooled connection stays open (its
+// running sessions must not be killed) and the acquisition backs off, without
+// the entry lock, until a slot frees or DialTimeout() elapses. The
+// wait-and-retry strategy is used rather than a client-side per-connection cap
+// or a second connection because sshd's MaxSessions is unknown and per-host;
+// polling adapts to whatever the server allows.
+func acquireSSHSessionContext(ctx context.Context, c config.Connection, v *config.Vault, noReuse bool) (*gossh.Client, *gossh.Session, string, error) {
 	if noReuse || !reuseEnabled() {
 		client, err := dialSSHFresh(c, v)
 		if err != nil {
 			return nil, nil, "dial", err
 		}
-		session, err := newSessionRetry(client)
+		session, err := client.NewSession()
 		if err != nil {
 			_ = client.Close()
 			return nil, nil, "session", err
@@ -230,17 +305,39 @@ func acquireSSHSession(c config.Connection, v *config.Vault, noReuse bool) (*gos
 		return client, session, "", nil
 	}
 
+	// One budget covers dialing and the slot wait, so the worst case is about
+	// DialTimeout() in total rather than one timeout for each.
+	deadline := time.Now().Add(DialTimeout())
+	for attempt := 0; ; attempt++ {
+		client, session, stage, err := tryPooledSession(c, v)
+		if err == nil || !machinecontract.IsSessionLimit(err) {
+			return client, session, stage, err
+		}
+		again, waitErr := waitSessionSlot(ctx, attempt, deadline)
+		if waitErr != nil {
+			return nil, nil, "session", waitErr
+		}
+		if !again {
+			return nil, nil, "session", err
+		}
+	}
+}
+
+// tryPooledSession makes one attempt to open a session on the host's pooled
+// connection under the entry lock. A session-limit refusal leaves the healthy
+// connection in the pool and is returned as-is for the caller to back off.
+func tryPooledSession(c config.Connection, v *config.Vault) (*gossh.Client, *gossh.Session, string, error) {
 	entry := lockPoolEntry(poolKeyChain(c, v))
 	defer entry.mu.Unlock()
 
 	if entry.client != nil {
-		session, err := newSessionRetry(entry.client)
+		session, err := entry.client.NewSession()
 		if err == nil {
 			entry.lastUsed = time.Now()
 			return entry.client, session, "", nil
 		}
-		if isSessionLimitError(err) {
-			return entry.client, nil, "session", err
+		if machinecontract.IsSessionLimit(err) {
+			return nil, nil, "session", err
 		}
 		_ = entry.client.Close()
 		entry.client = nil
@@ -250,13 +347,16 @@ func acquireSSHSession(c config.Connection, v *config.Vault, noReuse bool) (*gos
 	if err != nil {
 		return nil, nil, "dial", err
 	}
-	session, err := newSessionRetry(client)
-	if err != nil {
-		_ = client.Close()
-		return nil, nil, "session", err
-	}
 	entry.client = client
 	entry.lastUsed = time.Now()
+	session, err := client.NewSession()
+	if err != nil {
+		if !machinecontract.IsSessionLimit(err) {
+			_ = client.Close()
+			entry.client = nil
+		}
+		return nil, nil, "session", err
+	}
 	return client, session, "", nil
 }
 

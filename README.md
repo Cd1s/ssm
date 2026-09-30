@@ -325,7 +325,7 @@ PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
 | 124 | `run`、`map` 的 `--exec-timeout` 到期（`exec_timeout`）：先向远端发 SIGTERM，宽限期后关闭 session。与 GNU `timeout` 的退出码一致；远端命令自己也可能返回 124，请读 `error`。 |
 | 127 | 远端脚本解释器不存在（`interpreter_not_found`），或远端命令返回 127。 |
 | 128 + 信号编号 | 本地 SIGINT/SIGTERM/SIGHUP 中断了 `run`（`interrupted`；130、143、129）。信号已转发，远端命令可能仍在运行。 |
-| 255 | `run`、`map`、`check`、`doctor`、`put`、`get` 的 SSH 传输层失败：`dial_timeout`、`dial_refused`、`dial_network`、`handshake_failed`、`host_key_unknown`/`host_key_mismatch`/`host_key_type_changed`（连接被拒绝）、`auth_failed`、`no_auth_configured`、`session_failed`、`connection_lost`；以及 `run`、`map`、`check`、`doctor` 的 `alias_not_found`。远端命令本身也可能返回 255。 |
+| 255 | `run`、`map`、`check`、`doctor`、`put`、`get` 的 SSH 传输层失败：`dial_timeout`、`dial_refused`、`dial_network`、`handshake_failed`、`host_key_unknown`/`host_key_mismatch`/`host_key_type_changed`（连接被拒绝）、`auth_failed`、`no_auth_configured`、`session_failed`、`session_limit`、`connection_lost`；以及 `run`、`map`、`check`、`doctor` 的 `alias_not_found`。远端命令本身也可能返回 255。 |
 | 其它值 | 远端命令自己的退出码，原样透传。 |
 
 `map` 以第一个失败结果的退出码退出；数组里每个结果各自带 `error`。`put`/`get` 传输中途断开时与 `run` 一样返回 `connection_lost` 和 255，因为这是传输层失败，而不是传输专属错误。
@@ -334,7 +334,7 @@ PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
 
 是否可以安全重试，取决于命令有没有发出：
 
-- 可以重试：`dial_timeout`、`dial_refused`、`dial_network`；`handshake_failed`（`stage:handshake`，TCP 已连上但 SSH 握手失败，例如 EOF、connection reset 或协议错误，命令没有发出）；以及 `stage:session` 的 `session_failed`（会话没能打开，命令没有发出）。`no common algorithm` 这类确定性的握手失败每次都会同样失败，重试没有意义，应修正算法或服务器配置。`auth_failed` 和 `host_key_*` 保持各自的错误码，需要修复而不是重试。
+- 可以重试：`dial_timeout`、`dial_refused`、`dial_network`；`handshake_failed`（`stage:handshake`，TCP 已连上但 SSH 握手失败，例如 EOF、connection reset 或协议错误，命令没有发出）；以及 `stage:session` 的 `session_failed` 和 `session_limit`（会话没能打开，命令没有发出）。`session_limit` 表示服务器每条连接的会话数上限（sshd `MaxSessions`）持续占满：sshctl 会在连接超时内退避等待空位，不会关闭共享连接，也不会打断已在运行的会话；仍等不到时才返回它，请降低 `-j` 或调高 sshd `MaxSessions`。`no common algorithm` 这类确定性的握手失败每次都会同样失败，重试没有意义，应修正算法或服务器配置。`auth_failed` 和 `host_key_*` 保持各自的错误码，需要修复而不是重试。
 - 不可盲目重试：`exec_timeout`（`stage:remote_execution`，带 `timed_out:true`）。命令已经发出并跑到了 `--exec-timeout`；sshctl 发过 SIGTERM 并在宽限期后关闭了 session，但远端进程可能仍在运行。先在主机上确认，再决定是否加大 `--exec-timeout` 重跑。
 - 不可安全重试：`connection_lost`（`stage:remote_execution`，并带 `outcome:"unknown"`）。命令发出后连接中断，例如主机重启或执行了 `sysupgrade`，远端命令可能仍在运行，也可能已经结束。先去主机上确认进程状态。
 
