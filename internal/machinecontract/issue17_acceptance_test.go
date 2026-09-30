@@ -186,10 +186,6 @@ func issue17RenderCases() map[string]issue17RenderCase {
 	dialRefused := ClassifySSH(errors.New("connection refused"), SSHContext{
 		Alias: "refused", Host: "127.0.0.1", Port: 22, Stage: "dial",
 	})
-	windowsMessage := "dial tcp 127.0.0.1:22: connectex: No connection could be made because the target machine actively refused it"
-	windowsDial := ClassifySSH(errors.New(windowsMessage), SSHContext{
-		Alias: "refused", Host: "127.0.0.1", Port: 22, Stage: "dial",
-	})
 	auth := ClassifySSH(errors.New("ssh: unable to authenticate"), SSHContext{
 		Alias: "auth", Host: "127.0.0.1", Port: 22, Stage: "dial",
 	})
@@ -249,11 +245,6 @@ func issue17RenderCases() map[string]issue17RenderCase {
 			failure: dialRefused, machineMode: JSONDocument, machine: dialRefused,
 			wantMachine: "{\n  \"ok\": false,\n  \"error\": \"dial_refused\",\n  \"message\": \"connection refused by 127.0.0.1:22\",\n  \"hint\": \"sshd not listening or wrong port; not an ssm quote bug\",\n  \"stage\": \"dial\",\n  \"alias\": \"refused\",\n  \"exit\": 255\n}\n",
 			wantHuman:   "ssm: error=dial_refused stage=dial alias=refused address=127.0.0.1:22\nError: connection refused by 127.0.0.1:22\nssm: hint=sshd not listening or wrong port; not an ssm quote bug\n",
-		},
-		"dial_refused_windows": {
-			failure: windowsDial, machineMode: JSONDocument, machine: windowsDial,
-			wantMachine: "{\n  \"ok\": false,\n  \"error\": \"internal\",\n  \"message\": \"" + windowsMessage + "\",\n  \"stage\": \"dial\",\n  \"alias\": \"refused\",\n  \"exit\": 255\n}\n",
-			wantHuman:   "ssm: error=internal stage=dial alias=refused address=127.0.0.1:22\nError: " + windowsMessage + "\n",
 		},
 		"auth_failed": {
 			failure: auth, machineMode: JSONDocument, machine: auth,

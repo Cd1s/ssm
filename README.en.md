@@ -111,6 +111,23 @@ Replace the fingerprint only with the `observed_fingerprint` you verified throug
 
 sshctl negotiates the key type already recorded in `known_hosts` for the host first (for example ed25519), so a host you connected to with OpenSSH is not reported as changed just because the server also offers ECDSA. `host_key_mismatch` means the key of a recorded type changed; `host_key_type_changed` (inspect status `type_changed`) means the server no longer presents any recorded key type. `accept` replaces only the entry of the same key type: other key types of that host and lines of other hosts are left untouched.
 
+### Wait for a host (`wait`) and retry dialing (`--retry-dial`)
+
+When a host is rebooting or a route is flapping, use `wait` instead of an external sleep loop:
+
+```bash
+sshctl --json wait my-server --timeout 5m --interval 5s
+sshctl --json wait my-server --until tcp
+sshctl --json run my-server --retry-dial 3:500ms --argv hostname
+```
+
+- `wait` keeps waiting only while the transport is "not reachable yet": refused, timed-out or unroutable dials, and handshake failures (EOF, reset, timeout) that happen before the server's host key arrives. A drop or timeout after that point may have happened mid-authentication and is reported, never retried. The default `--until ssh` makes exactly one real SSH connection per attempt (no separate banner-only probe, which sshd logs as a pre-auth failure that fail2ban can count).
+- **`wait` and `--retry-dial` never retry authentication or host-key failures.** `auth_failed`, `host_key_unknown`/`host_key_mismatch`/`host_key_type_changed`, missing credentials, and alias or configuration errors stop immediately with the real error, because repeated logins against a host running fail2ban get the client banned quickly.
+- `--interval` must be at least `1s`; delays grow exponentially with jitter up to a 30 second cap, every attempt is time-bounded so the total does not noticeably overshoot `--timeout`. A timeout returns `error:wait_timeout` (`stage:wait`, exit 1) whose `message` carries the last observed cause. `--until tcp` checks TCP only and never authenticates. Success prints `{"ok":true,"alias":...,"attempts":N,"elapsed_ms":...}`.
+- `--retry-dial N[:backoff]` (N at most 10, `backoff` defaults to 250ms, exponential with jitter) retries only pre-command transport failures (`dial_*`, and handshake failures before the server's host key arrives); it never retries `auth_failed`, `host_key_*`, `connection_lost`, or anything after the session is open. `dial_attempts` appears in the JSON only when `--retry-dial` was given or a retry happened.
+- Through a `proxy_jump` alias the rule applies per hop: a transport failure before the failing hop's OWN host key arrived (for example the target behind the jump is down or refuses the connection) keeps `wait`/`--retry-dial` going, and each retry only logs in to the earlier hops successfully; an authentication failure at any hop, or any failure after a hop's host key arrived, is never retried. `wait --until tcp` is not supported for a `proxy_jump` alias (the target is only reachable through its jump host).
+- `--until cmd:<...>` from the original proposal is not implemented (deferred).
+
 ### Run a command
 
 Use this for one fixed, simple command on a selected host:

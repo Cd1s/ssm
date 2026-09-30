@@ -206,7 +206,7 @@ Usage:
   ssm server           run the headless encrypted sync server
   ssm <command> --help   per-command help (never unlocks the vault or uses the network)
 
-Only in sshctl: request, host-key, status, sync. Only in ssm: keys, remove,
+Only in sshctl: request, host-key, status, wait, sync. Only in ssm: keys, remove,
 import-json, update, login, register, logout, server, pull-if-changed, remote-hash.
 
 Cloud (optional):

@@ -328,6 +328,25 @@ type compiledSSHFixtureOptions struct {
 	// remote file/directory probe is still answered so get reaches its
 	// download command.
 	HangAfterExec bool
+	// DropFirstConnections closes the first N accepted TCP connections before
+	// the SSH handshake and serves later ones normally.
+	DropFirstConnections int64
+	// DropDuringAuth closes every connection as soon as the server sees the
+	// first password attempt, as a server enforcing MaxAuthTries or a ban.
+	DropDuringAuth bool
+	// DelayHandshake waits before starting the SSH handshake, so the host key
+	// arrives late.
+	DelayHandshake time.Duration
+	// HangDuringAuth blocks the first password attempt until the fixture is
+	// closed, so the client's handshake deadline expires after key exchange.
+	HangDuringAuth bool
+	// RejectSessionsMessage is the reason text sent with a rejected session.
+	RejectSessionsMessage string
+	// ListenAddress binds a specific address instead of an ephemeral port;
+	// DeferListen leaves it unbound until StartListening, so the port refuses
+	// connections until then.
+	ListenAddress string
+	DeferListen   bool
 
 	// AllowForward makes the fixture a jump host: it accepts direct-tcpip
 	// channels and relays them to the requested address (issue #86).
@@ -367,6 +386,7 @@ type compiledSSHFixture struct {
 
 	connections  atomic.Int64
 	sessions     atomic.Int64
+	accepts      atomic.Int64
 	authAttempts *atomic.Int64
 	// rejectedAuth counts credentials the fixture refused, which is what a hop
 	// receiving another hop's secret would produce.
@@ -374,8 +394,14 @@ type compiledSSHFixture struct {
 	passwordTries *atomic.Int64
 	keyTries      *atomic.Int64
 
-	forwardsMu sync.Mutex
-	forwards   []string
+	forwardAttempts atomic.Int64
+	forwardsMu      sync.Mutex
+	forwards        []string
+
+	addr      string
+	listenMu  sync.Mutex
+	serverCfg *gossh.ServerConfig
+	closed    bool
 
 	// liveSessions and peakSessions track concurrent sessions when
 	// MaxSessions is enforced.
@@ -430,11 +456,26 @@ func newCompiledSSHFixture(t *testing.T, options compiledSSHFixtureOptions) *com
 		signer = ed
 	}
 	authAttempts, rejectedAuth, passwordTries, keyTries := new(atomic.Int64), new(atomic.Int64), new(atomic.Int64), new(atomic.Int64)
+	var fixturePtr atomic.Pointer[compiledSSHFixture]
+	// onAuth runs the fault hooks on every authentication attempt.
+	onAuth := func() {
+		if options.HangDuringAuth {
+			if f := fixturePtr.Load(); f != nil {
+				<-f.serveDone
+			}
+		}
+		if options.DropDuringAuth {
+			if f := fixturePtr.Load(); f != nil {
+				f.closeActive()
+			}
+		}
+	}
 	serverConfig := &gossh.ServerConfig{}
 	if options.AuthorizedKey != nil {
 		serverConfig.PublicKeyCallback = func(_ gossh.ConnMetadata, key gossh.PublicKey) (*gossh.Permissions, error) {
 			authAttempts.Add(1)
 			keyTries.Add(1)
+			onAuth()
 			if string(key.Marshal()) != string(options.AuthorizedKey.Marshal()) {
 				rejectedAuth.Add(1)
 				return nil, fmt.Errorf("authentication failed")
@@ -445,6 +486,7 @@ func newCompiledSSHFixture(t *testing.T, options compiledSSHFixtureOptions) *com
 		serverConfig.PasswordCallback = func(_ gossh.ConnMetadata, password []byte) (*gossh.Permissions, error) {
 			authAttempts.Add(1)
 			passwordTries.Add(1)
+			onAuth()
 			if string(password) != options.Password {
 				rejectedAuth.Add(1)
 				return nil, fmt.Errorf("authentication failed")
@@ -455,12 +497,11 @@ func newCompiledSSHFixture(t *testing.T, options compiledSSHFixtureOptions) *com
 	for _, hostSigner := range ordered {
 		serverConfig.AddHostKey(hostSigner)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen for compiled CLI SSH fixture: %v", err)
+	listenAddress := options.ListenAddress
+	if listenAddress == "" {
+		listenAddress = "127.0.0.1:0"
 	}
 	fixture := &compiledSSHFixture{
-		listener:     listener,
 		signer:       signer,
 		signers:      signers,
 		options:      options,
@@ -468,12 +509,48 @@ func newCompiledSSHFixture(t *testing.T, options compiledSSHFixtureOptions) *com
 		rejectedAuth: rejectedAuth, passwordTries: passwordTries, keyTries: keyTries,
 		serveDone: make(chan struct{}),
 		active:    map[net.Conn]struct{}{},
+		serverCfg: serverConfig,
+		addr:      listenAddress,
 	}
+	fixturePtr.Store(fixture)
 	fixture.options.record = fixture.recordCommand
 	t.Cleanup(func() { fixture.Close(t) })
-	go fixture.serve(serverConfig)
+	if !options.DeferListen {
+		if err := fixture.StartListening(); err != nil {
+			t.Fatalf("listen for compiled CLI SSH fixture: %v", err)
+		}
+	}
 	return fixture
 }
+
+// StartListening binds the fixture's address and starts serving. It is safe to
+// call from a timer goroutine to model a host that comes up later.
+func (f *compiledSSHFixture) StartListening() error {
+	f.listenMu.Lock()
+	defer f.listenMu.Unlock()
+	if f.closed || f.listener != nil {
+		return nil
+	}
+	listener, err := net.Listen("tcp", f.addr)
+	if err != nil {
+		return err
+	}
+	f.listener = listener
+	f.addr = listener.Addr().String()
+	go f.serve(f.serverCfg)
+	return nil
+}
+
+func (f *compiledSSHFixture) closeActive() {
+	f.activeMu.Lock()
+	defer f.activeMu.Unlock()
+	for connection := range f.active {
+		_ = connection.Close()
+	}
+}
+
+// AcceptedConnections counts raw TCP connections the fixture accepted.
+func (f *compiledSSHFixture) AcceptedConnections() int64 { return f.accepts.Load() }
 
 func (f *compiledSSHFixture) recordCommand(command string) {
 	f.commandsMu.Lock()
@@ -489,7 +566,7 @@ func (f *compiledSSHFixture) Commands() []string {
 }
 
 func (f *compiledSSHFixture) Connection(alias, password string) config.Connection {
-	host, portText, _ := net.SplitHostPort(f.listener.Addr().String())
+	host, portText, _ := net.SplitHostPort(f.Address())
 	port, _ := strconv.Atoi(portText)
 	return config.Connection{Name: alias, Host: host, Port: port, User: "fixture", Password: password}
 }
@@ -503,6 +580,9 @@ func (f *compiledSSHFixture) RejectedAuth() int64 { return f.rejectedAuth.Load()
 // PasswordTries and KeyTries count attempts per authentication method.
 func (f *compiledSSHFixture) PasswordTries() int64 { return f.passwordTries.Load() }
 func (f *compiledSSHFixture) KeyTries() int64      { return f.keyTries.Load() }
+
+// ForwardAttempts counts direct-tcpip requests, including refused ones.
+func (f *compiledSSHFixture) ForwardAttempts() int64 { return f.forwardAttempts.Load() }
 
 // Forwards returns the direct-tcpip targets the fixture relayed.
 func (f *compiledSSHFixture) Forwards() []string {
@@ -525,6 +605,7 @@ func (f *compiledSSHFixture) forward(newChannel gossh.NewChannel) {
 		return
 	}
 	target := net.JoinHostPort(request.Host, strconv.Itoa(int(request.Port)))
+	f.forwardAttempts.Add(1)
 	upstream, err := net.Dial("tcp", target)
 	if err != nil {
 		_ = newChannel.Reject(gossh.ConnectionFailed, err.Error())
@@ -549,7 +630,9 @@ func (f *compiledSSHFixture) forward(newChannel gossh.NewChannel) {
 }
 
 func (f *compiledSSHFixture) Address() string {
-	return f.listener.Addr().String()
+	f.listenMu.Lock()
+	defer f.listenMu.Unlock()
+	return f.addr
 }
 
 func (f *compiledSSHFixture) ConnectionCount() int64 {
@@ -563,7 +646,15 @@ func (f *compiledSSHFixture) SessionCount() int64 {
 func (f *compiledSSHFixture) Close(t *testing.T) {
 	t.Helper()
 	f.closeOnce.Do(func() {
-		_ = f.listener.Close()
+		f.listenMu.Lock()
+		f.closed = true
+		listener := f.listener
+		f.listenMu.Unlock()
+		if listener == nil {
+			close(f.serveDone)
+		} else {
+			_ = listener.Close()
+		}
 		select {
 		case <-f.serveDone:
 		case <-time.After(5 * time.Second):
@@ -596,6 +687,11 @@ func (f *compiledSSHFixture) serve(serverConfig *gossh.ServerConfig) {
 		if err != nil {
 			return
 		}
+		accepted := f.accepts.Add(1)
+		if accepted <= f.options.DropFirstConnections {
+			_ = raw.Close()
+			continue
+		}
 		f.activeMu.Lock()
 		f.active[raw] = struct{}{}
 		f.activeMu.Unlock()
@@ -622,6 +718,12 @@ func (f *compiledSSHFixture) serveConnection(raw net.Conn, serverConfig *gossh.S
 		_, _ = io.Copy(io.Discard, raw)
 		_ = raw.Close()
 		return
+	}
+	if f.options.DelayHandshake > 0 {
+		select {
+		case <-time.After(f.options.DelayHandshake):
+		case <-f.serveDone:
+		}
 	}
 	serverConn, channels, requests, err := gossh.NewServerConn(raw, serverConfig)
 	if err != nil {
@@ -652,7 +754,11 @@ func (f *compiledSSHFixture) serveConnection(raw net.Conn, serverConfig *gossh.S
 			continue
 		}
 		if f.options.RejectSessions {
-			_ = newChannel.Reject(gossh.ResourceShortage, "fixture session rejected")
+			reason := "fixture session rejected"
+			if f.options.RejectSessionsMessage != "" {
+				reason = f.options.RejectSessionsMessage
+			}
+			_ = newChannel.Reject(gossh.ResourceShortage, reason)
 			continue
 		}
 		if f.options.MaxSessions > 0 && int(open.Load()) >= f.options.MaxSessions {

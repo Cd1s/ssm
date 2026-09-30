@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -155,9 +156,10 @@ func dialSSHFresh(c config.Connection, v *config.Vault) (*gossh.Client, error) {
 		}
 		return dialChain(chain, v)
 	}
-	client, err := dialDirectHop(c, v)
+	var reached atomic.Bool
+	client, err := dialDirectHop(c, v, &reached, nil)
 	if err != nil {
-		return nil, classifyHop(err, c, c, false)
+		return nil, classifyHop(err, c, c, false, &reached, false)
 	}
 	startKeepalive(client)
 	return client, nil
@@ -165,7 +167,9 @@ func dialSSHFresh(c config.Connection, v *config.Vault) (*gossh.Client, error) {
 
 // dialDirectHop dials c over TCP: host-key verification, authentication and
 // the handshake deadline apply. Errors are returned unclassified.
-func dialDirectHop(c config.Connection, v *config.Vault) (*gossh.Client, error) {
+// reached is set once the hop's host key arrived (credentials may then have
+// been sent), so callers can refuse to retry the failure.
+func dialDirectHop(c config.Connection, v *config.Vault, reached *atomic.Bool, abort *dialAbort) (*gossh.Client, error) {
 	auth, err := buildAuth(c, v)
 	if err != nil {
 		return nil, err
@@ -174,9 +178,9 @@ func dialDirectHop(c config.Connection, v *config.Vault) (*gossh.Client, error) 
 	return dialSSHClient(address, &gossh.ClientConfig{
 		User:              c.User,
 		Auth:              auth,
-		HostKeyCallback:   buildHostKeyCallback(),
+		HostKeyCallback:   trackedHostKeyCallback(reached, abort),
 		HostKeyAlgorithms: hostKeyAlgorithmsFor(KnownHostsPath(), address),
-	})
+	}, abort)
 }
 
 // dialConnectDeadline opens the TCP connection and arms one deadline covering
@@ -201,10 +205,13 @@ func dialConnectDeadline(address string) (net.Conn, error) {
 // dialSSHClient connects and completes the SSH handshake under the connect
 // deadline, then removes the deadline so the established session is bounded
 // only by exec timeouts and keepalive.
-func dialSSHClient(address string, config *gossh.ClientConfig) (*gossh.Client, error) {
+func dialSSHClient(address string, config *gossh.ClientConfig, abort *dialAbort) (*gossh.Client, error) {
 	conn, err := dialConnectDeadline(address)
 	if err != nil {
 		return nil, err
+	}
+	if !abort.register(conn) {
+		return nil, errDialAbandoned
 	}
 	sshConn, channels, requests, err := gossh.NewClientConn(conn, address, config)
 	if err != nil {

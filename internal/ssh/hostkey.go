@@ -426,7 +426,7 @@ func openObservationConn(c config.Connection, v *config.Vault, address string) (
 	conn, err := dialTunnel(last, address, deadline)
 	if err != nil {
 		closeJumps()
-		return nil, nil, classifyHop(err, c, c, true)
+		return nil, nil, classifyHop(err, c, c, true, nil, true)
 	}
 	// Channels have no deadlines: closing the channel ends a stalled handshake.
 	timer := time.AfterFunc(time.Until(deadline), func() { _ = conn.Close() })

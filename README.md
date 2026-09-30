@@ -111,6 +111,23 @@ sshctl host-key accept my-server --fingerprint SHA256:REPLACE_WITH_VERIFIED_FING
 
 sshctl 会按 `known_hosts` 中该主机已有的密钥类型（如 ed25519）优先协商，所以先用 OpenSSH 连过的主机不会因服务器同时提供 ECDSA 而误报。`host_key_mismatch` 表示同一类型的密钥变了；`host_key_type_changed`（inspect 状态 `type_changed`）表示服务器不再提供 `known_hosts` 里记录过的任何类型。`accept` 只替换同一类型的条目，该主机的其它类型条目与其它主机的行保持不变。
 
+### 等待主机就绪（`wait`）与拨号重试（`--retry-dial`）
+
+主机重启或路由短暂中断时，用 `wait` 代替外部 `sleep` 循环：
+
+```bash
+sshctl --json wait my-server --timeout 5m --interval 5s
+sshctl --json wait my-server --until tcp
+sshctl --json run my-server --retry-dial 3:500ms --argv hostname
+```
+
+- `wait` 只在「传输层还没就绪」时继续等待：拨号被拒、超时、无路由，以及服务器 host key 到达之前的握手失败（EOF、reset、超时）。此后（可能正在认证时）的断开或超时只报告、不重试。默认 `--until ssh` 每次尝试只用一条真实的 SSH 连接（不做单独的 banner 探测，那会在 sshd 日志里留下 pre-auth 失败记录，可能被 fail2ban 计数）。
+- **`wait` 和 `--retry-dial` 永远不会重试认证失败或 host key 失败。** `auth_failed`、`host_key_unknown`/`host_key_mismatch`/`host_key_type_changed`、缺少凭据、alias 或配置错误都会立即以真实的错误码退出，因为对运行 fail2ban 的主机反复登录会很快被封。
+- `--interval` 不得小于 `1s`；间隔按指数退避加抖动增长，上限 30 秒；每次尝试都有时间上限，总耗时不会明显超过 `--timeout`。超时返回 `error:wait_timeout`（`stage:wait`，退出码 1），`message` 中带最后一次观察到的原因。`--until tcp` 只检查 TCP，不认证。成功时 JSON 为 `{"ok":true,"alias":…,"attempts":N,"elapsed_ms":…}`。
+- `--retry-dial N[:backoff]`（N 最大 10，`backoff` 默认 250ms，指数退避加抖动）只重试命令发出之前的传输失败（`dial_*`，以及服务器 host key 到达之前的握手失败）；`auth_failed`、`host_key_*`、`connection_lost` 以及会话打开之后的任何失败都不会重试。只有给了 `--retry-dial` 或实际重试过时，JSON 才带 `dial_attempts`。
+- 经 `proxy_jump` 别名时规则按跳逐一适用：某一跳在**它自己的** host key 到达之前的传输失败（例如跳板后面的目标还没起来、端口被拒）会继续等待/重试，每次只是重新成功登录前面的跳板；任何一跳认证失败，或任何一跳在其 host key 到达之后失败，都不会重试。`wait --until tcp` 不支持 `proxy_jump` 别名（目标只能经跳板到达）。
+- 提案中的 `--until cmd:<…>` 尚未实现（已推迟）。
+
 ### 运行命令
 
 当你要在一台已选定的主机上执行一个固定、简单的命令时：

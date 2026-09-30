@@ -3,9 +3,11 @@ package ssh
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -34,17 +36,28 @@ func hostPortOf(c config.Connection) string {
 // plain connection (chained == false) it is the historical classification.
 // For a chained connection the failure additionally names the hop that failed
 // in Via, so an agent knows which alias to fix or trust.
-func classifyHop(err error, target, hop config.Connection, chained bool) *machinecontract.ClassifiedError {
+//
+// reached reports whether any hop's host key arrived before the failure; such a
+// failure carries PastKeyExchange and is never retried. tunneled marks a hop
+// reached through an earlier hop, whose errors are not local connect errnos.
+func classifyHop(err error, target, hop config.Connection, chained bool, reached *atomic.Bool, tunneled bool) *machinecontract.ClassifiedError {
 	if !chained {
-		return ClassifyError(err, target)
+		classified := ClassifyError(err, target)
+		if reached != nil && reached.Load() {
+			classified.PastKeyExchange = true
+		}
+		return classified
 	}
 	port := hop.Port
 	if port == 0 {
 		port = 22 // never render the unset port as :0
 	}
 	failure := machinecontract.ClassifySSH(err, machinecontract.SSHContext{
-		Alias: target.Name, Host: hop.Host, Port: port,
+		Alias: target.Name, Host: hop.Host, Port: port, Tunneled: tunneled,
 	})
+	if reached != nil && reached.Load() {
+		failure.PastKeyExchange = true
+	}
 	via := machinecontract.RedactString(hop.Name)
 	failure.Via = via
 	if failure.Message != "" {
@@ -72,19 +85,23 @@ func invalidJumpChainError(target config.Connection, err error) *machinecontract
 // dialHops connects hops in order, each over the previous one, and returns
 // every client opened. On failure it closes what it opened and returns the
 // classified error naming the failing hop.
-func dialHops(hops []config.Connection, target config.Connection, v *config.Vault) ([]*gossh.Client, error) {
+func dialHops(hops []config.Connection, target config.Connection, v *config.Vault, abort *dialAbort) ([]*gossh.Client, error) {
 	clients := make([]*gossh.Client, 0, len(hops))
 	for index, hop := range hops {
 		var client *gossh.Client
 		var err error
+		// One flag per hop: it says whether THIS hop's host key arrived, i.e.
+		// whether credentials may have been sent to it.
+		reached := new(atomic.Bool)
+		abort.setCurrent(reached)
 		if index == 0 {
-			client, err = dialDirectHop(hop, v)
+			client, err = dialDirectHop(hop, v, reached, abort)
 		} else {
-			client, err = dialHopThrough(clients[index-1], hop, v)
+			client, err = dialHopThrough(clients[index-1], hop, v, reached, abort)
 		}
 		if err != nil {
 			closeClients(clients)
-			return nil, classifyHop(err, target, hop, true)
+			return nil, classifyHop(err, target, hop, true, reached, index > 0)
 		}
 		clients = append(clients, client)
 	}
@@ -95,7 +112,14 @@ func dialHops(hops []config.Connection, target config.Connection, v *config.Vaul
 // owns the jump clients: when it closes, for whatever reason, they are closed
 // too, so neither goroutines nor connections outlive the target connection.
 func dialChain(chain []config.Connection, v *config.Vault) (*gossh.Client, error) {
-	clients, err := dialHops(chain, chain[len(chain)-1], v)
+	return dialChainTracked(chain, v, nil)
+}
+
+// dialChainTracked is dialChain with an optional dialAbort that can cancel the
+// dial from another goroutine and reports whether the hop in progress already
+// received its host key.
+func dialChainTracked(chain []config.Connection, v *config.Vault, abort *dialAbort) (*gossh.Client, error) {
+	clients, err := dialHops(chain, chain[len(chain)-1], v, abort)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +145,7 @@ func closeClients(clients []*gossh.Client) {
 // and returns the last one together with a function that closes them all. The
 // chain must have at least two entries.
 func dialJumpPrefix(chain []config.Connection, v *config.Vault) (*gossh.Client, func(), error) {
-	clients, err := dialHops(chain[:len(chain)-1], chain[len(chain)-1], v)
+	clients, err := dialHops(chain[:len(chain)-1], chain[len(chain)-1], v, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -131,7 +155,7 @@ func dialJumpPrefix(chain []config.Connection, v *config.Vault) (*gossh.Client, 
 // dialHopThrough opens a direct-tcpip channel to hop over previous and runs the
 // SSH handshake for hop over it, with hop's own host-key verification and
 // credentials. The handshake shares the connect deadline of the direct path.
-func dialHopThrough(previous *gossh.Client, hop config.Connection, v *config.Vault) (*gossh.Client, error) {
+func dialHopThrough(previous *gossh.Client, hop config.Connection, v *config.Vault, reached *atomic.Bool, abort *dialAbort) (*gossh.Client, error) {
 	auth, err := buildAuth(hop, v)
 	if err != nil {
 		return nil, err
@@ -142,10 +166,13 @@ func dialHopThrough(previous *gossh.Client, hop config.Connection, v *config.Vau
 	if err != nil {
 		return nil, err
 	}
+	if !abort.register(conn) {
+		return nil, errDialAbandoned
+	}
 	sshConn, channels, requests, err := handshakeOverTunnel(conn, address, deadline, &gossh.ClientConfig{
 		User:              hop.User,
 		Auth:              auth,
-		HostKeyCallback:   buildHostKeyCallback(),
+		HostKeyCallback:   trackedHostKeyCallback(reached, abort),
 		HostKeyAlgorithms: hostKeyAlgorithmsFor(KnownHostsPath(), address),
 	})
 	if err != nil {
@@ -240,4 +267,79 @@ func poolKeyChain(c config.Connection, v *config.Vault) string {
 		parts[i] = poolKey(hop)
 	}
 	return strings.Join(parts, " >> ")
+}
+
+// abortGrace is how long a cancelled chain dial gets to finish tearing down
+// before the caller moves on.
+const abortGrace = 2 * time.Second
+
+var errDialAbandoned = errors.New("connect: dial abandoned")
+
+// dialAbort lets another goroutine cancel a chain dial: it closes every
+// connection the dial opened and makes host-key verification refuse, so no
+// credential is sent after abandonment. All methods accept a nil receiver.
+type dialAbort struct {
+	mu      sync.Mutex
+	done    bool
+	conns   []io.Closer
+	current *atomic.Bool
+}
+
+// register records a connection to close on abort; it reports false (and
+// closes conn) when the dial was already abandoned.
+func (a *dialAbort) register(conn io.Closer) bool {
+	if a == nil {
+		return true
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.done {
+		_ = conn.Close()
+		return false
+	}
+	a.conns = append(a.conns, conn)
+	return true
+}
+
+func (a *dialAbort) abort() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.done = true
+	conns := a.conns
+	a.conns = nil
+	a.mu.Unlock()
+	for i := len(conns) - 1; i >= 0; i-- {
+		_ = conns[i].Close()
+	}
+}
+
+func (a *dialAbort) aborted() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.done
+}
+
+func (a *dialAbort) setCurrent(reached *atomic.Bool) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.current = reached
+	a.mu.Unlock()
+}
+
+// currentReached reports whether the hop in progress already received its
+// host key.
+func (a *dialAbort) currentReached() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.current != nil && a.current.Load()
 }

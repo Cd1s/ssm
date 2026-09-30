@@ -72,6 +72,12 @@ func TestParseRemoteRunArgsRetryDial(t *testing.T) {
 	if _, err := parseRemoteRunArgs([]string{"--retry-dial", "-1", "--argv", "true"}); err == nil {
 		t.Fatal("negative retry count accepted")
 	}
+	if _, err := parseRemoteRunArgs([]string{"--retry-dial", "10", "--argv", "true"}); err != nil {
+		t.Fatalf("cap value rejected: %v", err)
+	}
+	if _, err := parseRemoteRunArgs([]string{"--retry-dial", "11", "--argv", "true"}); err == nil {
+		t.Fatal("retry count above the cap accepted")
+	}
 }
 
 func TestParseRemoteRunArgsTimeout(t *testing.T) {

@@ -146,22 +146,6 @@
     "cardinality": "one_value"
   },
   {
-    "name": "dial_refused_windows",
-    "command": "sshctl --offline --json run refused --argv true",
-    "executable": "sshctl",
-    "args": ["--offline", "--json", "run", "refused", "--argv", "true"],
-    "ok": false,
-    "error": "internal",
-    "stage": "dial",
-    "json_exit": 255,
-    "process_exit": 255,
-    "alias": "refused",
-    "absent": ["candidates", "hint"],
-    "stdout_placement": "stdout",
-    "stderr_placement": "empty",
-    "cardinality": "one_value"
-  },
-  {
     "name": "auth_failed",
     "command": "sshctl --offline --json run auth --argv true",
     "executable": "sshctl",

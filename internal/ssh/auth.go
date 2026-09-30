@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -38,6 +39,23 @@ func buildAuth(c config.Connection, v *config.Vault) ([]gossh.AuthMethod, error)
 		return nil, fmt.Errorf("no authentication configured for %q", c.Name)
 	}
 	return methods, nil
+}
+
+// trackedHostKeyCallback wraps the known_hosts callback so reached turns true
+// once THIS hop's host key arrived, i.e. key exchange got far enough that
+// credentials may follow. Each hop of a jump chain has its own flag: a failure
+// at hop N with hop N's flag still false happened before any credential could
+// have been sent to hop N (earlier hops authenticated successfully). When the
+// dial was abandoned (abort), the callback refuses the key so nothing is sent.
+func trackedHostKeyCallback(reached *atomic.Bool, abort *dialAbort) gossh.HostKeyCallback {
+	callback := buildHostKeyCallback()
+	return func(hostname string, remote net.Addr, key gossh.PublicKey) error {
+		if abort.aborted() {
+			return errDialAbandoned
+		}
+		reached.Store(true)
+		return callback(hostname, remote, key)
+	}
 }
 
 func buildHostKeyCallback() gossh.HostKeyCallback {
