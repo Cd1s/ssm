@@ -693,6 +693,7 @@ var reviewedCommandPolicyBoundaries = map[string]bool{
 	"runSSHCTLRun":                  true,
 	"runSSHCTLRunInvocation":        true,
 	"runSSHCTLStatus":               true,
+	"runWait":                       true,
 	// The sole retained command-side construction boundary. Callers may wire
 	// this factory into inventory/stream options without inheriting New's
 	// transport policy; renamed constructors remain graph violations.

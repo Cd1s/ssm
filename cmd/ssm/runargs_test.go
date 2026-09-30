@@ -61,6 +61,19 @@ func TestParseRemoteRunArgsTrace(t *testing.T) {
 	}
 }
 
+func TestParseRemoteRunArgsRetryDial(t *testing.T) {
+	spec, err := parseRemoteRunArgs([]string{"--retry-dial", "3:750ms", "--argv", "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.RetryDial != 3 || spec.RetryBackoff != 750*time.Millisecond {
+		t.Fatalf("retry spec = %+v", spec)
+	}
+	if _, err := parseRemoteRunArgs([]string{"--retry-dial", "-1", "--argv", "true"}); err == nil {
+		t.Fatal("negative retry count accepted")
+	}
+}
+
 func TestParseRemoteRunArgsTimeout(t *testing.T) {
 	spec, err := parseRemoteRunArgs([]string{"--timeout", "10s", "true"})
 	if err != nil {

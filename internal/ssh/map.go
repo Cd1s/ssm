@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"ssm/internal/config"
 	"ssm/internal/machinecontract"
@@ -21,6 +22,8 @@ type MapJob struct {
 	Secrets        map[string]string
 	Mode           string
 	Preflight      bool
+	RetryDial      int
+	RetryBackoff   time.Duration
 }
 
 // Map runs jobs with bounded parallelism. Each job resolves alias redirects
@@ -96,6 +99,8 @@ func runMapJob(v *config.Vault, job MapJob, noReuse bool) RunResult {
 		Interpreter:    job.Interpreter,
 		ScriptLabel:    job.ScriptLabel,
 		Mode:           job.Mode,
+		RetryDial:      job.RetryDial,
+		RetryBackoff:   job.RetryBackoff,
 	})
 	if job.Input != "" && job.Preflight {
 		res.Preflight = "passed"

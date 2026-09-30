@@ -35,8 +35,10 @@ type RunOptions struct {
 	Mode        string
 	// Stdin selects the local stdin forwarding rule; StdinFile, when set,
 	// forwards that file instead (like "< file") in every mode.
-	Stdin     StdinMode
-	StdinFile string
+	Stdin        StdinMode
+	StdinFile    string
+	RetryDial    int
+	RetryBackoff time.Duration
 	// RequestedAlias is the name the user typed (before redirects).
 	RequestedAlias string
 	ResolvedAlias  string
@@ -72,12 +74,10 @@ type RunResult struct {
 	Warning        string `json:"warning,omitempty"`
 	// InventoryStale is set when the inventory used for this run came from a
 	// local cache older than the configured stale_after.
-	InventoryStale bool `json:"inventory_stale,omitempty"`
-	// InventoryUnsynced: sync is configured but has never confirmed this
-	// inventory. InventorySyncError is the cause (stable sync-failure
-	// taxonomy) of the most recent failed sync attempt, when there was one.
+	InventoryStale     bool   `json:"inventory_stale,omitempty"`
 	InventoryUnsynced  bool   `json:"inventory_unsynced,omitempty"`
 	InventorySyncError string `json:"inventory_sync_error,omitempty"`
+	DialAttempts       int    `json:"dial_attempts,omitempty"`
 
 	failure         machinecontract.Failure
 	sensitiveValues []string
@@ -88,6 +88,10 @@ func applyRunFailure(result *RunResult, failure machinecontract.Failure) {
 	result.Exit = failure.Exit
 	result.ResultMetadata = failure.ResultMetadata()
 	result.failure = failure
+}
+
+func retryableDialFailure(failure machinecontract.Failure) bool {
+	return strings.HasPrefix(failure.Error, "dial_") || failure.Error == "handshake_failed"
 }
 
 func redactRunFailure(result RunResult) RunResult {
@@ -301,7 +305,30 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 	}
 
 	start := time.Now()
-	client, session, acquireStage, err := acquireSSHSession(c, v, opts.NoReuse)
+	maxAttempts := opts.RetryDial + 1
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	backoff := opts.RetryBackoff
+	if backoff <= 0 {
+		backoff = 250 * time.Millisecond
+	}
+	var client *gossh.Client
+	var session *gossh.Session
+	var acquireStage string
+	var err error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		res.DialAttempts = attempt
+		client, session, acquireStage, err = acquireSSHSession(c, v, opts.NoReuse)
+		if err == nil {
+			break
+		}
+		failure := machinecontract.ClassifySSH(err, machinecontract.SSHContext{Alias: c.Name, Host: c.Host, Port: c.Port, Stage: acquireStage, SessionAcquisition: acquireStage == "session"})
+		if attempt == maxAttempts || !retryableDialFailure(failure) {
+			break
+		}
+		time.Sleep(backoff)
+	}
 	if err != nil {
 		failure := machinecontract.ClassifySSH(err, machinecontract.SSHContext{
 			Alias: c.Name, Host: c.Host, Port: c.Port, Stage: acquireStage,

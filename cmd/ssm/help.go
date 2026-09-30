@@ -12,7 +12,7 @@ var (
 		"pull", "push", "list", "host", "hosts", "run", "exec", "plan", "map", "check", "doctor",
 		"put", "get", "redirect", "alias-link",
 	}
-	sshctlOnlyCommands = []string{"request", "sync", "host-key", "known-hosts", "shell", "status"}
+	sshctlOnlyCommands = []string{"request", "sync", "host-key", "known-hosts", "shell", "status", "wait"}
 	ssmOnlyCommands    = []string{
 		"update", "remove", "keys", "ls", "import-json", "server", "register", "login", "logout",
 		"pull-if-changed", "remote-hash",
@@ -128,7 +128,9 @@ func sshctlCommandUsage(command string, args []string) {
 	case "doctor":
 		fmt.Print("Usage: sshctl doctor [alias] [--deep] [--json]\nReports vault/sync state; --deep adds remote health probes. No alias gives local diagnostics.\n")
 	case "status":
-		fmt.Print("Usage: sshctl [--json] status [--offline]\nIn the default local_first sync mode it reports the recorded sync outcome (remote_state, last_sync_error, next_sync_attempt, cache_age_seconds, inventory_stale, inventory_unsynced) without contacting the server and never fails because of sync; with sync_mode strict it refreshes online first. --offline (or SSM_OFFLINE=1) is deprecated for reads: accepted for compatibility; reads are local by default and it now only suppresses background sync (with sync_mode strict it still skips the online refresh and uses cached local state). Offline output reports pending transaction state and remote_state:not_checked.\n")
+		fmt.Print("Usage: sshctl [--json] status [--offline]\nIn the default local_first sync mode it reports the recorded sync outcome (remote_state, last_sync_error, next_sync_attempt, cache_age_seconds, inventory_stale, inventory_unsynced) without contacting the server and never fails because of sync; with sync_mode strict it refreshes online first. --offline is deprecated for reads.\n")
+	case "wait":
+		fmt.Print("Usage: sshctl [--json] wait <alias> [--timeout 5m] [--interval 5s] [--until ssh|tcp]\nWaits for an exact host alias to become reachable. A timeout returns error=wait_timeout.\n")
 	case "sync", "pull":
 		fmt.Printf("Usage: sshctl [--json] %[1]s [--adopt-remote <remote-sha256> --yes]\nExplicit and strict: failure is failure, with no silent offline fallback. Refuses to overwrite a local vault that diverged from the remote (conflict evidence is preserved), and fails with \"vault is busy\" if another ssm process holds the short vault write lock (retry).\nReviewed recovery: %[1]s --adopt-remote <remote-sha256> --yes replaces the local vault only after reviewing the exact remote identity, and is refused if the local vault changed after the conflict evidence was recorded (re-check with sshctl --offline --json doctor).\n", command)
 	case "redirect", "alias-link":

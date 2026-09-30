@@ -154,6 +154,10 @@ func runSSHCTLParsed(args []string) {
 		}
 		unlock()
 		runSSHCTLStatus()
+	case "wait":
+		machineJSON = machineJSON || commandHasJSONFlag(true, args[0], args[1:])
+		unlock()
+		runWait(args[1:])
 	case "--version", "-v":
 		if len(args) != 1 {
 			sshctlUsageExit()
