@@ -22,7 +22,7 @@ automation depend on.
 ## Development workflow
 
 - Prefer minimal changes, TDD at public seams, and actual verification.
-- Never push directly to `agent-headless-sync`; use branches and pull requests.
+- Never push directly to the default branch `main` (formerly `agent-headless-sync`); use branches and pull requests.
 - Never merge, tag, or release without explicit human approval.
 
 ## Agent skills

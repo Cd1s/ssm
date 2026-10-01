@@ -3,9 +3,9 @@ name: CI
 on:
   workflow_dispatch:
   push:
-    branches: [agent-headless-sync]
+    branches: [main, agent-headless-sync]
   pull_request:
-    branches: [agent-headless-sync]
+    branches: [main, agent-headless-sync]
 
 permissions:
   contents: read
