@@ -796,8 +796,10 @@ func TestPushContractSourceDiscoveryIncludesRequiredSurfaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range []string{
-		"README.en.md",
 		"README.md",
+		"README.zh-CN.md",
+		"docs/reference.md",
+		"docs/reference.zh-CN.md",
 		"CONTEXT.md",
 		"AGENTS.md",
 		"RELEASE_NOTES.md",

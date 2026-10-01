@@ -2977,7 +2977,7 @@ func TestReleaseV2ReadinessIsExecutable(t *testing.T) {
 		"markdown-contracts": commandAction(
 			"npx",
 			[]string{
-				"--yes", "markdownlint-cli2@0.18.1", "README.md", "README.en.md", "RELEASE_NOTES.md",
+				"--yes", "markdownlint-cli2@0.18.1", "README.md", "README.zh-CN.md", "RELEASE_NOTES.md",
 				"docs/**/*.md", "skills/**/*.md",
 			},
 			nil,

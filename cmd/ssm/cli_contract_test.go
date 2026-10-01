@@ -16,7 +16,7 @@ import (
 
 // This file is the public-contract check for issue #83: the flags the parsers
 // accept and the SSM_* environment variables the code reads must be documented
-// (help output, README zh and en, the agent skill), and everything the
+// (help output, the reference documents in both languages, the agent skill), and everything the
 // documents name must exist in the implementation.
 //
 // The rule is deliberately mechanical so it stays cheap to maintain:
@@ -29,7 +29,7 @@ import (
 //   - each accepted flag and variable must be mentioned (word-bounded, anywhere
 //     in the document; this is not a per-section check and short flags such as
 //     -j are covered only through the run option tables' help check) in
-//     README.md, README.en.md, and skills/agent-ssm/SKILL.md, and, unless it is a
+//     docs/reference.md, docs/reference.zh-CN.md, and skills/agent-ssm/SKILL.md, and, unless it is a
 //     flag.FlagSet flag whose help the flag package generates, in the help
 //     output of some command (environment variables: in `sshctl --help`);
 //   - every "--flag" and "SSM_*" token in those documents and in help output
@@ -65,10 +65,10 @@ var internalEnv = map[string]string{
 }
 
 // developerEnv are variables of the repository's own tooling (cmd/verify), not
-// of the ssm/sshctl binaries. They are documented in the README development
-// section only.
+// of the ssm/sshctl binaries. They are documented in the development section
+// of the reference documents only.
 var developerEnv = map[string]string{
-	"SSM_VERIFY_REQUIRE_PINNED": "cmd/verify readiness switch, documented in the README development section",
+	"SSM_VERIFY_REQUIRE_PINNED": "cmd/verify readiness switch, documented in the reference development section",
 }
 
 var (
@@ -89,7 +89,26 @@ var flagPackageMethods = map[string]bool{
 	"Func": true, "BoolFunc": true, "Var": true, "TextVar": true,
 }
 
-var contractDocuments = []string{"README.md", "README.en.md", filepath.Join("skills", "agent-ssm", "SKILL.md")}
+var referenceDocuments = []string{
+	filepath.Join("docs", "reference.md"),
+	filepath.Join("docs", "reference.zh-CN.md"),
+}
+
+var contractDocuments = append(append([]string{}, referenceDocuments...), filepath.Join("skills", "agent-ssm", "SKILL.md"))
+
+// readmeDocuments are the landing pages. They are deliberately short, so they
+// are not required to mention every flag, but everything they name must still
+// exist in the implementation (the reverse direction of the contract).
+var readmeDocuments = []string{"README.md", "README.zh-CN.md"}
+
+// installerEnv are SSM_* variables read by install.sh rather than by the Go
+// binaries. Documents may name them; the test below keeps the list honest by
+// requiring each one to still appear in install.sh.
+var installerEnv = map[string]string{
+	"SSM_RELEASE_TAG": "install.sh: exact stable tag to install",
+	"SSM_PREFIX":      "install.sh: directory that receives ssm and the sshctl symlink",
+	"SSM_REPO":        "install.sh: release repository to download from",
+}
 
 func mentionsToken(text, token string) bool {
 	pattern := regexp.MustCompile(`(?:^|[^A-Za-z0-9_-])` + regexp.QuoteMeta(token) + `(?:$|[^A-Za-z0-9_-])`)
@@ -390,7 +409,7 @@ func TestContractAcceptedFlagsAreDocumented(t *testing.T) {
 func TestContractDocumentedFlagsAreAccepted(t *testing.T) {
 	flags, _ := acceptedFlags(t)
 	sources := map[string]string{"help output": joinedHelp(helpCorpus(t))}
-	for _, name := range contractDocuments {
+	for _, name := range append(append([]string{}, contractDocuments...), readmeDocuments...) {
 		sources[name] = readContractDocument(t, name)
 	}
 	for name, text := range sources {
@@ -441,7 +460,7 @@ func TestContractEnvironmentVariablesAreDocumented(t *testing.T) {
 			continue
 		}
 		if _, developer := developerEnv[name]; developer {
-			for _, doc := range []string{"README.md", "README.en.md"} {
+			for _, doc := range referenceDocuments {
 				if !mentionsToken(documents[doc], name) {
 					t.Errorf("developer variable %s is not documented in %s", name, doc)
 				}
@@ -462,15 +481,26 @@ func TestContractEnvironmentVariablesAreDocumented(t *testing.T) {
 func TestContractDocumentedEnvironmentVariablesAreRead(t *testing.T) {
 	names := readEnvNames(t)
 	sources := map[string]string{"help output": joinedHelp(helpCorpus(t))}
-	for _, name := range contractDocuments {
+	for _, name := range append(append([]string{}, contractDocuments...), readmeDocuments...) {
 		sources[name] = readContractDocument(t, name)
 	}
 	for source, text := range sources {
 		for _, name := range envTokenPattern.FindAllString(text, -1) {
-			if names[name] || isInternalEnv(name) {
+			if names[name] || isInternalEnv(name) || installerEnv[name] != "" {
 				continue
 			}
 			t.Errorf("%s names %s, which the code never reads", source, name)
+		}
+	}
+}
+
+// TestContractInstallerEnvironmentVariablesAreRead keeps installerEnv honest:
+// every entry must still be read by install.sh.
+func TestContractInstallerEnvironmentVariablesAreRead(t *testing.T) {
+	installer := readContractDocument(t, "install.sh")
+	for name := range installerEnv {
+		if !mentionsToken(installer, name) {
+			t.Errorf("installerEnv lists %s, which install.sh no longer reads", name)
 		}
 	}
 }

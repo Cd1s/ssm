@@ -345,16 +345,18 @@ func assertV2SectionAnchors(t *testing.T, name, body string) {
 func assertV2PublicSurfaces(t *testing.T, root string) {
 	t.Helper()
 	surfaces := map[string][]string{
-		"README.en.md":               {"docs/migration-v1-to-v2.md", "docs/update-provenance-runbook.md", "--refresh", "update --major --yes", "changed:false", "action:\"unchanged\"", "transaction_id", "do not publish"},
-		"README.md":                  {"docs/migration-v1-to-v2.zh-CN.md", "docs/update-provenance-runbook.zh-CN.md", "--refresh", "update --major --yes", "changed:false", "action:\"unchanged\"", "transaction_id", "do not publish"},
-		"RELEASE_NOTES.md":           {"## v2.0.1", "## v2.0.0", "backward-compatible patch release", "BC-1", "BC-10", "v2-readiness-report", "all child tickets", "#31", "final readiness", "complete field-level", "changed:false", "action:\"unchanged\"", "does not publish"},
-		"SECURITY.md":                {"docs/update-provenance-runbook.md", "identity rotation", "no verification bypass"},
-		"skills/agent-ssm/SKILL.md":  {"docs/migration-v1-to-v2.md", "positive --refresh", "update --major --yes", "changed:false", "action:\"unchanged\"", "transaction_id", "do not publish"},
-		"skills/agent-ssm/README.md": {"docs/migration-v1-to-v2.md", "positive --refresh", "update --major --yes", "changed:false", "action:\"unchanged\"", "transaction_id", "do not publish"},
+		"README.md":                                  {"docs/migration-v1-to-v2.md", "docs/update-provenance-runbook.md", "update --major --yes"},
+		"README.zh-CN.md":                            {"docs/migration-v1-to-v2.zh-CN.md", "docs/update-provenance-runbook.zh-CN.md", "update --major --yes"},
+		"docs/reference.md":                          {"migration-v1-to-v2.md", "update-provenance-runbook.md", "--refresh", "update --major --yes", "changed:false", "action:\"unchanged\"", "transaction_id", "do not publish"},
+		"docs/reference.zh-CN.md":                    {"migration-v1-to-v2.zh-CN.md", "update-provenance-runbook.zh-CN.md", "--refresh", "update --major --yes", "changed:false", "action:\"unchanged\"", "transaction_id", "do not publish"},
+		"RELEASE_NOTES.md":                           {"## v2.0.1", "## v2.0.0", "backward-compatible patch release", "BC-1", "BC-10", "v2-readiness-report", "all child tickets", "#31", "final readiness", "complete field-level", "changed:false", "action:\"unchanged\"", "does not publish"},
+		"SECURITY.md":                                {"docs/update-provenance-runbook.md", "identity rotation", "no verification bypass"},
+		"skills/agent-ssm/SKILL.md":                  {"docs/migration-v1-to-v2.md", "positive --refresh", "update --major --yes", "changed:false", "action:\"unchanged\"", "transaction_id", "do not publish"},
+		"skills/agent-ssm/README.md":                 {"docs/migration-v1-to-v2.md", "positive --refresh", "update --major --yes", "changed:false", "action:\"unchanged\"", "transaction_id", "do not publish"},
 		"skills/agent-ssm/references/import-json.md": {"publishing-intent.json", "reconcile", "pending", "changed:false", "action:\"unchanged\"", "transaction_id", "do not publish"},
-		"cmd/ssm/help.go":                     {"positive", "--offline", "pending", "push --only", "direction", "kind"},
-		"cmd/ssm/main.go":                     {"update within", "update --major", "--yes", "digest", "provenance", "never bypassed"},
-		"docs/plans/verification-manifest.md": {"v2-readiness-report", "non-publishing", "initial_v2_release_readiness"},
+		"cmd/ssm/help.go":                            {"positive", "--offline", "pending", "push --only", "direction", "kind"},
+		"cmd/ssm/main.go":                            {"update within", "update --major", "--yes", "digest", "provenance", "never bypassed"},
+		"docs/plans/verification-manifest.md":        {"v2-readiness-report", "non-publishing", "initial_v2_release_readiness"},
 	}
 	for name, anchors := range surfaces {
 		body := readV2ContractFile(t, root, name)
