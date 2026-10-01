@@ -99,7 +99,11 @@ func remoteIsDir(c config.Connection, v *config.Vault, remotePath string) (bool,
 		return false, err
 	}
 	defer releaseClient(client, false)
+	return remoteIsDirOn(client, remotePath)
+}
 
+// remoteIsDirOn is remoteIsDir over an already connected client.
+func remoteIsDirOn(client *gossh.Client, remotePath string) (bool, error) {
 	session, err := newSessionRetry(client)
 	if err != nil {
 		return false, err

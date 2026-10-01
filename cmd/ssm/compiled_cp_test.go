@@ -242,20 +242,9 @@ func TestCompiledCopyScopeAndErrors(t *testing.T) {
 			issue80RequireFailure(t, result, 2, "invalid_arguments", "validate")
 		}
 	})
-	t.Run("direct is not implemented and says why", func(t *testing.T) {
-		connections := env.a.ConnectionCount()
-		result := env.cp(t, "--json", "cp", "src:"+source, "dst:"+destination, "--direct")
-		got := issue80RequireFailure(t, result, 2, "invalid_arguments", "validate")
-		if message, _ := got["message"].(string); !strings.Contains(message, "--direct") || !strings.Contains(message, "credentials") {
-			t.Fatalf("message = %q, want the security reason", message)
-		}
-		if env.a.ConnectionCount() != connections {
-			t.Fatal("--direct opened a connection")
-		}
-	})
-	t.Run("help documents the flags and the direct decision", func(t *testing.T) {
+	t.Run("help documents the flags and the direct exposure", func(t *testing.T) {
 		result := env.cp(t, "cp", "--help")
-		for _, want := range []string{"sshctl cp <alias-a>:<path> <alias-b>:<path>", "--timeout", "--json", "--direct", "explicit decision", "local_relay"} {
+		for _, want := range []string{"sshctl cp <alias-a>:<path> <alias-b>:<path>", "--timeout", "--json", "--direct", "--yes", "confirmation_required", "forwarded to A", "only B's key", "never sent", "host_key_unknown", "remote_tool_unavailable", "route=direct", "local_relay"} {
 			if !strings.Contains(result.Stdout, want) {
 				t.Fatalf("cp help lacks %q: %s", want, result.Stdout)
 			}
