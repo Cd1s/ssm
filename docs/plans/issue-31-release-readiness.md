@@ -316,7 +316,7 @@ Release profile prerequisites: `tool:git@any`, `repository:fully-populated-regul
 
 - requirement: `required`
 - description: Run the pinned Markdown style, table, and link-fragment contract across every public and maintainer document.
-- action: command `npx --yes markdownlint-cli2@0.18.1 README.md README.en.md RELEASE_NOTES.md docs/**/*.md skills/**/*.md`
+- action: command `npx --yes markdownlint-cli2@0.18.1 README.md README.zh-CN.md RELEASE_NOTES.md docs/**/*.md skills/**/*.md`
 - tool/file/capability prerequisites: `tool:npx@any`
 
 ### 32. `coverage-observation`
@@ -420,7 +420,7 @@ The acceptance rows below connect each public seam to the manifest check(s) that
 ### docs/help/lint
 
 - result: `passed`
-- manifest check(s): `v2-structure-docs`: command `go test ./cmd/ssm -run ^(TestDeepPolicyOwnershipContraction|TestDeepPolicyOwnershipAnalyzerAdversarialFixtures|TestV2MigrationDocumentationContract|TestSSHCTLCommandHelpNeedsNoUnlockOrTTY|TestRunHelpDocumentsFastStream)$ -count=1`; `markdown-contracts`: command `npx --yes markdownlint-cli2@0.18.1 README.md README.en.md RELEASE_NOTES.md docs/**/*.md skills/**/*.md`; `lint`: command `golangci-lint run --new-from-patch {temp}/lint.patch`
+- manifest check(s): `v2-structure-docs`: command `go test ./cmd/ssm -run ^(TestDeepPolicyOwnershipContraction|TestDeepPolicyOwnershipAnalyzerAdversarialFixtures|TestV2MigrationDocumentationContract|TestSSHCTLCommandHelpNeedsNoUnlockOrTTY|TestRunHelpDocumentsFastStream)$ -count=1`; `markdown-contracts`: command `npx --yes markdownlint-cli2@0.18.1 README.md README.zh-CN.md RELEASE_NOTES.md docs/**/*.md skills/**/*.md`; `lint`: command `golangci-lint run --new-from-patch {temp}/lint.patch`
 - evidence: cmd/ssm/v2_migration_documentation_contract_test.go — TestV2MigrationDocumentationContract; cmd/ssm/help_test.go — TestSSHCTLCommandHelpNeedsNoUnlockOrTTY, TestRunHelpDocumentsFastStream; cmd/verify/manifest.go — lint check and reviewed lint-patch preparation
 
 ### observed coverage
@@ -484,7 +484,7 @@ These are the exact local entry points for Issue #31 review; the release action 
 - `v2-update-contracts`: `go test ./internal/update -run ^(TestMigrationPreflightInspectsLocalSyncStateWithoutNetwork|TestMigrationPreflightFailsForPreservedSyncConflictWithoutNetwork|TestSameMajorSelection|TestCrossMajorRequiresExplicitAuthorization|TestFailedMigrationPreservesExecutable)$ -count=1`
 - `v2-structure-docs`: `go test ./cmd/ssm -run ^(TestDeepPolicyOwnershipContraction|TestDeepPolicyOwnershipAnalyzerAdversarialFixtures|TestV2MigrationDocumentationContract|TestSSHCTLCommandHelpNeedsNoUnlockOrTTY|TestRunHelpDocumentsFastStream)$ -count=1`
 - `v2-release-contracts`: `go test ./cmd/verify -run ^(TestReleaseStrictlyContainsCI|TestProfilesAreNonMutating|TestVerificationChildrenHaveNoInheritedPublicationAuthority|TestSourceVersionMatchesReleaseWorkflowGrammar|TestReleaseProvenanceForEveryTarget|TestReleaseWorkflowUsesCredentialFreeVerifierPreflightAndManifestParity|TestReleaseWorkflowProducesPinnedProvenance|TestReleaseWorkflowPublishesOnlySelectedTagIdentity|TestReleaseV2ReadinessIsExecutable)$ -count=1`
-- `markdown-contracts`: `npx --yes markdownlint-cli2@0.18.1 README.md README.en.md RELEASE_NOTES.md docs/**/*.md skills/**/*.md`
+- `markdown-contracts`: `npx --yes markdownlint-cli2@0.18.1 README.md README.zh-CN.md RELEASE_NOTES.md docs/**/*.md skills/**/*.md`
 - `coverage-observation`: `go test -cover -count=1 ./...`
 
 ## Verification boundaries and evidence semantics

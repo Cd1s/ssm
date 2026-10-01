@@ -16,18 +16,28 @@ func TestCurrentV2BeginnerDocumentationContract(t *testing.T) {
 	root := repositoryRoot(t)
 	active := currentV2ActiveDocumentation(t, root)
 
-	for _, name := range []string{"README.md", "README.en.md"} {
+	for _, name := range []string{"README.md", "README.zh-CN.md"} {
 		document := active[name]
 		for _, required := range []string{
 			"https://github.com/Cd1s/ssm/releases/latest/download/install.sh",
 			"v2.1.0",
 			"latest",
+			"SSM_RELEASE_TAG=v2.1.0",
+			"docs/reference",
 		} {
 			if !strings.Contains(strings.ToLower(document), strings.ToLower(required)) {
 				t.Errorf("%s lacks fresh-install/latest fact %q", name, required)
 			}
 		}
 		assertBeginnerFirstRunOrder(t, name, document)
+	}
+
+	// The exhaustive documents carry the current-release identity too, so they
+	// cannot drift from the landing page.
+	for _, name := range []string{"docs/reference.md", "docs/reference.zh-CN.md"} {
+		if !strings.Contains(active[name], "v2.1.0") {
+			t.Errorf("%s does not identify v2.1.0 as the current release", name)
+		}
 	}
 
 	for _, name := range []string{"skills/agent-ssm/SKILL.md", "skills/agent-ssm/README.md"} {
@@ -59,7 +69,9 @@ func currentV2ActiveDocumentation(t *testing.T, root string) map[string]string {
 	t.Helper()
 	paths := []string{
 		"README.md",
-		"README.en.md",
+		"README.zh-CN.md",
+		"docs/reference.md",
+		"docs/reference.zh-CN.md",
 		"SECURITY.md",
 		"docs/migration-v1-to-v2.md",
 		"docs/migration-v1-to-v2.zh-CN.md",
@@ -88,10 +100,11 @@ func assertBeginnerFirstRunOrder(t *testing.T, name, document string) {
 		regexp *regexp.Regexp
 	}{
 		{"install", regexp.MustCompile(`https://github\.com/Cd1s/ssm/releases/latest/download/install\.sh`)},
-		{"version", regexp.MustCompile(`sshctl --json --version`)},
-		{"status", regexp.MustCompile(`sshctl --json status`)},
-		{"host list", regexp.MustCompile(`sshctl --json host list`)},
-		{"exact-alias hostname", regexp.MustCompile(`sshctl --json run [A-Za-z0-9._-]+ --argv hostname`)},
+		{"version", regexp.MustCompile(`ssm --version`)},
+		{"add host", regexp.MustCompile(`sshctl host upsert [A-Za-z0-9._-]+ --host`)},
+		{"host-key inspect", regexp.MustCompile(`sshctl host-key inspect [A-Za-z0-9._-]+`)},
+		{"host-key accept", regexp.MustCompile(`sshctl host-key accept [A-Za-z0-9._-]+ --fingerprint SHA256:`)},
+		{"exact-alias hostname", regexp.MustCompile(`sshctl run [A-Za-z0-9._-]+ --argv hostname`)},
 	}
 	previous := -1
 	for _, anchor := range anchors {
@@ -199,7 +212,9 @@ func TestLatestDocumentationContract(t *testing.T) {
 		path string
 	}{
 		{name: "README.md", path: "README.md"},
-		{name: "README.en.md", path: "README.en.md"},
+		{name: "README.zh-CN.md", path: "README.zh-CN.md"},
+		{name: "reference", path: filepath.Join("docs", "reference.md")},
+		{name: "reference Chinese", path: filepath.Join("docs", "reference.zh-CN.md")},
 		{name: "agent skill", path: filepath.Join("skills", "agent-ssm", "SKILL.md")},
 		{name: "agent skill README", path: filepath.Join("skills", "agent-ssm", "README.md")},
 		{name: "version compatibility", path: filepath.Join("skills", "agent-ssm", "references", "version-compatibility.md")},
@@ -216,26 +231,26 @@ func TestLatestDocumentationContract(t *testing.T) {
 	}
 
 	readmes := map[string][]string{
-		"README.md": {
-			"### 1. 安装",
-			"### 2. 验证版本",
-			"### 3. 查看状态",
-			"### 4. 列出主机",
-			"### 5. 对一个精确 alias 运行 hostname",
+		"README.zh-CN.md": {
+			"## 安装",
+			"## 快速开始",
+			"1. **添加服务器。**",
+			"2. **信任它的主机密钥。**",
+			"3. **运行命令。**",
 		},
-		"README.en.md": {
-			"### 1. Install",
-			"### 2. Verify the version",
-			"### 3. Check status",
-			"### 4. List hosts",
-			"### 5. Run hostname on one exact alias",
+		"README.md": {
+			"## Install",
+			"## Quick start",
+			"1. **Add a server.**",
+			"2. **Trust its host key.**",
+			"3. **Run a command.**",
 		},
 	}
 	for name, anchors := range readmes {
 		assertLatestContractAnchorsInOrder(t, name, contents[name], anchors)
 		body := strings.ToLower(contents[name])
 		freshInstallAnchor := "fresh install"
-		if name == "README.md" {
+		if name == "README.zh-CN.md" {
 			freshInstallAnchor = "全新安装"
 		}
 		for _, required := range []string{

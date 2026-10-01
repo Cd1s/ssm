@@ -307,7 +307,7 @@ func releaseChecks() []Check {
 			Description: "Run the pinned Markdown style, table, and link-fragment contract across every public and maintainer document.",
 			Requirement: requirementRequired,
 			Action: commandAction("npx", []string{
-				"--yes", "markdownlint-cli2@0.18.1", "README.md", "README.en.md", "RELEASE_NOTES.md",
+				"--yes", "markdownlint-cli2@0.18.1", "README.md", "README.zh-CN.md", "RELEASE_NOTES.md",
 				"docs/**/*.md", "skills/**/*.md",
 			}, nil, ""),
 			Prerequisites: []Prerequisite{

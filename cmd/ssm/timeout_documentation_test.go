@@ -7,12 +7,12 @@ import (
 	"testing"
 )
 
-// TestTimeoutDocumentationNamesEveryTimeout pins that the README (both
+// TestTimeoutDocumentationNamesEveryTimeout pins that the reference (both
 // languages) and the agent skill say what each timeout governs, the keepalive
 // switch, and the exec_timeout exit code.
 func TestTimeoutDocumentationNamesEveryTimeout(t *testing.T) {
 	root := filepath.Join("..", "..")
-	for _, name := range []string{"README.md", "README.en.md", filepath.Join("skills", "agent-ssm", "SKILL.md")} {
+	for _, name := range []string{filepath.Join("docs", "reference.md"), filepath.Join("docs", "reference.zh-CN.md"), filepath.Join("skills", "agent-ssm", "SKILL.md")} {
 		data, err := os.ReadFile(filepath.Join(root, name)) //nolint:gosec // fixed repository documentation paths
 		if err != nil {
 			t.Fatal(err)
@@ -26,21 +26,21 @@ func TestTimeoutDocumentationNamesEveryTimeout(t *testing.T) {
 			}
 		}
 	}
-	readme, _ := os.ReadFile(filepath.Join(root, "README.md")) //nolint:gosec // fixed repository documentation path
-	if !strings.Contains(string(readme), "不是执行超时") {
-		t.Error("README.md must say --timeout is a connect timeout, not an execution timeout")
+	chinese, _ := os.ReadFile(filepath.Join(root, "docs", "reference.zh-CN.md")) //nolint:gosec // fixed repository documentation path
+	if !strings.Contains(string(chinese), "不是执行超时") {
+		t.Error("docs/reference.zh-CN.md must say --timeout is a connect timeout, not an execution timeout")
 	}
-	if !strings.Contains(string(readme), "已弃用") {
-		t.Error("README.md must mark the legacy --timeout alias deprecated")
+	if !strings.Contains(string(chinese), "已弃用") {
+		t.Error("docs/reference.zh-CN.md must mark the legacy --timeout alias deprecated")
 	}
-	english, _ := os.ReadFile(filepath.Join(root, "README.en.md"))                  //nolint:gosec // fixed repository documentation path
+	english, _ := os.ReadFile(filepath.Join(root, "docs", "reference.md"))          //nolint:gosec // fixed repository documentation path
 	skill, _ := os.ReadFile(filepath.Join(root, "skills", "agent-ssm", "SKILL.md")) //nolint:gosec // fixed repository documentation path
-	for name, text := range map[string]string{"README.en.md": string(english), "SKILL.md": string(skill)} {
+	for name, text := range map[string]string{"docs/reference.md": string(english), "SKILL.md": string(skill)} {
 		if !strings.Contains(text, "not an execution timeout") {
 			t.Errorf("%s must say --timeout is a connect timeout, not an execution timeout", name)
 		}
 	}
 	if !strings.Contains(string(english), "deprecated") || !strings.Contains(string(skill), "Deprecated") {
-		t.Error("README.en.md and SKILL.md must mark the legacy --timeout alias deprecated")
+		t.Error("docs/reference.md and SKILL.md must mark the legacy --timeout alias deprecated")
 	}
 }

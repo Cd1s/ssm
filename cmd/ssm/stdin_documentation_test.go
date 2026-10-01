@@ -9,7 +9,7 @@ import (
 
 func TestStdinForwardingRulesAreDocumented(t *testing.T) {
 	required := []string{"--stdin", "--no-stdin", "--stdin-file", "SSM_FORWARD_STDIN", "stdin_forwarded", "</dev/null"}
-	for _, name := range []string{"README.md", "README.en.md", filepath.Join("skills", "agent-ssm", "SKILL.md")} {
+	for _, name := range []string{filepath.Join("docs", "reference.md"), filepath.Join("docs", "reference.zh-CN.md"), filepath.Join("skills", "agent-ssm", "SKILL.md")} {
 		data, err := os.ReadFile(filepath.Join("..", "..", name)) //nolint:gosec // repository-owned documentation
 		if err != nil {
 			t.Fatal(err)
@@ -21,7 +21,7 @@ func TestStdinForwardingRulesAreDocumented(t *testing.T) {
 			}
 		}
 		hang := "never-ending"
-		if name == "README.md" {
+		if name == filepath.Join("docs", "reference.zh-CN.md") {
 			hang = "永不结束"
 		}
 		if !strings.Contains(text, hang) {
