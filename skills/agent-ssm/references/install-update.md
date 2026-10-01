@@ -12,7 +12,9 @@ sshctl --json --version
 ```
 
 The exact v2.0.2 bundle supports v1.4.3/v1.4.4 through its v1 compatibility
-branch and v2.0.0, v2.0.1, and v2.0.2 through its v2 compatibility branch. Any
+branch and v2.0.0, v2.0.1, v2.0.2, and v2.1.0 through its v2 compatibility
+branch (v2.1.0 is not GitHub latest until a separate promotion; install it
+from the exact tag `v2.1.0`). Any
 other version or an unsupported major must fail closed.
 
 From an exact-tag v2.0.2 checkout or verified source archive, install into an

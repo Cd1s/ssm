@@ -19,7 +19,7 @@ var (
 	offlineMode    bool
 	unlockedVault  *config.Vault
 	streamMachine  bool
-	version        = "2.0.2"
+	version        = "2.1.0"
 )
 
 func isSSHCTLInvocation(path string) bool {

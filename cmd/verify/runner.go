@@ -385,6 +385,25 @@ func validateReleaseNotes(repoRoot, version string) error {
 	if strings.TrimSpace(strings.Join(body, "\n")) == "" {
 		return fmt.Errorf("release-note section %q is empty", header)
 	}
+	if version == "2.1.0" {
+		lower := strings.ToLower(strings.Join(strings.Fields(strings.Join(body, "\n")), " "))
+		for _, required := range []string{
+			"v2 minor release",
+			"changes some default behavior",
+			"sync_mode",
+			"`ssm_run_output=buffered`",
+			"make_latest=false",
+			"v2.0.2 remains github latest",
+			"exact-tag release workflow",
+			"error-code changes (affects automation that matches `error`)",
+			"changes without a compatibility switch",
+			"no request-schema or json-field breaking change",
+		} {
+			if !strings.Contains(lower, required) {
+				return fmt.Errorf("release-note section %q omits v2.1.0 minor contract %q", header, required)
+			}
+		}
+	}
 	if version == "2.0.1" {
 		lower := strings.ToLower(strings.Join(strings.Fields(strings.Join(body, "\n")), " "))
 		for _, stale := range []string{

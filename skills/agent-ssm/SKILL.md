@@ -9,7 +9,8 @@ metadata:
 # Agent SSM
 
 This is the official skill for the current GitHub latest `ssm`/`sshctl` v2.0.2
-binary. It also supports the previous v2.0.1 and v2.0.0 patches in the v2
+binary. It also supports v2.1.0 (not GitHub latest until a separate
+promotion) and the previous v2.0.1 and v2.0.0 patches in the v2
 compatibility branch and contains a deliberately separate compatibility branch
 for the supported v1.4.3/v1.4.4 binaries. Read the [version compatibility reference](references/version-compatibility.md),
 [v1→v2 migration guide](../../docs/migration-v1-to-v2.md), and
@@ -37,6 +38,7 @@ one branch:
 
 | Exact version | Skill branch | Request schema |
 | --- | --- | --- |
+| v2.1.0 (supported; not latest until promoted) | v2 compatibility branch | `references/request-v1.schema.json` |
 | **v2.0.2 (current/latest)** | v2 compatibility branch | `references/request-v1.schema.json` |
 | v2.0.1 (supported previous v2 patch) | v2 compatibility branch | `references/request-v1.schema.json` |
 | v2.0.0 (supported earlier v2 patch) | v2 compatibility branch | `references/request-v1.schema.json` |
@@ -339,7 +341,7 @@ ssm update --major --yes
 
 The authorization flag never bypasses pinned digest or keyless provenance
 verification. Rerun `sshctl --json --version` after replacement and enter the
-v2 branch only on exact `2.0.0`, `2.0.1`, or `2.0.2`. Preserve the old executable, encrypted vault,
+v2 branch only on exact `2.0.0`, `2.0.1`, `2.0.2`, or `2.1.0`. Preserve the old executable, encrypted vault,
 pending ledger, `publishing-intent.json`, and recovery evidence until exact
 identities are reconciled.
 

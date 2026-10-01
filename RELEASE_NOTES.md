@@ -1,11 +1,169 @@
 # Release Notes
 
-These notes are the reviewed contract for the authorized stable v2.0.2
-Release. The official exact-tag workflow published it non-latest first;
-published-asset canaries then passed and the authorized promotion made v2.0.2
-GitHub latest. See the [v1→v2 migration guide](docs/migration-v1-to-v2.md) and
+These notes are the reviewed contract for the authorized stable v2.1.0
+Release. The official exact-tag workflow publishes it non-latest first with
+`make_latest=false`; v2.0.2 remains GitHub latest until published-asset
+canaries pass and a separate explicit latest-promotion decision is made. See
+the [v1→v2 migration guide](docs/migration-v1-to-v2.md) and
 [update-provenance runbook](docs/update-provenance-runbook.md) for operator and
 maintainer gates.
+
+## v2.1.0
+
+This is a v2 minor release. It fixes the agent-experience issues from the
+2026-09 usage audit (tracking issue #89) and **changes some default
+behavior and some error codes**. Only some of the changes have a
+compatibility switch; the lists below say which. The official exact-tag release workflow creates the stable v2.1.0
+Release with `make_latest=false`; v2.0.2 remains GitHub latest until
+published-asset canaries pass and a separate explicit latest-promotion
+decision is made. Ordinary `ssm update` stays within v2, and once v2.1.0 is
+promoted, same-major `ssm update` (including automatic update) adopts these
+defaults on existing installs. If a fleet needs the old behavior, pin
+`sync_mode: strict` and `SSM_RUN_OUTPUT=buffered` first.
+
+### Default behavior changes (read before upgrading)
+
+- **Local-first inventory (#72).** Read commands (`run`, `map`, `get`, `put`,
+  `check`, `doctor`, `list`, `host list|show`, `host-key`, `keys`, `status`)
+  read the local vault and no longer contact the sync server first; a sync
+  server outage no longer fails them. Automatic sync runs in a detached
+  background process, rate-limited (`sync_interval`, default 10m) with
+  exponential backoff (30s doubling to 1h). `status` reports freshness
+  (`remote_state`, `last_successful_sync`, `last_sync_error`,
+  `next_sync_attempt`, `cache_age_seconds`, `inventory_stale`,
+  `inventory_unsynced`); inventory older than `stale_after` (default 7d) is
+  reported stale. `run` JSON adds `inventory_stale`, `inventory_unsynced`,
+  `inventory_sync_error`. **Restore the v2.0.2 behavior** with
+  `"sync_mode": "strict"` in `settings.json` or `SSM_SYNC_MODE=strict`.
+  `--offline` is deprecated for reads (it now only suppresses background
+  sync); `SSM_OFFLINE=1` is equivalent. `login` now fetches the inventory
+  immediately. Local vault mutations and every pull (explicit `sync`/`pull`,
+  strict-mode refresh, background) take a short vault write lock; a
+  concurrent writer can produce a bounded (5s) "vault is busy ... retry"
+  failure.
+- **Streaming human-mode `run` output (#71).** Output is streamed as it
+  arrives instead of being held until the command exits (no more 8 MiB
+  per-stream limit); stdout is byte-exact, stderr is redacted line by line.
+  `--json` still returns one complete value. `SSM_RUN_OUTPUT=buffered`
+  restores the previous buffering. Local SIGINT/SIGTERM/SIGHUP are forwarded
+  to the remote command (`interrupted`, exit 128+signal).
+- **Connect timeout covers the SSH handshake (#73).** `--connect-timeout`
+  (default 15s) bounds TCP connect plus the SSH handshake and
+  authentication; legacy `--timeout` on run/exec/plan/map/`--stream` is a
+  deprecated alias of it (last flag wins; flags beat `SSM_CONNECT_TIMEOUT` /
+  `SSM_TIMEOUT`). `put`/`get`/`cp` keep `--timeout` as the transfer timeout.
+  See the lists below for the resulting error-code changes.
+- **SSH keepalive on by default (#73).** `keepalive@openssh.com` every 15s;
+  the connection is closed after 3 unanswered probes (`connection_lost`).
+  `SSM_KEEPALIVE=0` disables it; `SSM_KEEPALIVE=<duration>` changes it and an
+  invalid value falls back to 15s.
+
+### Error-code changes (affects automation that matches `error`)
+
+These replace codes that were too generic (`internal`) or split out a specific
+cause. None has a compatibility switch. Exit 255 is the transport-failure exit
+(`dial_*`, `connection_lost`, `handshake_failed`, `session_limit`).
+
+- A dropped connection after the command was sent: `connection_lost`
+  (stage `remote_execution`, exit 255, additive `outcome:"unknown"`) instead
+  of `internal` (exit 1); a `put`/`get` whose connection breaks midway is
+  `connection_lost` (exit 255) instead of `remote_write_failed` /
+  `remote_read_failed` (exit 1) (#79).
+- A handshake failure or stall after TCP connected: `handshake_failed` (stage
+  `handshake`, exit 255) instead of `internal` or `dial_timeout` (#73, #79).
+- Windows refused connection: `dial_refused` (stage `dial`, exit 255) instead
+  of `internal` (exit 1) (#85).
+- A session-limit wait that gives up: `session_limit` (stage `session`, exit
+  255) instead of `session_failed` (#76).
+- New codes: `exec_timeout` (exit 124), `remote_shell_unsupported` (exit 1),
+  `sftp_unavailable` (exit 1) and `proxy_jump_invalid` (exit 2); `error`
+  values that v2.0.2 never produced.
+
+### Changes without a compatibility switch
+
+Besides the error codes above:
+
+- `--connect-timeout` (and request `timeout` on run requests, `--timeout` on
+  run/exec/plan/map) now also covers the SSH handshake and authentication,
+  not only TCP connect. Mitigation: pass a larger `--connect-timeout`.
+- CLI duration flags reject integers with trailing text (`30abc`) and other
+  malformed values.
+
+Changes that do have a switch: `sync_mode: strict` / `SSM_SYNC_MODE=strict`
+(local-first reads), `SSM_RUN_OUTPUT=buffered` (streaming `run` output),
+`SSM_KEEPALIVE=0` (keepalive), `--no-stdin` / `SSM_FORWARD_STDIN=0`
+(stdin forwarding stays as before by default).
+
+### New features
+
+- `--exec-timeout` for run/exec/map/`--stream` and request-v1
+  `exec_timeout`: SIGTERM at the deadline, 5s grace, `exec_timeout`, exit 124,
+  `timed_out:true`, output so far kept (#73).
+- Explicit stdin forwarding: `--stdin`, `--no-stdin`, `--stdin-file`,
+  request-v1 `stdin_file`, JSON `stdin_forwarded`; defaults unchanged (#77).
+- `--interpreter` for non-shell `-f` scripts and shebang-aware script errors (#81).
+- Command and flag suggestions instead of `alias_not_found` for typos (#82).
+- `--retry-dial N[:backoff]` (N at most 10, exponential backoff with jitter
+  from `backoff`, default 250ms, capped at 30s) and `sshctl wait <alias>`
+  (`--timeout`, `--interval`, `--until ssh|tcp`): retry only transport
+  failures before the host key arrived; never retry authentication or
+  host-key failures; one SSH connection per `wait` attempt (#85).
+- SFTP transfers for targets without a POSIX shell (#87): `put`/`get --sftp`,
+  host setting `--transfer auto|shell|sftp` (`host.transfer` in request v1,
+  default `auto` through the shell path) and a per-operation request
+  `transfer` field. SFTP handles single regular files only. New error codes:
+  `remote_shell_unsupported` (stage `discovery`) and `sftp_unavailable`
+  (stage `capability`).
+- ProxyJump aliases (`host ... --proxy-jump <alias>`, `host.proxy_jump` in
+  request v1; chains up to 5 hops, no cycles, otherwise `proxy_jump_invalid`,
+  exit 2) with per-hop host-key verification and per-hop local credentials,
+  an optional `via` field on failures, and `sshctl cp <a>:<path> <b>:<path>`
+  (single regular file) relayed through this machine with three-way SHA-256
+  verification. `cp --direct` is not implemented.
+  **Upgrade every client before using `proxy_jump`:** v2.0.2 and older
+  ignore the field and drop it if they re-save the synced vault.
+
+### Fixes
+
+- Security: Go 1.26.8, `golang.org/x/crypto` v0.56.0, grpc v1.83.1 (#69).
+- `-h/--help` and `--json` inside remote argv are no longer captured by
+  sshctl; `ssm pull --help` no longer performs a pull (#70, #75).
+- host-key: a different recorded key type is no longer reported as a MITM
+  mismatch; `accept` no longer deletes other key types (#74).
+- Sync failures keep and classify their cause (`cause`) without exposing the
+  server address (#78).
+- Directory transfer error handling, `--sha256` digest-tool detection,
+  `--dir-mode`, get/put option parity (#80).
+- The connection pool keeps the shared connection when the server's session
+  limit is reached and waits for a free slot (#76).
+- Help, README and agent skill aligned with the actual flags and environment
+  variables, enforced by a contract test (#83).
+
+### Maintenance
+
+- The test suite no longer requires the pinned toolchain, CI triggers were
+  cleaned up, and a weekly `govulncheck` runs (#84, #88).
+
+### Request schema (request v1, version stays 1)
+
+Compared with v2.0.2, every change is additive, and no request that v2.0.2
+accepted is now rejected (v2.0.2 already rejected unknown fields):
+
+- New `run`/`plan` fields: `interpreter`, `exec_timeout`, `stdin_file`
+  (`stdin_file` is not valid with `script_file`; `interpreter` only with
+  `script_file`; `preflight:true` is invalid with a non-shell interpreter).
+- New `put`/`get` fields: `transfer` (`auto|shell|sftp`); `dir_mode` on
+  `put`. `get` now also accepts `sha256` and `timeout` (v2.0.2 rejected them).
+- New `host` fields: `transfer` and `proxy_jump` (empty string clears it).
+- Run-only fields (`interpreter`, `stdin_file`, `exec_timeout`) stay invalid
+  on `put`/`get`; `transfer` is invalid on run, check, doctor and host ops.
+- `op:get` itself is not new; it was added in v2.0.0.
+
+There is no request-schema or JSON-field breaking change: new result fields
+(`inventory_*`, `stdin_forwarded`, `via`, `outcome`, `timed_out`,
+`dial_attempts`) are additive. The behavior changes are the default changes
+and the error-code changes listed above; v2 compatibility behavior remains
+available only through the switches named there.
 
 ## v2.0.2
 

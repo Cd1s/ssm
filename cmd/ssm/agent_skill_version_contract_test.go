@@ -364,7 +364,7 @@ func TestAgentSkillInstallInstructionsCoverExactTagCodexAndHermes(t *testing.T) 
 	root := repositoryRoot(t)
 	document := readAgentSkillContractFile(t, root, filepath.Join("references", "install-update.md"))
 	for _, required := range []string{
-		"v2.0.0", "v2.0.1", "v2.0.2", "exact tag", "CODEX_HOME", "HERMES_HOME", "Codex", "Hermes",
+		"v2.0.0", "v2.0.1", "v2.0.2", "v2.1.0", "exact tag", "CODEX_HOME", "HERMES_HOME", "Codex", "Hermes",
 		"install-agent-ssm-skill.sh", "sshctl --json --version", "--replace",
 	} {
 		if !strings.Contains(strings.ToLower(document), strings.ToLower(required)) {
@@ -389,6 +389,7 @@ func TestAgentSkillDeploymentUsesTemporaryCodexAndHermesRoots(t *testing.T) {
 		{platform: "codex", version: "2.0.0", contract: "v2 compatibility branch"},
 		{platform: "hermes", version: "2.0.1", contract: "v2 compatibility branch"},
 		{platform: "hermes", version: "2.0.2", contract: "v2 compatibility branch"},
+		{platform: "codex", version: "2.1.0", contract: "v2 compatibility branch"},
 	}
 	for _, test := range tests {
 		t.Run(test.platform+"-"+test.version, func(t *testing.T) {

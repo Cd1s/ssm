@@ -7,6 +7,7 @@ must fail closed: do not guess flags, schemas, fields, or publication behavior.
 
 | Installed version | Skill branch | Typed request schema | Changed command/result contracts |
 | --- | --- | --- | --- |
+| v2.1.0 (supported; not latest until promoted) | v2 compatibility branch | `request-v1.schema.json`; request schema version remains 1 with `op:get` as in v2.0.x plus additive fields (see `RELEASE_NOTES.md`) | Additive request/result fields and flags; defaults change (local-first inventory reads, streaming human `run` output, handshake-covering `--connect-timeout`, SSH keepalive) and some error codes change (`internal` becomes `connection_lost`/`handshake_failed`, and so on). See `RELEASE_NOTES.md` for the compatibility switches (`sync_mode: strict`, `SSM_RUN_OUTPUT=buffered`, `SSM_KEEPALIVE=0`). |
 | v2.0.2 (current/latest) | v2 compatibility branch | `request-v1.schema.json`; request schema version remains 1 and adds strict `op:get` | Bare push is invalid. `push --all` is limited to the non-empty invocation-start pending set and an empty set never PUTs. Online `--refresh=0` is invalid unless global `--offline` is explicit. Invalid present `cloud.json` returns `sync_config_error`. Direct/request transfer results branch on `direction` and `kind`; directory results explicitly use `atomic:false`, `integrity:not_available`, and `resume:unsupported`. |
 | v2.0.1 (supported previous v2 patch) | v2 compatibility branch | `request-v1.schema.json`; request schema version remains 1 and adds strict `op:get` | Same v2 protocol, schema, publication, refresh, sync-config, and transfer-result compatibility behavior as v2.0.2. |
 | v2.0.0 (supported earlier v2 patch) | v2 compatibility branch | `request-v1.schema.json`; request schema version remains 1 and adds strict `op:get` | Same v2 protocol, schema, publication, refresh, sync-config, and transfer-result compatibility behavior as v2.0.2. |
@@ -36,6 +37,6 @@ after automated preflight and manual consumer checks pass. Authorization never
 bypasses the selected digest, exact-tag provenance, or replacement recovery.
 
 After a successful migration, rerun `sshctl --json --version`; enter the v2
-compatibility branch only when it returns exact `2.0.0`, `2.0.1`, or `2.0.2`. If it still reports
+compatibility branch only when it returns exact `2.0.0`, `2.0.1`, `2.0.2`, or `2.1.0`. If it still reports
 major 1, reports an unsupported major, or cannot be parsed, stop without
 issuing state-aware commands.

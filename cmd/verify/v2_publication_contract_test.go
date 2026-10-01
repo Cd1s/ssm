@@ -26,7 +26,7 @@ func TestV2ReleaseWorkflowCannotPromoteGitHubLatest(t *testing.T) {
 		"no concurrent cancellation": "  cancel-in-progress: false\n",
 		"exact section extraction":   "            found && /^## / { exit }\n",
 		"create-only helper":         "./scripts/release-create-only.sh",
-		"reviewed previous latest":   "            v2.0.1 \\\n",
+		"reviewed previous latest":   "            v2.0.2 \\\n",
 	} {
 		if !strings.Contains(workflow, required) {
 			t.Errorf("v2 release workflow lacks %s %q", description, required)
@@ -755,8 +755,8 @@ func TestTrackedV2PublicationMetadataIsExactAndDurable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != "2.0.2" {
-		t.Fatalf("source version = %q, want exact v2.0.2", version)
+	if version != "2.1.0" {
+		t.Fatalf("source version = %q, want exact v2.1.0", version)
 	}
 	if err := validateReleaseNotes(root, version); err != nil {
 		t.Fatal(err)
@@ -785,7 +785,7 @@ func TestTrackedV2PublicationMetadataIsExactAndDurable(t *testing.T) {
 		"no protocol or schema breaking change",
 		"v2 compatibility behavior remains",
 		"make_latest=false",
-		"v2.0.2 is now github latest",
+		"v2.0.2 remains github latest",
 		"exact-tag release workflow",
 	} {
 		if !strings.Contains(notes, durable) {
