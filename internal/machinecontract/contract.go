@@ -226,6 +226,7 @@ const (
 	CopyDirectConfirmationRequired Kind = "copy_direct_confirmation_required"
 	CopyDirectUnsupported          Kind = "copy_direct_unsupported"
 	CopyDirectSSHUnavailable       Kind = "copy_direct_ssh_unavailable"
+	CopyDirectAgentUnavailable     Kind = "copy_direct_agent_unavailable"
 )
 
 const ExitConnectionFailed = 255
@@ -928,6 +929,10 @@ var failurePolicies = map[Kind]failurePolicy{
 	CopyDirectSSHUnavailable: {
 		Code: "remote_tool_unavailable", Stage: "capability",
 		Hint: "cp --direct runs the ssh client on host A and A has none; install OpenSSH's ssh on A or use cp without --direct to relay through this machine", Exit: 1,
+	},
+	CopyDirectAgentUnavailable: {
+		Code: "unsupported_transfer_option", Stage: "capability",
+		Hint: "the source host's sshd did not provide the forwarded agent that cp --direct needs; allow agent forwarding (AllowAgentForwarding) for this account on host A or use cp without --direct to relay through this machine", Exit: 1,
 	},
 	IntegrityToolUnavailable: {
 		Code: "integrity_tool_unavailable", Stage: "capability",

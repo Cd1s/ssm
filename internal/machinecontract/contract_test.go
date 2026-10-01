@@ -988,6 +988,12 @@ func TestMachineContractMatrix(t *testing.T) {
 			code:    "remote_tool_unavailable", stage: "capability",
 			hint: "cp --direct runs the ssh client on host A and A has none; install OpenSSH's ssh on A or use cp without --direct to relay through this machine", exit: 1,
 		},
+		{
+			name: "copy direct agent unavailable", kind: CopyDirectAgentUnavailable,
+			details: Details{Message: "no agent"},
+			code:    "unsupported_transfer_option", stage: "capability",
+			hint: "the source host's sshd did not provide the forwarded agent that cp --direct needs; allow agent forwarding (AllowAgentForwarding) for this account on host A or use cp without --direct to relay through this machine", exit: 1,
+		},
 	}
 
 	seen := make(map[Kind]bool, len(tests))

@@ -51,17 +51,28 @@ func directFailureError(t *testing.T, err error) string {
 
 func TestDirectSSHCommandIsExactAndQuotesEveryOperand(t *testing.T) {
 	dst := config.Connection{Name: "b", Host: "b.example", Port: 2222, User: "deploy"}
-	got := directSSHCommand("/srv/a b/it's.bin", dst, []string{"[b.example]:2222 ssh-ed25519 AAAA"}, 15, "echo 'hi'")
+	got := directSSHCommand("/srv/a b/it's.bin", dst, []string{"[b.example]:2222 ssh-ed25519 AAAA"}, 15, 0, "echo 'hi'")
 	want := `umask 077; kh=$(mktemp "${TMPDIR:-/tmp}/ssm-kh.XXXXXXXX") || exit 70; ` +
 		`trap 'rm -f -- "$kh"' EXIT HUP INT TERM; ` +
 		`printf '%s\n' '[b.example]:2222 ssh-ed25519 AAAA' > "$kh" || exit 70; ` +
-		`ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$kh" -o GlobalKnownHostsFile=/dev/null ` +
-		`-o VerifyHostKeyDNS=no -o ForwardAgent=no -o ConnectTimeout=15 -o IdentitiesOnly=no ` +
+		`[ -n "$SSH_AUTH_SOCK" ] || { echo 'no forwarded agent' >&2; exit 71; }; ` +
+		`ssh -F /dev/null -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$kh" -o GlobalKnownHostsFile=/dev/null ` +
+		`-o VerifyHostKeyDNS=no -o UpdateHostKeys=no -o CheckHostIP=no -o ClearAllForwardings=yes -o ForwardAgent=no ` +
+		`-o ProxyCommand=none -o ProxyJump=none -o PermitLocalCommand=no -o ControlMaster=no -o ControlPath=none ` +
+		`-o PubkeyAuthentication=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o HostbasedAuthentication=no ` +
+		`-o IdentityFile=/dev/null -o "IdentityAgent=$SSH_AUTH_SOCK" -o ConnectTimeout=15 ` +
 		`-p 2222 -- 'deploy@b.example' 'echo '"'"'hi'"'"'' < '/srv/a b/it'"'"'s.bin'`
 	if got != want {
 		t.Fatalf("command =\n%s\nwant\n%s", got, want)
 	}
-	if defaulted := directSSHCommand("/x", config.Connection{Host: "h", User: "u"}, []string{"l"}, 1, "s"); !strings.Contains(defaulted, " -p 22 -- ") {
+	bounded := directSSHCommand("/x", dst, []string{"l"}, 15, 300, "s")
+	if !strings.Contains(bounded, `to=; if command -v timeout >/dev/null 2>&1; then to='timeout 300'; fi; $to ssh -F /dev/null `) {
+		t.Fatalf("timeout wrapper missing: %s", bounded)
+	}
+	if strings.Contains(bounded, "IdentitiesOnly") {
+		t.Fatalf("IdentitiesOnly must stay at its default: %s", bounded)
+	}
+	if defaulted := directSSHCommand("/x", config.Connection{Host: "h", User: "u"}, []string{"l"}, 1, 0, "s"); !strings.Contains(defaulted, " -p 22 -- ") {
 		t.Fatalf("default port missing: %s", defaulted)
 	}
 }

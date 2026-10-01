@@ -85,6 +85,8 @@ type directA struct {
 	mu          sync.Mutex
 	sshCommands []string
 	options     map[string]string
+	configFile  string
+	noTTY       bool
 	userHost    string
 	port        string
 	khLines     []string
@@ -116,7 +118,8 @@ func (a *directA) runSSH(request compiledExecRequest) uint32 {
 	words := directTestWords(request.Command)
 	var khLines []string
 	options := map[string]string{}
-	var userHost, port, script, source string
+	var userHost, port, script, source, configFile string
+	noTTY := false
 	for i := 0; i < len(words); i++ {
 		switch words[i] {
 		case "printf":
@@ -128,6 +131,11 @@ func (a *directA) runSSH(request compiledExecRequest) uint32 {
 		case "ssh":
 			for j := i + 1; j < len(words); j++ {
 				switch words[j] {
+				case "-F":
+					j++
+					configFile = words[j]
+				case "-T":
+					noTTY = true
 				case "-o":
 					j++
 					key, value, _ := strings.Cut(words[j], "=")
@@ -166,6 +174,7 @@ func (a *directA) runSSH(request compiledExecRequest) uint32 {
 	}
 	a.mu.Lock()
 	a.sshCommands = append(a.sshCommands, request.Command)
+	a.configFile, a.noTTY = configFile, noTTY
 	a.options, a.userHost, a.port, a.khLines, a.khMode, a.khPath, a.script = options, userHost, port, khLines, info.Mode().Perm(), khPath, script
 	a.mu.Unlock()
 
@@ -346,7 +355,7 @@ func TestCompiledCopyDirectPushesFromAToBThroughAScopedAgent(t *testing.T) {
 	}
 	destination := filepath.Join(env.bDir, "new", "release.bin")
 
-	result := env.cp(t, "--json", "cp", "src:"+source, "dst:"+destination, "--direct", "--yes")
+	result := env.cp(t, "--json", "cp", "src:"+source, "dst:"+destination, "--direct", "--yes", "--timeout", "5m")
 	got := issue80JSON(t, result)
 	if result.ProcessExit != 0 || got["ok"] != true || got["action"] != "cp" || got["route"] != "direct" || got["stage"] != "complete" ||
 		got["integrity"] != "sha256_verified" || got["atomic"] != true || got["bytes"] != float64(len(data)) {
@@ -393,8 +402,21 @@ func TestCompiledCopyDirectPushesFromAToBThroughAScopedAgent(t *testing.T) {
 		t.Fatalf("ssh commands = %v", env.emulator.sshCommands)
 	}
 	wantOptions := map[string]string{
-		"BatchMode": "yes", "StrictHostKeyChecking": "yes", "GlobalKnownHostsFile": "/dev/null", "IdentitiesOnly": "no",
+		"BatchMode": "yes", "StrictHostKeyChecking": "yes", "GlobalKnownHostsFile": "/dev/null",
 		"ForwardAgent": "no", "VerifyHostKeyDNS": "no", "UserKnownHostsFile": env.emulator.khPath,
+		"ClearAllForwardings": "yes", "ProxyCommand": "none", "ProxyJump": "none", "PermitLocalCommand": "no",
+		"ControlMaster": "no", "ControlPath": "none", "UpdateHostKeys": "no", "CheckHostIP": "no",
+		"PubkeyAuthentication": "yes", "PasswordAuthentication": "no", "KbdInteractiveAuthentication": "no",
+		"HostbasedAuthentication": "no", "IdentityFile": "/dev/null", "IdentityAgent": "$SSH_AUTH_SOCK",
+	}
+	if env.emulator.configFile != "/dev/null" || !env.emulator.noTTY {
+		t.Fatalf("ssh config file %q, no-tty %v", env.emulator.configFile, env.emulator.noTTY)
+	}
+	if _, present := env.emulator.options["IdentitiesOnly"]; present {
+		t.Fatal("IdentitiesOnly must not be set")
+	}
+	if !strings.Contains(env.emulator.sshCommands[0], "to='timeout 300'") {
+		t.Fatalf("A's ssh is not bounded by --timeout: %s", env.emulator.sshCommands[0])
 	}
 	for key, want := range wantOptions {
 		if env.emulator.options[key] != want {
@@ -471,7 +493,7 @@ func TestCompiledCopyDirectRefusals(t *testing.T) {
 		{name: "destination host key not trusted", opts: directEnvOptions{untrustedB: true}, code: "host_key_unknown", stage: "dial", exit: 255},
 		{name: "directory source", opts: directEnvOptions{}, code: "unsupported_transfer_option", stage: "validate", exit: 1, touchesA: true, sourceDir: true},
 		{name: "source without ssh", opts: directEnvOptions{noSSHOnA: true}, code: "remote_tool_unavailable", stage: "capability", exit: 1, touchesA: true},
-		{name: "source refuses agent forwarding", opts: directEnvOptions{noAgentForwarding: true}, code: "unsupported_transfer_option", stage: "validate", exit: 1, touchesA: true},
+		{name: "source refuses agent forwarding", opts: directEnvOptions{noAgentForwarding: true}, code: "unsupported_transfer_option", stage: "capability", exit: 1, touchesA: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			env := newDirectEnv(t, test.opts)

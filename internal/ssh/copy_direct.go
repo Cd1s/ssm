@@ -128,10 +128,31 @@ func directSafeToken(value string) bool {
 // directSSHCommand is the command line run on A. It writes the destination's
 // trusted host keys to a private (0600) temporary known_hosts file that a trap
 // removes on every exit, then pushes srcPath over ssh into putScript. Every
-// operand is quoted with ShellQuote; ssh never prompts (BatchMode), only
-// trusts the temporary file (strict checking, no global file), and does not
-// forward an agent any further.
-func directSSHCommand(srcPath string, dst config.Connection, knownHostsLines []string, connectSeconds int, putScript string) string {
+// operand is quoted with ShellQuote.
+//
+// The ssh client is pinned so that nothing on A can change who it talks to or
+// how it authenticates:
+//   - -F /dev/null ignores ~/.ssh/config, /etc/ssh/ssh_config and their
+//     Include files (no ProxyCommand/ProxyJump, LocalCommand, Hostname or
+//     HostKeyAlias, ControlMaster reuse, forwardings, IdentityAgent), and the
+//     remaining hardening options repeat the dangerous ones explicitly.
+//   - Host keys: strict checking against the temporary file only; A's global
+//     and user known_hosts and DNS host keys are not consulted.
+//   - Identities: only the forwarded agent. IdentityFile=/dev/null makes ssh
+//     skip A's default ~/.ssh/id_* files (an explicit IdentityFile replaces the
+//     defaults, and /dev/null holds no key; "none" is not accepted by older
+//     OpenSSH), IdentityAgent="$SSH_AUTH_SOCK" names the socket sshd created for
+//     this session's forwarded agent, and the guard refuses to run when sshd
+//     set none. IdentitiesOnly stays at its default (no): yes would hide the
+//     agent's key because it is not listed as an IdentityFile. Password,
+//     keyboard-interactive and host-based authentication are off.
+//   - Time: with timeoutSeconds > 0 the ssh runs under timeout(1) when A has
+//     it, so a stalled transfer ends on A too even if the session close does
+//     not reach the process (no pty, no SIGHUP).
+//
+// TMPDIR is honoured for the temporary file because /tmp may be unwritable or
+// mounted noexec on hardened hosts; mktemp creates it 0600 either way.
+func directSSHCommand(srcPath string, dst config.Connection, knownHostsLines []string, connectSeconds, timeoutSeconds int, putScript string) string {
 	port := dst.Port
 	if port == 0 {
 		port = 22
@@ -140,14 +161,32 @@ func directSSHCommand(srcPath string, dst config.Connection, knownHostsLines []s
 	for i, line := range knownHostsLines {
 		quoted[i] = ShellQuote(line)
 	}
+	wrapper := ""
+	runner := ""
+	if timeoutSeconds > 0 {
+		wrapper = "to=; if command -v timeout >/dev/null 2>&1; then to='timeout " + strconv.Itoa(timeoutSeconds) + "'; fi; "
+		runner = "$to "
+	}
 	return "umask 077; kh=$(mktemp \"${TMPDIR:-/tmp}/ssm-kh.XXXXXXXX\") || exit 70; " +
 		"trap 'rm -f -- \"$kh\"' EXIT HUP INT TERM; " +
 		"printf '%s\\n' " + strings.Join(quoted, " ") + " > \"$kh\" || exit 70; " +
-		"ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o \"UserKnownHostsFile=$kh\" -o GlobalKnownHostsFile=/dev/null " +
-		"-o VerifyHostKeyDNS=no -o ForwardAgent=no -o ConnectTimeout=" + strconv.Itoa(connectSeconds) + " -o IdentitiesOnly=no " +
+		"[ -n \"$SSH_AUTH_SOCK\" ] || { echo 'no forwarded agent' >&2; exit " + strconv.Itoa(directNoAgentExit) + "; }; " +
+		wrapper + runner +
+		"ssh -F /dev/null -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o \"UserKnownHostsFile=$kh\" -o GlobalKnownHostsFile=/dev/null " +
+		"-o VerifyHostKeyDNS=no -o UpdateHostKeys=no -o CheckHostIP=no -o ClearAllForwardings=yes -o ForwardAgent=no " +
+		"-o ProxyCommand=none -o ProxyJump=none -o PermitLocalCommand=no -o ControlMaster=no -o ControlPath=none " +
+		"-o PubkeyAuthentication=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o HostbasedAuthentication=no " +
+		"-o IdentityFile=/dev/null -o \"IdentityAgent=$SSH_AUTH_SOCK\" -o ConnectTimeout=" + strconv.Itoa(connectSeconds) + " " +
 		"-p " + strconv.Itoa(port) + " -- " + ShellQuote(dst.User+"@"+dst.Host) + " " + ShellQuote(putScript) +
 		" < " + ShellQuote(srcPath)
 }
+
+// directNoAgentExit is the exit status of the guard that finds no forwarded
+// agent socket; directTimeoutExit is timeout(1)'s status for an expired limit.
+const (
+	directNoAgentExit = 71
+	directTimeoutExit = 124
+)
 
 func directConnectSeconds() int {
 	seconds := int((DialTimeout() + time.Second - 1) / time.Second)
@@ -202,10 +241,21 @@ func copyFileDirect(src config.Connection, srcPath string, dst config.Connection
 
 	var timedOut atomic.Bool
 	var active sessionSet
+	var sshSession atomic.Pointer[gossh.Session]
 	if opts.Timeout > 0 {
 		deadline := time.AfterFunc(opts.Timeout, func() {
 			timedOut.Store(true)
+			// End the exposure first: nothing may use B's key any more. Then
+			// ask the ssh on A to stop (a session close alone sends no SIGHUP
+			// without a pty), give the signal a moment, and drop the sessions
+			// and the connection that carries the agent channel.
+			_ = keyring.RemoveAll()
+			if session := sshSession.Load(); session != nil {
+				_ = session.Signal(gossh.SIGTERM)
+				time.Sleep(200 * time.Millisecond)
+			}
 			active.closeAll()
+			_ = clientSrc.Close()
 		})
 		defer deadline.Stop()
 	}
@@ -258,11 +308,16 @@ func copyFileDirect(src config.Connection, srcPath string, dst config.Connection
 		return result, transferError(machinecontract.TransferStartFailed, 0, err)
 	}
 	if err := agent.RequestAgentForwarding(sessionSrc); err != nil {
-		return result, directUnsupported("the SSH server of the source host refused agent forwarding; cp --direct needs it (AllowAgentForwarding)")
+		result.Stage = "capability"
+		return result, directAgentRefused()
 	}
 
 	result.Stage = "remote_write"
-	command := directSSHCommand(srcPath, dst, knownHostsLines, directConnectSeconds(),
+	timeoutSeconds := 0
+	if opts.Timeout > 0 {
+		timeoutSeconds = int((opts.Timeout + time.Second - 1) / time.Second)
+	}
+	command := directSSHCommand(srcPath, dst, knownHostsLines, directConnectSeconds(), timeoutSeconds,
 		uploadCommandWithIntegrity(dstPath, mode, -1, sourceDigest, DefaultUploadDirMode))
 	if err := sessionSrc.Start(command); err != nil {
 		_ = keyring.RemoveAll()
@@ -271,6 +326,7 @@ func copyFileDirect(src config.Connection, srcPath string, dst config.Connection
 		}
 		return result, timeoutOr(transferError(machinecontract.TransferStartFailed, 0, err))
 	}
+	sshSession.Store(sessionSrc)
 	waitErr := sessionSrc.Wait()
 	// The copy is over: nothing may use B's key any more.
 	_ = keyring.RemoveAll()
@@ -294,6 +350,18 @@ func copyFileDirect(src config.Connection, srcPath string, dst config.Connection
 		}
 		message := sessionErr.String()
 		var exit *gossh.ExitError
+		if errors.As(waitErr, &exit) {
+			switch exit.ExitStatus() {
+			case directNoAgentExit:
+				result.Stage = "capability"
+				return result, directAgentRefused()
+			case directTimeoutExit:
+				if opts.Timeout > 0 {
+					result.Stage = "timeout"
+					return result, transferError(machinecontract.TransferTimedOut, 0, errors.New("the transfer on the source host exceeded --timeout"))
+				}
+			}
+		}
 		switch {
 		case errors.As(waitErr, &exit) && exit.ExitStatus() == 255:
 			if message == "" {
@@ -336,6 +404,14 @@ func copyFileDirect(src config.Connection, srcPath string, dst config.Connection
 	result.Stage = "complete"
 	result.Integrity = "sha256_verified"
 	return result, nil
+}
+
+// directAgentRefused reports a source host whose sshd did not set up the
+// forwarded agent. It is found while connected to A, so it is a capability
+// failure, not a validation one.
+func directAgentRefused() error {
+	return transferKindError(machinecontract.CopyDirectAgentUnavailable, 0,
+		errors.New("the SSH server of the source host did not provide the forwarded agent; cp --direct needs agent forwarding (AllowAgentForwarding)"))
 }
 
 // directRequireSSH checks that host A has an ssh client.
