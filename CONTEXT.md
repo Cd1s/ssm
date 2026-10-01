@@ -86,8 +86,9 @@ plans and speculative APIs live elsewhere.
   destination's key for other connections but cannot extract it. The
   destination's password, this machine's own agent and other keys are never
   forwarded. Requires a key-authenticated destination without `proxy_jump`,
-  no `transfer: sftp` host, and `--yes`; the exposure ends at `--timeout` at the
-  latest (no limit without it); the result reports `route:"direct"`
+  no `transfer: sftp` host, and `--yes`; `--timeout` closes the agent and the
+  connection carrying it at the deadline (A's ssh is bounded only when A has
+  GNU `timeout`; no limit without `--timeout`); the result reports `route:"direct"`
   with the source and destination digests and no relayed-bytes digest.
 - **Transfer outcome**: A machine-readable transfer result that identifies its
   direction and kind and reports only guarantees the selected transfer

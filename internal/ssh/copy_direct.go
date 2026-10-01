@@ -141,14 +141,17 @@ func directSafeToken(value string) bool {
 //   - Identities: only the forwarded agent. IdentityFile=/dev/null makes ssh
 //     skip A's default ~/.ssh/id_* files (an explicit IdentityFile replaces the
 //     defaults, and /dev/null holds no key; "none" is not accepted by older
-//     OpenSSH), IdentityAgent="$SSH_AUTH_SOCK" names the socket sshd created for
-//     this session's forwarded agent, and the guard refuses to run when sshd
-//     set none. IdentitiesOnly stays at its default (no): yes would hide the
+//     OpenSSH). Under -F /dev/null ssh reaches the forwarded agent through the
+//     $SSH_AUTH_SOCK that sshd sets for the session, and the guard refuses to
+//     run when sshd set none. IdentitiesOnly stays at its default (no): yes would hide the
 //     agent's key because it is not listed as an IdentityFile. Password,
 //     keyboard-interactive and host-based authentication are off.
-//   - Time: with timeoutSeconds > 0 the ssh runs under timeout(1) when A has
-//     it, so a stalled transfer ends on A too even if the session close does
-//     not reach the process (no pty, no SIGHUP).
+//   - Time: with timeoutSeconds > 0 the ssh runs under GNU-style timeout(1)
+//     when A has it (detected with timeout --version; BusyBox and others fall
+//     back to no wrapper), and an expired limit is reported as exit 72. Without
+//     the wrapper nothing reliably stops an already authenticated ssh on A:
+//     the session close sends no SIGHUP without a pty, and a signal request
+//     (OpenSSH 7.9+ only) reaches the login shell, not the ssh child.
 //
 // TMPDIR is honoured for the temporary file because /tmp may be unwritable or
 // mounted noexec on hardened hosts; mktemp creates it 0600 either way.
@@ -163,9 +166,13 @@ func directSSHCommand(srcPath string, dst config.Connection, knownHostsLines []s
 	}
 	wrapper := ""
 	runner := ""
+	suffix := ""
 	if timeoutSeconds > 0 {
-		wrapper = "to=; if command -v timeout >/dev/null 2>&1; then to='timeout " + strconv.Itoa(timeoutSeconds) + "'; fi; "
+		wrapper = "to=; if timeout --version >/dev/null 2>&1; then to='timeout " + strconv.Itoa(timeoutSeconds) + "'; fi; "
 		runner = "$to "
+		// 124 is timeout(1)'s status for an expired limit; only report it as
+		// such (72) when the wrapper actually ran.
+		suffix = "; rc=$?; if [ -n \"$to\" ] && [ \"$rc\" = 124 ]; then exit " + strconv.Itoa(directTimeoutExit) + "; fi; exit $rc"
 	}
 	return "umask 077; kh=$(mktemp \"${TMPDIR:-/tmp}/ssm-kh.XXXXXXXX\") || exit 70; " +
 		"trap 'rm -f -- \"$kh\"' EXIT HUP INT TERM; " +
@@ -174,18 +181,19 @@ func directSSHCommand(srcPath string, dst config.Connection, knownHostsLines []s
 		wrapper + runner +
 		"ssh -F /dev/null -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o \"UserKnownHostsFile=$kh\" -o GlobalKnownHostsFile=/dev/null " +
 		"-o VerifyHostKeyDNS=no -o UpdateHostKeys=no -o CheckHostIP=no -o ClearAllForwardings=yes -o ForwardAgent=no " +
-		"-o ProxyCommand=none -o ProxyJump=none -o PermitLocalCommand=no -o ControlMaster=no -o ControlPath=none " +
+		"-o ProxyCommand=none -o PermitLocalCommand=no -o ControlMaster=no -o ControlPath=none " +
 		"-o PubkeyAuthentication=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o HostbasedAuthentication=no " +
-		"-o IdentityFile=/dev/null -o \"IdentityAgent=$SSH_AUTH_SOCK\" -o ConnectTimeout=" + strconv.Itoa(connectSeconds) + " " +
+		"-o IdentityFile=/dev/null -o ConnectTimeout=" + strconv.Itoa(connectSeconds) + " " +
 		"-p " + strconv.Itoa(port) + " -- " + ShellQuote(dst.User+"@"+dst.Host) + " " + ShellQuote(putScript) +
-		" < " + ShellQuote(srcPath)
+		" < " + ShellQuote(srcPath) + suffix
 }
 
 // directNoAgentExit is the exit status of the guard that finds no forwarded
-// agent socket; directTimeoutExit is timeout(1)'s status for an expired limit.
+// agent socket; directTimeoutExit is the status the script reports when the
+// timeout(1) wrapper it chose to run expired.
 const (
 	directNoAgentExit = 71
-	directTimeoutExit = 124
+	directTimeoutExit = 72
 )
 
 func directConnectSeconds() int {
@@ -245,10 +253,13 @@ func copyFileDirect(src config.Connection, srcPath string, dst config.Connection
 	if opts.Timeout > 0 {
 		deadline := time.AfterFunc(opts.Timeout, func() {
 			timedOut.Store(true)
-			// End the exposure first: nothing may use B's key any more. Then
-			// ask the ssh on A to stop (a session close alone sends no SIGHUP
-			// without a pty), give the signal a moment, and drop the sessions
-			// and the connection that carries the agent channel.
+			// End the exposure first: nothing may use B's key any more through
+			// the agent. The signal request is honoured only by OpenSSH 7.9+
+			// and reaches A's login shell (whose trap removes the temporary
+			// known_hosts), not the ssh child; A's ssh is bounded only by the
+			// timeout(1) wrapper when A has it. Then drop the sessions and the
+			// connection that carries the agent channel; an already
+			// authenticated ssh on A may still run until it finishes or fails.
 			_ = keyring.RemoveAll()
 			if session := sshSession.Load(); session != nil {
 				_ = session.Signal(gossh.SIGTERM)
@@ -356,10 +367,8 @@ func copyFileDirect(src config.Connection, srcPath string, dst config.Connection
 				result.Stage = "capability"
 				return result, directAgentRefused()
 			case directTimeoutExit:
-				if opts.Timeout > 0 {
-					result.Stage = "timeout"
-					return result, transferError(machinecontract.TransferTimedOut, 0, errors.New("the transfer on the source host exceeded --timeout"))
-				}
+				result.Stage = "timeout"
+				return result, transferError(machinecontract.TransferTimedOut, 0, errors.New("the transfer on the source host exceeded --timeout"))
 			}
 		}
 		switch {

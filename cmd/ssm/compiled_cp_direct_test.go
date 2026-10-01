@@ -57,7 +57,7 @@ func directTestWords(command string) []string {
 			inWord = true
 			i++
 			current.WriteByte(command[i])
-		case c == ' ' || c == '\t' || c == '\n':
+		case c == ' ' || c == '\t' || c == '\n' || c == ';':
 			if inWord {
 				words = append(words, current.String())
 				current.Reset()
@@ -404,16 +404,18 @@ func TestCompiledCopyDirectPushesFromAToBThroughAScopedAgent(t *testing.T) {
 	wantOptions := map[string]string{
 		"BatchMode": "yes", "StrictHostKeyChecking": "yes", "GlobalKnownHostsFile": "/dev/null",
 		"ForwardAgent": "no", "VerifyHostKeyDNS": "no", "UserKnownHostsFile": env.emulator.khPath,
-		"ClearAllForwardings": "yes", "ProxyCommand": "none", "ProxyJump": "none", "PermitLocalCommand": "no",
+		"ClearAllForwardings": "yes", "ProxyCommand": "none", "PermitLocalCommand": "no",
 		"ControlMaster": "no", "ControlPath": "none", "UpdateHostKeys": "no", "CheckHostIP": "no",
 		"PubkeyAuthentication": "yes", "PasswordAuthentication": "no", "KbdInteractiveAuthentication": "no",
-		"HostbasedAuthentication": "no", "IdentityFile": "/dev/null", "IdentityAgent": "$SSH_AUTH_SOCK",
+		"HostbasedAuthentication": "no", "IdentityFile": "/dev/null",
 	}
 	if env.emulator.configFile != "/dev/null" || !env.emulator.noTTY {
 		t.Fatalf("ssh config file %q, no-tty %v", env.emulator.configFile, env.emulator.noTTY)
 	}
-	if _, present := env.emulator.options["IdentitiesOnly"]; present {
-		t.Fatal("IdentitiesOnly must not be set")
+	for _, forbidden := range []string{"IdentitiesOnly", "IdentityAgent", "ProxyJump"} {
+		if _, present := env.emulator.options[forbidden]; present {
+			t.Fatalf("%s must not be set", forbidden)
+		}
 	}
 	if !strings.Contains(env.emulator.sshCommands[0], "to='timeout 300'") {
 		t.Fatalf("A's ssh is not bounded by --timeout: %s", env.emulator.sshCommands[0])
