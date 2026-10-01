@@ -1,6 +1,6 @@
 # SSM v1 到 v2 的迁移契约
 
-本指南是当前 GitHub latest SSM v2.0.2 的运维者和机器消费者契约。全新安装选择 v2.0.2；
+本指南是当前 GitHub latest SSM v2.1.0 的运维者和机器消费者契约。全新安装选择 v2.1.0；
 v1 客户端普通更新仍留在 major 1，只有经过审查并显式授权的 major 迁移才能选择 v2。
 
 [English](migration-v1-to-v2.md) | [来源证明运行手册](update-provenance-runbook.zh-CN.md)
@@ -193,7 +193,7 @@ review sshctl --offline --json doctor and preserve the local vault and sync-conf
 
 ## 更新授权和信任
 
-普通自动/手动更新只选择已安装 major 内（same-major）较新的 stable release。跨 major 的可用性会报告，但不
+普通自动/手动更新只选择已安装 major 内（same-major）较新的 stable release（该 major 内最高的 stable release，不看 GitHub latest 标记）。跨 major 的可用性会报告，但不
 会安装。`ssm update --major` 仅供审查；`ssm update --major --yes` 是唯一明确的 major 替换路径。
 
 每次替换仍需要所选 digest，以及针对精确 repository、workflow、issuer、tag、subject 和六目标

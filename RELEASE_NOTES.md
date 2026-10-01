@@ -1,10 +1,10 @@
 # Release Notes
 
 These notes are the reviewed contract for the authorized stable v2.1.0
-Release. The official exact-tag workflow publishes it non-latest first with
-`make_latest=false`; v2.0.2 remains GitHub latest until published-asset
-canaries pass and a separate explicit latest-promotion decision is made. See
-the [v1→v2 migration guide](docs/migration-v1-to-v2.md) and
+Release. The official exact-tag workflow published it non-latest first with
+`make_latest=false`; published-asset canaries then passed and the authorized
+promotion made v2.1.0 GitHub latest. See the
+[v1→v2 migration guide](docs/migration-v1-to-v2.md) and
 [update-provenance runbook](docs/update-provenance-runbook.md) for operator and
 maintainer gates.
 
@@ -13,12 +13,13 @@ maintainer gates.
 This is a v2 minor release. It fixes the agent-experience issues from the
 2026-09 usage audit (tracking issue #89) and **changes some default
 behavior and some error codes**. Only some of the changes have a
-compatibility switch; the lists below say which. The official exact-tag release workflow creates the stable v2.1.0
-Release with `make_latest=false`; v2.0.2 remains GitHub latest until
-published-asset canaries pass and a separate explicit latest-promotion
-decision is made. Ordinary `ssm update` stays within v2, and once v2.1.0 is
-promoted, same-major `ssm update` (including automatic update) adopts these
-defaults on existing installs. If a fleet needs the old behavior, pin
+compatibility switch; the lists below say which. The official exact-tag release workflow created the stable v2.1.0
+Release with `make_latest=false`; after the published-asset canaries passed,
+the authorized latest-promotion step made v2.1.0 GitHub latest. Ordinary
+`ssm update` stays within v2 and installs the highest stable release of the
+installed major (it does not consult the GitHub latest flag), so same-major
+`ssm update` (including automatic update) adopts these defaults on existing
+installs; it already did so before the latest flag moved. If a fleet needs the old behavior, pin
 `sync_mode: strict` and `SSM_RUN_OUTPUT=buffered` first.
 
 ### Default behavior changes (read before upgrading)

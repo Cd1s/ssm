@@ -1,7 +1,7 @@
 # SSM v1 to v2 migration contract
 
 This guide is the operator and machine-consumer contract for the current
-GitHub latest v2.0.2. Fresh installs select v2.0.2; v1 clients remain on major
+GitHub latest v2.1.0. Fresh installs select v2.1.0; v1 clients remain on major
 1 for ordinary updates and select v2 only through an explicit reviewed major
 migration.
 
@@ -231,7 +231,8 @@ review sshctl --offline --json doctor and preserve the local vault and sync-conf
 ## Update authorization and trust
 
 Ordinary automatic/manual update is same-major: it selects only a newer stable
-release within the installed major. Cross-major availability is reported but
+release within the installed major (the highest stable release of that
+major, not the GitHub latest flag). Cross-major availability is reported but
 not installed.
 `ssm update --major` is review-only; `ssm update --major --yes` is the sole
 explicit major replacement path.

@@ -20,7 +20,7 @@ func TestCurrentV2BeginnerDocumentationContract(t *testing.T) {
 		document := active[name]
 		for _, required := range []string{
 			"https://github.com/Cd1s/ssm/releases/latest/download/install.sh",
-			"v2.0.2",
+			"v2.1.0",
 			"latest",
 		} {
 			if !strings.Contains(strings.ToLower(document), strings.ToLower(required)) {
@@ -33,7 +33,7 @@ func TestCurrentV2BeginnerDocumentationContract(t *testing.T) {
 	for _, name := range []string{"skills/agent-ssm/SKILL.md", "skills/agent-ssm/README.md"} {
 		document := active[name]
 		for _, required := range []string{
-			"v2.0.2 (current/latest)",
+			"v2.1.0 (current/latest)",
 			"v2.0.1",
 			"v2.0.0",
 			"v1.4.3/v1.4.4",
@@ -135,7 +135,7 @@ func TestBundledAgentSkillProbesVersionBeforeChoosingMajorContract(t *testing.T)
 	for description, required := range map[string]string{
 		"v1 bridge versions":         "v1.4.3 / v1.4.4",
 		"previous v2 patch":          "v2.0.0",
-		"current v2 release version": "v2.0.2",
+		"current v2 release version": "v2.1.0",
 		"unsupported-major stop":     "unsupported major",
 		"fail-closed instruction":    "fail closed",
 		"v1 compatibility branch":    "v1 compatibility branch",
@@ -151,7 +151,7 @@ func TestBundledAgentSkillProbesVersionBeforeChoosingMajorContract(t *testing.T)
 
 	compatibility := readAgentSkillContractFile(t, root, filepath.Join("references", "version-compatibility.md"))
 	for _, required := range []string{
-		"v1.4.3", "v1.4.4", "v2.0.0", "v2.0.1", "v2.0.2", "request-v1.schema.json", "op:get",
+		"v1.4.3", "v1.4.4", "v2.0.0", "v2.0.1", "v2.0.2", "v2.1.0", "request-v1.schema.json", "op:get",
 		"push --only", "push --all", "--refresh=0", "sync_config_error",
 		"direction", "kind", "unsupported major",
 	} {
@@ -167,8 +167,8 @@ func TestBundledAgentSkillProbesVersionBeforeChoosingMajorContract(t *testing.T)
 		if err := json.Unmarshal([]byte(schema), &parsed); err != nil {
 			t.Errorf("%s request schema is not JSON: %v", name, err)
 		}
-		if !strings.Contains(schema, "https://github.com/Cd1s/ssm/blob/v2.0.2/") {
-			t.Errorf("%s request schema does not bind its active ID to v2.0.2", name)
+		if !strings.Contains(schema, "https://github.com/Cd1s/ssm/blob/v2.1.0/") {
+			t.Errorf("%s request schema does not bind its active ID to v2.1.0", name)
 		}
 	}
 	if strings.Contains(bridgeSchema, `"get"`) {
@@ -239,7 +239,7 @@ func TestLatestDocumentationContract(t *testing.T) {
 			freshInstallAnchor = "全新安装"
 		}
 		for _, required := range []string{
-			"v2.0.2",
+			"v2.1.0",
 			"github",
 			"latest",
 			freshInstallAnchor,
@@ -253,7 +253,7 @@ func TestLatestDocumentationContract(t *testing.T) {
 
 	skill := strings.ToLower(contents["agent skill"])
 	for _, required := range []string{
-		"v2.0.2 (current/latest)",
+		"v2.1.0 (current/latest)",
 		"v2.0.1",
 		"v2.0.0",
 		"v1.4.3/v1.4.4",
@@ -268,7 +268,7 @@ func TestLatestDocumentationContract(t *testing.T) {
 
 	compatibility := strings.ToLower(contents["version compatibility"])
 	for _, required := range []string{
-		"v2.0.2 (current/latest)",
+		"v2.1.0 (current/latest)",
 		"v2.0.1",
 		"v2.0.0",
 		"v1.4.3 / v1.4.4",
@@ -282,8 +282,8 @@ func TestLatestDocumentationContract(t *testing.T) {
 
 	for _, document := range documents {
 		body := strings.ToLower(contents[document.name])
-		if !strings.Contains(body, "v2.0.2") {
-			t.Errorf("%s does not identify v2.0.2 as the active contract", document.name)
+		if !strings.Contains(body, "v2.1.0") {
+			t.Errorf("%s does not identify v2.1.0 as the active contract", document.name)
 		}
 		for _, stale := range []string{
 			"non-latest",
@@ -292,6 +292,9 @@ func TestLatestDocumentationContract(t *testing.T) {
 			"v2.0.1 is staged",
 			"v2 release is staged",
 			"v2.0.0 (current/latest)",
+			"v2.0.2 (current/latest)",
+			"not latest until promoted",
+			"not github latest until",
 			"current github latest v2.0.0",
 			"v1.4.4 remains github latest",
 			"v1.4.4 都保持为 github latest",

@@ -12,9 +12,9 @@ If sync is enabled, the sync server sees only encrypted vault blobs. It cannot s
 
 [中文](README.md) | [English](README.en.md)
 
-## Current release: v2.0.2
+## Current release: v2.1.0
 
-The current GitHub latest Release is **v2.0.2**, so the one-line fresh install below gets v2.0.2. Existing v1.4.3/v1.4.4 users stay on major 1 when they run ordinary `ssm update`; only an explicitly reviewed `ssm update --major --yes` crosses to v2. See the [v1→v2 migration guide](docs/migration-v1-to-v2.md) for migration details and the [update-provenance runbook](docs/update-provenance-runbook.md) for source and attestation checks.
+The current GitHub latest Release is **v2.1.0**, so the one-line fresh install below gets v2.1.0. Existing v1.4.3/v1.4.4 users stay on major 1 when they run ordinary `ssm update`; only an explicitly reviewed `ssm update --major --yes` crosses to v2. See the [v1→v2 migration guide](docs/migration-v1-to-v2.md) for migration details and the [update-provenance runbook](docs/update-provenance-runbook.md) for source and attestation checks.
 
 ## 3-minute quick start
 
@@ -32,7 +32,7 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 sshctl --json --version
 ```
 
-The version field should be `2.0.2`. If `sshctl` is not found, reopen the terminal or check that `/usr/local/bin` is on `PATH`.
+The version field should be `2.1.0`. If `sshctl` is not found, reopen the terminal or check that `/usr/local/bin` is on `PATH`.
 
 ### 3. Check status
 
@@ -283,7 +283,7 @@ Replace `<transaction-id>` with the exact ID returned by the mutation. Do not us
 
 ## Updates and rollback
 
-Fresh installs follow GitHub latest, currently v2.0.2. Ordinary updates choose a newer release only within the installed major:
+Fresh installs follow GitHub latest, currently v2.1.0. Ordinary updates choose a newer release only within the installed major: the highest stable release of that major, regardless of the GitHub latest flag (a v2.0.2 install updated to v2.1.0 before the latest flag moved):
 
 ```bash
 ssm update
@@ -320,7 +320,7 @@ PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
 
 ## Advanced / for agents and automation
 
-Read the [official Agent Skill](skills/agent-ssm/SKILL.md) and [version compatibility matrix](skills/agent-ssm/references/version-compatibility.md) first. They define the v1.4.3/v1.4.4 compatibility branch and the v2 branch shared by supported v2.0.0 and current v2.0.2, including the schema and fields each branch may use.
+Read the [official Agent Skill](skills/agent-ssm/SKILL.md) and [version compatibility matrix](skills/agent-ssm/references/version-compatibility.md) first. They define the v1.4.3/v1.4.4 compatibility branch and the v2 branch shared by supported v2.0.0 and current v2.1.0, including the schema and fields each branch may use.
 
 ### Structured output and requests
 
