@@ -8,9 +8,8 @@ metadata:
 
 # Agent SSM
 
-This is the official skill for the current GitHub latest `ssm`/`sshctl` v2.0.2
-binary. It also supports v2.1.0 (not GitHub latest until a separate
-promotion) and the previous v2.0.1 and v2.0.0 patches in the v2
+This is the official skill for the current GitHub latest `ssm`/`sshctl` v2.1.0
+binary. It also supports the previous v2.0.2, v2.0.1, and v2.0.0 patches in the v2
 compatibility branch and contains a deliberately separate compatibility branch
 for the supported v1.4.3/v1.4.4 binaries. Read the [version compatibility reference](references/version-compatibility.md),
 [v1→v2 migration guide](../../docs/migration-v1-to-v2.md), and
@@ -38,8 +37,8 @@ one branch:
 
 | Exact version | Skill branch | Request schema |
 | --- | --- | --- |
-| v2.1.0 (supported; not latest until promoted) | v2 compatibility branch | `references/request-v1.schema.json` |
-| **v2.0.2 (current/latest)** | v2 compatibility branch | `references/request-v1.schema.json` |
+| **v2.1.0 (current/latest)** | v2 compatibility branch | `references/request-v1.schema.json` |
+| v2.0.2 (supported previous v2 patch) | v2 compatibility branch | `references/request-v1.schema.json` |
 | v2.0.1 (supported previous v2 patch) | v2 compatibility branch | `references/request-v1.schema.json` |
 | v2.0.0 (supported earlier v2 patch) | v2 compatibility branch | `references/request-v1.schema.json` |
 | v1.4.3 / v1.4.4 | v1 compatibility branch | `references/request-v1-bridge.schema.json` |
@@ -324,9 +323,9 @@ Other commands:
 
 ## Updates and rollback
 
-The current v2.0.2 is GitHub latest. Same-major automatic/manual updates remain
+The current v2.1.0 is GitHub latest. Same-major automatic/manual updates remain
 the default. A v1.4.3/v1.4.4 ordinary update remains in major 1 even though
-v2.0.2 is current/latest. Review a cross-major candidate with:
+v2.1.0 is current/latest. Review a cross-major candidate with:
 
 ```bash
 ssm update --major

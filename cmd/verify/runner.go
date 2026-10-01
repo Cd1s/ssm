@@ -393,7 +393,7 @@ func validateReleaseNotes(repoRoot, version string) error {
 			"sync_mode",
 			"`ssm_run_output=buffered`",
 			"make_latest=false",
-			"v2.0.2 remains github latest",
+			"made v2.1.0 github latest",
 			"exact-tag release workflow",
 			"error-code changes (affects automation that matches `error`)",
 			"changes without a compatibility switch",

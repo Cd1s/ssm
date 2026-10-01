@@ -12,9 +12,9 @@
 
 [中文](README.md) | [English](README.en.md)
 
-## 目前版本：v2.0.2
+## 目前版本：v2.1.0
 
-GitHub 当前 latest Release 是 **v2.0.2**，所以全新安装下面的一行命令会得到 v2.0.2。已有 v1.4.3/v1.4.4 用户执行普通 `ssm update` 时仍留在 major 1；只有完成审查并明确执行 `ssm update --major --yes` 才会跨到 v2。迁移细节见[v1→v2 迁移指南](docs/migration-v1-to-v2.zh-CN.md)，来源与签名验证见[更新来源凭证运行手册](docs/update-provenance-runbook.zh-CN.md)。
+GitHub 当前 latest Release 是 **v2.1.0**，所以全新安装下面的一行命令会得到 v2.1.0。已有 v1.4.3/v1.4.4 用户执行普通 `ssm update` 时仍留在 major 1；只有完成审查并明确执行 `ssm update --major --yes` 才会跨到 v2。迁移细节见[v1→v2 迁移指南](docs/migration-v1-to-v2.zh-CN.md)，来源与签名验证见[更新来源凭证运行手册](docs/update-provenance-runbook.zh-CN.md)。
 
 ## 3 分钟上手
 
@@ -32,7 +32,7 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 sshctl --json --version
 ```
 
-应看到版本字段为 `2.0.2`。如果 `sshctl` 不存在，重新打开终端或检查 `/usr/local/bin` 是否在 `PATH` 中。
+应看到版本字段为 `2.1.0`。如果 `sshctl` 不存在，重新打开终端或检查 `/usr/local/bin` 是否在 `PATH` 中。
 
 ### 3. 查看状态
 
@@ -283,7 +283,7 @@ sshctl --json push --only <transaction-id>
 
 ## 更新与回滚
 
-全新安装跟随 GitHub latest，目前是 v2.0.2。普通更新只在已安装的 major 内选择更高版本：
+全新安装跟随 GitHub latest，目前是 v2.1.0。普通更新只在已安装的 major 内选择更高版本（已安装 major 内最高的 stable release，不看 GitHub latest 标记；v2.0.2 曾在 latest 标记移动之前就更新到了 v2.1.0）：
 
 ```bash
 ssm update
@@ -320,7 +320,7 @@ PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
 
 ## 进阶 / 给 Agent 与自动化
 
-先读[官方 Agent Skill](skills/agent-ssm/SKILL.md)和[版本兼容矩阵](skills/agent-ssm/references/version-compatibility.md)。它们定义了 v1.4.3/v1.4.4 兼容分支，以及受支持的 v2.0.0 与当前 v2.0.2 共用的 v2 兼容分支各自可以使用的 schema 和字段。
+先读[官方 Agent Skill](skills/agent-ssm/SKILL.md)和[版本兼容矩阵](skills/agent-ssm/references/version-compatibility.md)。它们定义了 v1.4.3/v1.4.4 兼容分支，以及受支持的 v2.0.0 与当前 v2.1.0 共用的 v2 兼容分支各自可以使用的 schema 和字段。
 
 ### 结构化输出与 request
 
