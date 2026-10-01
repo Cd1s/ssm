@@ -48,7 +48,12 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | SSM
 
 The installer puts `ssm` and a `sshctl` link next to it in `/usr/local/bin`
 (change it with `SSM_PREFIX`) and uses `~/.config/ssm` for your data (change it
-with `SSM_CONFIG_DIR`).
+with `SSM_CONFIG_DIR`). If you cannot write to `/usr/local/bin`, install into
+your home directory instead and make sure that directory is on your `PATH`:
+
+```bash
+curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | SSM_PREFIX="$HOME/.local/bin" sh
+```
 
 On Windows, download `ssm-windows-amd64.exe` (or `ssm-windows-arm64.exe`) from
 the [latest release](https://github.com/Cd1s/ssm/releases/latest) and verify it
@@ -112,7 +117,7 @@ address.
 | List my servers                 | `sshctl host list`                                                   |
 | Run a script                    | `sshctl run web-1 -f deploy.sh`                                      |
 | Run a Python script             | `sshctl run web-1 -f report.py --interpreter python3`                |
-| Run a command on many servers   | `sshctl map 'web-*' -j 8 hostname`                                   |
+| Run a command on many servers   | `sshctl map 'web-*' -j 8 --argv hostname`                            |
 | Upload a file                   | `sshctl put web-1 ./a.txt /tmp/a.txt`                                |
 | Download a file                 | `sshctl get web-1 /tmp/a.txt ./a.txt`                                |
 | Copy between two servers        | `sshctl cp web-1:/srv/app.tgz web-2:/srv/app.tgz`                    |

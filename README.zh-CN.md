@@ -46,6 +46,11 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | SSM
 
 安装脚本会把 `ssm` 和指向它的 `sshctl` 链接放进 `/usr/local/bin`
 （用 `SSM_PREFIX` 修改），并把数据放在 `~/.config/ssm`（用 `SSM_CONFIG_DIR` 修改）。
+如果没有 `/usr/local/bin` 的写权限，可以装到自己的目录，并确保该目录在 `PATH` 里：
+
+```bash
+curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | SSM_PREFIX="$HOME/.local/bin" sh
+```
 
 Windows 上请从[最新发布页](https://github.com/Cd1s/ssm/releases/latest)下载
 `ssm-windows-amd64.exe`（或 `ssm-windows-arm64.exe`），并按
@@ -105,7 +110,7 @@ Windows 上请从[最新发布页](https://github.com/Cd1s/ssm/releases/latest)�
 | 列出我的服务器         | `sshctl host list`                                                    |
 | 运行脚本               | `sshctl run web-1 -f deploy.sh`                                       |
 | 运行 Python 脚本       | `sshctl run web-1 -f report.py --interpreter python3`                 |
-| 在多台服务器上运行命令 | `sshctl map 'web-*' -j 8 hostname`                                    |
+| 在多台服务器上运行命令 | `sshctl map 'web-*' -j 8 --argv hostname`                             |
 | 上传文件               | `sshctl put web-1 ./a.txt /tmp/a.txt`                                 |
 | 下载文件               | `sshctl get web-1 /tmp/a.txt ./a.txt`                                 |
 | 在两台服务器之间复制   | `sshctl cp web-1:/srv/app.tgz web-2:/srv/app.tgz`                     |
