@@ -106,13 +106,15 @@ func TestCIWorkflowEnforcesPinnedHostAndOnlyTriggersOnDefaultBranch(t *testing.T
 	if got := strings.Count(text, "SSM_VERIFY_REQUIRE_PINNED"); got != 2 {
 		t.Errorf("SSM_VERIFY_REQUIRE_PINNED appears %d times, want 2 (check and windows jobs)", got)
 	}
+	// The default branch is being renamed from agent-headless-sync to main;
+	// both names trigger CI until the rename has landed everywhere.
 	const triggers = "on:\n  workflow_dispatch:\n" +
-		"  push:\n    branches: [agent-headless-sync]\n" +
-		"  pull_request:\n    branches: [agent-headless-sync]\n"
+		"  push:\n    branches: [main, agent-headless-sync]\n" +
+		"  pull_request:\n    branches: [main, agent-headless-sync]\n"
 	if !strings.Contains(text, triggers) {
 		t.Errorf("ci.yml triggers are not exactly workflow_dispatch plus the default branch")
 	}
-	for _, stale := range []string{"dev", "main"} {
+	for _, stale := range []string{"dev"} {
 		if regexp.MustCompile(`(?m)^\s*branches:.*[\[\s,]` + stale + `[\],\s]`).MatchString(text) {
 			t.Errorf("ci.yml still triggers on stale branch %q", stale)
 		}
