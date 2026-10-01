@@ -74,9 +74,22 @@ plans and speculative APIs live elsewhere.
   connections.
 - **Host-to-host copy (`cp`)**: A single regular file streamed from one host
   through this machine to another, published only when the source digest, the
-  digest of the relayed bytes, and the destination's digest agree. A direct
-  A-to-B push is deliberately not offered because it would expose access to
-  the destination to the source host.
+  digest of the relayed bytes, and the destination's digest agree. With
+  `--direct --yes` the source host instead pushes straight to the destination
+  over its own network path: it runs `ssh` (ignoring A's ssh_config and A's own
+  keys) to the destination with a scoped,
+  in-process SSH agent that holds only the destination's vault key, forwarded
+  for that one session and emptied when the copy ends, and with strict
+  host-key checking against a private known_hosts that holds only the
+  destination key this machine already trusts. The exposure is explicit: while
+  the copy runs, the source host (and whoever controls it) can use the
+  destination's key for other connections but cannot extract it. The
+  destination's password, this machine's own agent and other keys are never
+  forwarded. Requires a key-authenticated destination without `proxy_jump`,
+  no `transfer: sftp` host, and `--yes`; `--timeout` closes the agent and the
+  connection carrying it at the deadline (A's ssh is bounded only when A has
+  GNU `timeout`; no limit without `--timeout`); the result reports `route:"direct"`
+  with the source and destination digests and no relayed-bytes digest.
 - **Transfer outcome**: A machine-readable transfer result that identifies its
   direction and kind and reports only guarantees the selected transfer
   protocol actually provides.

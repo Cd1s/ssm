@@ -970,6 +970,30 @@ func TestMachineContractMatrix(t *testing.T) {
 			code:    "unsupported_transfer_option", stage: "validate",
 			hint: "cp copies single regular files only; copy a directory with sshctl get and sshctl put, or archive it on the source host first", exit: 1,
 		},
+		{
+			name: "copy direct confirmation required", kind: CopyDirectConfirmationRequired,
+			details: Details{Message: "cp --direct needs --yes"},
+			code:    "confirmation_required", stage: "validate",
+			hint: "cp --direct lets host A use B's key through a forwarded agent while the copy runs; review the exposure in sshctl cp --help and pass --yes explicitly, or drop --direct to relay through this machine", exit: 2,
+		},
+		{
+			name: "copy direct unsupported", kind: CopyDirectUnsupported,
+			details: Details{Message: "destination uses a password"},
+			code:    "unsupported_transfer_option", stage: "validate",
+			hint: "cp --direct needs a key-authenticated destination B that is reachable from A without proxy_jump, trusted host key for B, shell transfer on both hosts and a single regular file; B's password is never sent to A; use cp without --direct to relay through this machine", exit: 1,
+		},
+		{
+			name: "copy direct ssh unavailable", kind: CopyDirectSSHUnavailable,
+			details: Details{Message: "no ssh on A"},
+			code:    "remote_tool_unavailable", stage: "capability",
+			hint: "cp --direct runs the ssh client on host A and A has none; install OpenSSH's ssh on A or use cp without --direct to relay through this machine", exit: 1,
+		},
+		{
+			name: "copy direct agent unavailable", kind: CopyDirectAgentUnavailable,
+			details: Details{Message: "no agent"},
+			code:    "unsupported_transfer_option", stage: "capability",
+			hint: "the source host's sshd did not provide the forwarded agent that cp --direct needs; allow agent forwarding (AllowAgentForwarding) for this account on host A or use cp without --direct to relay through this machine", exit: 1,
+		},
 	}
 
 	seen := make(map[Kind]bool, len(tests))

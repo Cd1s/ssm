@@ -221,6 +221,12 @@ const (
 	// CopyArgumentsInvalid and CopyDirectoryUnsupported belong to sshctl cp.
 	CopyArgumentsInvalid     Kind = "copy_arguments_invalid"
 	CopyDirectoryUnsupported Kind = "copy_directory_unsupported"
+	// CopyDirectConfirmationRequired, CopyDirectUnsupported and
+	// CopyDirectSSHUnavailable belong to sshctl cp --direct (issue #115).
+	CopyDirectConfirmationRequired Kind = "copy_direct_confirmation_required"
+	CopyDirectUnsupported          Kind = "copy_direct_unsupported"
+	CopyDirectSSHUnavailable       Kind = "copy_direct_ssh_unavailable"
+	CopyDirectAgentUnavailable     Kind = "copy_direct_agent_unavailable"
 )
 
 const ExitConnectionFailed = 255
@@ -911,6 +917,22 @@ var failurePolicies = map[Kind]failurePolicy{
 	CopyDirectoryUnsupported: {
 		Code: "unsupported_transfer_option", Stage: "validate",
 		Hint: "cp copies single regular files only; copy a directory with sshctl get and sshctl put, or archive it on the source host first", Exit: 1,
+	},
+	CopyDirectConfirmationRequired: {
+		Code: "confirmation_required", Stage: "validate",
+		Hint: "cp --direct lets host A use B's key through a forwarded agent while the copy runs; review the exposure in sshctl cp --help and pass --yes explicitly, or drop --direct to relay through this machine", Exit: 2,
+	},
+	CopyDirectUnsupported: {
+		Code: "unsupported_transfer_option", Stage: "validate",
+		Hint: "cp --direct needs a key-authenticated destination B that is reachable from A without proxy_jump, trusted host key for B, shell transfer on both hosts and a single regular file; B's password is never sent to A; use cp without --direct to relay through this machine", Exit: 1,
+	},
+	CopyDirectSSHUnavailable: {
+		Code: "remote_tool_unavailable", Stage: "capability",
+		Hint: "cp --direct runs the ssh client on host A and A has none; install OpenSSH's ssh on A or use cp without --direct to relay through this machine", Exit: 1,
+	},
+	CopyDirectAgentUnavailable: {
+		Code: "unsupported_transfer_option", Stage: "capability",
+		Hint: "the source host's sshd did not provide the forwarded agent that cp --direct needs; allow agent forwarding (AllowAgentForwarding) for this account on host A or use cp without --direct to relay through this machine", Exit: 1,
 	},
 	IntegrityToolUnavailable: {
 		Code: "integrity_tool_unavailable", Stage: "capability",

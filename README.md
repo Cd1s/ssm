@@ -212,13 +212,20 @@ request v1 用 `host.transfer` 设置主机字段，`put`/`get` 请求可带顶�
 
 ```bash
 sshctl cp web1:/srv/app.tgz web2:/srv/app.tgz --timeout 5m --json
+# A 直接推到 B（需要显式确认，见下面的 --direct）
+sshctl cp web1:/srv/app.tgz web2:/srv/app.tgz --direct --yes
 ```
 
 - 读取沿用 `get` 的读路径（`cat` over SSH），写入沿用 `put` 的“私有临时文件 + 校验 + rename”，所以 B 上不会出现半成品；失败或摘要不一致时 B 的旧目标保持原样。
 - 本机对流过的字节计算 SHA-256，并与 A 端源文件摘要、B 端写后（rename 前）摘要三方比对，三者一致才成功。结果 JSON 含 `direction:"cp"`、`route:"local_relay"`、`source`/`destination`（`alias`、`path`）、`bytes`、`source_sha256`、`local_sha256`、`destination_sha256`、`atomic:true`、`integrity:"sha256_verified"`；失败结果带常规的 `error`/`stage`/`exit`/`hint`（摘要不一致为 `integrity_failed`，`integrity:"mismatch"`）。
 - 两端都需要 POSIX shell 和 `sha256sum`/`shasum`/`openssl` 之一（否则 `integrity_tool_unavailable`）；只支持单个普通文件，目录返回 `unsupported_transfer_option`（先用 `get`/`put`，或在源端打包）；`transfer: sftp` 的主机不支持 `cp`。A 有 `stat` 时保留源文件权限位，否则用 `0600`。
 - `--json` 输出机器结果；`--timeout <时长>` 限制建立连接之后的摘要探测和传输（建连本身由连接超时管），超时返回 `transfer_timeout`。源和目标解析到同一别名且同一路径时拒绝（`invalid_arguments`）。任一端都可以本身经 `proxy_jump` 连接。
-- **没有实现 `--direct`（A 直接推到 B）**，这是有意为之：它要么要把 B 的凭据放到 A 上，要么要把本机 agent 转发给 A，两者都会让 A 以及能控制 A 的人获得访问 B 的能力，违背“凭据只在本机”。是否提供、以何种显式确认提供，需要用户单独决定；传入 `--direct` 会明确报错。
+- **`--direct --yes`（A 直接推到 B）。** `sshctl cp web1:/srv/app.tgz web2:/srv/app.tgz --direct --yes` 让文件沿 A 自己的网络路径直接传给 B，不再经本机中转。没有 `--yes` 时在建立任何连接之前返回 `confirmation_required`（exit 2，人类输出和 `--json` 都一样），因为它有实实在在的暴露面：
+  - A 必须向 B 认证，所以 sshctl 在进程内启动一个只持有 **B 的 vault 私钥** 的 SSH agent，只为这一次会话转发给 A（`auth-agent@openssh.com`），复制结束即清空并关闭。本机的 `SSH_AUTH_SOCK`、其他密钥和 B 的密码都不会离开本机。**复制进行期间，A 以及能控制 A 的人可以用 B 的密钥去连 B（或任何接受该密钥的主机）；但拿不到私钥本身。**
+  - A 执行 `ssh -F /dev/null -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=<私有临时文件> -o GlobalKnownHostsFile=/dev/null ... <user>@<host>`，并运行 `put` 同款的“临时文件 + 摘要校验 + rename”脚本。**A 上的 `ssh_config`（用户级和系统级，含 `Include`、ProxyCommand/ProxyJump、LocalCommand、ControlMaster）和 A 自己的密钥（`~/.ssh/id_*`）都被忽略**：这条 ssh 只使用转发来的 agent（`IdentityFile=/dev/null`，ssh 通过 `SSH_AUTH_SOCK` 找到转发的 socket），并关闭密码、键盘交互、基于主机的认证和所有转发。临时文件（权限 0600，退出时删除）只含本机已信任的 B 的主机密钥，写成 A 实际连接的 `host[:port]`；A 自己的 known_hosts 不会被使用或修改。B 的密钥在本机尚未信任时，在接触 A 之前就返回 `host_key_unknown`。
+  - 要求与拒绝。在接触 A 之前拒绝（`unsupported_transfer_option`、`stage:validate`、exit 1）：只有密码的 B，或不接受 vault 密钥的 B（由本机用纯密钥登录检查）；B 有 `proxy_jump`（A 本身仍可经跳板访问）；任一端是 `transfer: sftp`；vault 密钥不可用。B 的主机密钥未受信是 `host_key_unknown`（`stage:dial`、exit 255），同样发生在接触 A 之前。连上 A 之后才拒绝：源是目录（`unsupported_transfer_option`、`stage:validate`、exit 1，与普通 `cp` 一致）；A 没有 `ssh` 客户端（`remote_tool_unavailable`、`stage:capability`、exit 1）；A 的 sshd 没有提供转发的 agent（`unsupported_transfer_option`、`stage:capability`、exit 1，需要 `AllowAgentForwarding`）。A 的 ssh 使用 `BatchMode` 和 `ConnectTimeout`，不会等待输入。
+  - 时间上界：传输受 `--timeout` 约束。设置后，A 上的 ssh 在 A 有 GNU 风格 `timeout` 时也在其下运行（用 `timeout --version` 检测，BusyBox 等不使用包装），到期报 `transfer_timeout`。到期时 sshctl 一定会清空 agent 并关闭到 A 的、承载 agent 通道的连接，所以 B 的密钥不能再通过 agent 使用。但没有 `timeout` 包装时，A 上已经认证完成的 ssh 可能继续运行到自己结束或失败（没有 pty 时关闭会话不发 SIGHUP，`signal` 请求只有 OpenSSH 7.9+ 才处理，且只到达登录 shell 而不是 ssh）。**不带 `--timeout` 时没有上限**（与普通 `cp` 相同），使用 `--direct` 时请带上 `--timeout`。
+  - 完整性：sshctl 先读 A 的源文件摘要，B 在 rename 前用它校验临时文件，传完后 sshctl 再通过自己的连接读 B 的摘要，三者相等才算成功。结果 JSON 含 `route:"direct"`、`source_sha256`、`destination_sha256`、`bytes`、`integrity:"sha256_verified"`，没有 `local_sha256`（本机不经手数据）。request v1 暂无 `direct` 字段。
 
 ### 添加或修改主机
 

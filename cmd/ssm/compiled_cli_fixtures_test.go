@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -367,7 +368,27 @@ type compiledSSHFixtureOptions struct {
 	// RunDelay holds every configured run for this long before it answers.
 	RunDelay time.Duration
 
+	// AgentForwarding makes the fixture accept auth-agent-req@openssh.com
+	// session requests, like an sshd with AllowAgentForwarding (issue #115).
+	AgentForwarding bool
+	// ExecHook is offered every exec request before the built-in command
+	// emulation; it reports whether it handled the command and its exit
+	// status.
+	ExecHook func(request compiledExecRequest) (status uint32, handled bool)
+
 	dropConnection func()
+	openChannel    func(name string) (gossh.Channel, error)
+}
+
+// compiledExecRequest is what an ExecHook sees: the command, the session
+// streams, whether the client asked for agent forwarding on this session, and
+// a way to open the agent channel back to the client.
+type compiledExecRequest struct {
+	Command        string
+	Channel        gossh.Channel
+	Stderr         io.Writer
+	AgentRequested bool
+	OpenAgent      func() (gossh.Channel, error)
 }
 
 // compiledPathProbe is the canned reply of a remote whose shell does not
@@ -733,6 +754,14 @@ func (f *compiledSSHFixture) serveConnection(raw net.Conn, serverConfig *gossh.S
 	f.connections.Add(1)
 	options := f.options
 	options.dropConnection = func() { _ = serverConn.Close() }
+	options.openChannel = func(name string) (gossh.Channel, error) {
+		channel, requests, err := serverConn.OpenChannel(name, nil)
+		if err != nil {
+			return nil, err
+		}
+		go gossh.DiscardRequests(requests)
+		return channel, nil
+	}
 	var open atomic.Int64
 	requestsDone := make(chan struct{})
 	go func() {
@@ -790,7 +819,13 @@ func (f *compiledSSHFixture) serveConnection(raw net.Conn, serverConfig *gossh.S
 
 func serveCompiledSSHSession(channel gossh.Channel, requests <-chan *gossh.Request, options compiledSSHFixtureOptions) {
 	defer func() { _ = channel.Close() }()
+	agentRequested := false
 	for request := range requests {
+		if request.Type == "auth-agent-req@openssh.com" {
+			agentRequested = options.AgentForwarding
+			_ = request.Reply(options.AgentForwarding, nil)
+			continue
+		}
 		if request.Type == "subsystem" && options.SFTP {
 			var subsystem struct{ Name string }
 			if err := gossh.Unmarshal(request.Payload, &subsystem); err != nil || subsystem.Name != "sftp" {
@@ -822,6 +857,18 @@ func serveCompiledSSHSession(channel gossh.Channel, requests <-chan *gossh.Reque
 		}
 		if options.record != nil {
 			options.record(payload.Command)
+		}
+		if options.ExecHook != nil {
+			openAgent := func() (gossh.Channel, error) {
+				if options.openChannel == nil {
+					return nil, errors.New("fixture cannot open channels")
+				}
+				return options.openChannel("auth-agent@openssh.com")
+			}
+			if status, handled := options.ExecHook(compiledExecRequest{Command: payload.Command, Channel: channel, Stderr: channel.Stderr(), AgentRequested: agentRequested, OpenAgent: openAgent}); handled {
+				_, _ = channel.SendRequest("exit-status", false, gossh.Marshal(struct{ Status uint32 }{status}))
+				return
+			}
 		}
 		if options.DropAfterExec && options.dropConnection != nil {
 			options.dropConnection()

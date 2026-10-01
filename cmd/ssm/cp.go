@@ -17,6 +17,7 @@ type cpOptions struct {
 	srcAlias, srcPath string
 	dstAlias, dstPath string
 	timeout           time.Duration
+	direct, yes       bool
 }
 
 // splitCopyEndpoint parses <alias>:<path>. The alias ends at the first colon,
@@ -38,7 +39,9 @@ func parseCpArgs(args []string) (cpOptions, error) {
 		case args[i] == "--json":
 			machineJSON = true
 		case args[i] == "--direct":
-			return opts, fmt.Errorf("--direct is not supported: it would need the destination's credentials on the source host or agent forwarding to it, which exposes access to the destination to anyone who controls the source; cp always relays through this machine")
+			opts.direct = true
+		case args[i] == "--yes":
+			opts.yes = true
 		case args[i] == "--timeout" && i+1 < len(args):
 			i++
 			duration, err := time.ParseDuration(args[i])
@@ -61,6 +64,9 @@ func parseCpArgs(args []string) (cpOptions, error) {
 	if len(positionals) != 2 {
 		return opts, fmt.Errorf("cp requires <alias>:<path> for the source and the destination")
 	}
+	if opts.yes && !opts.direct {
+		return opts, fmt.Errorf("--yes only confirms --direct; plain cp needs no confirmation")
+	}
 	var err error
 	if opts.srcAlias, opts.srcPath, err = splitCopyEndpoint(positionals[0]); err != nil {
 		return opts, err
@@ -75,6 +81,13 @@ func runCpArgs(args []string) {
 	opts, err := parseCpArgs(args)
 	if err != nil {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.CopyArgumentsInvalid, machinecontract.Details{Cause: err}))
+	}
+	if opts.direct && !opts.yes {
+		// Refused before any sync, vault read or connection: --direct lets
+		// the source host use the destination's key while the copy runs.
+		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.CopyDirectConfirmationRequired, machinecontract.Details{
+			Message: "cp --direct needs explicit confirmation: host A can use B's key through a forwarded agent while the copy runs, and anyone who controls A can use it too",
+		}))
 	}
 	runCp(opts)
 }
@@ -103,12 +116,16 @@ func runCp(opts cpOptions) {
 		}))
 	}
 
+	route := "local_relay"
+	if opts.direct {
+		route = "direct"
+	}
 	base := machinecontract.CopyOutcome{
-		Direction: "cp", Kind: "file", Route: "local_relay",
+		Direction: "cp", Kind: "file", Route: route,
 		Source:      machinecontract.CopyEndpoint{Alias: opts.srcAlias, Path: opts.srcPath},
 		Destination: machinecontract.CopyEndpoint{Alias: opts.dstAlias, Path: opts.dstPath},
 	}
-	result, err := ssh.CopyFile(src, opts.srcPath, dst, opts.dstPath, v, ssh.CopyOptions{Timeout: opts.timeout})
+	result, err := ssh.CopyFile(src, opts.srcPath, dst, opts.dstPath, v, ssh.CopyOptions{Timeout: opts.timeout, Direct: opts.direct})
 	if err != nil {
 		carried := machinecontract.Failure{}
 		var transferErr *ssh.TransferError
@@ -139,4 +156,7 @@ func runCp(opts cpOptions) {
 		return
 	}
 	fmt.Printf("ok=1\nsource=%s:%s\ndestination=%s:%s\nbytes=%d\nsha256=%s\n", opts.srcAlias, opts.srcPath, opts.dstAlias, opts.dstPath, result.Bytes, result.SourceSHA256)
+	if opts.direct {
+		fmt.Print("route=direct\n")
+	}
 }

@@ -45,7 +45,6 @@ import (
 // no user documentation. Each entry states why.
 var flagsWithoutDocumentation = map[string]string{
 	"--background":  "internal: re-execution marker of the detached background sync child, never typed by users",
-	"--direct":      "recognized only to reject: cp --direct is deliberately not implemented (its rejection is documented under cp)",
 	"--fetch":       "recognized only to suggest 'get' for a mistyped run option, never accepted",
 	"--script-file": "recognized only to suggest '-f' for a mistyped run option, never accepted",
 	"--help":        "universal; every command answers -h/--help and the docs do not repeat it per command",
@@ -60,6 +59,7 @@ var internalEnv = map[string]string{
 	"SSM_TRANSFER":               "remote-side marker printed by the transfer shell script, not read from the environment",
 	"SSM_INTEGRITY_MISMATCH":     "remote-side marker printed by the transfer shell script, not read from the environment",
 	"SSM_INTEGRITY_TOOL_MISSING": "remote-side marker printed by the transfer shell script, not read from the environment",
+	"SSM_SSH_OK":                 "remote-side marker printed by the cp --direct ssh-client probe, not read from the environment",
 	"SSM_TEST_":                  "test-only fault and helper hooks compiled into production files",
 	"SSM_COMPILED_TEST_":         "test-only hooks used by the compiled-CLI harness",
 }

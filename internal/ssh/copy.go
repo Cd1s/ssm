@@ -25,6 +25,11 @@ type CopyOptions struct {
 	// after both hosts are connected; connecting is bounded by the connect
 	// timeout.
 	Timeout time.Duration
+	// Direct streams the file from the source host to the destination host
+	// over the source's own network path (issue #115): the source host runs
+	// ssh towards the destination with a scoped, in-process agent that holds
+	// only the destination's key. Callers must have confirmed the exposure.
+	Direct bool
 }
 
 // CopyResult is the outcome of CopyFile. The digests are the source host's
@@ -33,6 +38,7 @@ type CopyOptions struct {
 // over its temporary file before publishing it.
 type CopyResult struct {
 	OK                bool
+	Route             string
 	Stage             string
 	Bytes             int64
 	Integrity         string
@@ -53,10 +59,13 @@ type CopyResult struct {
 // source digest, the locally computed digest and the destination digest all
 // agree. Both hosts need a POSIX shell and a SHA-256 tool.
 func CopyFile(src config.Connection, srcPath string, dst config.Connection, dstPath string, v *config.Vault, opts CopyOptions) (CopyResult, error) {
-	result := CopyResult{Stage: "validate", Integrity: "not_checked", Atomic: true}
+	result := CopyResult{Stage: "validate", Integrity: "not_checked", Atomic: true, Route: "local_relay"}
 	if src.UsesSFTP() || dst.UsesSFTP() {
 		return result, transferKindError(machinecontract.TransferSFTPUnsupported, 0,
 			errors.New("cp needs a POSIX shell on both hosts; hosts with transfer: sftp are not supported (use get and put)"))
+	}
+	if opts.Direct {
+		return copyFileDirect(src, srcPath, dst, dstPath, v, opts)
 	}
 
 	result.Stage = "discovery"
