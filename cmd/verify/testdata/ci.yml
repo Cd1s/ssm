@@ -116,6 +116,23 @@ jobs:
       - name: Verify CI profile
         run: go run ./cmd/verify ci
 
+  race:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version: "1.26.8"
+
+      - name: Run internal race tests
+        run: go test -race -count=1 ./internal/...
+
   windows:
     permissions:
       contents: read

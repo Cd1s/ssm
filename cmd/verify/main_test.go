@@ -784,13 +784,13 @@ func TestCIWorkflowMatchesReviewedGoldenAndHasReadOnlyCredentialFreeJobs(t *test
 	}
 
 	text := string(workflow)
-	if got, want := strings.Count(text, "    permissions:\n      contents: read\n"), 3; got != want {
+	if got, want := strings.Count(text, "    permissions:\n      contents: read\n"), 4; got != want {
 		t.Fatalf("job-level contents: read permissions count = %d, want %d", got, want)
 	}
-	if got, want := strings.Count(text, "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0\n"), 3; got != want {
+	if got, want := strings.Count(text, "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0\n"), 4; got != want {
 		t.Fatalf("checkout step count = %d, want %d", got, want)
 	}
-	if got, want := strings.Count(text, "          persist-credentials: false\n"), 3; got != want {
+	if got, want := strings.Count(text, "          persist-credentials: false\n"), 4; got != want {
 		t.Fatalf("persist-credentials: false count = %d, want %d", got, want)
 	}
 	if got, want := strings.Count(text, "        run: go run ./cmd/verify ci\n"), 1; got != want {
@@ -850,7 +850,7 @@ func TestCIWorkflowMatchesReviewedGoldenAndHasReadOnlyCredentialFreeJobs(t *test
 		"actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0",
 		"actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0",
 	} {
-		if got, want := strings.Count(text, "uses: "+exactUse), 3; got != want {
+		if got, want := strings.Count(text, "uses: "+exactUse), 4; got != want {
 			t.Fatalf("%s use count = %d, want %d", exactUse, got, want)
 		}
 	}
