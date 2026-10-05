@@ -271,10 +271,9 @@ func (t *Transaction) ApplyHost(before *config.Vault, change HostChange) (Mutati
 	}
 	mutation := config.PendingMutation{
 		ID: id, Alias: receipt.Host.Name, Operation: receipt.Action,
-		CreatedAt:  t.now().UTC().Format(time.RFC3339Nano),
-		KeysBefore: append([]config.SSHKey(nil), before.Keys...),
-		KeysAfter:  append([]config.SSHKey(nil), after.Keys...),
+		CreatedAt: t.now().UTC().Format(time.RFC3339Nano),
 	}
+	mutation.KeysBefore, mutation.KeysAfter = keyDelta(before.Keys, after.Keys)
 	if idx := exactConnectionIndex(before, receipt.Host.Name); idx >= 0 {
 		value := before.Connections[idx]
 		mutation.Before = &value
@@ -330,13 +329,13 @@ func (t *Transaction) RemoveSavedKey(before *config.Vault, name string) (SavedKe
 		}
 		after.PendingBase = snapshotInventory(before)
 	}
-	after.PendingMutations = append(after.PendingMutations, config.PendingMutation{
+	mutation := config.PendingMutation{
 		ID: id, KeyName: name, Operation: "saved_key_removed",
-		CreatedAt:  t.now().UTC().Format(time.RFC3339Nano),
-		KeysBefore: append([]config.SSHKey(nil), before.Keys...),
-		KeysAfter:  append([]config.SSHKey(nil), after.Keys...),
-		KeyCount:   1,
-	})
+		CreatedAt: t.now().UTC().Format(time.RFC3339Nano),
+		KeyCount:  1,
+	}
+	mutation.KeysBefore, mutation.KeysAfter = keyDelta(before.Keys, after.Keys)
+	after.PendingMutations = append(after.PendingMutations, mutation)
 	if err := saveLoadedVault(after, t.masterPass); err != nil {
 		return SavedKeyMutationReceipt{}, fmt.Errorf("save saved-key transaction: %w", err)
 	}
@@ -387,16 +386,16 @@ func (t *Transaction) ApplyImport(before, imported *config.Vault, replace bool) 
 	if replace {
 		action = "replaced"
 	}
-	after.PendingMutations = append(after.PendingMutations, config.PendingMutation{
+	mutation := config.PendingMutation{
 		ID: id, Aliases: aliases, Operation: "import_" + action,
 		CreatedAt:       t.now().UTC().Format(time.RFC3339Nano),
-		KeysBefore:      append([]config.SSHKey(nil), before.Keys...),
-		KeysAfter:       append([]config.SSHKey(nil), after.Keys...),
 		BulkBefore:      snapshotInventory(before),
 		BulkAfter:       snapshotInventory(after),
 		ConnectionCount: len(aliases),
 		KeyCount:        affectedKeys,
-	})
+	}
+	mutation.KeysBefore, mutation.KeysAfter = keyDelta(before.Keys, after.Keys)
+	after.PendingMutations = append(after.PendingMutations, mutation)
 	if !replace {
 		if err := config.SaveMergeReport(report); err != nil {
 			return ImportReceipt{}, &MergeReportError{Err: err}
@@ -1819,6 +1818,41 @@ func changedKeyNames(before, after []config.SSHKey) []string {
 	}
 	sort.Strings(changed)
 	return changed
+}
+
+// keyDelta records only keys whose lifecycle or value changed. A missing key
+// on one side means create/delete; unchanged keys are omitted from both sides.
+// Names are sorted so ledger bytes remain deterministic across map iteration.
+func keyDelta(before, after []config.SSHKey) (changedBefore, changedAfter []config.SSHKey) {
+	beforeByName := make(map[string]config.SSHKey, len(before))
+	afterByName := make(map[string]config.SSHKey, len(after))
+	names := make(map[string]bool, len(before)+len(after))
+	for _, key := range before {
+		beforeByName[key.Name] = key
+		names[key.Name] = true
+	}
+	for _, key := range after {
+		afterByName[key.Name] = key
+		names[key.Name] = true
+	}
+	changedNames := make([]string, 0, len(names))
+	for name := range names {
+		previous, hadPrevious := beforeByName[name]
+		next, hasNext := afterByName[name]
+		if !hadPrevious || !hasNext || previous != next {
+			changedNames = append(changedNames, name)
+		}
+	}
+	sort.Strings(changedNames)
+	for _, name := range changedNames {
+		if key, ok := beforeByName[name]; ok {
+			changedBefore = append(changedBefore, key)
+		}
+		if key, ok := afterByName[name]; ok {
+			changedAfter = append(changedAfter, key)
+		}
+	}
+	return changedBefore, changedAfter
 }
 
 func keyLifecycleReason(mutation config.PendingMutation, keyName, change string) string {
