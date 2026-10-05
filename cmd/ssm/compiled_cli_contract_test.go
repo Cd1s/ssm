@@ -2697,7 +2697,7 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 			PendingMutations: []config.PendingMutation{{
 				ID: pendingTransactions[0].ID, Alias: pendingTransactions[0].Alias,
 				Operation: pendingTransactions[0].Operation, CreatedAt: pendingTransactions[0].CreatedAt,
-				After: &alphaConnection, KeysBefore: []config.SSHKey{statusKey}, KeysAfter: []config.SSHKey{statusKey},
+				After: &alphaConnection,
 			}},
 		})
 	})
