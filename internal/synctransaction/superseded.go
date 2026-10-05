@@ -2,6 +2,8 @@ package synctransaction
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,6 +12,8 @@ import (
 )
 
 const maxSuperseded = 64
+
+var errRemoteSuperseded = fmt.Errorf("%w: remote vault is a version this machine already replaced (possible rollback); review, then pull --adopt-remote", ErrConflict)
 
 type supersededLedger struct {
 	Superseded []string `json:"superseded"`
@@ -64,6 +68,14 @@ func recordSuperseded(old, next string) {
 
 func isSuperseded(identity string) bool {
 	return identity != "" && slices.Contains(loadSuperseded(), identity)
+}
+
+func (t *Transaction) supersededError(facts Facts, remote string) (Facts, error) {
+	result, err := t.conflictError(facts, remote)
+	if errors.Is(err, ErrConflict) {
+		return result, errRemoteSuperseded
+	}
+	return result, err
 }
 
 func clearSuperseded() {

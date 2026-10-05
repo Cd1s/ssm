@@ -253,6 +253,8 @@ func (t *Transaction) describeFailure(err error) (cause, message string) {
 		}
 	}
 	switch {
+	case errors.Is(err, errRemoteSuperseded):
+		cause, message = CauseConflict, "remote vault is a version this machine already replaced (possible rollback); review, then pull --adopt-remote"
 	case errors.Is(err, ErrConflict), errors.Is(err, ErrEmptyLedgerDivergence):
 		cause, message = CauseConflict, "local and remote vaults diverged"
 	case errors.Is(err, ErrConfiguration):

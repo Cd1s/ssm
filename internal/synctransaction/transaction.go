@@ -522,7 +522,7 @@ func (t *Transaction) applyRemoteIdentity(cfg *cloud.CloudConfig, facts Facts, r
 	if !forcePull && remote != "" && remote == facts.RemoteETag {
 		return facts, nil
 	}
-	if divergedFor(mode, facts, remote) {
+	if (mode != pullAdopt && isSuperseded(remote)) || divergedFor(mode, facts, remote) {
 		// Decide divergence before downloading, under the lock so the
 		// evidence reflects the vault as it is now.
 		lock, err := t.lockVault("decision", mode)
@@ -531,6 +531,11 @@ func (t *Transaction) applyRemoteIdentity(cfg *cloud.CloudConfig, facts Facts, r
 		}
 		current := identityFacts()
 		current.Configuration = facts.Configuration
+		if mode != pullAdopt && isSuperseded(remote) {
+			result, err := t.supersededError(current, remote)
+			_ = lock.Close()
+			return result, err
+		}
 		if divergedFor(mode, current, remote) {
 			result, err := t.conflictError(current, remote)
 			_ = lock.Close()
@@ -566,6 +571,8 @@ func (t *Transaction) installFetched(data []byte, etag string, mode pullMode) (F
 		if facts.Conflict == nil || facts.LocalETag != facts.Conflict.LocalETag {
 			return facts, fmt.Errorf("%w: local vault changed after the conflict was recorded; nothing was replaced, re-check with sshctl --offline --json doctor before adopting", ErrConflict)
 		}
+	} else if isSuperseded(etag) {
+		return t.supersededError(facts, etag)
 	} else if divergedFor(mode, facts, etag) {
 		return t.conflictError(facts, etag)
 	}
