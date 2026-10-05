@@ -500,6 +500,7 @@ An empty, unparseable, or non-positive `sync_interval` or `stale_after` falls ba
 | `SSM_REUSE` | `0`, `off`, `false`, or `no` disables the connection pool. Reuse is always process-local (`status` reports `reuse_scope=process`). |
 | `SSM_FORWARD_STDIN` | `1` forwards local stdin by default (including `--json`); `0` is the same as `--no-stdin`. |
 | `SSM_RUN_OUTPUT` | `buffered` restores the v2.0.2 buffered output mode. |
+| `SSM_NO_PERMISSION_WARNING` | Set to `1` to suppress warnings for credential files readable by other users. |
 | `SSM_TRACE` | `1` (also `true`, `yes`, `on`) is the same as `--trace`/`-v`. |
 | `SSM_OFFLINE` | `1` is the same as `--offline`. |
 | `SSM_SYNC_MODE` | `strict` or `local_first`; overrides `sync_mode` for one process. |
