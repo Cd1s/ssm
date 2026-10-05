@@ -610,7 +610,7 @@ func divergedFor(mode pullMode, facts Facts, remote string) bool {
 // last confirmed remote identity.
 func diverged(facts Facts, remote string) bool {
 	return facts.RemoteETag != "" && remote != "" && remote != facts.RemoteETag &&
-		facts.LocalETag != "" && facts.LocalETag != facts.RemoteETag
+		facts.LocalETag != "" && facts.LocalETag != facts.RemoteETag && facts.LocalETag != remote
 }
 
 func (t *Transaction) Pull() (Facts, error) {
