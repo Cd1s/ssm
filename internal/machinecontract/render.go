@@ -26,10 +26,21 @@ import (
 const DiagnosticSpoolByteLimit int64 = 8 << 20
 
 var (
-	redactAssignmentPrefix = regexp.MustCompile(`(?i)(?:(?:\\+)?["'])?\b(?:password|passwd|pass|passphrase|master_pass|masterpass|credential|token|secret|config|private_key|request_body|decrypted_inventory)\b(?:(?:\\+)?["'])?\s*[:=]\s*`)
-	redactBearerPattern    = regexp.MustCompile(`(?i)(["']?\bauthorization\b["']?\s*:\s*["']?bearer\s+)(?:"[^"]*"|'[^']*'|[^\s,}]+)`)
-	redactStructuredPrefix = regexp.MustCompile(`(?i)(?:(?:\\+)?["'])?\b(?:config|request_body|decrypted_inventory)\b(?:(?:\\+)?["'])?\s*[:=]\s*`)
-	privateKeyBlockPattern = regexp.MustCompile(`(?is)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----`)
+	redactAssignmentPrefix            = regexp.MustCompile(`(?i)(?:(?:\\+)?["'])?\b(?:password|passwd|pass|passphrase|master_pass|masterpass|credential|token|secret|config|private_key|request_body|decrypted_inventory)\b(?:(?:\\+)?["'])?\s*[:=]\s*`)
+	redactBearerPattern               = regexp.MustCompile(`(?i)(["']?\bauthorization\b["']?\s*:\s*["']?bearer\s+)(?:"[^"]*"|'[^']*'|[^\s,}]+)`)
+	redactStructuredPrefix            = regexp.MustCompile(`(?i)(?:(?:\\+)?["'])?\b(?:config|request_body|decrypted_inventory)\b(?:(?:\\+)?["'])?\s*[:=]\s*`)
+	privateKeyBlockPattern            = regexp.MustCompile(`(?is)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----`)
+	redactAssignmentFileErrorPrefixes = []string{
+		"no such file or directory",
+		"permission denied",
+		"is a directory",
+		"not a directory",
+		"file exists",
+		"too many open files",
+		"read-only file system",
+		"no space left on device",
+		"operation not permitted",
+	}
 )
 
 // Format identifies one existing public rendering mode.
@@ -434,6 +445,19 @@ func redactAssignmentValues(value string) string {
 	for _, match := range matches {
 		if match[0] < cursor || match[1] >= len(value) {
 			continue
+		}
+		if match[0] > 0 && (value[match[0]-1] == '.' || value[match[0]-1] == '/') {
+			assignmentValue := strings.ToLower(strings.TrimSpace(value[match[1]:]))
+			keepFileError := false
+			for _, prefix := range redactAssignmentFileErrorPrefixes {
+				if strings.HasPrefix(assignmentValue, prefix) {
+					keepFileError = true
+					break
+				}
+			}
+			if keepFileError {
+				continue
+			}
 		}
 		end := assignmentValueEnd(value, match[1])
 		if end == match[1] {
