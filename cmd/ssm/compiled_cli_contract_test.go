@@ -1918,7 +1918,7 @@ func TestCompiledFailedStatusPreservesSuccessfulSyncHistory(t *testing.T) {
 	cli := newCompiledCLIHarness(t)
 	cli.SaveVault(t, &config.Vault{})
 	const lastPull = "2026-07-01T01:02:03Z"
-	settings, err := json.Marshal(config.Settings{PasswordCache: "never", AutoSync: true, LastPull: lastPull})
+	settings, err := json.Marshal(config.Settings{AutoSync: true, LastPull: lastPull})
 	if err != nil {
 		t.Fatalf("marshal historical settings: %v", err)
 	}
