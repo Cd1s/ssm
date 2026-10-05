@@ -9,19 +9,19 @@ import (
 	"testing"
 )
 
-func TestR3DirectoryDownloadStagingWidensPermissionsOfExistingDestination(t *testing.T) {
+func TestDirectoryDownloadPublishKeepsExistingDestinationModes(t *testing.T) {
 	old := syscall.Umask(0o022)
 	defer syscall.Umask(old)
 	root := t.TempDir()
 	dest := filepath.Join(root, "dest")
-	if err := os.MkdirAll(filepath.Join(dest, ".ssh"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(dest, ".ssh"), 0o700); err != nil { //nolint:gosec // test-only fixture under t.TempDir uses restrictive mode
 		t.Fatal(err)
 	}
 	secret := filepath.Join(dest, ".ssh", "id_x")
-	if err := os.WriteFile(secret, []byte("k"), 0o600); err != nil {
+	if err := os.WriteFile(secret, []byte("k"), 0o600); err != nil { //nolint:gosec // test-only fixture under t.TempDir
 		t.Fatal(err)
 	}
-	if err := os.Chmod(dest, 0o700); err != nil {
+	if err := os.Chmod(dest, 0o700); err != nil { //nolint:gosec // test-only fixture under t.TempDir uses restrictive mode
 		t.Fatal(err)
 	}
 	staging, err := newDirectoryDownloadStaging(dest)
@@ -47,7 +47,7 @@ func TestR3DirectoryDownloadStagingWidensPermissionsOfExistingDestination(t *tes
 
 	real := filepath.Join(root, "real")
 	link := filepath.Join(root, "link")
-	if err := os.Mkdir(real, 0o755); err != nil {
+	if err := os.Mkdir(real, 0o755); err != nil { //nolint:gosec // test-only fixture under t.TempDir
 		t.Fatal(err)
 	}
 	if err := os.Symlink("real", link); err != nil {

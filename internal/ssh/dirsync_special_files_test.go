@@ -36,7 +36,7 @@ func extractTestTar(t *testing.T, root string, archive []byte) error {
 		args = append(args, "--no-same-owner", "--no-same-permissions")
 	}
 	args = append(args, "-xf", "-")
-	cmd := exec.Command("tar", args...)
+	cmd := exec.Command("tar", args...) //nolint:gosec // test-only tar fixture under t.TempDir
 	cmd.Stdin = bytes.NewReader(archive)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -47,7 +47,10 @@ func extractTestTar(t *testing.T, root string, archive []byte) error {
 
 func TestRejectSpecialEntriesClearsSpecialPermissionBits(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "setid")
-	if err := os.WriteFile(path, []byte("x"), 0o4755); err != nil {
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o755|os.ModeSetuid); err != nil { //nolint:gosec // test-only fixture under t.TempDir uses intentional setuid mode
 		t.Fatal(err)
 	}
 	if err := rejectSpecialEntries(filepath.Dir(path)); err != nil {
