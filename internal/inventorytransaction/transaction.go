@@ -961,7 +961,7 @@ func (s *PublicationSession) Publish(t *Transaction, v *config.Vault, only strin
 				projection, err = project(v, only)
 			}
 		default:
-			projection, err = project(v, only)
+			return PublicationReceipt{}, synctransaction.ErrUnconfigured
 		}
 	} else {
 		projection, err = project(v, only)
