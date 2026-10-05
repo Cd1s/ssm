@@ -104,7 +104,7 @@ Remote target identity equality is the only publication commit point.
 | `prepared`; restart/status | None | Remove intent; exact IDs remain ordinary pending. |
 | `ready`; pre-send failure or explicit rejection | No PUT, or one rejected PUT | Remove intent; exact IDs remain pending. |
 | `ready`; transport/response loss | At most one PUT attempt | Persist `ambiguous`; exact IDs remain pending. |
-| `ready`/`ambiguous`; remote equals prerequisite | HEAD only | Status returns the scope to pending. A publication retry re-encrypts and sends only the recorded IDs, never new pending IDs. |
+| `ready`/`ambiguous`; remote equals prerequisite | HEAD only | Status returns the scope to pending. A publication retry re-encrypts and sends only the recorded IDs, never new pending IDs. Only a retry with the same scope replays the recorded IDs; a different scope is rejected without publishing. |
 | `ready`/`ambiguous`; remote equals target | HEAD only | Atomically finalize only recorded IDs, confirm sync metadata, then remove intent. |
 | Any sent state; remote is a third identity | HEAD only | Persist `divergent` evidence; preserve local ledger and remote blob; never PUT. |
 | Target confirmed; local save fails | No additional network required | Persist `finalization_failed`; its durable target confirmation retries exact local finalization on restart, including offline status. |
