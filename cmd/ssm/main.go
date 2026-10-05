@@ -672,6 +672,7 @@ func unlockVault() (machinecontract.Failure, bool) {
 		masterPassFile = defaultMasterPassFileIfPresent()
 	}
 	if masterPassFile != "" {
+		warnCredentialFile("--master-pass-file", masterPassFile)
 		data, err := os.ReadFile(masterPassFile)
 		if err != nil {
 			return machinecontract.Classify(machinecontract.MasterPassFileReadFailed, machinecontract.Details{

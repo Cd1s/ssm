@@ -534,6 +534,7 @@ Global options: --json, --offline, --master-pass-file <protected-file>, --versio
 Env: SSM_TRACE=1  SSM_CONNECT_TIMEOUT=10s (same as --connect-timeout)
      SSM_TIMEOUT=10s (deprecated compatibility alias of SSM_CONNECT_TIMEOUT)  SSM_DIAL_TIMEOUT=10s (older name, read last)
      SSM_REUSE=0|off|false|no  SSM_FORWARD_STDIN=1|0  SSM_RUN_OUTPUT=buffered
+     SSM_NO_PERMISSION_WARNING=1  suppress credential-file permission warnings
      SSM_CONFIG_DIR=<dir>  SSM_MASTER_PASS_FILE=<protected-file>  SSM_KEEPALIVE=0|<duration> (invalid: 15s)
      SSM_OFFLINE=1  SSM_SYNC_MODE=strict|local_first
      SSM_UPDATE_REPO=<owner/repo>|off  release repository that ssm update reads (ssm update only) (for tests and forks; provenance stays pinned to Cd1s/ssm)

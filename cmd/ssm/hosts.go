@@ -344,6 +344,12 @@ func runHostCommand(args []string) {
 		return
 	}
 
+	if opts.passwordFile.set {
+		warnCredentialFile("--password-file", opts.passwordFile.value)
+	}
+	if opts.keyFile.set {
+		warnCredentialFile("--key-file", strings.TrimSpace(opts.keyFile.value))
+	}
 	result, err := inventorytransaction.New(inventorytransaction.Options{
 		MasterPass: masterPass,
 	}).ApplyHost(v, hostChangeFromOptions(opts))

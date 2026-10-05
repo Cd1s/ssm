@@ -522,6 +522,7 @@ func parseSecretKV(spec string, into map[string]string) error {
 	val := spec[eq+1:]
 	if strings.HasPrefix(val, "@") {
 		path := val[1:]
+		warnCredentialFile("--secret", path)
 		data, err := readLimitedFile(path, maxSecretBytes)
 		if err != nil {
 			return fmt.Errorf("secret file %s: %w", path, err)
