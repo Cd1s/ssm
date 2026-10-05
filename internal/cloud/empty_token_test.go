@@ -3,6 +3,7 @@ package cloud
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -10,7 +11,7 @@ import (
 // answers 200 with `{}` or `{"token":""}` must not make Login/Register return ("", nil), which
 // would let the CLI save cloud.json with an empty token and print "Logged in.".
 func TestLoginRejectsAnEmptyToken(t *testing.T) {
-	for name, body := range map[string]string{"empty object": `{}`, "empty token": `{"token":""}`, "html": `<html>`} {
+	for name, body := range map[string]string{"empty object": `{}`, "empty token": `{"token":""}`, "blank token": `{"token":"  \t"}`, "html": `<html>`} {
 		t.Run(name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
@@ -19,11 +20,11 @@ func TestLoginRejectsAnEmptyToken(t *testing.T) {
 			defer server.Close()
 			token, err := Login(server.URL, "a@b.c", "pw")
 			t.Logf("Login -> token=%q err=%v", token, err)
-			if err == nil && token == "" {
+			if err == nil && strings.TrimSpace(token) == "" {
 				t.Errorf("Login returned an empty token without an error")
 			}
 			token, err = Register(server.URL, "a@b.c", "pw")
-			if err == nil && token == "" {
+			if err == nil && strings.TrimSpace(token) == "" {
 				t.Errorf("Register returned an empty token without an error")
 			}
 		})
