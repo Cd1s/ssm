@@ -7,10 +7,46 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"sync/atomic"
 	"testing"
 )
+
+func TestCheckRedirectSameHostSchemes(t *testing.T) {
+	const host = "example.test:443"
+	tests := []struct {
+		name      string
+		via       []string
+		next      string
+		wantError bool
+	}{
+		{name: "HTTPS downgrade", via: []string{"https"}, next: "http", wantError: true},
+		{name: "HTTPS unchanged", via: []string{"https"}, next: "https"},
+		{name: "HTTP unchanged", via: []string{"http"}, next: "http"},
+		{name: "HTTP upgrade", via: []string{"http"}, next: "https"},
+		{name: "multihop HTTPS downgrade", via: []string{"https", "https"}, next: "http", wantError: true},
+		{name: "multihop HTTP upgrade", via: []string{"http", "http"}, next: "https"},
+		{name: "downgrade after HTTP upgrade", via: []string{"http", "https"}, next: "http", wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			via := make([]*http.Request, len(test.via))
+			for index, scheme := range test.via {
+				via[index] = &http.Request{URL: &url.URL{Scheme: scheme, Host: host}}
+			}
+			request := &http.Request{URL: &url.URL{Scheme: test.next, Host: host}}
+			err := checkRedirect(request, via)
+			if test.wantError {
+				if err == nil || err.Error() != "refusing to follow a redirect to a different host or to plain http" {
+					t.Fatalf("checkRedirect error = %v, want fixed downgrade refusal", err)
+				}
+			} else if err != nil {
+				t.Fatalf("checkRedirect error = %v, want nil", err)
+			}
+		})
+	}
+}
 
 func TestAuthRedirectRefusesDifferentHost(t *testing.T) {
 	for name, authenticate := range map[string]func(string, string, string) (string, error){
