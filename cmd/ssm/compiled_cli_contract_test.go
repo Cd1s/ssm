@@ -1864,6 +1864,7 @@ func TestCompiledFailedStatusUsesFailureRenderer(t *testing.T) {
 		PasswordCache: "never",
 		AutoSync:      true,
 		LastPush:      `config="{\"token\":\"` + canary + `\"}"`,
+		LastPull:      "2026-07-01T01:02:03Z",
 	})
 	if err != nil {
 		t.Fatalf("marshal failed-status settings: %v", err)
@@ -1910,7 +1911,7 @@ func TestCompiledFailedStatusUsesFailureRenderer(t *testing.T) {
 	}
 	lastPull, pullOK := value["last_pull"].(string)
 	lastSync, syncOK := value["last_sync"].(string)
-	if !pullOK || !syncOK || lastPull == "" || lastSync != lastPull {
+	if !pullOK || !syncOK || lastPull != "2026-07-01T01:02:03Z" || lastSync != lastPull {
 		t.Fatalf("failed status sync timestamps changed: last_pull=%v last_sync=%v", value["last_pull"], value["last_sync"])
 	}
 }

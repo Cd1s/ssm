@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"ssm/internal/config"
 	"ssm/internal/inventorytransaction"
@@ -415,14 +414,6 @@ func runSSHCTLStatus() {
 	}
 	freshness := string(syncFacts.Freshness)
 	lastPull, lastSync := syncFacts.LastPull, syncFacts.LastSync
-	if refreshErr != nil && lastPull == "" {
-		if syncFacts.LastError != nil && syncFacts.LastError.At != "" {
-			lastPull = syncFacts.LastError.At
-		} else {
-			lastPull = time.Now().UTC().Format(time.RFC3339)
-		}
-		lastSync = lastPull
-	}
 	pending := false
 	pendingMutations := []pendingMutationView{}
 	if v != nil {
