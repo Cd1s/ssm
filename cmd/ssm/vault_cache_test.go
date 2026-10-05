@@ -14,7 +14,7 @@ func prepareUnlockedVaultForCacheTest(t *testing.T, vault *config.Vault) (string
 	home := t.TempDir()
 	setTestHome(t, home)
 	t.Setenv("SSM_CONFIG_DIR", filepath.Join(home, ".config", "ssm"))
-	const pass = "status-cache-test-pass"
+	const pass = "status-cache-test-pass" //nolint:gosec // test-only fake credential
 	if err := config.Save(vault, pass); err != nil {
 		t.Fatal(err)
 	}
