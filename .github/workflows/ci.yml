@@ -3,9 +3,9 @@ name: CI
 on:
   workflow_dispatch:
   push:
-    branches: [main, agent-headless-sync]
+    branches: [main]
   pull_request:
-    branches: [main, agent-headless-sync]
+    branches: [main]
 
 permissions:
   contents: read
@@ -17,13 +17,14 @@ jobs:
     env:
       SSM_VERIFY_REQUIRE_PINNED: "1"
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.26.8"
 
@@ -96,8 +97,8 @@ jobs:
           set -euo pipefail
           archive="golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64.tar.gz"
           release="https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_LINT_VERSION}"
-          curl -sSfL "$release/$archive" -o "$RUNNER_TEMP/$archive"
-          curl -sSfL "$release/golangci-lint-${GOLANGCI_LINT_VERSION}-checksums.txt" \
+          curl --fail --silent --show-error --location --retry 3 --retry-connrefused "$release/$archive" -o "$RUNNER_TEMP/$archive"
+          curl --fail --silent --show-error --location --retry 3 --retry-connrefused "$release/golangci-lint-${GOLANGCI_LINT_VERSION}-checksums.txt" \
             -o "$RUNNER_TEMP/golangci-lint-checksums.txt"
           grep "  $archive\$" "$RUNNER_TEMP/golangci-lint-checksums.txt" \
             > "$RUNNER_TEMP/golangci-lint-selected-checksum.txt"
@@ -115,19 +116,37 @@ jobs:
       - name: Verify CI profile
         run: go run ./cmd/verify ci
 
+  race:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: "1.26.8"
+
+      - name: Run internal race tests
+        run: go test -race -count=1 ./internal/...
+
   windows:
     permissions:
       contents: read
     env:
       SSM_VERIFY_REQUIRE_PINNED: "1"
     runs-on: windows-latest
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.26.8"
 
@@ -142,13 +161,14 @@ jobs:
     permissions:
       contents: read
     runs-on: macos-latest
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.26.8"
 

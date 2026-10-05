@@ -784,13 +784,13 @@ func TestCIWorkflowMatchesReviewedGoldenAndHasReadOnlyCredentialFreeJobs(t *test
 	}
 
 	text := string(workflow)
-	if got, want := strings.Count(text, "    permissions:\n      contents: read\n"), 3; got != want {
+	if got, want := strings.Count(text, "    permissions:\n      contents: read\n"), 4; got != want {
 		t.Fatalf("job-level contents: read permissions count = %d, want %d", got, want)
 	}
-	if got, want := strings.Count(text, "      - uses: actions/checkout@v7\n"), 3; got != want {
+	if got, want := strings.Count(text, "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n"), 4; got != want {
 		t.Fatalf("checkout step count = %d, want %d", got, want)
 	}
-	if got, want := strings.Count(text, "          persist-credentials: false\n"), 3; got != want {
+	if got, want := strings.Count(text, "          persist-credentials: false\n"), 4; got != want {
 		t.Fatalf("persist-credentials: false count = %d, want %d", got, want)
 	}
 	if got, want := strings.Count(text, "        run: go run ./cmd/verify ci\n"), 1; got != want {
@@ -847,10 +847,10 @@ func TestCIWorkflowMatchesReviewedGoldenAndHasReadOnlyCredentialFreeJobs(t *test
 		t.Fatal("native Windows gate incorrectly requires optional host privileges")
 	}
 	for _, exactUse := range []string{
-		"actions/checkout@v7",
-		"actions/setup-go@v6",
+		"actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
+		"actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0",
 	} {
-		if got, want := strings.Count(text, "uses: "+exactUse), 3; got != want {
+		if got, want := strings.Count(text, "uses: "+exactUse), 4; got != want {
 			t.Fatalf("%s use count = %d, want %d", exactUse, got, want)
 		}
 	}
