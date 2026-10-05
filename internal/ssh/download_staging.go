@@ -3,6 +3,7 @@ package ssh
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -78,6 +79,7 @@ func systemDirectoryDownloadPublishOperations() directoryDownloadPublishOperatio
 
 type directoryDownloadStaging struct {
 	path              string
+	destinationPath   string
 	destinationExists bool
 	published         bool
 }
@@ -91,7 +93,7 @@ func newDirectoryDownloadStaging(localPath string) (*directoryDownloadStaging, e
 	if err != nil {
 		return nil, transferError(machinecontract.TransferDownloadLocalWrite, 0, err)
 	}
-	staging := &directoryDownloadStaging{path: path}
+	staging := &directoryDownloadStaging{path: path, destinationPath: localPath}
 	info, statErr := os.Stat(localPath)
 	switch {
 	case statErr == nil && !info.IsDir():
@@ -99,15 +101,65 @@ func newDirectoryDownloadStaging(localPath string) (*directoryDownloadStaging, e
 		return nil, transferError(machinecontract.TransferDownloadLocalWrite, 0, fmt.Errorf("local destination is not a directory"))
 	case statErr == nil:
 		staging.destinationExists = true
+		if linkInfo, err := os.Lstat(localPath); err == nil && linkInfo.Mode()&os.ModeSymlink != 0 {
+			resolved, err := filepath.EvalSymlinks(localPath)
+			if err != nil {
+				staging.cleanup()
+				return nil, transferError(machinecontract.TransferDownloadLocalWrite, 0, err)
+			}
+			staging.destinationPath = resolved
+		}
 		if err := os.CopyFS(path, os.DirFS(localPath)); err != nil {
 			staging.cleanup()
 			return nil, transferError(machinecontract.TransferDownloadLocalWrite, 0, fmt.Errorf("stage existing local directory: %w", err))
+		}
+		modeSource := localPath
+		if staging.destinationPath != localPath {
+			modeSource = staging.destinationPath
+		}
+		if err := restoreDirectoryModes(modeSource, path); err != nil {
+			staging.cleanup()
+			return nil, transferError(machinecontract.TransferDownloadLocalWrite, 0, fmt.Errorf("preserve local directory modes: %w", err))
 		}
 	case !os.IsNotExist(statErr):
 		staging.cleanup()
 		return nil, transferError(machinecontract.TransferDownloadLocalWrite, 0, statErr)
 	}
 	return staging, nil
+}
+
+func restoreDirectoryModes(source, destination string) error {
+	sourceRoot, err := os.OpenRoot(source)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = sourceRoot.Close() }()
+	destinationRoot, err := os.OpenRoot(destination)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = destinationRoot.Close() }()
+	return fs.WalkDir(sourceRoot.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := sourceRoot.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		targetInfo, err := destinationRoot.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if targetInfo.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		mode := info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
+		return destinationRoot.Chmod(path, mode)
+	})
 }
 
 func (staging *directoryDownloadStaging) cleanup() {
@@ -118,6 +170,9 @@ func (staging *directoryDownloadStaging) cleanup() {
 }
 
 func (staging *directoryDownloadStaging) publish(localPath string, operations directoryDownloadPublishOperations) error {
+	if staging.destinationPath != "" {
+		localPath = staging.destinationPath
+	}
 	parent := filepath.Dir(localPath)
 	backup := ""
 	var err error
