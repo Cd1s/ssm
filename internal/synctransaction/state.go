@@ -253,6 +253,8 @@ func (t *Transaction) describeFailure(err error) (cause, message string) {
 		}
 	}
 	switch {
+	case errors.Is(err, errRemoteSuperseded):
+		cause, message = CauseConflict, "remote vault is a version this machine already replaced (possible rollback); review, then pull --adopt-remote"
 	case errors.Is(err, ErrConflict), errors.Is(err, ErrEmptyLedgerDivergence):
 		cause, message = CauseConflict, "local and remote vaults diverged"
 	case errors.Is(err, ErrConfiguration):
@@ -362,7 +364,9 @@ var resetLockWait = 5 * time.Second
 // is returned so the caller can tell the user.
 func ResetSyncState() error {
 	if _, err := os.Lstat(syncStatePath()); err != nil {
-		return nil
+		if _, err := os.Lstat(supersededPath()); err != nil {
+			return nil
+		}
 	}
 	// Lock order everywhere is vault write lock, then state lock. Holding the
 	// vault lock means a background process cannot be between its claim check
@@ -380,6 +384,7 @@ func ResetSyncState() error {
 	if err := os.Remove(syncStatePath()); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("reset sync state: %w", err)
 	}
+	clearSuperseded()
 	return nil
 }
 
