@@ -316,6 +316,9 @@ func parseTokenResponse(resp *http.Response) (string, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", err
 	}
+	if strings.TrimSpace(result.Token) == "" {
+		return "", errors.New("server response did not include a token")
+	}
 	return result.Token, nil
 }
 
