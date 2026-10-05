@@ -37,6 +37,40 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 	}
 }
 
+func TestValidBlob(t *testing.T) {
+	minimum := make([]byte, headerLen+16)
+	minimum[0] = byte(version)
+	wrongVersion := append([]byte(nil), minimum...)
+	wrongVersion[0]++
+	encrypted, err := Encrypt([]byte("valid blob"), testPassword)
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+	corruptedEncrypted := append([]byte(nil), encrypted...)
+	corruptedEncrypted[0]++
+
+	cases := []struct {
+		name string
+		data []byte
+		want bool
+	}{
+		{name: "nil", data: nil, want: false},
+		{name: "empty", data: []byte{}, want: false},
+		{name: "too short", data: make([]byte, headerLen+15), want: false},
+		{name: "minimum valid shape", data: minimum, want: true},
+		{name: "minimum wrong version", data: wrongVersion, want: false},
+		{name: "encrypted output", data: encrypted, want: true},
+		{name: "encrypted output wrong version", data: corruptedEncrypted, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ValidBlob(tc.data); got != tc.want {
+				t.Fatalf("ValidBlob = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDecryptWrongPasswordDoesNotRevealData(t *testing.T) {
 	plaintext := []byte("vault plaintext must stay private")
 	ciphertext, err := Encrypt(plaintext, testPassword)
@@ -108,7 +142,13 @@ func TestEncryptIsRandomized(t *testing.T) {
 		t.Fatalf("second Encrypt: %v", err)
 	}
 	if bytes.Equal(first, second) {
-		t.Fatal("Encrypt returned identical ciphertext twice")
+		t.Error("Encrypt returned identical ciphertext twice")
+	}
+	if bytes.Equal(first[1:1+saltLen], second[1:1+saltLen]) {
+		t.Error("Encrypt reused salt across calls")
+	}
+	if bytes.Equal(first[1+saltLen:headerLen], second[1+saltLen:headerLen]) {
+		t.Error("Encrypt reused nonce across calls")
 	}
 }
 
