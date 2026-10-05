@@ -1261,6 +1261,44 @@ func TestMachineContractRedaction(t *testing.T) {
 	})
 }
 
+func TestRedactStringKeepsFileErrorText(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		want     string
+		redacted bool
+		secret   string
+	}{
+		{name: "missing file", input: "open /tmp/x/master.pass: no such file or directory", want: "open /tmp/x/master.pass: no such file or directory"},
+		{name: "permission denied", input: "open /tmp/x/master.pass: permission denied", want: "open /tmp/x/master.pass: permission denied"},
+		{name: "directory", input: "stat /x/pass: Is a directory", want: "stat /x/pass: Is a directory"},
+		{name: "context before path", input: "master pass file: open /tmp/x/master.pass: no such file or directory", want: "master pass file: open /tmp/x/master.pass: no such file or directory"},
+		{name: "password assignment", input: "password: hunter2", redacted: true, secret: "hunter2"},
+		{name: "pass assignment", input: "pass: hunter2", redacted: true, secret: "hunter2"},
+		{name: "path component assignment", input: "master.pass: hunter2", redacted: true, secret: "hunter2"},
+		{name: "token assignment", input: "token: abc", redacted: true, secret: "abc"},
+		{name: "bare pass error text", input: "pass: permission denied", redacted: true, secret: "permission denied"},
+		{name: "path component non-error", input: "open /x/master.pass: hunter2", redacted: true, secret: "hunter2"},
+		{name: "mixed case password", input: "PASSWORD: Hunter2", redacted: true, secret: "Hunter2"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := RedactString(test.input)
+			if test.redacted {
+				if !strings.Contains(got, "<redacted>") || strings.Contains(got, test.secret) {
+					t.Fatalf("RedactString(%q) = %q, want redacted value", test.input, got)
+				}
+				return
+			}
+			if got != test.want {
+				t.Fatalf("RedactString(%q) = %q, want %q", test.input, got, test.want)
+			}
+		})
+	}
+}
+
 func TestRedactingWriterCoversSplitValuesAndPrivateKeyBlocks(t *testing.T) {
 	t.Parallel()
 
