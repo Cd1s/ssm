@@ -88,6 +88,8 @@ func SetRequestTimeout(timeout time.Duration) {
 
 var maxPullBlobBytes int64 = 64 << 20
 
+const maxResponseBodyBytes int64 = 1 << 20
+
 func cloudPath() string {
 	return filepath.Join(config.Dir(), "cloud.json")
 }
@@ -324,10 +326,14 @@ func parseTokenResponse(resp *http.Response) (string, error) {
 	if resp.StatusCode >= 400 {
 		return "", parseError(resp)
 	}
+	body, err := readResponseBody(resp.Body)
+	if err != nil {
+		return "", err
+	}
 	var result struct {
 		Token string `json:"token"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		return "", err
 	}
 	return result.Token, nil
@@ -356,7 +362,11 @@ func CheckVerified(cfg *CloudConfig) bool {
 	var result struct {
 		Verified bool `json:"verified"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	body, err := readResponseBody(resp.Body)
+	if err != nil {
+		return false
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
 		return false
 	}
 	return result.Verified
@@ -484,13 +494,28 @@ func (*MissingTokenError) Error() string {
 }
 
 func parseError(resp *http.Response) error {
+	body, err := readResponseBody(resp.Body)
+	if err != nil {
+		return err
+	}
 	var result struct {
 		Error string `json:"error"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		return &HTTPStatusError{StatusCode: resp.StatusCode}
 	}
 	return &HTTPStatusError{StatusCode: resp.StatusCode, Message: strings.TrimSpace(result.Error)}
+}
+
+func readResponseBody(body io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, maxResponseBodyBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxResponseBodyBytes {
+		return nil, errors.New("response body is too large")
+	}
+	return data, nil
 }
 
 func requireToken(cfg *CloudConfig) error {
