@@ -948,6 +948,7 @@ func (t *Transaction) localFacts() Facts {
 func (t *Transaction) commitSuccess(operation, remoteIdentity string) {
 	failed := remoteIdentity == ""
 	if remoteIdentity != "" {
+		recordSuperseded(cachedRemoteIdentity(), remoteIdentity)
 		if err := config.WritePrivateFile(remoteIdentityPath(), []byte(remoteIdentity+"\n")); err != nil {
 			failed = true
 		}
