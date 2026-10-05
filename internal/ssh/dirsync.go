@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -490,11 +491,16 @@ func superviseDirectoryDownload(waitRemote, waitLocal func() error, closeRemote,
 }
 
 func rejectSpecialEntries(root string) error {
-	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+	rootFS, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rootFS.Close() }()
+	return fs.WalkDir(rootFS.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		info, err := os.Lstat(path)
+		info, err := rootFS.Lstat(path)
 		if err != nil {
 			return err
 		}
@@ -502,13 +508,13 @@ func rejectSpecialEntries(root string) error {
 		switch {
 		case mode.IsRegular():
 			if mode&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
-				if err := os.Chmod(path, mode.Perm()); err != nil {
+				if err := rootFS.Chmod(path, mode.Perm()); err != nil {
 					return err
 				}
 			}
 		case mode.IsDir(), mode&os.ModeSymlink != 0:
 		default:
-			return fmt.Errorf("download contains unsupported special file %s", path)
+			return fmt.Errorf("download contains unsupported special file %s", filepath.Join(root, filepath.FromSlash(path)))
 		}
 		return nil
 	})

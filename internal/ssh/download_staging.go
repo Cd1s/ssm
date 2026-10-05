@@ -3,6 +3,7 @@ package ssh
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -128,26 +129,28 @@ func newDirectoryDownloadStaging(localPath string) (*directoryDownloadStaging, e
 }
 
 func restoreDirectoryModes(source, destination string) error {
-	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
+	sourceRoot, err := os.OpenRoot(source)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = sourceRoot.Close() }()
+	destinationRoot, err := os.OpenRoot(destination)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = destinationRoot.Close() }()
+	return fs.WalkDir(sourceRoot.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		info, err := os.Lstat(path)
+		info, err := sourceRoot.Lstat(path)
 		if err != nil {
 			return err
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			return nil
 		}
-		rel, err := filepath.Rel(source, path)
-		if err != nil {
-			return err
-		}
-		target := destination
-		if rel != "." {
-			target = filepath.Join(destination, rel)
-		}
-		targetInfo, err := os.Lstat(target)
+		targetInfo, err := destinationRoot.Lstat(path)
 		if err != nil {
 			return err
 		}
@@ -155,7 +158,7 @@ func restoreDirectoryModes(source, destination string) error {
 			return nil
 		}
 		mode := info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
-		return os.Chmod(target, mode)
+		return destinationRoot.Chmod(path, mode)
 	})
 }
 
