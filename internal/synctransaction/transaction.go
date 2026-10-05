@@ -18,7 +18,6 @@ import (
 
 	"ssm/internal/cloud"
 	"ssm/internal/config"
-	"ssm/internal/vault"
 )
 
 type ConfigurationState string
@@ -565,7 +564,7 @@ func (t *Transaction) installFetched(data []byte, etag string, mode pullMode) (F
 		return facts, fmt.Errorf("%w: downloaded vault has an invalid format and was not installed", ErrRefresh)
 	}
 	if mode != pullBackground && t.masterPass != "" {
-		if _, err := vault.Decrypt(data, t.masterPass); err != nil {
+		if err := config.ValidateVaultBlob(data, t.masterPass); err != nil {
 			return facts, fmt.Errorf("%w: downloaded vault could not be authenticated and was not installed", ErrRefresh)
 		}
 	}

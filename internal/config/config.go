@@ -348,6 +348,13 @@ func LoadMergeReport() MergeReport {
 // malformed download never replaces the only local copy.
 func ValidVaultBlob(data []byte) bool { return vault.ValidBlob(data) }
 
+// ValidateVaultBlob authenticates an encrypted vault blob without changing
+// the local vault or parsing its inventory contents.
+func ValidateVaultBlob(data []byte, masterPass string) error {
+	_, err := vault.Decrypt(data, masterPass)
+	return err
+}
+
 var vaultCreateLockWait = 5 * time.Second
 
 // CreateVaultIfAbsent writes an initial vault only if none exists, under the
