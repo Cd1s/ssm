@@ -32,7 +32,7 @@ func TestCompiledIdempotentHostUpsertPushIsSuccessfulNoOp(t *testing.T) {
 		"--user", connection.User, "--password-file", passwordPath,
 		"--verify", "--push")
 	if result.ProcessExit != 0 {
-		t.Fatalf("idempotent upsert --push failed: %s", string(result.Stdout))
+		t.Fatalf("idempotent upsert --push failed: %s", result.Stdout)
 	}
 	value := assertCompiledJSONSuccess(t, result)
 	if value["changed"] != false || value["pushed"] != false || value["sync_pending"] != false {
