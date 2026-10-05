@@ -1861,9 +1861,8 @@ func TestCompiledFailedStatusUsesFailureRenderer(t *testing.T) {
 	cli.SaveVault(t, &config.Vault{})
 	const canary = "COMPILED_STATUS_FAILURE_CONFIG_CANARY"
 	settings, err := json.Marshal(config.Settings{
-		PasswordCache: "never",
-		AutoSync:      true,
-		LastPush:      `config="{\"token\":\"` + canary + `\"}"`,
+		AutoSync: true,
+		LastPush: `config="{\"token\":\"` + canary + `\"}"`,
 	})
 	if err != nil {
 		t.Fatalf("marshal failed-status settings: %v", err)

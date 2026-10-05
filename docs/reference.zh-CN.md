@@ -480,8 +480,8 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 | `auto_sync` | `true` | `false` 在两种模式下都关闭自动同步。 |
 | `auto_update` | `true` | 联网命令最多每 6 小时检查一次已安装主版本下是否有更新的稳定版，并在通过校验和与来源证明检查后安装。`--offline` 跳过检查；设为 `false` 关闭。 |
 | `update_repo` | `Cd1s/ssm` | 发布仓库；优先级见下面的 `SSM_UPDATE_REPO`。 |
-| `password_cache` | `always` | `session` 让后续命令复用临时目录里短期有效的主密码加密缓存；其他值不使用缓存。 |
-| `vim_keys` | `true` | 为兼容保留；目前没有命令读取它。 |
+| `password_cache` | 忽略 | 旧设置会被忽略；不再提供会话密码缓存。 |
+| `vim_keys` | 忽略 | 旧设置会被忽略；目前没有命令读取它。 |
 | `last_push`、`last_pull` | 空 | 由 `ssm` 维护的时间戳，请勿手改。 |
 
 `sync_interval` 或 `stale_after` 为空、无法解析或不是正数时回退到默认值；无法识别的 `sync_mode` 按 `local_first` 处理。

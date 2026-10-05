@@ -475,9 +475,8 @@ func TestStatusFailureAdapterSubprocessHelper(t *testing.T) {
 	setTestHome(t, t.TempDir())
 	const canary = `config="{\"token\":\"STATUS_FAILURE_CONFIG_CANARY\"}"`
 	if err := config.SaveSettings(&config.Settings{
-		PasswordCache: "never",
-		AutoSync:      true,
-		LastPush:      canary,
+		AutoSync: true,
+		LastPush: canary,
 	}); err != nil {
 		t.Fatal(err)
 	}

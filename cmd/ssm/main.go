@@ -716,18 +716,6 @@ func unlockVault() (machinecontract.Failure, bool) {
 		), true
 	}
 
-	settings := config.LoadSettings()
-	if settings.PasswordCache == "session" {
-		if cached := config.GetCachedPassword(); cached != "" {
-			if v, err := config.Load(cached); err == nil {
-				masterPass = cached
-				unlockedVault = v
-				return machinecontract.Failure{}, false
-			}
-			config.ClearPasswordCache()
-		}
-	}
-
 	return machinecontract.Classify(
 		machinecontract.MasterPassFileRequiredExisting,
 		machinecontract.Details{Message: "vault passphrase is required"},
@@ -742,8 +730,7 @@ func defaultMasterPassPath() string {
 
 // defaultMasterPassFileIfPresent returns <config dir>/master.pass when it
 // exists, so ssm unlocks like sshctl without SSM_MASTER_PASS_FILE. When the
-// file is absent it returns "" and the historical ssm behavior (session
-// password cache, master_pass_file_required errors) is unchanged.
+// file is absent it returns "" and the master_pass_file_required error is used.
 func defaultMasterPassFileIfPresent() string {
 	path := defaultMasterPassPath()
 	if info, err := os.Stat(path); err == nil && !info.IsDir() {
