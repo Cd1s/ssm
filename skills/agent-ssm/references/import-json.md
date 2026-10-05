@@ -30,6 +30,8 @@ Host JSON includes address, port, user, group, auth type, and saved key name. It
 
 ## Retry-safe add/upsert
 
+The `--verify` examples below assume the host key is already trusted. For a new host, first run `host.upsert` without `--verify`, then run `host-key inspect` and `host-key accept --fingerprint ... --yes`; after acceptance, rerun with `--verify`. Permit `--push` only after that trust step; standalone publication uses `sshctl push --only <transaction-id>`.
+
 Private key:
 
 ```bash
