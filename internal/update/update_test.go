@@ -605,7 +605,7 @@ func TestOversizedReleaseMetadataPreservesExecutable(t *testing.T) {
 		version,
 		releaseAssetMetadataJSON(),
 	)
-	metadata += strings.Repeat(" ", (1<<20)+1-len(metadata))
+	metadata += strings.Repeat(" ", maxMetadata+1-len(metadata))
 	digest := sha256.Sum256(payload)
 	var paths []string
 	httpClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -640,6 +640,53 @@ func TestOversizedReleaseMetadataPreservesExecutable(t *testing.T) {
 	assertExecutablePreserved(t, exe, original, before.Mode().Perm())
 	if want := []string{"/repos/owner/repo/releases"}; !reflect.DeepEqual(paths, want) {
 		t.Fatalf("oversized metadata request paths = %q, want metadata only %q", paths, want)
+	}
+}
+
+func TestListReleasesAllowsGrowingMetadataAndSelectsRelease(t *testing.T) {
+	restoreUpdateTestHooks(t)
+	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
+	metadata := fmt.Sprintf(
+		`[{"tag_name":"v1.6.0","body":%q},{"tag_name":"v2.0.0"}]`,
+		strings.Repeat("x", 2<<20),
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/owner/repo/releases" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(metadata))
+	}))
+	defer server.Close()
+	apiBaseURL = server.URL
+	httpClient = server.Client()
+
+	releases, err := listReleases()
+	if err != nil {
+		t.Fatalf("listReleases: %v", err)
+	}
+	sameMajor, crossMajor := SelectRelease(releases, "v1.4.3")
+	if sameMajor == nil || sameMajor.TagName != "v1.6.0" {
+		t.Fatalf("same-major release = %#v, want v1.6.0", sameMajor)
+	}
+	if crossMajor == nil || crossMajor.TagName != "v2.0.0" {
+		t.Fatalf("cross-major release = %#v, want v2.0.0", crossMajor)
+	}
+}
+
+func TestListReleasesRejectsMetadataAboveLimit(t *testing.T) {
+	restoreUpdateTestHooks(t)
+	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
+	metadata := fmt.Sprintf(`[{"tag_name":"v1.6.0","body":%q}]`, strings.Repeat("x", 9<<20))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(metadata))
+	}))
+	defer server.Close()
+	apiBaseURL = server.URL
+	httpClient = server.Client()
+
+	if _, err := listReleases(); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("metadata exceeds %d-byte limit", maxMetadata)) {
+		t.Fatalf("listReleases error = %v, want metadata limit error", err)
 	}
 }
 
@@ -1976,6 +2023,51 @@ func TestCheckLatestUsesInjectedHTTPClient(t *testing.T) {
 	}
 }
 
+func TestMetadataTimeoutAndBinaryDownloadDeadline(t *testing.T) {
+	restoreUpdateTestHooks(t)
+	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
+	if downloadTimeout != 10*time.Minute {
+		t.Fatalf("download timeout = %s, want 10m", downloadTimeout)
+	}
+	metadataTimeout = 300 * time.Millisecond
+	downloadTimeout = 2 * time.Second
+	httpClient = &http.Client{Timeout: metadataTimeout}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		if r.URL.Path == "/repos/owner/repo/releases/latest" {
+			time.Sleep(500 * time.Millisecond)
+			_, _ = w.Write([]byte(`{"tag_name":"v9.9.9"}`))
+			return
+		}
+		for _, chunk := range []string{"first-", "second-", "third"} {
+			_, _ = w.Write([]byte(chunk))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+	}))
+	defer server.Close()
+	apiBaseURL = server.URL
+	downloadBaseURL = server.URL
+
+	if _, err := checkLatest(); err == nil {
+		t.Fatal("metadata request succeeded after its timeout")
+	}
+	data, err := downloadReleaseAssetLimited("owner/repo", "v1.0.0", "asset.bin", int64(len("first-second-third")))
+	if err != nil {
+		t.Fatalf("slow binary download: %v", err)
+	}
+	if got := string(data); got != "first-second-third" {
+		t.Fatalf("downloaded data = %q", got)
+	}
+}
+
 func restoreUpdateTestHooks(t *testing.T) {
 	t.Helper()
 	oldHTTPClient := httpClient
@@ -1985,6 +2077,8 @@ func restoreUpdateTestHooks(t *testing.T) {
 	oldEvalSymlinks := evalSymlinks
 	oldVerifyProvenance := verifyProvenance
 	oldUnixReplacementTestHook := unixReplacementTestHook
+	oldMetadataTimeout := metadataTimeout
+	oldDownloadTimeout := downloadTimeout
 	t.Cleanup(func() {
 		httpClient = oldHTTPClient
 		apiBaseURL = oldAPIBaseURL
@@ -1993,6 +2087,8 @@ func restoreUpdateTestHooks(t *testing.T) {
 		evalSymlinks = oldEvalSymlinks
 		verifyProvenance = oldVerifyProvenance
 		unixReplacementTestHook = oldUnixReplacementTestHook
+		metadataTimeout = oldMetadataTimeout
+		downloadTimeout = oldDownloadTimeout
 	})
 	httpClient = &http.Client{}
 	apiBaseURL = "https://api.github.com"
