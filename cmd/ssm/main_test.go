@@ -100,6 +100,18 @@ func setTestHome(t *testing.T, home string) {
 	t.Setenv("USERPROFILE", home)
 }
 
+func TestConfigDirectoryAvailabilityRequiresHomeOrOverride(t *testing.T) {
+	setTestHome(t, "")
+	t.Setenv("SSM_CONFIG_DIR", "")
+	if configDirectoryAvailable() {
+		t.Fatal("configuration directory reported available without HOME or SSM_CONFIG_DIR")
+	}
+	t.Setenv("SSM_CONFIG_DIR", t.TempDir())
+	if !configDirectoryAvailable() {
+		t.Fatal("SSM_CONFIG_DIR did not make configuration directory available")
+	}
+}
+
 func TestMachineSuccessRendererPropagatesWriterFailure(t *testing.T) {
 	err := renderMachineValue(machineRejectWriter{}, []string{"host"})
 	if err == nil || !strings.Contains(err.Error(), "fixture machine output rejected") {

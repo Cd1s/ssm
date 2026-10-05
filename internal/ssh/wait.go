@@ -106,6 +106,11 @@ func WaitAuthProbe(c config.Connection, v *config.Vault, timeout time.Duration) 
 	if err != nil {
 		return machinecontract.ClassifySSH(ClassifyError(err, c), context), false
 	}
+	knownHostsPath, err := KnownHostsPath()
+	if err != nil {
+		failure, _ := machinecontract.FailureFromError(knownHostsPathError())
+		return failure, false
+	}
 	conn, err := net.DialTimeout("tcp", address, timeout)
 	if err != nil {
 		return machinecontract.ClassifySSH(err, context), false
@@ -117,7 +122,7 @@ func WaitAuthProbe(c config.Connection, v *config.Vault, timeout time.Duration) 
 		User:              c.User,
 		Auth:              auth,
 		HostKeyCallback:   hostKeyCallback,
-		HostKeyAlgorithms: hostKeyAlgorithmsFor(KnownHostsPath(), address),
+		HostKeyAlgorithms: hostKeyAlgorithmsFor(knownHostsPath, address),
 		Timeout:           timeout,
 	})
 	if err != nil {

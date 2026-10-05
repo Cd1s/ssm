@@ -162,6 +162,10 @@ func dialHopThrough(previous *gossh.Client, hop config.Connection, v *config.Vau
 	}
 	address := hostPortOf(hop)
 	deadline := time.Now().Add(DialTimeout())
+	knownHostsPath, err := KnownHostsPath()
+	if err != nil {
+		return nil, knownHostsPathError()
+	}
 	conn, err := dialTunnel(previous, address, deadline)
 	if err != nil {
 		return nil, err
@@ -173,7 +177,7 @@ func dialHopThrough(previous *gossh.Client, hop config.Connection, v *config.Vau
 		User:              hop.User,
 		Auth:              auth,
 		HostKeyCallback:   trackedHostKeyCallback(reached, abort),
-		HostKeyAlgorithms: hostKeyAlgorithmsFor(KnownHostsPath(), address),
+		HostKeyAlgorithms: hostKeyAlgorithmsFor(knownHostsPath, address),
 	})
 	if err != nil {
 		return nil, err
