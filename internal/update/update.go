@@ -112,9 +112,11 @@ const (
 	defaultRepo    = "Cd1s/ssm"
 	checksumsAsset = "checksums.txt"
 	maxChecksums   = 16 << 10
-	maxMetadata    = 1 << 20
-	maxBinary      = 64 << 20
-	cooldown       = 6 * time.Hour
+	// Release metadata is fetched in one bounded response; 8 MiB leaves room
+	// for up to 100 releases while keeping a finite per-request memory cap.
+	maxMetadata = 8 << 20
+	maxBinary   = 64 << 20
+	cooldown    = 6 * time.Hour
 )
 
 var (

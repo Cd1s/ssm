@@ -605,7 +605,7 @@ func TestOversizedReleaseMetadataPreservesExecutable(t *testing.T) {
 		version,
 		releaseAssetMetadataJSON(),
 	)
-	metadata += strings.Repeat(" ", (1<<20)+1-len(metadata))
+	metadata += strings.Repeat(" ", maxMetadata+1-len(metadata))
 	digest := sha256.Sum256(payload)
 	var paths []string
 	httpClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -640,6 +640,53 @@ func TestOversizedReleaseMetadataPreservesExecutable(t *testing.T) {
 	assertExecutablePreserved(t, exe, original, before.Mode().Perm())
 	if want := []string{"/repos/owner/repo/releases"}; !reflect.DeepEqual(paths, want) {
 		t.Fatalf("oversized metadata request paths = %q, want metadata only %q", paths, want)
+	}
+}
+
+func TestListReleasesAllowsGrowingMetadataAndSelectsRelease(t *testing.T) {
+	restoreUpdateTestHooks(t)
+	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
+	metadata := fmt.Sprintf(
+		`[{"tag_name":"v1.6.0","body":%q},{"tag_name":"v2.0.0"}]`,
+		strings.Repeat("x", 2<<20),
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/owner/repo/releases" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(metadata))
+	}))
+	defer server.Close()
+	apiBaseURL = server.URL
+	httpClient = server.Client()
+
+	releases, err := listReleases()
+	if err != nil {
+		t.Fatalf("listReleases: %v", err)
+	}
+	sameMajor, crossMajor := SelectRelease(releases, "v1.4.3")
+	if sameMajor == nil || sameMajor.TagName != "v1.6.0" {
+		t.Fatalf("same-major release = %#v, want v1.6.0", sameMajor)
+	}
+	if crossMajor == nil || crossMajor.TagName != "v2.0.0" {
+		t.Fatalf("cross-major release = %#v, want v2.0.0", crossMajor)
+	}
+}
+
+func TestListReleasesRejectsMetadataAboveLimit(t *testing.T) {
+	restoreUpdateTestHooks(t)
+	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
+	metadata := fmt.Sprintf(`[{"tag_name":"v1.6.0","body":%q}]`, strings.Repeat("x", 9<<20))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(metadata))
+	}))
+	defer server.Close()
+	apiBaseURL = server.URL
+	httpClient = server.Client()
+
+	if _, err := listReleases(); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("metadata exceeds %d-byte limit", maxMetadata)) {
+		t.Fatalf("listReleases error = %v, want metadata limit error", err)
 	}
 }
 
