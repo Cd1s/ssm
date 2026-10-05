@@ -564,10 +564,21 @@ ssm update --major --yes
 | `remote_shell_unsupported` | The target has no usable POSIX shell for `put`/`get`. | Add `--sftp`, or set `host update <alias> --transfer sftp`. |
 | `integrity_tool_unavailable` | The remote host has no `sha256sum`, `shasum`, or `openssl`. | Retry without `--sha256`. |
 | `sync_pull_failed` and other sync errors | See the `cause` field. | `auth` and `missing_token`: run `ssm login`. `tls`: inspect the certificate, never bypass it. Others: retry later, or use `--offline` only when stale inventory is acceptable. |
-| `sync_conflict` | The local and remote vaults diverged. | Follow the [empty-ledger recovery guidance](../skills/agent-ssm/references/import-json.md) or review the conflict before using `pull --adopt-remote`. |
+| `sync_conflict` | The local and remote vaults diverged, or the remote returned to a version this machine already replaced (possible rollback or backup restore). | Follow the [empty-ledger recovery guidance](../skills/agent-ssm/references/import-json.md) or review the conflict before using `pull --adopt-remote`. |
 | `vault is busy` | Another local writer holds the short vault write lock. | Retry the command. |
 | `alias_not_found` | The alias does not exist. `candidates` are suggestions only. | Use the exact alias from `sshctl host list`. |
 | `confirmation_required` | `cp --direct` needs `--yes`. | Read the exposure notes, then add `--yes` only if you accept them. |
+
+### Restoring the sync server from backup
+
+After an administrator restores the sync server from backup, clients that previously accepted and replaced the restored
+identity refuse it as `sync_conflict` and keep their local vault. Review the conflict, then run
+`sshctl pull --adopt-remote <sha> --yes` on each affected machine, using the restored remote identity.
+Alternatively, one machine can adopt the restored version and publish a new version for the other clients to pull.
+
+The client-local `sync-superseded.json` ledger retains at most 64 replaced identities and is neither uploaded nor part
+of the vault. It cannot detect older versions this machine never accepted, evicted identities, or replay when ledger
+metadata is missing or unreadable. Login, logout, and registration reset the ledger.
 
 ## Development and verification
 

@@ -553,10 +553,19 @@ ssm update --major --yes
 | `remote_shell_unsupported` | 目标没有可用于 `put`/`get` 的 POSIX shell。 | 加 `--sftp`，或 `host update <alias> --transfer sftp`。 |
 | `integrity_tool_unavailable` | 远端没有 `sha256sum`、`shasum` 或 `openssl`。 | 去掉 `--sha256` 重试。 |
 | `sync_pull_failed` 和其他同步错误 | 看 `cause` 字段。 | `auth`、`missing_token`：运行 `ssm login`。`tls`：检查证书，不要绕过。其他：稍后重试，只有能接受过期库存时才用 `--offline`。 |
-| `sync_conflict` | 本地和远端 vault 出现分歧。 | 按[空 ledger 恢复指引](../skills/agent-ssm/references/import-json.md)处理，或先审查冲突再使用 `pull --adopt-remote`。 |
+| `sync_conflict` | 本地和远端 vault 出现分歧，或远端回到本机已取代的版本（可能是回滚或备份恢复）。 | 按[空 ledger 恢复指引](../skills/agent-ssm/references/import-json.md)处理，或先审查冲突再使用 `pull --adopt-remote`。 |
 | `vault is busy` | 另一个本地写入者持有短暂的 vault 写锁。 | 重试命令。 |
 | `alias_not_found` | alias 不存在；`candidates` 只是建议。 | 使用 `sshctl host list` 里的精确 alias。 |
 | `confirmation_required` | `cp --direct` 需要 `--yes`。 | 先阅读暴露风险说明，接受后才加 `--yes`。 |
+
+### 从备份恢复同步服务端
+
+管理员从备份恢复同步服务端后，曾采用并取代该旧版本的客户端会将其视为 `sync_conflict` 而拒绝安装，保留本地 vault。
+审查冲突后，需要在每台受影响的机器上运行 `sshctl pull --adopt-remote <sha> --yes`，使用恢复后的远端身份确认采用。
+也可以由一台机器采用恢复的版本后，重新发布一个新版本，供其他客户端拉取。
+
+`sync-superseded.json` 是客户端本地内部账本，最多保留 64 个已取代身份，不上传，也不进入 vault。
+它无法识别本机从未采用过或已淘汰的旧身份；账本缺失或不可读时也无法检测重放。登录、登出和注册会清空账本。
 
 ## 开发与验证
 
