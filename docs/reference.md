@@ -481,8 +481,8 @@ Host keys are checked against the standard OpenSSH `~/.ssh/known_hosts`.
 | `auto_sync` | `true` | `false` turns automatic sync off in both modes. |
 | `auto_update` | `true` | Online commands check for a newer stable release of the installed major at most every 6 hours and install it after the usual checksum and provenance checks. `--offline` skips the check; `false` turns it off. |
 | `update_repo` | `Cd1s/ssm` | Release repository; see `SSM_UPDATE_REPO` below for the precedence. |
-| `password_cache` | `always` | `session` lets later commands reuse a short-lived encrypted copy of the master password from the temporary directory; any other value disables the cache. |
-| `vim_keys` | `true` | Kept for compatibility; no current command reads it. |
+| `password_cache` | ignored | Legacy setting is ignored; the session password cache is no longer provided. |
+| `vim_keys` | ignored | Legacy setting is ignored; no current command reads it. |
 | `last_push`, `last_pull` | empty | Timestamps maintained by `ssm`; do not edit. |
 
 An empty, unparseable, or non-positive `sync_interval` or `stale_after` falls back to the default. An unrecognized `sync_mode` is treated as `local_first`.
