@@ -42,6 +42,12 @@ func TestValidBlob(t *testing.T) {
 	minimum[0] = byte(version)
 	wrongVersion := append([]byte(nil), minimum...)
 	wrongVersion[0]++
+	tooShortValidVersion := make([]byte, headerLen+15)
+	tooShortValidVersion[0] = byte(version)
+	tooShortWrongVersion := make([]byte, headerLen+15)
+	minimumVersionZero := make([]byte, headerLen+16)
+	minimumPlusOne := make([]byte, headerLen+17)
+	minimumPlusOne[0] = byte(version)
 	encrypted, err := Encrypt([]byte("valid blob"), testPassword)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
@@ -56,8 +62,11 @@ func TestValidBlob(t *testing.T) {
 	}{
 		{name: "nil", data: nil, want: false},
 		{name: "empty", data: []byte{}, want: false},
-		{name: "too short", data: make([]byte, headerLen+15), want: false},
+		{name: "too short", data: tooShortValidVersion, want: false},
+		{name: "too short, wrong version", data: tooShortWrongVersion, want: false},
+		{name: "minimum length, version zero", data: minimumVersionZero, want: false},
 		{name: "minimum valid shape", data: minimum, want: true},
+		{name: "minimum length plus one, valid version", data: minimumPlusOne, want: true},
 		{name: "minimum wrong version", data: wrongVersion, want: false},
 		{name: "encrypted output", data: encrypted, want: true},
 		{name: "encrypted output wrong version", data: corruptedEncrypted, want: false},
