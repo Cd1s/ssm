@@ -620,7 +620,7 @@ func TestSavePublishingIntentRejectsOversizeCanonicalDocumentBeforeWrite(t *test
 	}
 }
 
-func TestLoadPublishingIntentSanitizesVersionOneBeforeRecovery(t *testing.T) {
+func TestLoadPublishingIntentRejectsUnsupportedVersionOneWithoutRewrite(t *testing.T) {
 	intentPath := usePublishingIntentTestHome(t)
 	const (
 		savedKeyNameCanary = "ISSUE23_V1_SAVED_KEY_NAME_CANARY"
@@ -651,72 +651,40 @@ func TestLoadPublishingIntentSanitizesVersionOneBeforeRecovery(t *testing.T) {
 		t.Fatalf("write version-one publishing intent: %v", err)
 	}
 
-	intent, err := loadPublishingIntent()
-	if err != nil {
-		t.Fatalf("load version-one publishing intent: %v", err)
-	}
-	if intent.Version != publishingIntentVersion || intent.State != intentReady ||
-		intent.Scope != "only" || !reflect.DeepEqual(intent.TransactionIDs, []string{"tx_23232323232323232323232323232323"}) ||
-		len(intent.Transactions) != 1 ||
-		intent.Transactions[0] != (publishingIntentTransaction{
-			Operation: "saved_key_removed", CreatedAt: "2026-07-29T00:00:23Z",
-		}) {
-		t.Fatal("version-one sanitization lost reconciliation or minimum recovered-receipt metadata")
+	_, err := loadPublishingIntent()
+	if err == nil || err.Error() != "publishing intent version is unsupported" {
+		t.Fatalf("version-one error = %v, want constant unsupported-version error", err)
 	}
 
-	sanitized, err := os.ReadFile(intentPath) //nolint:gosec // fixed path beneath the test-owned home
+	after, err := os.ReadFile(intentPath) //nolint:gosec // test reads a sidecar path under t.TempDir
 	if err != nil {
-		t.Fatalf("read sanitized publishing intent: %v", err)
+		t.Fatalf("read rejected version-one publishing intent: %v", err)
 	}
-	for _, forbidden := range []string{savedKeyNameCanary, aliasCanary, `"key_name"`, `"alias"`, `"aliases"`, `"connections"`, `"keys"`} {
-		if bytes.Contains(sanitized, []byte(forbidden)) {
-			t.Fatal("sanitized publishing intent retained deprecated public-view metadata")
-		}
-	}
-	if !bytes.Contains(sanitized, []byte(`"version": 2`)) ||
-		!bytes.Contains(sanitized, []byte(`"transaction_ids"`)) ||
-		!bytes.Contains(sanitized, []byte(`"saved_key_removed"`)) {
-		t.Fatal("sanitized publishing intent omitted its version or reconciliation projection")
+	if !bytes.Equal(after, versionOne) {
+		t.Fatal("version-one publishing intent was rewritten")
 	}
 }
 
 func TestLoadPublishingIntentRejectsUnknownFieldsWithoutRewrite(t *testing.T) {
 	intentPath := usePublishingIntentTestHome(t)
 	const unknownFieldCanary = "ISSUE23_UNKNOWN_FIELD_NAME_CANARY"
-	versionOne := []byte(`{
-  "version": 1,
+	versionTwo := []byte(`{
+  "version": 2,
   "state": "ready",
   "scope": "only",
   "transaction_ids": ["tx_23232323232323232323232323232323"],
   "transactions": [{
-    "id": "tx_23232323232323232323232323232323",
     "operation": "saved_key_removed",
     "created_at": "2026-07-29T00:00:23Z"
   }],
   "prerequisite_remote_exists": false,
-  "target_encrypted_blob_identity": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-  "created_at": "2026-07-29T00:00:24Z"
+  "target_encrypted_blob_identity": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 }
 `)
-	versionTwo := bytes.Replace(versionOne, []byte(`"version": 1`), []byte(`"version": 2`), 1)
-	versionTwo = bytes.Replace(
-		versionTwo,
-		[]byte(`    "id": "tx_23232323232323232323232323232323",`+"\n"),
-		nil,
-		1,
-	)
 	tests := []struct {
 		name string
 		data []byte
 	}{
-		{
-			name: "version one top level",
-			data: bytes.Replace(versionOne, []byte(`"state": "ready"`), []byte(`"`+unknownFieldCanary+`": true, "state": "ready"`), 1),
-		},
-		{
-			name: "version one transaction",
-			data: bytes.Replace(versionOne, []byte(`"operation": "saved_key_removed"`), []byte(`"`+unknownFieldCanary+`": true, "operation": "saved_key_removed"`), 1),
-		},
 		{
 			name: "version two top level",
 			data: bytes.Replace(versionTwo, []byte(`"state": "ready"`), []byte(`"`+unknownFieldCanary+`": true, "state": "ready"`), 1),
@@ -765,39 +733,6 @@ func TestLoadPublishingIntentRejectsUnknownVersionWithoutRewrite(t *testing.T) {
 	}
 	if !bytes.Equal(after, unknown) {
 		t.Fatal("unknown-version publishing intent was rewritten")
-	}
-}
-
-func TestLoadPublishingIntentRejectsChangedVersionOneIDOrderWithoutRewrite(t *testing.T) {
-	intentPath := usePublishingIntentTestHome(t)
-	changed := []byte(`{
-  "version": 1,
-  "state": "ready",
-  "scope": "only",
-  "transaction_ids": ["tx_23232323232323232323232323232323"],
-  "transactions": [{
-    "id": "tx_24242424242424242424242424242424",
-    "operation": "saved_key_removed",
-    "created_at": "2026-07-29T00:00:23Z"
-  }],
-  "prerequisite_remote_exists": false,
-  "target_encrypted_blob_identity": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-  "created_at": "2026-07-29T00:00:24Z"
-}
-`)
-	if err := config.WritePrivateFile(intentPath, changed); err != nil {
-		t.Fatalf("write changed-ID publishing intent: %v", err)
-	}
-	_, err := loadPublishingIntent()
-	if err == nil || !strings.Contains(err.Error(), "transaction metadata order changed") {
-		t.Fatal("version-one publishing intent accepted changed transaction metadata order")
-	}
-	after, readErr := os.ReadFile(intentPath) //nolint:gosec // fixed path beneath the test-owned home
-	if readErr != nil {
-		t.Fatalf("read changed-ID publishing intent: %v", readErr)
-	}
-	if !bytes.Equal(after, changed) {
-		t.Fatal("changed-ID publishing intent was rewritten")
 	}
 }
 

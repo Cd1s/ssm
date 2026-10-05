@@ -865,42 +865,10 @@ type publishingIntentTransaction struct {
 	CreatedAt string `json:"created_at"`
 }
 
-// publishingIntentV1 exists only to strictly decode and sanitize sidecars
-// written before the private projection was separated from MutationView.
-type publishingIntentV1 struct {
-	Version              int                                   `json:"version"`
-	State                string                                `json:"state"`
-	Scope                string                                `json:"scope"`
-	TransactionIDs       []string                              `json:"transaction_ids"`
-	Transactions         []publishingIntentTransactionV1Legacy `json:"transactions"`
-	PrerequisiteExists   bool                                  `json:"prerequisite_remote_exists"`
-	PrerequisiteIdentity string                                `json:"prerequisite_remote_identity,omitempty"`
-	TargetIdentity       string                                `json:"target_encrypted_blob_identity"`
-	ObservedExists       bool                                  `json:"observed_remote_exists,omitempty"`
-	ObservedIdentity     string                                `json:"observed_remote_identity,omitempty"`
-	CreatedAt            string                                `json:"created_at"`
-}
-
-// publishingIntentTransactionV1Legacy is the complete known v1 transaction
-// schema. Deprecated fields are decoded only so they can be discarded.
-type publishingIntentTransactionV1Legacy struct {
-	ID          string   `json:"id"`
-	Alias       string   `json:"alias,omitempty"`
-	Aliases     []string `json:"aliases,omitempty"`
-	KeyName     string   `json:"key_name,omitempty"`
-	Operation   string   `json:"operation"`
-	CreatedAt   string   `json:"created_at"`
-	Connections *int     `json:"connections,omitempty"`
-	Keys        *int     `json:"keys,omitempty"`
-}
-
 const (
-	publishingIntentVersion   = 2
-	publishingIntentV1Version = 1
+	publishingIntentVersion = 2
 	// A canonical v2 intent at the 1,024-transaction ceiling is below 256
-	// KiB and uses at most 7,192 JSON tokens. The larger byte/token budgets
-	// retain migration headroom for v1's deprecated diagnostics. V1's deepest
-	// known shape is four containers, so 16 levels also leaves 4x headroom.
+	// KiB and uses at most 7,192 JSON tokens.
 	maxPublishingIntentDocumentBytes = 512 * 1024
 	maxPublishingIntentJSONDepth     = 16
 	maxPublishingIntentJSONTokens    = 32 * 1024
@@ -1231,22 +1199,6 @@ func loadPublishingIntent() (publishingIntent, error) {
 			return publishingIntent{}, err
 		}
 		return intent, nil
-	case publishingIntentV1Version:
-		var legacy publishingIntentV1
-		if err := decodePublishingIntent(data, &legacy, true); err != nil {
-			return publishingIntent{}, err
-		}
-		intent, err := sanitizePublishingIntentV1(legacy)
-		if err != nil {
-			return publishingIntent{}, err
-		}
-		if err := validatePublishingIntent(intent); err != nil {
-			return publishingIntent{}, err
-		}
-		if err := savePublishingIntent(intent); err != nil {
-			return publishingIntent{}, fmt.Errorf("sanitize version 1 publishing intent: %w", err)
-		}
-		return intent, nil
 	default:
 		return publishingIntent{}, errors.New("publishing intent version is unsupported")
 	}
@@ -1361,37 +1313,6 @@ func consumeUniqueJSONValue(decoder *json.Decoder, budget *uniqueJSONBudget, dep
 	}
 	_, err = budget.nextToken(decoder)
 	return err
-}
-
-func sanitizePublishingIntentV1(legacy publishingIntentV1) (publishingIntent, error) {
-	if len(legacy.Transactions) != len(legacy.TransactionIDs) {
-		return publishingIntent{}, errors.New("publishing intent transaction metadata is incomplete")
-	}
-	if _, err := time.Parse(time.RFC3339Nano, legacy.CreatedAt); err != nil {
-		return publishingIntent{}, errors.New("publishing intent creation time is invalid")
-	}
-	for index, transaction := range legacy.Transactions {
-		if transaction.ID != legacy.TransactionIDs[index] {
-			return publishingIntent{}, errors.New("publishing intent transaction metadata order changed")
-		}
-	}
-	intent := publishingIntent{
-		Version:              publishingIntentVersion,
-		State:                legacy.State,
-		Scope:                legacy.Scope,
-		TransactionIDs:       append([]string(nil), legacy.TransactionIDs...),
-		PrerequisiteExists:   legacy.PrerequisiteExists,
-		PrerequisiteIdentity: legacy.PrerequisiteIdentity,
-		TargetIdentity:       legacy.TargetIdentity,
-		ObservedExists:       legacy.ObservedExists,
-		ObservedIdentity:     legacy.ObservedIdentity,
-	}
-	for _, transaction := range legacy.Transactions {
-		intent.Transactions = append(intent.Transactions, publishingIntentTransaction{
-			Operation: transaction.Operation, CreatedAt: transaction.CreatedAt,
-		})
-	}
-	return intent, nil
 }
 
 func validatePublishingIntent(intent publishingIntent) error {
