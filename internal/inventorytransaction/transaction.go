@@ -882,6 +882,11 @@ const (
 
 var errInvalidPublishingIntentDocument = errors.New("publishing intent document is invalid")
 
+var (
+	errPublicationScopeFinalized = errors.New("interrupted publication was finalized; requested push scope did not match it and was not published; review status and retry")
+	errPublicationScopePending   = errors.New("interrupted publication was returned to pending; requested push scope did not match it and was not published; review status and retry")
+)
+
 // Pending returns stable secret-free pending views in ledger order.
 func Pending(v *config.Vault) []MutationView {
 	if v == nil {
@@ -905,18 +910,25 @@ func (s *PublicationSession) Publish(t *Transaction, v *config.Vault, only strin
 	if err != nil {
 		return PublicationReceipt{}, err
 	}
-	if recovery != nil && recovery.State == "confirmed" {
-		return reconciled, nil
-	}
-
-	publicationOnly := only
 	var projection projection
-	if recovery != nil && recovery.State == "pending" {
-		projection, err = projectTransactionIDs(v, recovery.TransactionIDs)
-		if recovery.Scope == "only" && len(recovery.TransactionIDs) == 1 {
-			publicationOnly = recovery.TransactionIDs[0]
-		} else {
-			publicationOnly = ""
+	if recovery != nil {
+		switch recovery.State {
+		case "confirmed":
+			if !matchesRecovery(only, recovery) {
+				return PublicationReceipt{}, errPublicationScopeFinalized
+			}
+			return reconciled, nil
+		case "pending":
+			if !matchesRecovery(only, recovery) {
+				return PublicationReceipt{}, errPublicationScopePending
+			}
+			if only == "" {
+				projection, err = projectTransactionIDs(v, recovery.TransactionIDs)
+			} else {
+				projection, err = project(v, only)
+			}
+		default:
+			return PublicationReceipt{}, synctransaction.ErrUnconfigured
 		}
 	} else {
 		projection, err = project(v, only)
@@ -928,7 +940,7 @@ func (s *PublicationSession) Publish(t *Transaction, v *config.Vault, only strin
 		if err := t.sync.VerifyEmptyPublication(); err != nil {
 			return PublicationReceipt{}, err
 		}
-		receipt := publicationReceipt(publicationOnly, projection.Selected, v)
+		receipt := publicationReceipt(only, projection.Selected, v)
 		receipt.Action = "noop"
 		return receipt, nil
 	}
@@ -938,7 +950,7 @@ func (s *PublicationSession) Publish(t *Transaction, v *config.Vault, only strin
 	}
 
 	scope := "all"
-	if publicationOnly != "" {
+	if only != "" {
 		scope = "only"
 	}
 	intent := publishingIntent{
@@ -1016,6 +1028,16 @@ func (s *PublicationSession) Publish(t *Transaction, v *config.Vault, only strin
 		return PublicationReceipt{}, err
 	}
 	return receipt, nil
+}
+
+func matchesRecovery(only string, recovery *PublicationRecovery) bool {
+	if recovery == nil {
+		return false
+	}
+	if only == "" {
+		return recovery.Scope == "all"
+	}
+	return len(recovery.TransactionIDs) == 1 && recovery.TransactionIDs[0] == only
 }
 
 // ReconcilePublishingIntent resolves durable recovery state for status without
