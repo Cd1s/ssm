@@ -571,7 +571,9 @@ func downloadDirTar(c config.Connection, v *config.Vault, remoteDir, localDir st
 	if err := session.Start(remoteCmd); err != nil {
 		return err
 	}
+	interrupt := watchRunInterrupt(session)
 	if err := tarLocal.Start(); err != nil {
+		interrupt.stop()
 		_ = session.Close()
 		return transferError(machinecontract.TransferDownloadLocalWrite, 0, fmt.Errorf("local tar: %w", err))
 	}
@@ -600,6 +602,14 @@ func downloadDirTar(c config.Connection, v *config.Vault, remoteDir, localDir st
 		func() { _ = tarLocal.Process.Kill() },
 		downloadRemoteGrace,
 	)
+	interrupt.stop()
+	if signalExit, interrupted := interrupt.result(); interrupted {
+		failure := machinecontract.Classify(machinecontract.RunInterrupted, machinecontract.Details{
+			Message: fmt.Sprintf("interrupted by local signal; exit %d", signalExit),
+			Exit:    signalExit,
+		})
+		return transferClassifiedError(failure, 0, machinecontract.NewClassifiedError(failure))
+	}
 	switch {
 	case first != downloadEndNone && timedOut.Load():
 		// A deadline that fires after both ends already finished cleanly is
