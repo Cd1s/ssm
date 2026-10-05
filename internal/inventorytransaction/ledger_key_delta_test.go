@@ -30,7 +30,7 @@ func TestPendingLedgerKeyDeltaPreservesConsumers(t *testing.T) {
 		},
 	}
 	transaction, passphrase, keyFiles := newKeyDeltaFixture(t, base)
-	random := rand.New(rand.NewSource(20261005))
+	random := rand.New(rand.NewSource(20261005)) //nolint:gosec // fixed seed keeps the sequence deterministic; not security related
 	legacy := cloneVault(base)
 	step := 0
 	for round := 0; round < 2; round++ {
@@ -235,7 +235,7 @@ func newKeyDeltaFixture(t *testing.T, vault *config.Vault) (*Transaction, string
 	}
 	return New(Options{
 		MasterPass: passphrase,
-		Random:     rand.New(rand.NewSource(20261005)),
+		Random:     rand.New(rand.NewSource(20261005)), //nolint:gosec // fixed seed keeps the sequence deterministic; not security related
 		Now:        func() time.Time { return time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC) },
 	}), passphrase, keyFiles
 }
