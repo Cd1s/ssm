@@ -356,13 +356,17 @@ func runHostCommand(args []string) {
 		os.Exit(machinecontract.WriteMetadataError(opts.asJSON, err, machinecontract.HostInternalFailure))
 	}
 	if opts.push {
-		remaining, err := pushTransactions(result.TransactionID)
-		if err != nil {
-			failure, document := hostPushFailureFor(result, err)
-			os.Exit(machinecontract.WriteFailure(opts.asJSON, failure, document))
+		if result.TransactionID == "" {
+			result.SyncPending = len(v.PendingMutations) > 0
+		} else {
+			remaining, err := pushTransactions(result.TransactionID)
+			if err != nil {
+				failure, document := hostPushFailureFor(result, err)
+				os.Exit(machinecontract.WriteFailure(opts.asJSON, failure, document))
+			}
+			result.Pushed = true
+			result.SyncPending = remaining
 		}
-		result.Pushed = true
-		result.SyncPending = remaining
 	}
 	writeHostMutationResult(result, opts.asJSON)
 }
