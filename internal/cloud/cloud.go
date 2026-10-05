@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"ssm/internal/config"
 )
@@ -391,9 +392,34 @@ type HTTPStatusError struct {
 
 func (e *HTTPStatusError) Error() string {
 	if e.Message != "" {
-		return e.Message
+		return sanitizeServerMessage(e.Message)
 	}
 	return fmt.Sprintf("server error (%d)", e.StatusCode)
+}
+
+func sanitizeServerMessage(message string) string {
+	var builder strings.Builder
+	space := false
+	for _, r := range message {
+		if unicode.IsControl(r) {
+			space = true
+			continue
+		}
+		if unicode.IsSpace(r) {
+			space = true
+			continue
+		}
+		if space && builder.Len() > 0 {
+			builder.WriteByte(' ')
+		}
+		space = false
+		builder.WriteRune(r)
+	}
+	clean := []rune(builder.String())
+	if len(clean) > 300 {
+		clean = append(clean[:299], '…')
+	}
+	return string(clean)
 }
 
 // TransportError wraps a failure to complete an HTTP exchange with the sync

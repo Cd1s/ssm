@@ -1,6 +1,8 @@
 package cloud
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -81,6 +83,35 @@ func TestAuthRedirectFollowsSameHost(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestAuthRedirectRefusesHTTPSDowngrade(t *testing.T) {
+	var requests atomic.Int32
+	plain := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(writer, `{"token":"redirect-token"}`)
+	}))
+	t.Cleanup(plain.Close)
+	tlsServer := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		http.Redirect(writer, request, plain.URL+"/token", http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(tlsServer.Close)
+
+	pool := x509.NewCertPool()
+	pool.AddCert(tlsServer.Certificate())
+	oldClient := httpClient
+	httpClient = &http.Client{
+		Transport:     &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}},
+		CheckRedirect: checkRedirect,
+	}
+	t.Cleanup(func() { httpClient = oldClient })
+
+	if _, err := Login(tlsServer.URL, "redirect@example.test", "test-password"); err == nil || err.Error() != "refusing to follow a redirect to a different host or to plain http" {
+		t.Fatalf("Login error = %v, want HTTPS downgrade refusal", err)
+	}
+	if count := requests.Load(); count != 0 {
+		t.Fatalf("plain redirect target received %d requests, want 0", count)
 	}
 }
 
