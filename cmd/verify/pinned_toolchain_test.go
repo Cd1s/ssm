@@ -151,8 +151,8 @@ func TestVulnerabilityWorkflowMatchesReviewedGoldenAndManifest(t *testing.T) {
 		"job-level read":     "    permissions:\n      contents: read\n",
 		"credential-free":    "          persist-credentials: false\n",
 		"fixed go version":   "          go-version: \"" + pinnedGoVersion + "\"\n",
-		"checkout version":   "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0\n",
-		"setup-go version":   "      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0\n",
+		"checkout version":   "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n",
+		"setup-go version":   "      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0\n",
 		"manifest command":   "        run: " + manifestVulnerabilityCommand(t) + "\n",
 		"single job":         "jobs:\n  govulncheck:\n",
 		"github runner host": "    runs-on: ubuntu-latest\n",
@@ -171,7 +171,7 @@ func TestVulnerabilityWorkflowMatchesReviewedGoldenAndManifest(t *testing.T) {
 	}
 
 	ci := readWorkflowFile(t, "ci.yml")
-	for _, use := range []string{"actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0", "actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0"} {
+	for _, use := range []string{"actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1", "actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0"} {
 		if !strings.Contains(ci, "uses: "+use) || !strings.Contains(text, "uses: "+use) {
 			t.Errorf("ci.yml and vulncheck.yml do not both use %s", use)
 		}
