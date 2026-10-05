@@ -130,7 +130,7 @@ func remoteIsDirOn(client *gossh.Client, remotePath string) (bool, error) {
 	case "FILE":
 		return false, nil
 	case "MISSING":
-		return false, transferError(machinecontract.TransferDownloadRemoteRead, 0, fmt.Errorf("remote path %s not found", remotePath))
+		return false, fmt.Errorf("remote path %s not found", remotePath)
 	default:
 		return false, remoteShellUnsupportedError(string(out), nil)
 	}
