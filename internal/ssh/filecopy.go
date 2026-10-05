@@ -180,6 +180,9 @@ func UploadFileWithOptions(c config.Connection, v *config.Vault, localPath, remo
 		if message == "" {
 			message = err.Error()
 		}
+		if strings.Contains(message, "remote destination") && strings.Contains(message, "is a directory") {
+			return result, transferError(machinecontract.TransferRemoteWriteFailed, written, errors.New(message))
+		}
 		return result, transferError(machinecontract.TransferRemotePermissionsFailed, written, errors.New(message))
 	}
 	remoteSize, remoteDigest, err := parseUploadReceipt(stdout.String())
@@ -469,7 +472,7 @@ func uploadCommandWithIntegrity(remotePath string, mode os.FileMode, size int64,
 	} else {
 		checks += "actual_sha=-; "
 	}
-	return fmt.Sprintf("%stmp=%s.ssm-upload.$$; trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM; cat > \"$tmp\" && chmod %04o \"$tmp\" || exit $?; %smv -f -- \"$tmp\" %s && trap - EXIT HUP INT TERM && printf 'SSM_TRANSFER %%s %%s\\n' \"$actual_size\" \"$actual_sha\"", prefix, quotedPath, uint32(mode.Perm()), checks, quotedPath)
+	return fmt.Sprintf("%stmp=%s.ssm-upload.$$; trap 'rm -f -- \"$tmp\"' EXIT HUP INT TERM; cat > \"$tmp\" && chmod %04o \"$tmp\" || exit $?; %s[ -d %s ] && { rm -f -- \"$tmp\"; echo \"remote destination %s is a directory\" >&2; exit 73; }; mv -f -- \"$tmp\" %s && trap - EXIT HUP INT TERM && printf 'SSM_TRANSFER %%s %%s\\n' \"$actual_size\" \"$actual_sha\"", prefix, quotedPath, uint32(mode.Perm()), checks, quotedPath, quotedPath, quotedPath)
 }
 
 func parseUploadReceipt(output string) (int64, string, error) {
