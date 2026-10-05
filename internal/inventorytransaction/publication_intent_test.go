@@ -656,7 +656,7 @@ func TestLoadPublishingIntentRejectsUnsupportedVersionOneWithoutRewrite(t *testi
 		t.Fatalf("version-one error = %v, want constant unsupported-version error", err)
 	}
 
-	after, err := os.ReadFile(intentPath)
+	after, err := os.ReadFile(intentPath) //nolint:gosec // test reads a sidecar path under t.TempDir
 	if err != nil {
 		t.Fatalf("read rejected version-one publishing intent: %v", err)
 	}
