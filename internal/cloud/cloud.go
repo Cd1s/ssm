@@ -62,7 +62,21 @@ func PushFailureIsAmbiguous(err error) bool {
 // example a freshly registered one). It is not a transport failure.
 var ErrNoVaultOnServer = errors.New("no vault found on server; review pending mutations, then choose sshctl --json push --only <transaction-id> or sshctl --json push --all")
 
-var httpClient = &http.Client{Timeout: 15 * time.Second}
+var httpClient = &http.Client{
+	Timeout:       15 * time.Second,
+	CheckRedirect: checkRedirect,
+}
+
+func checkRedirect(request *http.Request, via []*http.Request) error {
+	if request.URL.Host != via[0].URL.Host ||
+		(via[len(via)-1].URL.Scheme == "https" && request.URL.Scheme == "http") {
+		return errors.New("refusing to follow a redirect to a different host or to plain http")
+	}
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	return nil
+}
 
 // SetRequestTimeout bounds every later sync-service request in this process.
 // The detached background sync uses a shorter bound than interactive commands.
