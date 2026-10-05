@@ -17,7 +17,7 @@ func TestCompiledPutDirectoryDestinationReportsRemoteWriteFailure(t *testing.T) 
 	}
 	remoteRoot := t.TempDir()
 	remoteDir := filepath.Join(remoteRoot, "existing")
-	if err := os.Mkdir(remoteDir, 0o755); err != nil {
+	if err := os.Mkdir(remoteDir, 0o755); err != nil { //nolint:gosec // test fixture directory under t.TempDir
 		t.Fatal(err)
 	}
 

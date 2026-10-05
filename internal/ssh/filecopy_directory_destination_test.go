@@ -12,7 +12,7 @@ import (
 func TestUploadScriptRejectsDirectoryDestination(t *testing.T) {
 	root := t.TempDir()
 	dest := filepath.Join(root, "existing")
-	if err := os.Mkdir(dest, 0o755); err != nil {
+	if err := os.Mkdir(dest, 0o755); err != nil { //nolint:gosec // test fixture directory under t.TempDir
 		t.Fatal(err)
 	}
 	out, err := runUploadScript(t, os.Getenv("PATH"), uploadCommandWithIntegrity(dest, 0o644, 3, "", DefaultUploadDirMode), []byte("abc"))
@@ -42,7 +42,7 @@ func TestUploadScriptOverwritesRegularFileDestination(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upload script failed for regular file destination: %v; output=%q", err, strings.TrimSpace(out))
 	}
-	content, err := os.ReadFile(dest)
+	content, err := os.ReadFile(dest) //nolint:gosec // test reads a path under t.TempDir
 	if err != nil {
 		t.Fatal(err)
 	}
