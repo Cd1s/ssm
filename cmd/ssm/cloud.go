@@ -129,6 +129,7 @@ func parseCloudAuthFlags(name string, args []string) (cloudAuthFlags, bool) {
 }
 
 func readSecretFile(path, label string) string {
+	warnCredentialFile("--password-file", path)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.GenericFailure, machinecontract.Details{

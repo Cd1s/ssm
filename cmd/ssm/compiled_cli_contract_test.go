@@ -457,6 +457,7 @@ func isolatedCompiledCLIEnvironmentWith(home, temp string, overrides map[string]
 		"SSM_REUSE":                  true,
 		"SSM_FORWARD_STDIN":          true,
 		"SSM_RUN_OUTPUT":             true,
+		"SSM_NO_PERMISSION_WARNING":  true,
 		"SSM_TEST_PUBLICATION_FAULT": true,
 		"SSM_OFFLINE":                true,
 	}

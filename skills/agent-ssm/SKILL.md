@@ -290,6 +290,7 @@ Check `sshctl --help` for `--exec-timeout` before relying on these; v2.0.2 and o
 processes. `SSM_FORWARD_STDIN=1|0` controls default stdin forwarding,
 `SSM_RUN_OUTPUT=buffered` restores buffered output, `SSM_CONFIG_DIR` selects
 the config directory, and `SSM_MASTER_PASS_FILE` points to a protected file (same as the global `--master-pass-file <path>`).
+`SSM_NO_PERMISSION_WARNING=1` suppresses the stderr warning for credential input files readable by other users; reading the file still behaves normally.
 `SSM_TRACE=1` is the same as `--trace`/`-v`: the redacted remote command (and
 script digest) is written to stderr before running. `SSM_UPDATE_REPO=<owner/repo>|off`
 chooses the GitHub repository `ssm update` reads releases from (default

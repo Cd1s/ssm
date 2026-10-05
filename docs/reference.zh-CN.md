@@ -499,6 +499,7 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 | `SSM_REUSE` | `0`、`off`、`false`、`no` 关闭连接池。连接复用范围始终是单个进程（`status` 显示 `reuse_scope=process`）。 |
 | `SSM_FORWARD_STDIN` | `1` 默认转发本地 stdin（包括 `--json`）；`0` 等同于 `--no-stdin`。 |
 | `SSM_RUN_OUTPUT` | `buffered` 恢复 v2.0.2 的缓冲输出模式。 |
+| `SSM_NO_PERMISSION_WARNING` | 设为 `1` 可关闭凭据文件被其他用户读取时的警告。 |
 | `SSM_TRACE` | `1`（也接受 `true`、`yes`、`on`）等价于 `--trace`/`-v`。 |
 | `SSM_OFFLINE` | `1` 等价于 `--offline`。 |
 | `SSM_SYNC_MODE` | `strict` 或 `local_first`；对单个进程覆盖 `sync_mode`。 |
