@@ -14,12 +14,14 @@ import (
 )
 
 var (
-	masterPass     string
-	masterPassFile string
-	offlineMode    bool
-	unlockedVault  *config.Vault
-	streamMachine  bool
-	version        = "2.1.0"
+	masterPass                 string
+	masterPassFile             string
+	offlineMode                bool
+	unlockedVault              *config.Vault
+	unlockedVaultIdentity      vaultFileIdentity
+	unlockedVaultIdentityKnown bool
+	streamMachine              bool
+	version                    = "2.1.0"
 )
 
 func isSSHCTLInvocation(path string) bool {
@@ -668,6 +670,9 @@ func unlock() {
 // choosing a renderer. Normal commands and run --stream render the same
 // classified failure through their respective machine-contract framing.
 func unlockVault() (machinecontract.Failure, bool) {
+	// Capture identity before reading: a replacement during decryption must
+	// never bind the old snapshot to the new file.
+	identity, identityErr := currentVaultFileIdentity()
 	if masterPassFile == "" {
 		masterPassFile = defaultMasterPassFileIfPresent()
 	}
@@ -695,7 +700,7 @@ func unlockVault() (machinecontract.Failure, bool) {
 			}
 			if created {
 				masterPass = pass
-				unlockedVault = &config.Vault{}
+				cacheUnlockedVault(&config.Vault{}, identity, identityErr)
 				return machinecontract.Failure{}, false
 			}
 		}
@@ -705,7 +710,7 @@ func unlockVault() (machinecontract.Failure, bool) {
 			return machinecontract.Classify(machinecontract.VaultUnlockFailed, machinecontract.Details{Cause: err}), true
 		}
 		masterPass = pass
-		unlockedVault = v
+		cacheUnlockedVault(v, identity, identityErr)
 		return machinecontract.Failure{}, false
 	}
 
@@ -721,7 +726,7 @@ func unlockVault() (machinecontract.Failure, bool) {
 		if cached := config.GetCachedPassword(); cached != "" {
 			if v, err := config.Load(cached); err == nil {
 				masterPass = cached
-				unlockedVault = v
+				cacheUnlockedVault(v, identity, identityErr)
 				return machinecontract.Failure{}, false
 			}
 			config.ClearPasswordCache()
@@ -769,6 +774,22 @@ func loadVault() (*config.Vault, error) {
 	return v, nil
 }
 
+func cacheUnlockedVault(v *config.Vault, identity vaultFileIdentity, err error) {
+	unlockedVault = v
+	unlockedVaultIdentity = identity
+	unlockedVaultIdentityKnown = err == nil
+}
+
+func unlockedVaultStillCurrent() bool {
+	if unlockedVault == nil || !unlockedVaultIdentityKnown {
+		return false
+	}
+	identity, err := currentVaultFileIdentity()
+	return err == nil && identity == unlockedVaultIdentity
+}
+
 func invalidateVaultCache() {
 	unlockedVault = nil
+	unlockedVaultIdentity = vaultFileIdentity{}
+	unlockedVaultIdentityKnown = false
 }

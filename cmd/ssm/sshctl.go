@@ -378,9 +378,10 @@ func runSSHCTLStatus() {
 	}
 	if recoveryErr == nil {
 		// Reconciliation waits for any in-flight publisher. Discard the vault
-		// snapshot loaded before that wait so status cannot report its stale
-		// pending ledger after the other process finalizes.
-		invalidateVaultCache()
+		// snapshot if the publisher changed the file while we waited.
+		if !unlockedVaultStillCurrent() {
+			invalidateVaultCache()
+		}
 		if _, err := syncTransaction(false).Refresh(); err != nil {
 			failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullFailed)
 			os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
