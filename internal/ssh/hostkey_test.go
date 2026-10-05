@@ -19,6 +19,38 @@ func setTestHome(t *testing.T, home string) {
 	t.Setenv("USERPROFILE", home)
 }
 
+func TestKnownHostsPathRejectsBlankHome(t *testing.T) {
+	validHome := t.TempDir()
+	tests := []struct {
+		name    string
+		home    string
+		wantErr bool
+	}{
+		{name: "empty", home: "", wantErr: true},
+		{name: "spaces", home: "   ", wantErr: true},
+		{name: "tab", home: "\t", wantErr: true},
+		{name: "valid", home: validHome},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			setTestHome(t, tc.home)
+			got, err := KnownHostsPath()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("KnownHostsPath() = %q, want an error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("KnownHostsPath() error = %v", err)
+			}
+			if want := filepath.Join(tc.home, ".ssh", "known_hosts"); got != want {
+				t.Fatalf("KnownHostsPath() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestInspectHostKeyFailsClosedWithoutHome(t *testing.T) {
 	working := t.TempDir()
 	previous, err := os.Getwd()
