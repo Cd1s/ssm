@@ -623,6 +623,11 @@ func downloadDirTar(c config.Connection, v *config.Vault, remoteDir, localDir st
 	if err := rejectSpecialEntries(staging.path); err != nil {
 		return transferError(machinecontract.TransferDownloadLocalWrite, 0, err)
 	}
+	if staging.destinationExists {
+		if err := restoreDirectoryModes(staging.destinationPath, staging.path); err != nil {
+			return transferError(machinecontract.TransferDownloadLocalWrite, 0, fmt.Errorf("preserve local directory modes: %w", err))
+		}
+	}
 	if err := staging.publish(localDir, systemDirectoryDownloadPublishOperations()); err != nil {
 		return err
 	}
