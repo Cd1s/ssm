@@ -18,6 +18,7 @@ import (
 
 	"ssm/internal/cloud"
 	"ssm/internal/config"
+	"ssm/internal/vault"
 )
 
 type ConfigurationState string
@@ -180,7 +181,10 @@ type Facts struct {
 }
 
 type Options struct {
-	Offline    bool
+	Offline bool
+	// MasterPass authenticates downloaded vaults on foreground pulls. An empty
+	// value is used by login before a local vault has been unlocked.
+	MasterPass string
 	Invalidate func()
 	Now        func() time.Time
 	// SpawnBackground starts the detached background sync process. It is
@@ -196,6 +200,7 @@ type Options struct {
 
 type Transaction struct {
 	offline    bool
+	masterPass string
 	invalidate func()
 	now        func() time.Time
 	spawn      func(claimToken string) error
@@ -228,7 +233,7 @@ func New(opts Options) *Transaction {
 		now = time.Now
 	}
 	return &Transaction{
-		offline: opts.Offline, invalidate: opts.Invalidate, now: now,
+		offline: opts.Offline, masterPass: opts.MasterPass, invalidate: opts.Invalidate, now: now,
 		spawn: opts.SpawnBackground, describe: opts.DescribeFailure, observe: opts.Observe,
 	}
 }
@@ -556,8 +561,13 @@ func (t *Transaction) installFetched(data []byte, etag string, mode pullMode) (F
 	defer func() { _ = lock.Close() }()
 	facts := identityFacts()
 	facts.Configuration = ConfigurationConfigured
-	if mode == pullBackground && !config.ValidVaultBlob(data) {
+	if !config.ValidVaultBlob(data) {
 		return facts, fmt.Errorf("%w: downloaded vault has an invalid format and was not installed", ErrRefresh)
+	}
+	if mode != pullBackground && t.masterPass != "" {
+		if _, err := vault.Decrypt(data, t.masterPass); err != nil {
+			return facts, fmt.Errorf("%w: downloaded vault could not be authenticated and was not installed", ErrRefresh)
+		}
 	}
 	if mode == pullAdopt {
 		// The adoption was reviewed against specific evidence. If the local
@@ -568,6 +578,17 @@ func (t *Transaction) installFetched(data []byte, etag string, mode pullMode) (F
 		}
 	} else if divergedFor(mode, facts, etag) {
 		return t.conflictError(facts, etag)
+	}
+	if _, err := os.Stat(config.Path()); err == nil {
+		previous, err := os.ReadFile(config.Path())
+		if err != nil {
+			return facts, fmt.Errorf("%w: remote refresh did not commit: preserve previous vault: %w", ErrRefresh, err)
+		}
+		if err := config.WritePrivateFile(config.Path()+".prev", previous); err != nil {
+			return facts, fmt.Errorf("%w: remote refresh did not commit: preserve previous vault: %w", ErrRefresh, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return facts, fmt.Errorf("%w: remote refresh did not commit: inspect previous vault: %w", ErrRefresh, err)
 	}
 	if err := config.WritePrivateFile(config.Path(), data); err != nil {
 		return facts, fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err)

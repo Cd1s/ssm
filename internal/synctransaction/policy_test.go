@@ -169,7 +169,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 
 	t.Run("changed remote blob commits before one invalidation", func(t *testing.T) {
 		isolateTestUserConfig(t)
-		remoteBlob := []byte("opaque remote encrypted blob")
+		remoteBlob := fakeVaultBlob("opaque remote encrypted blob")
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("ETag", `"remote-current"`)
 			if r.Method == http.MethodGet {
@@ -201,7 +201,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 	t.Run("pull metadata records the confirmed GET identity and transaction time", func(t *testing.T) {
 		isolateTestUserConfig(t)
 		now := time.Date(2026, 7, 28, 12, 34, 56, 0, time.UTC)
-		remoteBlob := []byte("opaque confirmed remote blob")
+		remoteBlob := fakeVaultBlob("opaque confirmed remote blob")
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.Method {
 			case http.MethodHead:
@@ -413,8 +413,8 @@ func TestSyncTransactionPolicy(t *testing.T) {
 	t.Run("confirmed GET succeeds when sync metadata persistence fails", func(t *testing.T) {
 		home := isolateTestUserConfig(t)
 		config.EnableDebug()
-		localBlob := []byte("ISSUE20_METADATA_PULL_LOCAL_OPAQUE_BLOB_CANARY")
-		remoteBlob := []byte("ISSUE20_METADATA_PULL_REMOTE_OPAQUE_BLOB_CANARY")
+		localBlob := fakeVaultBlob("ISSUE20_METADATA_PULL_LOCAL_OPAQUE_BLOB_CANARY")
+		remoteBlob := fakeVaultBlob("ISSUE20_METADATA_PULL_REMOTE_OPAQUE_BLOB_CANARY")
 		if err := config.WritePrivateFile(config.Path(), localBlob); err != nil {
 			t.Fatal(err)
 		}

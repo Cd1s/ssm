@@ -424,6 +424,7 @@ func syncTransaction(commandOffline bool) *synctransaction.Transaction {
 	offline := offlineMode || commandOffline
 	options := synctransaction.Options{
 		Offline:         offline,
+		MasterPass:      masterPass,
 		Invalidate:      invalidateInventory,
 		Now:             syncTransactionClock(),
 		DescribeFailure: machinecontract.DescribeSyncFailure,

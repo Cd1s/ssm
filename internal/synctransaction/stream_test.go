@@ -71,7 +71,7 @@ func TestStreamTransactionPolicy(t *testing.T) {
 				headCount.Add(1)
 			case http.MethodGet:
 				getCount.Add(1)
-				_, _ = w.Write([]byte("opaque stream snapshot"))
+				_, _ = w.Write(fakeVaultBlob("opaque stream snapshot"))
 			default:
 				t.Fatalf("unexpected method %s", r.Method)
 			}
