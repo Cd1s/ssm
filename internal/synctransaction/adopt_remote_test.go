@@ -14,8 +14,8 @@ import (
 
 func TestAdoptRemoteRequiresReviewedIdentityAndCommitsVerifiedBlob(t *testing.T) {
 	isolateTestUserConfig(t)
-	local := []byte("opaque local encrypted vault")
-	remote := []byte("opaque reviewed remote encrypted vault")
+	local := fakeVaultBlob("opaque local encrypted vault")
+	remote := fakeVaultBlob("opaque reviewed remote encrypted vault")
 	if err := config.WritePrivateFile(config.Path(), local); err != nil {
 		t.Fatal(err)
 	}

@@ -1869,7 +1869,7 @@ func TestCompiledFailedStatusUsesFailureRenderer(t *testing.T) {
 	}
 	cli.writeConfigFile(t, "settings.json", settings)
 	sync := newCompiledSyncFixture(t)
-	sync.SetRemote(t, []byte("invalid encrypted vault"), "")
+	sync.SetRemote(t, append([]byte{1}, bytes.Repeat([]byte{0x41}, 60)...), "")
 	cli.SaveCloud(t, sync.URL(), "COMPILED_STATUS_FAILURE_TOKEN_CANARY")
 
 	result := cli.Run(t, "sshctl", nil, "--json", "status")
@@ -1907,10 +1907,33 @@ func TestCompiledFailedStatusUsesFailureRenderer(t *testing.T) {
 	if !ok || len(mutations) != 0 {
 		t.Fatalf("failed status pending_mutations=%v, want []", value["pending_mutations"])
 	}
-	lastPull, pullOK := value["last_pull"].(string)
-	lastSync, syncOK := value["last_sync"].(string)
-	if !pullOK || !syncOK || lastPull == "" || lastSync != lastPull {
+	lastPull, _ := value["last_pull"].(string)
+	lastSync, _ := value["last_sync"].(string)
+	if lastPull != "" || lastSync != "" {
 		t.Fatalf("failed status sync timestamps changed: last_pull=%v last_sync=%v", value["last_pull"], value["last_sync"])
+	}
+}
+
+func TestCompiledFailedStatusPreservesSuccessfulSyncHistory(t *testing.T) {
+	cli := newCompiledCLIHarness(t)
+	cli.SaveVault(t, &config.Vault{})
+	const lastPull = "2026-07-01T01:02:03Z"
+	settings, err := json.Marshal(config.Settings{PasswordCache: "never", AutoSync: true, LastPull: lastPull})
+	if err != nil {
+		t.Fatalf("marshal historical settings: %v", err)
+	}
+	cli.writeConfigFile(t, "settings.json", settings)
+	sync := newCompiledSyncFixture(t)
+	sync.SetRemote(t, append([]byte{1}, bytes.Repeat([]byte{0x41}, 60)...), "")
+	cli.SaveCloud(t, sync.URL(), "COMPILED_STATUS_HISTORY_TOKEN_CANARY")
+
+	result := cli.Run(t, "sshctl", nil, "--json", "status")
+	if result.ProcessExit != 1 || result.Stderr != "" {
+		t.Fatalf("historical failed status exit=%d stderr=%q output=%s", result.ProcessExit, result.Stderr, compiledOutputIdentity(result))
+	}
+	value := decodeExactlyOneJSONObject(t, result.Stdout)
+	if value["last_pull"] != lastPull || value["last_sync"] != lastPull {
+		t.Fatalf("successful sync history changed: last_pull=%v last_sync=%v", value["last_pull"], value["last_sync"])
 	}
 }
 
