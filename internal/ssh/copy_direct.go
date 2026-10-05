@@ -217,7 +217,11 @@ func copyFileDirect(src config.Connection, srcPath string, dst config.Connection
 		return result, err
 	}
 	defer func() { _ = keyring.RemoveAll() }()
-	knownHostsLines, err := directKnownHostsLines(KnownHostsPath(), dst)
+	knownHostsPath, err := KnownHostsPath()
+	if err != nil {
+		return result, knownHostsPathError()
+	}
+	knownHostsLines, err := directKnownHostsLines(knownHostsPath, dst)
 	if err != nil {
 		return result, err
 	}

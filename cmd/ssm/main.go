@@ -150,6 +150,11 @@ func main() {
 		}
 		os.Exit(machinecontract.WriteClassified(machineJSON, kind, machinecontract.Details{Cause: err}))
 	}
+	if !isInformationalInvocationFor(sshctlInvocation, rawArgs) && !configDirectoryAvailable() {
+		failure := machinecontract.Classify(machinecontract.GenericFailure, machinecontract.Details{Message: "configuration directory unavailable"})
+		failure.Hint = "set HOME or SSM_CONFIG_DIR"
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+	}
 	if !offlineMode && !isInformationalInvocationFor(sshctlInvocation, rawArgs) && !isBackgroundSyncInvocation(args) {
 		if err := checkUpdate(); err != nil {
 			failure := machinecontract.Classify(
@@ -373,6 +378,15 @@ Cloud (optional):
 			Script:  "ssm",
 		}))
 	}
+}
+
+func configDirectoryAvailable() bool {
+	configured := filepath.Clean(os.Getenv("SSM_CONFIG_DIR"))
+	if configured != "." && configured != "" {
+		return true
+	}
+	home, err := os.UserHomeDir()
+	return err == nil && strings.TrimSpace(home) != ""
 }
 
 func runUpdate(args []string) {

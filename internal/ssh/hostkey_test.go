@@ -8,12 +8,76 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"ssm/internal/config"
+	"ssm/internal/machinecontract"
 )
 
 func setTestHome(t *testing.T, home string) {
 	t.Helper()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+}
+
+func TestKnownHostsPathRejectsBlankHome(t *testing.T) {
+	validHome := t.TempDir()
+	tests := []struct {
+		name    string
+		home    string
+		wantErr bool
+	}{
+		{name: "empty", home: "", wantErr: true},
+		{name: "spaces", home: "   ", wantErr: true},
+		{name: "tab", home: "\t", wantErr: true},
+		{name: "valid", home: validHome},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			setTestHome(t, tc.home)
+			got, err := KnownHostsPath()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("KnownHostsPath() = %q, want an error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("KnownHostsPath() error = %v", err)
+			}
+			if want := filepath.Join(tc.home, ".ssh", "known_hosts"); got != want {
+				t.Fatalf("KnownHostsPath() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestInspectHostKeyFailsClosedWithoutHome(t *testing.T) {
+	working := t.TempDir()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(working); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previous) })
+	setTestHome(t, "")
+	t.Setenv("SSM_CONFIG_DIR", "")
+
+	_, err = InspectHostKey(config.Connection{Host: "example.invalid", User: "user"})
+	if err == nil {
+		t.Fatal("InspectHostKey succeeded without a home directory")
+	}
+	failure, ok := machinecontract.FailureFromError(err)
+	if !ok || failure.Error != "known_hosts_error" {
+		t.Fatalf("failure = %+v, classified = %v", failure, ok)
+	}
+	if strings.Contains(failure.Message, ".ssh") || strings.Contains(failure.Message, "known_hosts") {
+		t.Fatalf("failure message exposes a path: %q", failure.Message)
+	}
+	if _, statErr := os.Stat(filepath.Join(working, ".ssh")); !os.IsNotExist(statErr) {
+		t.Fatalf("current directory contains .ssh: %v", statErr)
+	}
 }
 
 func TestInspectAndAcceptHostKeyRequiresExactFingerprint(t *testing.T) {

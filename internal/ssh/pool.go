@@ -175,11 +175,15 @@ func dialDirectHop(c config.Connection, v *config.Vault, reached *atomic.Bool, a
 		return nil, err
 	}
 	address := hostPortOf(c)
+	knownHostsPath, err := KnownHostsPath()
+	if err != nil {
+		return nil, knownHostsPathError()
+	}
 	return dialSSHClient(address, &gossh.ClientConfig{
 		User:              c.User,
 		Auth:              auth,
 		HostKeyCallback:   trackedHostKeyCallback(reached, abort),
-		HostKeyAlgorithms: hostKeyAlgorithmsFor(KnownHostsPath(), address),
+		HostKeyAlgorithms: hostKeyAlgorithmsFor(knownHostsPath, address),
 	}, abort)
 }
 

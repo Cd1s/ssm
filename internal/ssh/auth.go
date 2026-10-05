@@ -62,8 +62,11 @@ func trackedHostKeyCallback(reached *atomic.Bool, abort *dialAbort) gossh.HostKe
 }
 
 func buildHostKeyCallback() gossh.HostKeyCallback {
-	home, _ := os.UserHomeDir()
-	return buildHostKeyCallbackForPath(filepath.Join(home, ".ssh", "known_hosts"))
+	path, err := KnownHostsPath()
+	if err != nil {
+		return rejectHostKey(knownHostsPathError())
+	}
+	return buildHostKeyCallbackForPath(path)
 }
 
 func buildHostKeyCallbackForPath(path string) gossh.HostKeyCallback {
