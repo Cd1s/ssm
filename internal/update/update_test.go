@@ -2023,6 +2023,51 @@ func TestCheckLatestUsesInjectedHTTPClient(t *testing.T) {
 	}
 }
 
+func TestMetadataTimeoutAndBinaryDownloadDeadline(t *testing.T) {
+	restoreUpdateTestHooks(t)
+	t.Setenv("SSM_UPDATE_REPO", "owner/repo")
+	if downloadTimeout != 10*time.Minute {
+		t.Fatalf("download timeout = %s, want 10m", downloadTimeout)
+	}
+	metadataTimeout = 300 * time.Millisecond
+	downloadTimeout = 2 * time.Second
+	httpClient = &http.Client{Timeout: metadataTimeout}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		if r.URL.Path == "/repos/owner/repo/releases/latest" {
+			time.Sleep(500 * time.Millisecond)
+			_, _ = w.Write([]byte(`{"tag_name":"v9.9.9"}`))
+			return
+		}
+		for _, chunk := range []string{"first-", "second-", "third"} {
+			_, _ = w.Write([]byte(chunk))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+	}))
+	defer server.Close()
+	apiBaseURL = server.URL
+	downloadBaseURL = server.URL
+
+	if _, err := checkLatest(); err == nil {
+		t.Fatal("metadata request succeeded after its timeout")
+	}
+	data, err := downloadReleaseAssetLimited("owner/repo", "v1.0.0", "asset.bin", int64(len("first-second-third")))
+	if err != nil {
+		t.Fatalf("slow binary download: %v", err)
+	}
+	if got := string(data); got != "first-second-third" {
+		t.Fatalf("downloaded data = %q", got)
+	}
+}
+
 func restoreUpdateTestHooks(t *testing.T) {
 	t.Helper()
 	oldHTTPClient := httpClient
@@ -2032,6 +2077,8 @@ func restoreUpdateTestHooks(t *testing.T) {
 	oldEvalSymlinks := evalSymlinks
 	oldVerifyProvenance := verifyProvenance
 	oldUnixReplacementTestHook := unixReplacementTestHook
+	oldMetadataTimeout := metadataTimeout
+	oldDownloadTimeout := downloadTimeout
 	t.Cleanup(func() {
 		httpClient = oldHTTPClient
 		apiBaseURL = oldAPIBaseURL
@@ -2040,6 +2087,8 @@ func restoreUpdateTestHooks(t *testing.T) {
 		evalSymlinks = oldEvalSymlinks
 		verifyProvenance = oldVerifyProvenance
 		unixReplacementTestHook = oldUnixReplacementTestHook
+		metadataTimeout = oldMetadataTimeout
+		downloadTimeout = oldDownloadTimeout
 	})
 	httpClient = &http.Client{}
 	apiBaseURL = "https://api.github.com"
