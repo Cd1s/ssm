@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -488,6 +489,31 @@ func superviseDirectoryDownload(waitRemote, waitLocal func() error, closeRemote,
 	return first, remoteErr, localErr
 }
 
+func rejectSpecialEntries(root string) error {
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		mode := info.Mode()
+		switch {
+		case mode.IsRegular():
+			if mode&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
+				if err := os.Chmod(path, mode.Perm()); err != nil {
+					return err
+				}
+			}
+		case mode.IsDir(), mode&os.ModeSymlink != 0:
+		default:
+			return fmt.Errorf("download contains unsupported special file %s", path)
+		}
+		return nil
+	})
+}
+
 func downloadDirTar(c config.Connection, v *config.Vault, remoteDir, localDir string, timeout time.Duration) (resultErr error) {
 	staging, err := newDirectoryDownloadStaging(localDir)
 	if err != nil {
@@ -506,7 +532,12 @@ func downloadDirTar(c config.Connection, v *config.Vault, remoteDir, localDir st
 	}
 	defer func() { _ = session.Close() }()
 
-	tarLocal := exec.Command("tar", "-C", staging.path, "-xf", "-") //nolint:gosec // fixed binary/argv; staging is created internally with os.MkdirTemp
+	tarArgs := []string{"-C", staging.path}
+	if runtime.GOOS == "linux" {
+		tarArgs = append(tarArgs, "--no-same-owner", "--no-same-permissions")
+	}
+	tarArgs = append(tarArgs, "-xf", "-")
+	tarLocal := exec.Command("tar", tarArgs...) //nolint:gosec // fixed binary/argv; staging is created internally with os.MkdirTemp
 	// If the local tar exits early nobody drains the pipe copy; bound the
 	// post-exit I/O wait so Wait cannot block on an idle remote.
 	tarLocal.WaitDelay = time.Second
@@ -578,6 +609,9 @@ func downloadDirTar(c config.Connection, v *config.Vault, remoteDir, localDir st
 		return transferError(machinecontract.TransferDownloadLocalWrite, 0, localErr)
 	case first == downloadEndRemote:
 		return transferError(machinecontract.TransferDownloadRemoteRead, 0, remoteErr)
+	}
+	if err := rejectSpecialEntries(staging.path); err != nil {
+		return transferError(machinecontract.TransferDownloadLocalWrite, 0, err)
 	}
 	if err := staging.publish(localDir, systemDirectoryDownloadPublishOperations()); err != nil {
 		return err
