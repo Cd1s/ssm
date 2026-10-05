@@ -11,7 +11,7 @@ import (
 // answers 200 with `{}` or `{"token":""}` must not make Login/Register return ("", nil), which
 // would let the CLI save cloud.json with an empty token and print "Logged in.".
 func TestLoginRejectsAnEmptyToken(t *testing.T) {
-	for name, body := range map[string]string{"empty object": `{}`, "empty token": `{"token":""}`, "blank token": `{"token":"  \t"}`, "html": `<html>`} {
+	for name, body := range map[string]string{"empty object": `{}`, "empty token": `{"token":""}`, "blank token": `{"token":"  \t"}`, "html": `<html>`} { //nolint:gosec // test response bodies, not credentials
 		t.Run(name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
