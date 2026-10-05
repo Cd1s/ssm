@@ -3,6 +3,7 @@ package ssh
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,8 +45,7 @@ func parseTimeout(value string) (time.Duration, error) {
 	if duration, err := time.ParseDuration(value); err == nil {
 		return duration, nil
 	}
-	var seconds int
-	if _, err := fmt.Sscanf(value, "%d", &seconds); err == nil && seconds > 0 {
+	if seconds, err := strconv.Atoi(strings.TrimSpace(value)); err == nil && seconds > 0 {
 		return time.Duration(seconds) * time.Second, nil
 	}
 	return 0, fmt.Errorf("invalid timeout %q", value)
