@@ -605,16 +605,17 @@ func (t *Transaction) installFetched(data []byte, etag string, mode pullMode) (F
 			return facts, fmt.Errorf("%w: downloaded vault could not be authenticated and was not installed", ErrRefresh)
 		}
 	}
-	if mode == pullAdopt {
+	switch {
+	case mode == pullAdopt:
 		// The adoption was reviewed against specific evidence. If the local
 		// vault changed after that evidence was recorded, the review no longer
 		// covers it: fail closed and keep the newer local state.
 		if facts.Conflict == nil || facts.LocalETag != facts.Conflict.LocalETag {
 			return facts, fmt.Errorf("%w: local vault changed after the conflict was recorded; nothing was replaced, re-check with sshctl --offline --json doctor before adopting", ErrConflict)
 		}
-	} else if isSuperseded(etag) {
+	case isSuperseded(etag):
 		return t.supersededError(facts, etag)
-	} else if divergedFor(mode, facts, etag) {
+	case divergedFor(mode, facts, etag):
 		return t.conflictError(facts, etag)
 	}
 	if _, err := os.Stat(config.Path()); err == nil {
