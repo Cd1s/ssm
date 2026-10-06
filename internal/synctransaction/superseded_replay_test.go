@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"reflect"
 	"sync/atomic"
 	"testing"
@@ -258,12 +257,4 @@ func TestDescribeRemoteSupersededOverridesInjectedClassifier(t *testing.T) {
 			t.Fatalf("ordinary conflict classification changed: (%q, %q)", cause, message)
 		}
 	}
-}
-
-func selectReplayHome(t *testing.T, home string) {
-	t.Helper()
-	for _, name := range []string{"HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"} {
-		t.Setenv(name, home)
-	}
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 }
