@@ -14,12 +14,14 @@ import (
 )
 
 var (
-	masterPass     string
-	masterPassFile string
-	offlineMode    bool
-	unlockedVault  *config.Vault
-	streamMachine  bool
-	version        = "2.1.0"
+	masterPass                 string
+	masterPassFile             string
+	offlineMode                bool
+	unlockedVault              *config.Vault
+	unlockedVaultIdentity      vaultFileIdentity
+	unlockedVaultIdentityKnown bool
+	streamMachine              bool
+	version                    = "2.1.0"
 )
 
 func isSSHCTLInvocation(path string) bool {
@@ -147,6 +149,11 @@ func main() {
 			kind = machinecontract.InvalidGlobalArguments
 		}
 		os.Exit(machinecontract.WriteClassified(machineJSON, kind, machinecontract.Details{Cause: err}))
+	}
+	if !isInformationalInvocationFor(sshctlInvocation, rawArgs) && !configDirectoryAvailable() {
+		failure := machinecontract.Classify(machinecontract.GenericFailure, machinecontract.Details{Message: "configuration directory unavailable"})
+		failure.Hint = "set HOME or SSM_CONFIG_DIR"
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
 	}
 	if !offlineMode && !isInformationalInvocationFor(sshctlInvocation, rawArgs) && !isBackgroundSyncInvocation(args) {
 		if err := checkUpdate(); err != nil {
@@ -371,6 +378,15 @@ Cloud (optional):
 			Script:  "ssm",
 		}))
 	}
+}
+
+func configDirectoryAvailable() bool {
+	configured := filepath.Clean(os.Getenv("SSM_CONFIG_DIR"))
+	if configured != "." && configured != "" {
+		return true
+	}
+	home, err := os.UserHomeDir()
+	return err == nil && strings.TrimSpace(home) != ""
 }
 
 func runUpdate(args []string) {
@@ -668,10 +684,14 @@ func unlock() {
 // choosing a renderer. Normal commands and run --stream render the same
 // classified failure through their respective machine-contract framing.
 func unlockVault() (machinecontract.Failure, bool) {
+	// Capture identity before reading: a replacement during decryption must
+	// never bind the old snapshot to the new file.
+	identity, identityErr := currentVaultFileIdentity()
 	if masterPassFile == "" {
 		masterPassFile = defaultMasterPassFileIfPresent()
 	}
 	if masterPassFile != "" {
+		warnCredentialFile("--master-pass-file", masterPassFile)
 		data, err := os.ReadFile(masterPassFile)
 		if err != nil {
 			return machinecontract.Classify(machinecontract.MasterPassFileReadFailed, machinecontract.Details{
@@ -695,7 +715,7 @@ func unlockVault() (machinecontract.Failure, bool) {
 			}
 			if created {
 				masterPass = pass
-				unlockedVault = &config.Vault{}
+				cacheUnlockedVault(&config.Vault{}, identity, identityErr)
 				return machinecontract.Failure{}, false
 			}
 		}
@@ -705,7 +725,7 @@ func unlockVault() (machinecontract.Failure, bool) {
 			return machinecontract.Classify(machinecontract.VaultUnlockFailed, machinecontract.Details{Cause: err}), true
 		}
 		masterPass = pass
-		unlockedVault = v
+		cacheUnlockedVault(v, identity, identityErr)
 		return machinecontract.Failure{}, false
 	}
 
@@ -714,18 +734,6 @@ func unlockVault() (machinecontract.Failure, bool) {
 			machinecontract.MasterPassFileRequiredCreate,
 			machinecontract.Details{Message: "vault does not exist"},
 		), true
-	}
-
-	settings := config.LoadSettings()
-	if settings.PasswordCache == "session" {
-		if cached := config.GetCachedPassword(); cached != "" {
-			if v, err := config.Load(cached); err == nil {
-				masterPass = cached
-				unlockedVault = v
-				return machinecontract.Failure{}, false
-			}
-			config.ClearPasswordCache()
-		}
 	}
 
 	return machinecontract.Classify(
@@ -742,8 +750,7 @@ func defaultMasterPassPath() string {
 
 // defaultMasterPassFileIfPresent returns <config dir>/master.pass when it
 // exists, so ssm unlocks like sshctl without SSM_MASTER_PASS_FILE. When the
-// file is absent it returns "" and the historical ssm behavior (session
-// password cache, master_pass_file_required errors) is unchanged.
+// file is absent it returns "" and the master_pass_file_required error is used.
 func defaultMasterPassFileIfPresent() string {
 	path := defaultMasterPassPath()
 	if info, err := os.Stat(path); err == nil && !info.IsDir() {
@@ -769,6 +776,22 @@ func loadVault() (*config.Vault, error) {
 	return v, nil
 }
 
+func cacheUnlockedVault(v *config.Vault, identity vaultFileIdentity, err error) {
+	unlockedVault = v
+	unlockedVaultIdentity = identity
+	unlockedVaultIdentityKnown = err == nil
+}
+
+func unlockedVaultStillCurrent() bool {
+	if unlockedVault == nil || !unlockedVaultIdentityKnown {
+		return false
+	}
+	identity, err := currentVaultFileIdentity()
+	return err == nil && identity == unlockedVaultIdentity
+}
+
 func invalidateVaultCache() {
 	unlockedVault = nil
+	unlockedVaultIdentity = vaultFileIdentity{}
+	unlockedVaultIdentityKnown = false
 }

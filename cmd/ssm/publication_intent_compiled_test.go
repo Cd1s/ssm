@@ -200,7 +200,7 @@ func TestMaliciousPublishingIntentDocumentsFailClosedWithoutLeaksOrSideEffects(t
 			wantMessage: "publishing intent document is invalid",
 		},
 		{
-			name: "version one untrusted migration state",
+			name: "version one unsupported with untrusted state",
 			data: []byte(`{
   "version": 1,
   "state": "ISSUE23_V1_UNTRUSTED_MIGRATION_STATE_CANARY",
@@ -221,7 +221,7 @@ func TestMaliciousPublishingIntentDocumentsFailClosedWithoutLeaksOrSideEffects(t
 				"state": "ISSUE23_V1_UNTRUSTED_MIGRATION_STATE_CANARY",
 				"alias": "ISSUE23_V1_UNTRUSTED_MIGRATION_ALIAS_CANARY",
 			},
-			wantMessage: "publishing intent state is invalid",
+			wantMessage: "publishing intent version is unsupported",
 		},
 		{
 			name: "version two untrusted validation scope",

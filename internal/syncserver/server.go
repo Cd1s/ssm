@@ -27,6 +27,8 @@ type Server struct {
 	dataDir string
 	users   *userStore
 	mux     *http.ServeMux
+	pushMu  sync.Mutex
+	pushes  map[string]*sync.Mutex
 }
 
 type user struct {
@@ -67,6 +69,7 @@ func New(dataDir string) (*Server, error) {
 		dataDir: dataDir,
 		users:   store,
 		mux:     http.NewServeMux(),
+		pushes:  make(map[string]*sync.Mutex),
 	}
 	s.routes()
 	return s, nil
@@ -206,12 +209,50 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	}
 
 	path := s.vaultPath(u.Email)
+	lock := s.pushLock(u.Email)
+	lock.Lock()
+	defer lock.Unlock()
+
+	current, readErr := os.ReadFile(path) //nolint:gosec // path is derived from the authenticated user within the private vault root
+	exists := readErr == nil
+	if readErr != nil && !os.IsNotExist(readErr) {
+		writeError(w, http.StatusInternalServerError, "could not read sync blob")
+		return
+	}
+	ifMatch := strings.TrimSpace(r.Header.Get("If-Match"))
+	ifNoneMatch := strings.TrimSpace(r.Header.Get("If-None-Match"))
+	preconditioned := ifMatch != "" || ifNoneMatch != ""
+	if ifMatch != "" {
+		matches := exists && (ifMatch == "*" || ifMatch == quoteETag(hashBytes(current)))
+		if !matches {
+			writeError(w, http.StatusPreconditionFailed, "sync blob precondition failed")
+			return
+		}
+	}
+	if ifNoneMatch == "*" && exists {
+		writeError(w, http.StatusPreconditionFailed, "sync blob precondition failed")
+		return
+	}
 	if err := writePrivateFile(path, data); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not store sync blob")
 		return
 	}
 	w.Header().Set("ETag", quoteETag(hashBytes(data)))
+	if preconditioned {
+		w.Header().Set("X-Sync-Precondition", "1")
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) pushLock(email string) *sync.Mutex {
+	s.pushMu.Lock()
+	defer s.pushMu.Unlock()
+	lock := s.pushes[email]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		s.pushes[email] = lock
+	}
+	return lock
 }
 
 func (s *Server) handlePull(w http.ResponseWriter, r *http.Request) {

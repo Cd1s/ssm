@@ -4,6 +4,10 @@ package privatepath
 
 import "fmt"
 
+func WarnIfBroad(string) bool {
+	return false
+}
+
 func RestrictDirectory(string) error {
 	return fmt.Errorf("private directory enforcement is unsupported on this platform")
 }

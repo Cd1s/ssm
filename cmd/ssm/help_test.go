@@ -65,12 +65,23 @@ func captureHelpOutput(t *testing.T, fn func()) string {
 	original := os.Stdout
 	os.Stdout = write
 	defer func() { os.Stdout = original }()
+	// Drain concurrently: a Windows pipe holds only 4096 bytes, so writing the
+	// whole help text before reading would block forever once it grows past that.
+	type result struct {
+		data []byte
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		data, err := io.ReadAll(read)
+		done <- result{data, err}
+	}()
 	fn()
 	_ = write.Close()
-	data, err := io.ReadAll(read)
+	got := <-done
 	_ = read.Close()
-	if err != nil {
-		t.Fatal(err)
+	if got.err != nil {
+		t.Fatal(got.err)
 	}
-	return string(data)
+	return string(got.data)
 }

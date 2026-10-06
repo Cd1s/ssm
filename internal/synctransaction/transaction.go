@@ -180,7 +180,10 @@ type Facts struct {
 }
 
 type Options struct {
-	Offline    bool
+	Offline bool
+	// MasterPass authenticates downloaded vaults on foreground pulls. An empty
+	// value is used by login before a local vault has been unlocked.
+	MasterPass string
 	Invalidate func()
 	Now        func() time.Time
 	// SpawnBackground starts the detached background sync process. It is
@@ -196,6 +199,7 @@ type Options struct {
 
 type Transaction struct {
 	offline    bool
+	masterPass string
 	invalidate func()
 	now        func() time.Time
 	spawn      func(claimToken string) error
@@ -228,7 +232,7 @@ func New(opts Options) *Transaction {
 		now = time.Now
 	}
 	return &Transaction{
-		offline: opts.Offline, invalidate: opts.Invalidate, now: now,
+		offline: opts.Offline, masterPass: opts.MasterPass, invalidate: opts.Invalidate, now: now,
 		spawn: opts.SpawnBackground, describe: opts.DescribeFailure, observe: opts.Observe,
 	}
 }
@@ -522,7 +526,31 @@ func (t *Transaction) applyRemoteIdentity(cfg *cloud.CloudConfig, facts Facts, r
 	if !forcePull && remote != "" && remote == facts.RemoteETag {
 		return facts, nil
 	}
-	if divergedFor(mode, facts, remote) {
+	// A generation check needs the body because HEAD exposes only its opaque
+	// identity. Fetch once before the decision when this machine has a high
+	// water mark; installFetched checks the body again under the write lock.
+	var fetched []byte
+	var fetchedETag string
+	if mode != pullAdopt && config.MaxSeenGeneration() > 0 {
+		var fetchErr error
+		fetched, fetchedETag, fetchErr = cloud.Fetch(cfg)
+		if fetchErr != nil {
+			return facts, fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, fetchErr)
+		}
+		remote = fetchedETag
+		if generation, ok := config.VaultGeneration(fetched); ok && generation < config.MaxSeenGeneration() {
+			lock, err := t.lockVault("decision", mode)
+			if err != nil {
+				return facts, err
+			}
+			current := identityFacts()
+			current.Configuration = facts.Configuration
+			result, conflictErr := t.supersededError(current, remote)
+			_ = lock.Close()
+			return result, conflictErr
+		}
+	}
+	if (mode != pullAdopt && isSuperseded(remote)) || divergedFor(mode, facts, remote) {
 		// Decide divergence before downloading, under the lock so the
 		// evidence reflects the vault as it is now.
 		lock, err := t.lockVault("decision", mode)
@@ -531,6 +559,11 @@ func (t *Transaction) applyRemoteIdentity(cfg *cloud.CloudConfig, facts Facts, r
 		}
 		current := identityFacts()
 		current.Configuration = facts.Configuration
+		if mode != pullAdopt && isSuperseded(remote) {
+			result, err := t.supersededError(current, remote)
+			_ = lock.Close()
+			return result, err
+		}
 		if divergedFor(mode, current, remote) {
 			result, err := t.conflictError(current, remote)
 			_ = lock.Close()
@@ -538,11 +571,14 @@ func (t *Transaction) applyRemoteIdentity(cfg *cloud.CloudConfig, facts Facts, r
 		}
 		_ = lock.Close()
 	}
-	data, etag, err := cloud.Fetch(cfg)
-	if err != nil {
-		return facts, fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err)
+	if fetched == nil {
+		var err error
+		fetched, fetchedETag, err = cloud.Fetch(cfg)
+		if err != nil {
+			return facts, fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err)
+		}
 	}
-	return t.installFetched(data, etag, mode)
+	return t.installFetched(fetched, fetchedETag, mode)
 }
 
 // installFetched replaces the local vault with an already downloaded blob under
@@ -556,8 +592,18 @@ func (t *Transaction) installFetched(data []byte, etag string, mode pullMode) (F
 	defer func() { _ = lock.Close() }()
 	facts := identityFacts()
 	facts.Configuration = ConfigurationConfigured
-	if mode == pullBackground && !config.ValidVaultBlob(data) {
+	if !config.ValidVaultBlob(data) {
 		return facts, fmt.Errorf("%w: downloaded vault has an invalid format and was not installed", ErrRefresh)
+	}
+	if mode != pullAdopt {
+		if generation, ok := config.VaultGeneration(data); ok && generation < config.MaxSeenGeneration() {
+			return t.supersededError(facts, etag)
+		}
+	}
+	if mode != pullBackground && t.masterPass != "" {
+		if err := config.ValidateVaultBlob(data, t.masterPass); err != nil {
+			return facts, fmt.Errorf("%w: downloaded vault could not be authenticated and was not installed", ErrRefresh)
+		}
 	}
 	if mode == pullAdopt {
 		// The adoption was reviewed against specific evidence. If the local
@@ -566,8 +612,25 @@ func (t *Transaction) installFetched(data []byte, etag string, mode pullMode) (F
 		if facts.Conflict == nil || facts.LocalETag != facts.Conflict.LocalETag {
 			return facts, fmt.Errorf("%w: local vault changed after the conflict was recorded; nothing was replaced, re-check with sshctl --offline --json doctor before adopting", ErrConflict)
 		}
-	} else if divergedFor(mode, facts, etag) {
-		return t.conflictError(facts, etag)
+	}
+	if mode != pullAdopt {
+		if isSuperseded(etag) {
+			return t.supersededError(facts, etag)
+		}
+		if divergedFor(mode, facts, etag) {
+			return t.conflictError(facts, etag)
+		}
+	}
+	if _, err := os.Stat(config.Path()); err == nil {
+		previous, err := os.ReadFile(config.Path())
+		if err != nil {
+			return facts, fmt.Errorf("%w: remote refresh did not commit: preserve previous vault: %w", ErrRefresh, err)
+		}
+		if err := config.WritePrivateFile(config.Path()+".prev", previous); err != nil {
+			return facts, fmt.Errorf("%w: remote refresh did not commit: preserve previous vault: %w", ErrRefresh, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return facts, fmt.Errorf("%w: remote refresh did not commit: inspect previous vault: %w", ErrRefresh, err)
 	}
 	if err := config.WritePrivateFile(config.Path(), data); err != nil {
 		return facts, fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err)
@@ -575,7 +638,12 @@ func (t *Transaction) installFetched(data []byte, etag string, mode pullMode) (F
 	if t.invalidate != nil {
 		t.invalidate()
 	}
-	t.commitSuccess("pull", etag)
+	operation := "pull"
+	if mode == pullAdopt {
+		operation = "adopt"
+	}
+	generation, _ := config.VaultGeneration(data)
+	t.commitSuccess(operation, etag, generation)
 	facts = t.localFacts()
 	facts.Configuration = ConfigurationConfigured
 	facts.Changed = true
@@ -610,7 +678,7 @@ func divergedFor(mode pullMode, facts Facts, remote string) bool {
 // last confirmed remote identity.
 func diverged(facts Facts, remote string) bool {
 	return facts.RemoteETag != "" && remote != "" && remote != facts.RemoteETag &&
-		facts.LocalETag != "" && facts.LocalETag != facts.RemoteETag
+		facts.LocalETag != "" && facts.LocalETag != facts.RemoteETag && facts.LocalETag != remote
 }
 
 func (t *Transaction) Pull() (Facts, error) {
@@ -719,7 +787,7 @@ func (t *Transaction) PreparePublication(blob []byte) (_ PreparedPublication, er
 		if !prerequisite.Exists {
 			return PreparedPublication{}, fmt.Errorf("%w: remote push prerequisite disappeared", ErrRefresh)
 		}
-		if prerequisite.Value != facts.RemoteETag && target != facts.RemoteETag {
+		if prerequisite.Value != facts.RemoteETag {
 			conflict := SyncConflict{
 				DetectedAt: t.now().UTC().Format(time.RFC3339),
 				LocalETag:  target, RemoteETag: prerequisite.Value, CachedETag: facts.RemoteETag,
@@ -729,6 +797,8 @@ func (t *Transaction) PreparePublication(blob []byte) (_ PreparedPublication, er
 			}
 			return PreparedPublication{}, fmt.Errorf("%w: local and remote opaque blobs diverged", ErrConflict)
 		}
+	} else if prerequisite.Exists {
+		return PreparedPublication{}, fmt.Errorf("%w: remote publication exists but cached identity is missing; sync or pull before pushing", ErrRefresh)
 	}
 	return PreparedPublication{Prerequisite: prerequisite, Target: target}, nil
 }
@@ -786,9 +856,19 @@ func (t *Transaction) SendPublication(blob []byte, prepared PreparedPublication)
 	if state != ConfigurationConfigured {
 		return BlobIdentity{}, fmt.Errorf("%w: %v", ErrPushNotSent, ErrUnconfigured)
 	}
-	identity, observed, err := cloud.PushBlobObserved(cfg, blob)
+	identity, observed, err := cloud.PushBlobObserved(cfg, blob, cloud.RemoteBlobIdentity{
+		Exists: prepared.Prerequisite.Exists,
+		Value:  prepared.Prerequisite.Value,
+	})
 	if err != nil {
 		switch {
+		case cloud.PushFailureIsConflict(err):
+			remote, observeErr := t.ObservePublicationIdentity()
+			if observeErr != nil {
+				remote = current
+			}
+			_ = t.preservePublicationConflict(prepared, remote)
+			return remote, fmt.Errorf("%w: remote publication precondition failed", ErrConflict)
 		case cloud.PushFailureIsExplicit(err):
 			return BlobIdentity{}, fmt.Errorf("%w: %w", ErrPushRejected, err)
 		case cloud.PushFailureIsAmbiguous(err):
@@ -831,50 +911,6 @@ func (t *Transaction) preservePublicationConflict(prepared PreparedPublication, 
 func (t *Transaction) ConfirmPublication(target string) {
 	t.commitSuccess("push", target)
 	t.recordExplicitOutcome(nil)
-}
-
-func (t *Transaction) PushBlob(blob []byte) (Facts, error) {
-	facts := t.localFacts()
-	cfg, state, err := t.configuration()
-	facts.Configuration = state
-	facts.Offline = t.offline
-	if err != nil {
-		return facts, err
-	}
-	switch state {
-	case ConfigurationOffline:
-		return markOffline(facts), ErrUnconfigured
-	case ConfigurationUnconfigured:
-		facts.Remote = RemoteNotConfigured
-		return facts, ErrUnconfigured
-	}
-	candidateIdentity := opaqueIdentity(blob)
-	if facts.RemoteETag != "" {
-		remote, headErr := cloud.RemoteETag(cfg)
-		if headErr != nil {
-			return facts, fmt.Errorf("%w: remote push preflight did not complete: %w", ErrRefresh, headErr)
-		}
-		facts.Remote = RemoteChecked
-		if remote != "" && remote != facts.RemoteETag && candidateIdentity != facts.RemoteETag {
-			conflict := SyncConflict{
-				DetectedAt: t.now().UTC().Format(time.RFC3339),
-				LocalETag:  candidateIdentity, RemoteETag: remote, CachedETag: facts.RemoteETag,
-			}
-			if err := preserveConflict(conflict); err != nil {
-				return facts, fmt.Errorf("%w: conflict evidence could not be preserved", ErrRefresh)
-			}
-			facts.Conflict = &conflict
-			return facts, fmt.Errorf("%w: local and remote opaque blobs diverged", ErrConflict)
-		}
-	}
-	committedIdentity, err := cloud.PushBlob(cfg, blob)
-	if err != nil {
-		return facts, fmt.Errorf("%w: remote push did not commit: %w", ErrRefresh, err)
-	}
-	t.commitSuccess("push", committedIdentity)
-	facts = t.localFacts()
-	facts.Configuration, facts.Remote = state, RemoteChecked
-	return facts, nil
 }
 
 func opaqueIdentity(blob []byte) string {
@@ -945,9 +981,23 @@ func (t *Transaction) localFacts() Facts {
 // commitSuccess records best-effort metadata only after the remote or local
 // opaque-blob commit has been confirmed. Metadata failures must not make that
 // confirmed operation ambiguous to callers.
-func (t *Transaction) commitSuccess(operation, remoteIdentity string) {
+func (t *Transaction) commitSuccess(operation, remoteIdentity string, generations ...uint64) {
 	failed := remoteIdentity == ""
 	if remoteIdentity != "" {
+		recordSuperseded(cachedRemoteIdentity(), remoteIdentity)
+		generation, haveGeneration := uint64(0), false
+		if len(generations) > 0 {
+			generation, haveGeneration = generations[0], true
+		} else if data, err := os.ReadFile(config.Path()); err == nil {
+			generation, haveGeneration = config.VaultGeneration(data)
+		}
+		if haveGeneration {
+			if operation == "adopt" {
+				config.SetMaxSeenGeneration(generation)
+			} else {
+				config.RecordMaxSeenGeneration(generation)
+			}
+		}
 		if err := config.WritePrivateFile(remoteIdentityPath(), []byte(remoteIdentity+"\n")); err != nil {
 			failed = true
 		}
@@ -958,7 +1008,7 @@ func (t *Transaction) commitSuccess(operation, remoteIdentity string) {
 	settings := config.LoadSettings()
 	timestamp := t.now().Format(time.RFC3339)
 	switch operation {
-	case "pull":
+	case "pull", "adopt":
 		settings.LastPull = timestamp
 	case "push":
 		settings.LastPush = timestamp

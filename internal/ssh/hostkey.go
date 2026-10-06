@@ -67,13 +67,17 @@ func InspectHostKeyWithVault(c config.Connection, v *config.Vault) (HostKeyInspe
 	}
 	address := net.JoinHostPort(c.Host, strconv.Itoa(port))
 	report := HostKeyInspection{
-		Alias:          c.Name,
-		ResolvedAlias:  c.Name,
-		Host:           c.Host,
-		Port:           port,
-		Address:        address,
-		KnownHostsPath: KnownHostsPath(),
+		Alias:         c.Name,
+		ResolvedAlias: c.Name,
+		Host:          c.Host,
+		Port:          port,
+		Address:       address,
 	}
+	knownHostsPath, err := KnownHostsPath()
+	if err != nil {
+		return report, knownHostsPathError()
+	}
+	report.KnownHostsPath = knownHostsPath
 
 	conn, closeObservation, err := openObservationConn(c, v, address)
 	if err != nil {
@@ -228,6 +232,10 @@ func scanObservedKey(c config.Connection, v *config.Vault) (gossh.PublicKey, err
 		port = 22
 	}
 	address := net.JoinHostPort(c.Host, strconv.Itoa(port))
+	knownHostsPath, err := KnownHostsPath()
+	if err != nil {
+		return nil, knownHostsPathError()
+	}
 	conn, closeObservation, err := openObservationConn(c, v, address)
 	if err != nil {
 		return nil, err
@@ -241,7 +249,7 @@ func scanObservedKey(c config.Connection, v *config.Vault) (gossh.PublicKey, err
 			observed = key
 			return stop
 		},
-		HostKeyAlgorithms: hostKeyAlgorithmsFor(KnownHostsPath(), address),
+		HostKeyAlgorithms: hostKeyAlgorithmsFor(knownHostsPath, address),
 	})
 	if observed == nil {
 		message := "SSH handshake ended before a host key was received"
@@ -397,9 +405,18 @@ func knownHostToken(c config.Connection) string {
 	return knownhosts.Normalize(net.JoinHostPort(c.Host, strconv.Itoa(port)))
 }
 
-func KnownHostsPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".ssh", "known_hosts")
+var errHomeDirectoryUnavailable = errors.New("home directory unavailable")
+
+func knownHostsPathError() error {
+	return hostKeyError(machinecontract.KnownHostsInspectionFailed, errHomeDirectoryUnavailable.Error(), errHomeDirectoryUnavailable)
+}
+
+func KnownHostsPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return "", errHomeDirectoryUnavailable
+	}
+	return filepath.Join(home, ".ssh", "known_hosts"), nil
 }
 
 // openObservationConn returns the connection over which the target's host key

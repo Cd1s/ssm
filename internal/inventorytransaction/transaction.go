@@ -271,10 +271,9 @@ func (t *Transaction) ApplyHost(before *config.Vault, change HostChange) (Mutati
 	}
 	mutation := config.PendingMutation{
 		ID: id, Alias: receipt.Host.Name, Operation: receipt.Action,
-		CreatedAt:  t.now().UTC().Format(time.RFC3339Nano),
-		KeysBefore: append([]config.SSHKey(nil), before.Keys...),
-		KeysAfter:  append([]config.SSHKey(nil), after.Keys...),
+		CreatedAt: t.now().UTC().Format(time.RFC3339Nano),
 	}
+	mutation.KeysBefore, mutation.KeysAfter = keyDelta(before.Keys, after.Keys)
 	if idx := exactConnectionIndex(before, receipt.Host.Name); idx >= 0 {
 		value := before.Connections[idx]
 		mutation.Before = &value
@@ -330,13 +329,13 @@ func (t *Transaction) RemoveSavedKey(before *config.Vault, name string) (SavedKe
 		}
 		after.PendingBase = snapshotInventory(before)
 	}
-	after.PendingMutations = append(after.PendingMutations, config.PendingMutation{
+	mutation := config.PendingMutation{
 		ID: id, KeyName: name, Operation: "saved_key_removed",
-		CreatedAt:  t.now().UTC().Format(time.RFC3339Nano),
-		KeysBefore: append([]config.SSHKey(nil), before.Keys...),
-		KeysAfter:  append([]config.SSHKey(nil), after.Keys...),
-		KeyCount:   1,
-	})
+		CreatedAt: t.now().UTC().Format(time.RFC3339Nano),
+		KeyCount:  1,
+	}
+	mutation.KeysBefore, mutation.KeysAfter = keyDelta(before.Keys, after.Keys)
+	after.PendingMutations = append(after.PendingMutations, mutation)
 	if err := saveLoadedVault(after, t.masterPass); err != nil {
 		return SavedKeyMutationReceipt{}, fmt.Errorf("save saved-key transaction: %w", err)
 	}
@@ -387,16 +386,16 @@ func (t *Transaction) ApplyImport(before, imported *config.Vault, replace bool) 
 	if replace {
 		action = "replaced"
 	}
-	after.PendingMutations = append(after.PendingMutations, config.PendingMutation{
+	mutation := config.PendingMutation{
 		ID: id, Aliases: aliases, Operation: "import_" + action,
 		CreatedAt:       t.now().UTC().Format(time.RFC3339Nano),
-		KeysBefore:      append([]config.SSHKey(nil), before.Keys...),
-		KeysAfter:       append([]config.SSHKey(nil), after.Keys...),
 		BulkBefore:      snapshotInventory(before),
 		BulkAfter:       snapshotInventory(after),
 		ConnectionCount: len(aliases),
 		KeyCount:        affectedKeys,
-	})
+	}
+	mutation.KeysBefore, mutation.KeysAfter = keyDelta(before.Keys, after.Keys)
+	after.PendingMutations = append(after.PendingMutations, mutation)
 	if !replace {
 		if err := config.SaveMergeReport(report); err != nil {
 			return ImportReceipt{}, &MergeReportError{Err: err}
@@ -866,42 +865,10 @@ type publishingIntentTransaction struct {
 	CreatedAt string `json:"created_at"`
 }
 
-// publishingIntentV1 exists only to strictly decode and sanitize sidecars
-// written before the private projection was separated from MutationView.
-type publishingIntentV1 struct {
-	Version              int                                   `json:"version"`
-	State                string                                `json:"state"`
-	Scope                string                                `json:"scope"`
-	TransactionIDs       []string                              `json:"transaction_ids"`
-	Transactions         []publishingIntentTransactionV1Legacy `json:"transactions"`
-	PrerequisiteExists   bool                                  `json:"prerequisite_remote_exists"`
-	PrerequisiteIdentity string                                `json:"prerequisite_remote_identity,omitempty"`
-	TargetIdentity       string                                `json:"target_encrypted_blob_identity"`
-	ObservedExists       bool                                  `json:"observed_remote_exists,omitempty"`
-	ObservedIdentity     string                                `json:"observed_remote_identity,omitempty"`
-	CreatedAt            string                                `json:"created_at"`
-}
-
-// publishingIntentTransactionV1Legacy is the complete known v1 transaction
-// schema. Deprecated fields are decoded only so they can be discarded.
-type publishingIntentTransactionV1Legacy struct {
-	ID          string   `json:"id"`
-	Alias       string   `json:"alias,omitempty"`
-	Aliases     []string `json:"aliases,omitempty"`
-	KeyName     string   `json:"key_name,omitempty"`
-	Operation   string   `json:"operation"`
-	CreatedAt   string   `json:"created_at"`
-	Connections *int     `json:"connections,omitempty"`
-	Keys        *int     `json:"keys,omitempty"`
-}
-
 const (
-	publishingIntentVersion   = 2
-	publishingIntentV1Version = 1
+	publishingIntentVersion = 2
 	// A canonical v2 intent at the 1,024-transaction ceiling is below 256
-	// KiB and uses at most 7,192 JSON tokens. The larger byte/token budgets
-	// retain migration headroom for v1's deprecated diagnostics. V1's deepest
-	// known shape is four containers, so 16 levels also leaves 4x headroom.
+	// KiB and uses at most 7,192 JSON tokens.
 	maxPublishingIntentDocumentBytes = 512 * 1024
 	maxPublishingIntentJSONDepth     = 16
 	maxPublishingIntentJSONTokens    = 32 * 1024
@@ -914,6 +881,11 @@ const (
 )
 
 var errInvalidPublishingIntentDocument = errors.New("publishing intent document is invalid")
+
+var (
+	errPublicationScopeFinalized = errors.New("interrupted publication was finalized; requested push scope did not match it and was not published; review status and retry")
+	errPublicationScopePending   = errors.New("interrupted publication was returned to pending; requested push scope did not match it and was not published; review status and retry")
+)
 
 // Pending returns stable secret-free pending views in ledger order.
 func Pending(v *config.Vault) []MutationView {
@@ -938,18 +910,25 @@ func (s *PublicationSession) Publish(t *Transaction, v *config.Vault, only strin
 	if err != nil {
 		return PublicationReceipt{}, err
 	}
-	if recovery != nil && recovery.State == "confirmed" {
-		return reconciled, nil
-	}
-
-	publicationOnly := only
 	var projection projection
-	if recovery != nil && recovery.State == "pending" {
-		projection, err = projectTransactionIDs(v, recovery.TransactionIDs)
-		if recovery.Scope == "only" && len(recovery.TransactionIDs) == 1 {
-			publicationOnly = recovery.TransactionIDs[0]
-		} else {
-			publicationOnly = ""
+	if recovery != nil {
+		switch recovery.State {
+		case "confirmed":
+			if !matchesRecovery(only, recovery) {
+				return PublicationReceipt{}, errPublicationScopeFinalized
+			}
+			return reconciled, nil
+		case "pending":
+			if !matchesRecovery(only, recovery) {
+				return PublicationReceipt{}, errPublicationScopePending
+			}
+			if only == "" {
+				projection, err = projectTransactionIDs(v, recovery.TransactionIDs)
+			} else {
+				projection, err = project(v, only)
+			}
+		default:
+			return PublicationReceipt{}, synctransaction.ErrUnconfigured
 		}
 	} else {
 		projection, err = project(v, only)
@@ -961,17 +940,17 @@ func (s *PublicationSession) Publish(t *Transaction, v *config.Vault, only strin
 		if err := t.sync.VerifyEmptyPublication(); err != nil {
 			return PublicationReceipt{}, err
 		}
-		receipt := publicationReceipt(publicationOnly, projection.Selected, v)
+		receipt := publicationReceipt(only, projection.Selected, v)
 		receipt.Action = "noop"
 		return receipt, nil
 	}
-	blob, err := config.EncryptVault(projection.Vault, t.masterPass)
+	blob, err := config.EncryptVault(projection.Vault, t.masterPass, config.NextVaultGeneration())
 	if err != nil {
 		return PublicationReceipt{}, err
 	}
 
 	scope := "all"
-	if publicationOnly != "" {
+	if only != "" {
 		scope = "only"
 	}
 	intent := publishingIntent{
@@ -1049,6 +1028,16 @@ func (s *PublicationSession) Publish(t *Transaction, v *config.Vault, only strin
 		return PublicationReceipt{}, err
 	}
 	return receipt, nil
+}
+
+func matchesRecovery(only string, recovery *PublicationRecovery) bool {
+	if recovery == nil {
+		return false
+	}
+	if only == "" {
+		return recovery.Scope == "all"
+	}
+	return len(recovery.TransactionIDs) == 1 && recovery.TransactionIDs[0] == only
 }
 
 // ReconcilePublishingIntent resolves durable recovery state for status without
@@ -1232,22 +1221,6 @@ func loadPublishingIntent() (publishingIntent, error) {
 			return publishingIntent{}, err
 		}
 		return intent, nil
-	case publishingIntentV1Version:
-		var legacy publishingIntentV1
-		if err := decodePublishingIntent(data, &legacy, true); err != nil {
-			return publishingIntent{}, err
-		}
-		intent, err := sanitizePublishingIntentV1(legacy)
-		if err != nil {
-			return publishingIntent{}, err
-		}
-		if err := validatePublishingIntent(intent); err != nil {
-			return publishingIntent{}, err
-		}
-		if err := savePublishingIntent(intent); err != nil {
-			return publishingIntent{}, fmt.Errorf("sanitize version 1 publishing intent: %w", err)
-		}
-		return intent, nil
 	default:
 		return publishingIntent{}, errors.New("publishing intent version is unsupported")
 	}
@@ -1362,37 +1335,6 @@ func consumeUniqueJSONValue(decoder *json.Decoder, budget *uniqueJSONBudget, dep
 	}
 	_, err = budget.nextToken(decoder)
 	return err
-}
-
-func sanitizePublishingIntentV1(legacy publishingIntentV1) (publishingIntent, error) {
-	if len(legacy.Transactions) != len(legacy.TransactionIDs) {
-		return publishingIntent{}, errors.New("publishing intent transaction metadata is incomplete")
-	}
-	if _, err := time.Parse(time.RFC3339Nano, legacy.CreatedAt); err != nil {
-		return publishingIntent{}, errors.New("publishing intent creation time is invalid")
-	}
-	for index, transaction := range legacy.Transactions {
-		if transaction.ID != legacy.TransactionIDs[index] {
-			return publishingIntent{}, errors.New("publishing intent transaction metadata order changed")
-		}
-	}
-	intent := publishingIntent{
-		Version:              publishingIntentVersion,
-		State:                legacy.State,
-		Scope:                legacy.Scope,
-		TransactionIDs:       append([]string(nil), legacy.TransactionIDs...),
-		PrerequisiteExists:   legacy.PrerequisiteExists,
-		PrerequisiteIdentity: legacy.PrerequisiteIdentity,
-		TargetIdentity:       legacy.TargetIdentity,
-		ObservedExists:       legacy.ObservedExists,
-		ObservedIdentity:     legacy.ObservedIdentity,
-	}
-	for _, transaction := range legacy.Transactions {
-		intent.Transactions = append(intent.Transactions, publishingIntentTransaction{
-			Operation: transaction.Operation, CreatedAt: transaction.CreatedAt,
-		})
-	}
-	return intent, nil
 }
 
 func validatePublishingIntent(intent publishingIntent) error {
@@ -1819,6 +1761,41 @@ func changedKeyNames(before, after []config.SSHKey) []string {
 	}
 	sort.Strings(changed)
 	return changed
+}
+
+// keyDelta records only keys whose lifecycle or value changed. A missing key
+// on one side means create/delete; unchanged keys are omitted from both sides.
+// Names are sorted so ledger bytes remain deterministic across map iteration.
+func keyDelta(before, after []config.SSHKey) (changedBefore, changedAfter []config.SSHKey) {
+	beforeByName := make(map[string]config.SSHKey, len(before))
+	afterByName := make(map[string]config.SSHKey, len(after))
+	names := make(map[string]bool, len(before)+len(after))
+	for _, key := range before {
+		beforeByName[key.Name] = key
+		names[key.Name] = true
+	}
+	for _, key := range after {
+		afterByName[key.Name] = key
+		names[key.Name] = true
+	}
+	changedNames := make([]string, 0, len(names))
+	for name := range names {
+		previous, hadPrevious := beforeByName[name]
+		next, hasNext := afterByName[name]
+		if !hadPrevious || !hasNext || previous != next {
+			changedNames = append(changedNames, name)
+		}
+	}
+	sort.Strings(changedNames)
+	for _, name := range changedNames {
+		if key, ok := beforeByName[name]; ok {
+			changedBefore = append(changedBefore, key)
+		}
+		if key, ok := afterByName[name]; ok {
+			changedAfter = append(changedAfter, key)
+		}
+	}
+	return changedBefore, changedAfter
 }
 
 func keyLifecycleReason(mutation config.PendingMutation, keyName, change string) string {

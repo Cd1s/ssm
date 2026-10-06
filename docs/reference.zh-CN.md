@@ -142,6 +142,8 @@ sshctl run inner --argv hostname                                   # run/map/put
 - 每个位于跳板机后面的目标各自打开一条自己的跳板连接（不共享）。
 - 连接池按整条链缓存；目标连接关闭或被淘汰时，它拥有的跳板机连接一并关闭。request v1 用 `host.proxy_jump`（空字符串清除）。
 
+Vault 加密格式 v2 增加了经过认证的单调代数。上线前请先升级所有客户端；旧客户端无法读取 v2 vault。
+
 ### 检查连接
 
 当你要先确认本地 vault、同步状态和 SSH 是否正常时：
@@ -378,6 +380,8 @@ sshctl --json push --only <transaction-id>
 
 把 `<transaction-id>` 替换为刚才命令返回的精确 ID。不要使用裸 `push`；只有在审查了调用开始时的全部 pending 变更后，才使用 `sshctl --json push --all`。
 
+发布在服务器支持时会使用条件 blob 前置校验。本机缺少远端身份缓存但远端已有 blob 时，请先执行 sync 或 pull；身份确认前发布会被拒绝。旧版同步服务器仍通过原有的 HEAD 后 PUT 兼容路径工作。
+
 ### 精确发布范围与空 ledger
 
 `push --only <transaction-id>` 发布一个 reviewed transaction，`push --all` 只固定并发布调用开始时的 pending ID 集合。空集合不会覆盖整个本地 blob：一致时是 `action:"noop"`，缺少或不一致的身份则是 `error:"sync_conflict"`；按[空 ledger 恢复说明](../skills/agent-ssm/references/import-json.md)执行受保护的 pull、reviewed `--merge` 和新的 `push --only <transaction-id>`。
@@ -480,8 +484,8 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 | `auto_sync` | `true` | `false` 在两种模式下都关闭自动同步。 |
 | `auto_update` | `true` | 联网命令最多每 6 小时检查一次已安装主版本下是否有更新的稳定版，并在通过校验和与来源证明检查后安装。`--offline` 跳过检查；设为 `false` 关闭。 |
 | `update_repo` | `Cd1s/ssm` | 发布仓库；优先级见下面的 `SSM_UPDATE_REPO`。 |
-| `password_cache` | `always` | `session` 让后续命令复用临时目录里短期有效的主密码加密缓存；其他值不使用缓存。 |
-| `vim_keys` | `true` | 为兼容保留；目前没有命令读取它。 |
+| `password_cache` | 忽略 | 旧设置会被忽略；不再提供会话密码缓存。 |
+| `vim_keys` | 忽略 | 旧设置会被忽略；目前没有命令读取它。 |
 | `last_push`、`last_pull` | 空 | 由 `ssm` 维护的时间戳，请勿手改。 |
 
 `sync_interval` 或 `stale_after` 为空、无法解析或不是正数时回退到默认值；无法识别的 `sync_mode` 按 `local_first` 处理。
@@ -499,6 +503,7 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 | `SSM_REUSE` | `0`、`off`、`false`、`no` 关闭连接池。连接复用范围始终是单个进程（`status` 显示 `reuse_scope=process`）。 |
 | `SSM_FORWARD_STDIN` | `1` 默认转发本地 stdin（包括 `--json`）；`0` 等同于 `--no-stdin`。 |
 | `SSM_RUN_OUTPUT` | `buffered` 恢复 v2.0.2 的缓冲输出模式。 |
+| `SSM_NO_PERMISSION_WARNING` | 设为 `1` 可关闭凭据文件被其他用户读取时的警告。 |
 | `SSM_TRACE` | `1`（也接受 `true`、`yes`、`on`）等价于 `--trace`/`-v`。 |
 | `SSM_OFFLINE` | `1` 等价于 `--offline`。 |
 | `SSM_SYNC_MODE` | `strict` 或 `local_first`；对单个进程覆盖 `sync_mode`。 |
@@ -553,10 +558,19 @@ ssm update --major --yes
 | `remote_shell_unsupported` | 目标没有可用于 `put`/`get` 的 POSIX shell。 | 加 `--sftp`，或 `host update <alias> --transfer sftp`。 |
 | `integrity_tool_unavailable` | 远端没有 `sha256sum`、`shasum` 或 `openssl`。 | 去掉 `--sha256` 重试。 |
 | `sync_pull_failed` 和其他同步错误 | 看 `cause` 字段。 | `auth`、`missing_token`：运行 `ssm login`。`tls`：检查证书，不要绕过。其他：稍后重试，只有能接受过期库存时才用 `--offline`。 |
-| `sync_conflict` | 本地和远端 vault 出现分歧。 | 按[空 ledger 恢复指引](../skills/agent-ssm/references/import-json.md)处理，或先审查冲突再使用 `pull --adopt-remote`。 |
+| `sync_conflict` | 本地和远端 vault 出现分歧，或远端回到本机已取代的版本（可能是回滚或备份恢复）。 | 按[空 ledger 恢复指引](../skills/agent-ssm/references/import-json.md)处理，或先审查冲突再使用 `pull --adopt-remote`。 |
 | `vault is busy` | 另一个本地写入者持有短暂的 vault 写锁。 | 重试命令。 |
 | `alias_not_found` | alias 不存在；`candidates` 只是建议。 | 使用 `sshctl host list` 里的精确 alias。 |
 | `confirmation_required` | `cp --direct` 需要 `--yes`。 | 先阅读暴露风险说明，接受后才加 `--yes`。 |
+
+### 从备份恢复同步服务端
+
+管理员从备份恢复同步服务端后，曾采用并取代该旧版本的客户端会将其视为 `sync_conflict` 而拒绝安装，保留本地 vault。
+审查冲突后，需要在每台受影响的机器上运行 `sshctl pull --adopt-remote <sha> --yes`，使用恢复后的远端身份确认采用。
+也可以由一台机器采用恢复的版本后，重新发布一个新版本，供其他客户端拉取。
+
+`sync-superseded.json` 是客户端本地内部账本，最多保留 64 个已取代身份，不上传，也不进入 vault。
+它无法识别本机从未采用过或已淘汰的旧身份；账本缺失或不可读时也无法检测重放。登录、登出和注册会清空账本。
 
 ## 开发与验证
 

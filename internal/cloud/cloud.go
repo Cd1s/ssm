@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"ssm/internal/config"
 )
@@ -58,11 +59,35 @@ func PushFailureIsAmbiguous(err error) bool {
 	return errors.As(err, &failure) && failure.ambiguous
 }
 
+// PushFailureIsConflict reports a failed conditional PUT (HTTP 412).
+func PushFailureIsConflict(err error) bool {
+	var failure *pushFailure
+	if !errors.As(err, &failure) {
+		return false
+	}
+	var status *HTTPStatusError
+	return errors.As(failure.err, &status) && status.StatusCode == http.StatusPreconditionFailed
+}
+
 // ErrNoVaultOnServer reports that the account has no published vault yet (for
 // example a freshly registered one). It is not a transport failure.
 var ErrNoVaultOnServer = errors.New("no vault found on server; review pending mutations, then choose sshctl --json push --only <transaction-id> or sshctl --json push --all")
 
-var httpClient = &http.Client{Timeout: 15 * time.Second}
+var httpClient = &http.Client{
+	Timeout:       15 * time.Second,
+	CheckRedirect: checkRedirect,
+}
+
+func checkRedirect(request *http.Request, via []*http.Request) error {
+	if request.URL.Host != via[0].URL.Host ||
+		(via[len(via)-1].URL.Scheme == "https" && request.URL.Scheme == "http") {
+		return errors.New("refusing to follow a redirect to a different host or to plain http")
+	}
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	return nil
+}
 
 // SetRequestTimeout bounds every later sync-service request in this process.
 // The detached background sync uses a shorter bound than interactive commands.
@@ -73,6 +98,8 @@ func SetRequestTimeout(timeout time.Duration) {
 }
 
 var maxPullBlobBytes int64 = 64 << 20
+
+const maxResponseBodyBytes int64 = 1 << 20
 
 func cloudPath() string {
 	return filepath.Join(config.Dir(), "cloud.json")
@@ -127,7 +154,7 @@ func Login(server, email, password string) (string, error) {
 // or local transaction metadata; sync metadata commits belong to
 // internal/synctransaction.
 func PushBlob(cfg *CloudConfig, data []byte) (string, error) {
-	etag, observed, err := PushBlobObserved(cfg, data)
+	etag, observed, err := PushBlobObserved(cfg, data, RemoteBlobIdentity{})
 	if err != nil {
 		return "", err
 	}
@@ -139,7 +166,7 @@ func PushBlob(cfg *CloudConfig, data []byte) (string, error) {
 
 // PushBlobObserved publishes opaque bytes and distinguishes a service-provided
 // remote identity from the legacy local-hash fallback used by PushBlob.
-func PushBlobObserved(cfg *CloudConfig, data []byte) (string, bool, error) {
+func PushBlobObserved(cfg *CloudConfig, data []byte, prerequisite RemoteBlobIdentity) (string, bool, error) {
 	if err := requireToken(cfg); err != nil {
 		return "", false, err
 	}
@@ -152,6 +179,11 @@ func PushBlobObserved(cfg *CloudConfig, data []byte) (string, bool, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	req.Header.Set("Content-Type", "application/octet-stream")
+	if prerequisite.Exists {
+		req.Header.Set("If-Match", `"`+strings.Trim(prerequisite.Value, `"`)+`"`)
+	} else {
+		req.Header.Set("If-None-Match", "*")
+	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -166,6 +198,9 @@ func PushBlobObserved(cfg *CloudConfig, data []byte) (string, bool, error) {
 	if resp.StatusCode != 200 {
 		config.Debug("push: server error %d", resp.StatusCode)
 		return "", false, &pushFailure{err: parseError(resp), explicit: true}
+	}
+	if resp.Header.Get("X-Sync-Precondition") != "1" {
+		config.Debug("push: server did not confirm precondition support")
 	}
 	etag := strings.Trim(resp.Header.Get("ETag"), `"`)
 	config.Debug("push: success")
@@ -310,11 +345,18 @@ func parseTokenResponse(resp *http.Response) (string, error) {
 	if resp.StatusCode >= 400 {
 		return "", parseError(resp)
 	}
+	body, err := readResponseBody(resp.Body)
+	if err != nil {
+		return "", err
+	}
 	var result struct {
 		Token string `json:"token"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		return "", err
+	}
+	if strings.TrimSpace(result.Token) == "" {
+		return "", errors.New("server response did not include a token")
 	}
 	return result.Token, nil
 }
@@ -342,7 +384,11 @@ func CheckVerified(cfg *CloudConfig) bool {
 	var result struct {
 		Verified bool `json:"verified"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	body, err := readResponseBody(resp.Body)
+	if err != nil {
+		return false
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
 		return false
 	}
 	return result.Verified
@@ -367,9 +413,34 @@ type HTTPStatusError struct {
 
 func (e *HTTPStatusError) Error() string {
 	if e.Message != "" {
-		return e.Message
+		return sanitizeServerMessage(e.Message)
 	}
 	return fmt.Sprintf("server error (%d)", e.StatusCode)
+}
+
+func sanitizeServerMessage(message string) string {
+	var builder strings.Builder
+	space := false
+	for _, r := range message {
+		if unicode.IsControl(r) {
+			space = true
+			continue
+		}
+		if unicode.IsSpace(r) {
+			space = true
+			continue
+		}
+		if space && builder.Len() > 0 {
+			builder.WriteByte(' ')
+		}
+		space = false
+		builder.WriteRune(r)
+	}
+	clean := []rune(builder.String())
+	if len(clean) > 300 {
+		clean = append(clean[:299], '…')
+	}
+	return string(clean)
 }
 
 // TransportError wraps a failure to complete an HTTP exchange with the sync
@@ -470,13 +541,28 @@ func (*MissingTokenError) Error() string {
 }
 
 func parseError(resp *http.Response) error {
+	body, err := readResponseBody(resp.Body)
+	if err != nil {
+		return err
+	}
 	var result struct {
 		Error string `json:"error"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		return &HTTPStatusError{StatusCode: resp.StatusCode}
 	}
 	return &HTTPStatusError{StatusCode: resp.StatusCode, Message: strings.TrimSpace(result.Error)}
+}
+
+func readResponseBody(body io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, maxResponseBodyBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxResponseBodyBytes {
+		return nil, errors.New("response body is too large")
+	}
+	return data, nil
 }
 
 func requireToken(cfg *CloudConfig) error {

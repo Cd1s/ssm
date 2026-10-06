@@ -26,7 +26,7 @@ func TestV2ReleaseWorkflowCannotPromoteGitHubLatest(t *testing.T) {
 		"no concurrent cancellation": "  cancel-in-progress: false\n",
 		"exact section extraction":   "            found && /^## / { exit }\n",
 		"create-only helper":         "./scripts/release-create-only.sh",
-		"reviewed previous latest":   "            v2.0.2 \\\n",
+		"reviewed previous latest":   "            v2.1.0 \\\n",
 	} {
 		if !strings.Contains(workflow, required) {
 			t.Errorf("v2 release workflow lacks %s %q", description, required)

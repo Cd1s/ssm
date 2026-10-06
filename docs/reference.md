@@ -142,6 +142,8 @@ sshctl run inner --argv hostname                                   # run/map/put
 - Each target behind a jump host opens its own jump connection (they are not shared).
 - The connection pool is keyed by the whole chain; closing or evicting the target also closes the jump connections it owns. Request v1 uses `host.proxy_jump` (an empty string clears it).
 
+Vault encryption format v2 adds an authenticated monotonic generation. Upgrade every client before rollout; older clients cannot read v2 vaults.
+
 ### Check a connection
 
 Use this before a change when you want to check local vault state, sync freshness, and SSH health:
@@ -379,6 +381,8 @@ sshctl --json push --only <transaction-id>
 
 Replace `<transaction-id>` with the exact ID returned by the mutation. Do not use bare `push`; use `sshctl --json push --all` only after reviewing every pending change in the invocation-start set.
 
+Publication uses the server's conditional blob precondition when supported. If the local remote identity cache is missing while a remote blob exists, sync or pull first; the publication is refused until that identity is confirmed. Older sync servers remain compatible through the existing HEAD-then-PUT fallback.
+
 ### Explicit publication scope and empty ledgers
 
 `push --only <transaction-id>` publishes one reviewed transaction. `push --all` fixes the invocation-start pending-ID set and publishes only that set. An empty set never overwrites the complete local blob: identical identities return `action:"noop"`, while missing or divergent identities return `error:"sync_conflict"`; follow the guarded [empty-ledger recovery guidance](../skills/agent-ssm/references/import-json.md) for pull, reviewed `--merge`, and a new `push --only <transaction-id>`.
@@ -481,8 +485,8 @@ Host keys are checked against the standard OpenSSH `~/.ssh/known_hosts`.
 | `auto_sync` | `true` | `false` turns automatic sync off in both modes. |
 | `auto_update` | `true` | Online commands check for a newer stable release of the installed major at most every 6 hours and install it after the usual checksum and provenance checks. `--offline` skips the check; `false` turns it off. |
 | `update_repo` | `Cd1s/ssm` | Release repository; see `SSM_UPDATE_REPO` below for the precedence. |
-| `password_cache` | `always` | `session` lets later commands reuse a short-lived encrypted copy of the master password from the temporary directory; any other value disables the cache. |
-| `vim_keys` | `true` | Kept for compatibility; no current command reads it. |
+| `password_cache` | ignored | Legacy setting is ignored; the session password cache is no longer provided. |
+| `vim_keys` | ignored | Legacy setting is ignored; no current command reads it. |
 | `last_push`, `last_pull` | empty | Timestamps maintained by `ssm`; do not edit. |
 
 An empty, unparseable, or non-positive `sync_interval` or `stale_after` falls back to the default. An unrecognized `sync_mode` is treated as `local_first`.
@@ -500,6 +504,7 @@ An empty, unparseable, or non-positive `sync_interval` or `stale_after` falls ba
 | `SSM_REUSE` | `0`, `off`, `false`, or `no` disables the connection pool. Reuse is always process-local (`status` reports `reuse_scope=process`). |
 | `SSM_FORWARD_STDIN` | `1` forwards local stdin by default (including `--json`); `0` is the same as `--no-stdin`. |
 | `SSM_RUN_OUTPUT` | `buffered` restores the v2.0.2 buffered output mode. |
+| `SSM_NO_PERMISSION_WARNING` | Set to `1` to suppress warnings for credential files readable by other users. |
 | `SSM_TRACE` | `1` (also `true`, `yes`, `on`) is the same as `--trace`/`-v`. |
 | `SSM_OFFLINE` | `1` is the same as `--offline`. |
 | `SSM_SYNC_MODE` | `strict` or `local_first`; overrides `sync_mode` for one process. |
@@ -564,10 +569,21 @@ ssm update --major --yes
 | `remote_shell_unsupported` | The target has no usable POSIX shell for `put`/`get`. | Add `--sftp`, or set `host update <alias> --transfer sftp`. |
 | `integrity_tool_unavailable` | The remote host has no `sha256sum`, `shasum`, or `openssl`. | Retry without `--sha256`. |
 | `sync_pull_failed` and other sync errors | See the `cause` field. | `auth` and `missing_token`: run `ssm login`. `tls`: inspect the certificate, never bypass it. Others: retry later, or use `--offline` only when stale inventory is acceptable. |
-| `sync_conflict` | The local and remote vaults diverged. | Follow the [empty-ledger recovery guidance](../skills/agent-ssm/references/import-json.md) or review the conflict before using `pull --adopt-remote`. |
+| `sync_conflict` | The local and remote vaults diverged, or the remote returned to a version this machine already replaced (possible rollback or backup restore). | Follow the [empty-ledger recovery guidance](../skills/agent-ssm/references/import-json.md) or review the conflict before using `pull --adopt-remote`. |
 | `vault is busy` | Another local writer holds the short vault write lock. | Retry the command. |
 | `alias_not_found` | The alias does not exist. `candidates` are suggestions only. | Use the exact alias from `sshctl host list`. |
 | `confirmation_required` | `cp --direct` needs `--yes`. | Read the exposure notes, then add `--yes` only if you accept them. |
+
+### Restoring the sync server from backup
+
+After an administrator restores the sync server from backup, clients that previously accepted and replaced the restored
+identity refuse it as `sync_conflict` and keep their local vault. Review the conflict, then run
+`sshctl pull --adopt-remote <sha> --yes` on each affected machine, using the restored remote identity.
+Alternatively, one machine can adopt the restored version and publish a new version for the other clients to pull.
+
+The client-local `sync-superseded.json` ledger retains at most 64 replaced identities and is neither uploaded nor part
+of the vault. It cannot detect older versions this machine never accepted, evicted identities, or replay when ledger
+metadata is missing or unreadable. Login, logout, and registration reset the ledger.
 
 ## Development and verification
 

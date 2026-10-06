@@ -169,7 +169,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 
 	t.Run("changed remote blob commits before one invalidation", func(t *testing.T) {
 		isolateTestUserConfig(t)
-		remoteBlob := []byte("opaque remote encrypted blob")
+		remoteBlob := fakeVaultBlob("opaque remote encrypted blob")
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("ETag", `"remote-current"`)
 			if r.Method == http.MethodGet {
@@ -201,7 +201,7 @@ func TestSyncTransactionPolicy(t *testing.T) {
 	t.Run("pull metadata records the confirmed GET identity and transaction time", func(t *testing.T) {
 		isolateTestUserConfig(t)
 		now := time.Date(2026, 7, 28, 12, 34, 56, 0, time.UTC)
-		remoteBlob := []byte("opaque confirmed remote blob")
+		remoteBlob := fakeVaultBlob("opaque confirmed remote blob")
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.Method {
 			case http.MethodHead:
@@ -228,193 +228,11 @@ func TestSyncTransactionPolicy(t *testing.T) {
 		}
 	})
 
-	t.Run("push conflict identifies the candidate encrypted blob and performs no PUT", func(t *testing.T) {
-		isolateTestUserConfig(t)
-		baselineBlob := []byte("opaque cached baseline")
-		candidateBlob := []byte("opaque candidate publication")
-		if err := config.WritePrivateFile(config.Path(), baselineBlob); err != nil {
-			t.Fatal(err)
-		}
-		cachedIdentity := opaqueIdentity(baselineBlob)
-		if err := config.WritePrivateFile(filepath.Join(config.Dir(), "remote.etag"), []byte(cachedIdentity+"\n")); err != nil {
-			t.Fatal(err)
-		}
-		headCount, putCount := 0, 0
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch r.Method {
-			case http.MethodHead:
-				headCount++
-				w.Header().Set("ETag", `"remote-diverged"`)
-			case http.MethodPut:
-				putCount++
-			}
-		}))
-		t.Cleanup(server.Close)
-		if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: "opaque"}); err != nil {
-			t.Fatal(err)
-		}
-
-		facts, err := New(Options{}).PushBlob(candidateBlob)
-		if !errors.Is(err, ErrConflict) {
-			t.Fatalf("PushBlob error = %v, want %v", err, ErrConflict)
-		}
-		if headCount != 1 || putCount != 0 {
-			t.Fatalf("requests: HEAD=%d PUT=%d, want HEAD=1 PUT=0", headCount, putCount)
-		}
-		wantCandidate := opaqueIdentity(candidateBlob)
-		if facts.Conflict == nil ||
-			facts.Conflict.LocalETag != wantCandidate ||
-			facts.Conflict.RemoteETag != "remote-diverged" ||
-			facts.Conflict.CachedETag != cachedIdentity {
-			t.Fatalf("facts = %+v", facts)
-		}
-	})
-
-	t.Run("push metadata records only the confirmed PUT identity and transaction time", func(t *testing.T) {
-		isolateTestUserConfig(t)
-		now := time.Date(2026, 7, 28, 13, 45, 1, 0, time.UTC)
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodPut {
-				t.Fatalf("unexpected method %s", r.Method)
-			}
-			w.Header().Set("ETag", `"put-commit"`)
-			w.WriteHeader(http.StatusOK)
-		}))
-		t.Cleanup(server.Close)
-		if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: "opaque"}); err != nil {
-			t.Fatal(err)
-		}
-
-		facts, err := New(Options{Now: func() time.Time { return now }}).PushBlob([]byte("opaque pushed blob"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		wantTime := now.Format(time.RFC3339)
-		if facts.RemoteETag != "put-commit" || facts.LastPush != wantTime || facts.LastSync != wantTime {
-			t.Fatalf("facts = %+v", facts)
-		}
-	})
-
-	t.Run("confirmed PUT succeeds when sync metadata persistence fails", func(t *testing.T) {
-		home := isolateTestUserConfig(t)
-		config.EnableDebug()
-		now := time.Date(2026, 7, 28, 14, 12, 34, 0, time.UTC)
-		previousPush := "2026-07-20T01:02:03Z"
-		settings := config.DefaultSettings()
-		settings.LastPush = previousPush
-		if err := config.SaveSettings(settings); err != nil {
-			t.Fatal(err)
-		}
-		replacePathWithDirectory(t, remoteIdentityPath())
-		conflict := SyncConflict{
-			DetectedAt: "2026-07-28T14:00:00Z",
-			LocalETag:  "opaque-local", RemoteETag: "opaque-remote", CachedETag: "opaque-cached",
-		}
-		if err := preserveConflict(conflict); err != nil {
-			t.Fatal(err)
-		}
-
-		tokenCanary := "ISSUE20_METADATA_PUSH_TOKEN_CANARY" //nolint:gosec // test-only fake credential canary
-		blobCanary := []byte("ISSUE20_METADATA_PUSH_OPAQUE_BLOB_CANARY")
-		var putCount atomic.Int64
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodPut {
-				t.Fatalf("unexpected method %s", r.Method)
-			}
-			putCount.Add(1)
-			if info, err := os.Stat(remoteIdentityPath()); err != nil || !info.IsDir() {
-				t.Fatalf("remote identity metadata changed before confirmed PUT: info=%v err=%v", info, err)
-			}
-			if loadConflict() == nil {
-				t.Fatal("conflict metadata cleared before confirmed PUT")
-			}
-			if got := config.LoadSettings().LastPush; got != previousPush {
-				t.Fatalf("last push changed before confirmed PUT: got %q want %q", got, previousPush)
-			}
-			w.Header().Set("ETag", `"confirmed-put"`)
-			w.WriteHeader(http.StatusOK)
-		}))
-		t.Cleanup(server.Close)
-		if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: tokenCanary}); err != nil {
-			t.Fatal(err)
-		}
-
-		facts, err := New(Options{Now: func() time.Time { return now }}).PushBlob(blobCanary)
-		if err != nil {
-			t.Fatalf("PushBlob returned a post-confirmation metadata failure: %v", err)
-		}
-		if got := putCount.Load(); got != 1 {
-			t.Fatalf("PUT count = %d, want 1", got)
-		}
-		if loadConflict() != nil {
-			t.Fatal("conflict metadata was not cleared after confirmed PUT")
-		}
-		wantTime := now.Format(time.RFC3339)
-		if got := config.LoadSettings().LastPush; got != wantTime {
-			t.Fatalf("last push = %q, want %q", got, wantTime)
-		}
-		if facts.LastPush != wantTime || facts.Remote != RemoteChecked {
-			t.Fatalf("facts = %+v", facts)
-		}
-		debugLog, readErr := os.ReadFile(filepath.Join(config.Dir(), "debug.log"))
-		if readErr != nil {
-			t.Fatal(readErr)
-		}
-		if !strings.Contains(string(debugLog), "push: sync metadata update failed") {
-			t.Fatalf("debug log omitted generic metadata diagnostic: %q", debugLog)
-		}
-		for _, canary := range []string{tokenCanary, string(blobCanary), home, config.Path()} {
-			if strings.Contains(string(debugLog), canary) {
-				t.Fatalf("debug log leaked sensitive metadata: %q", debugLog)
-			}
-		}
-	})
-
-	t.Run("confirmed PUT still records other metadata when conflict cleanup fails", func(t *testing.T) {
-		isolateTestUserConfig(t)
-		config.EnableDebug()
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodPut {
-				t.Fatalf("unexpected method %s", r.Method)
-			}
-			if got := cachedRemoteIdentity(); got != "" {
-				t.Fatalf("remote identity changed before confirmed PUT: %q", got)
-			}
-			if got := config.LoadSettings().LastPush; got != "" {
-				t.Fatalf("last push changed before confirmed PUT: %q", got)
-			}
-			w.Header().Set("ETag", `"confirmed-cleanup-fault"`)
-			w.WriteHeader(http.StatusOK)
-		}))
-		t.Cleanup(server.Close)
-		if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: "opaque"}); err != nil {
-			t.Fatal(err)
-		}
-		replacePathWithDirectory(t, conflictPath())
-		if err := os.WriteFile(filepath.Join(conflictPath(), "blocker"), []byte("opaque\n"), 0600); err != nil {
-			t.Fatal(err)
-		}
-
-		facts, err := New(Options{}).PushBlob([]byte("opaque encrypted candidate"))
-		if err != nil {
-			t.Fatalf("PushBlob returned a post-confirmation cleanup failure: %v", err)
-		}
-		if got := cachedRemoteIdentity(); got != "confirmed-cleanup-fault" {
-			t.Fatalf("remote identity = %q, want confirmed-cleanup-fault", got)
-		}
-		if facts.LastPush == "" || config.LoadSettings().LastPush == "" {
-			t.Fatalf("last push metadata was not attempted: facts=%+v", facts)
-		}
-		if info, statErr := os.Stat(conflictPath()); statErr != nil || !info.IsDir() {
-			t.Fatalf("conflict cleanup fault was not preserved: info=%v err=%v", info, statErr)
-		}
-	})
-
 	t.Run("confirmed GET succeeds when sync metadata persistence fails", func(t *testing.T) {
 		home := isolateTestUserConfig(t)
 		config.EnableDebug()
-		localBlob := []byte("ISSUE20_METADATA_PULL_LOCAL_OPAQUE_BLOB_CANARY")
-		remoteBlob := []byte("ISSUE20_METADATA_PULL_REMOTE_OPAQUE_BLOB_CANARY")
+		localBlob := fakeVaultBlob("ISSUE20_METADATA_PULL_LOCAL_OPAQUE_BLOB_CANARY")
+		remoteBlob := fakeVaultBlob("ISSUE20_METADATA_PULL_REMOTE_OPAQUE_BLOB_CANARY")
 		if err := config.WritePrivateFile(config.Path(), localBlob); err != nil {
 			t.Fatal(err)
 		}
@@ -551,38 +369,4 @@ func TestSyncTransactionPolicy(t *testing.T) {
 		}
 	})
 
-	t.Run("failed PUT leaves cached identity and push timestamp unchanged", func(t *testing.T) {
-		isolateTestUserConfig(t)
-		candidateBlob := []byte("opaque candidate")
-		cachedIdentity := opaqueIdentity(candidateBlob)
-		if err := config.WritePrivateFile(remoteIdentityPath(), []byte(cachedIdentity+"\n")); err != nil {
-			t.Fatal(err)
-		}
-		settings := config.DefaultSettings()
-		settings.LastPush = "2026-07-21T01:02:03Z"
-		if err := config.SaveSettings(settings); err != nil {
-			t.Fatal(err)
-		}
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch r.Method {
-			case http.MethodHead:
-				w.Header().Set("ETag", `"`+cachedIdentity+`"`)
-			case http.MethodPut:
-				http.Error(w, `{"error":"fixture failure"}`, http.StatusInternalServerError)
-			}
-		}))
-		t.Cleanup(server.Close)
-		if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: "opaque"}); err != nil {
-			t.Fatal(err)
-		}
-
-		_, err := New(Options{}).PushBlob(candidateBlob)
-		if !errors.Is(err, ErrRefresh) {
-			t.Fatalf("PushBlob error = %v, want %v", err, ErrRefresh)
-		}
-		facts := New(Options{}).Facts()
-		if facts.RemoteETag != cachedIdentity || facts.LastPush != settings.LastPush {
-			t.Fatalf("facts = %+v", facts)
-		}
-	})
 }

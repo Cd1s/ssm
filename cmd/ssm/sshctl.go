@@ -366,6 +366,7 @@ type statusResult struct {
 
 func runSSHCTLStatus() {
 	statusCommand = true
+	var refreshErr error
 	recovery, recoveryErr := inventorytransaction.New(inventorytransaction.Options{
 		MasterPass: masterPass,
 		Sync:       syncTransaction(false),
@@ -378,18 +379,26 @@ func runSSHCTLStatus() {
 	}
 	if recoveryErr == nil {
 		// Reconciliation waits for any in-flight publisher. Discard the vault
-		// snapshot loaded before that wait so status cannot report its stale
-		// pending ledger after the other process finalizes.
-		invalidateVaultCache()
+		// snapshot if the publisher changed the file while we waited.
+		if !unlockedVaultStillCurrent() {
+			invalidateVaultCache()
+		}
 		if _, err := syncTransaction(false).Refresh(); err != nil {
-			failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullFailed)
-			os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+			if !errors.Is(err, synctransaction.ErrRefresh) {
+				failure := machinecontract.ClassifySyncFailure(err, machinecontract.SyncPullFailed)
+				os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
+			}
+			refreshErr = err
 		}
 	}
 	count := 0
 	v, err := loadVault()
 	if err == nil {
 		count = len(v.Connections)
+	}
+	statusErr := err
+	if refreshErr != nil {
+		statusErr = refreshErr
 	}
 	vaultStatus := "missing"
 	if config.Exists() {
@@ -405,6 +414,7 @@ func runSSHCTLStatus() {
 		cloudStatus = "offline"
 	}
 	freshness := string(syncFacts.Freshness)
+	lastPull, lastSync := syncFacts.LastPull, syncFacts.LastSync
 	pending := false
 	pendingMutations := []pendingMutationView{}
 	if v != nil {
@@ -417,9 +427,9 @@ func runSSHCTLStatus() {
 	remoteState := string(syncFacts.Remote)
 	if machineJSON {
 		result := statusResult{
-			OK: err == nil && recoveryErr == nil, Version: version, Hosts: count, Vault: vaultStatus, Sync: cloudStatus,
+			OK: statusErr == nil && recoveryErr == nil, Version: version, Hosts: count, Vault: vaultStatus, Sync: cloudStatus,
 			Redirects: len(config.LoadRedirects()), Reuse: reuse, ReuseScope: "process",
-			LastPull: syncFacts.LastPull, LastPush: syncFacts.LastPush, LastSync: syncFacts.LastSync,
+			LastPull: lastPull, LastPush: syncFacts.LastPush, LastSync: lastSync,
 			Freshness: freshness, Remote: remoteState, Pending: pending, Mutations: pendingMutations,
 			Offline: syncFacts.Offline, CacheAge: syncFacts.CacheAge, Conflict: syncFacts.Conflict,
 			Recovery: recovery,
@@ -432,8 +442,8 @@ func runSSHCTLStatus() {
 			failure := machinecontract.ClassifySyncFailure(recoveryErr, machinecontract.SyncPushFailed)
 			os.Exit(machinecontract.WriteFailure(true, failure, result))
 		}
-		if err != nil {
-			failure := machinecontract.Classify(machinecontract.GenericFailure, machinecontract.Details{Cause: err})
+		if statusErr != nil {
+			failure := machinecontract.Classify(machinecontract.GenericFailure, machinecontract.Details{Cause: statusErr})
 			os.Exit(machinecontract.WriteFailure(true, failure, result))
 		}
 		writeMachineValue(result)
@@ -534,6 +544,7 @@ Global options: --json, --offline, --master-pass-file <protected-file>, --versio
 Env: SSM_TRACE=1  SSM_CONNECT_TIMEOUT=10s (same as --connect-timeout)
      SSM_TIMEOUT=10s (deprecated compatibility alias of SSM_CONNECT_TIMEOUT)  SSM_DIAL_TIMEOUT=10s (older name, read last)
      SSM_REUSE=0|off|false|no  SSM_FORWARD_STDIN=1|0  SSM_RUN_OUTPUT=buffered
+     SSM_NO_PERMISSION_WARNING=1  suppress credential-file permission warnings
      SSM_CONFIG_DIR=<dir>  SSM_MASTER_PASS_FILE=<protected-file>  SSM_KEEPALIVE=0|<duration> (invalid: 15s)
      SSM_OFFLINE=1  SSM_SYNC_MODE=strict|local_first
      SSM_UPDATE_REPO=<owner/repo>|off  release repository that ssm update reads (ssm update only) (for tests and forks; provenance stays pinned to Cd1s/ssm)

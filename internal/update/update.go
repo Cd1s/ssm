@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -112,13 +113,20 @@ const (
 	defaultRepo    = "Cd1s/ssm"
 	checksumsAsset = "checksums.txt"
 	maxChecksums   = 16 << 10
-	maxMetadata    = 1 << 20
-	maxBinary      = 64 << 20
-	cooldown       = 6 * time.Hour
+	// Release metadata is fetched in one bounded response; 8 MiB leaves room
+	// for up to 100 releases while keeping a finite per-request memory cap.
+	maxMetadata = 8 << 20
+	maxBinary   = 64 << 20
+	cooldown    = 6 * time.Hour
 )
 
 var (
-	httpClient              = &http.Client{Timeout: 15 * time.Second}
+	metadataTimeout = 15 * time.Second
+	downloadTimeout = 10 * time.Minute
+	httpClient      = &http.Client{
+		Timeout:   metadataTimeout,
+		Transport: newUpdateTransport(),
+	}
 	apiBaseURL              = "https://api.github.com"
 	downloadBaseURL         = "https://github.com"
 	executablePath          = os.Executable
@@ -126,6 +134,17 @@ var (
 	verifyProvenance        = provenance.VerifyPublicGoodBundle
 	unixReplacementTestHook func(phase, staged, install string) error
 )
+
+func newUpdateTransport() http.RoundTripper {
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return http.DefaultTransport
+	}
+	transport = transport.Clone()
+	transport.DialContext = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
+	transport.ResponseHeaderTimeout = 15 * time.Second
+	return transport
+}
 
 func flagPath() string {
 	return filepath.Join(config.Dir(), ".update-available")
@@ -358,7 +377,7 @@ func AssetNameFor(goos, goarch string) string {
 
 func getReleaseAsset(repo, version, asset string) (*http.Response, error) {
 	url := fmt.Sprintf("%s/%s/releases/download/%s/%s", strings.TrimRight(downloadBaseURL, "/"), repo, version, asset)
-	resp, err := httpClient.Get(url)
+	resp, err := clientWithTimeout(downloadTimeout).Get(url)
 	if err != nil {
 		return nil, err
 	}
@@ -367,6 +386,12 @@ func getReleaseAsset(repo, version, asset string) (*http.Response, error) {
 		return nil, fmt.Errorf("%s: %s", asset, resp.Status)
 	}
 	return resp, nil
+}
+
+func clientWithTimeout(timeout time.Duration) *http.Client {
+	client := *httpClient
+	client.Timeout = timeout
+	return &client
 }
 
 func downloadReleaseAssetLimited(repo, version, asset string, limit int64) ([]byte, error) {
@@ -461,7 +486,7 @@ func checkLatest() (string, error) {
 	if repo == "" {
 		return "", nil
 	}
-	resp, err := httpClient.Get(strings.TrimRight(apiBaseURL, "/") + "/repos/" + repo + "/releases/latest")
+	resp, err := clientWithTimeout(metadataTimeout).Get(strings.TrimRight(apiBaseURL, "/") + "/repos/" + repo + "/releases/latest")
 	if err != nil {
 		return "", err
 	}
@@ -493,7 +518,7 @@ func listReleases() ([]Release, error) {
 		return nil, nil
 	}
 	url := strings.TrimRight(apiBaseURL, "/") + "/repos/" + repo + "/releases?per_page=100"
-	resp, err := httpClient.Get(url)
+	resp, err := clientWithTimeout(metadataTimeout).Get(url)
 	if err != nil {
 		return nil, err
 	}

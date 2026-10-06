@@ -223,7 +223,7 @@ jobs:
             "${{ needs.preflight.outputs.tag }}" \
             "${{ github.sha }}" \
             release-body.md \
-            v2.0.2 \
+            v2.1.0 \
             ssm-linux-amd64 \
             ssm-linux-arm64 \
             ssm-darwin-amd64 \

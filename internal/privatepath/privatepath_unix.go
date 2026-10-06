@@ -7,6 +7,11 @@ import (
 	"os"
 )
 
+func WarnIfBroad(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o077 != 0
+}
+
 func RestrictDirectory(path string) error {
 	if err := requirePathType(path, true); err != nil {
 		return err

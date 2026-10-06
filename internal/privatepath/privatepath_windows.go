@@ -14,6 +14,10 @@ const windowsFileAllAccess = windows.ACCESS_MASK(
 	windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE | 0x1ff,
 )
 
+func WarnIfBroad(string) bool {
+	return false
+}
+
 func RestrictDirectory(path string) error {
 	if err := requirePathType(path, true); err != nil {
 		return err

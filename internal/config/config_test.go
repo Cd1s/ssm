@@ -34,49 +34,52 @@ func TestSaveWritesVaultAtomicallyWithPrivatePermissions(t *testing.T) {
 	assertNoPrivateTempFiles(t, Dir())
 }
 
-func TestSettingsAndPasswordCacheUsePrivateFiles(t *testing.T) {
+func TestSettingsUsePrivateFiles(t *testing.T) {
 	home := t.TempDir()
 	setTestHome(t, home)
-	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("SSM_CONFIG_DIR", t.TempDir())
 
 	if err := SaveSettings(DefaultSettings()); err != nil {
 		t.Fatalf("SaveSettings: %v", err)
 	}
-	CachePassword("master-pass")
-	if got := GetCachedPassword(); got != "master-pass" {
-		t.Fatalf("cached password = %q", got)
-	}
-
-	for _, path := range []string{settingsPath(), cachePath()} {
-		if err := privatepath.VerifyFile(path); err != nil {
-			t.Fatalf("%s is not private: %v", path, err)
-		}
-	}
-	if err := privatepath.VerifyDirectory(filepath.Dir(cachePath())); err != nil {
-		t.Fatalf("cache directory is not private: %v", err)
+	if err := privatepath.VerifyFile(settingsPath()); err != nil {
+		t.Fatalf("settings file is not private: %v", err)
 	}
 }
 
 func TestLoadSettingsDefaultsMissingBooleansToEnabled(t *testing.T) {
 	home := t.TempDir()
 	setTestHome(t, home)
-	if err := WritePrivateFile(settingsPath(), []byte(`{"password_cache":"session"}`)); err != nil {
+	t.Setenv("SSM_CONFIG_DIR", t.TempDir())
+	if err := WritePrivateFile(settingsPath(), []byte(`{}`)); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	settings := LoadSettings()
+	if !settings.AutoUpdate {
+		t.Fatal("AutoUpdate defaulted to false")
+	}
+	if !settings.AutoSync {
+		t.Fatal("AutoSync defaulted to false")
+	}
+}
+
+func TestLoadSettingsIgnoresLegacyPasswordCacheAndVimKeys(t *testing.T) {
+	home := t.TempDir()
+	setTestHome(t, home)
+	t.Setenv("SSM_CONFIG_DIR", t.TempDir())
+	t.Setenv(SyncModeEnv, "")
+	if err := WritePrivateFile(settingsPath(), []byte(`{"password_cache":"session","vim_keys":true,"sync_mode":"strict"}`)); err != nil {
 		t.Fatalf("write settings: %v", err)
 	}
 
 	s := LoadSettings()
 
-	if s.PasswordCache != "session" {
-		t.Fatalf("PasswordCache = %q, want session", s.PasswordCache)
+	if s.SyncMode != SyncModeStrict {
+		t.Fatalf("loaded sync mode = %q, want %q", s.SyncMode, SyncModeStrict)
 	}
-	if !s.VimKeys {
-		t.Fatal("VimKeys defaulted to false")
-	}
-	if !s.AutoUpdate {
-		t.Fatal("AutoUpdate defaulted to false")
-	}
-	if !s.AutoSync {
-		t.Fatal("AutoSync defaulted to false")
+	if got := s.EffectiveSyncMode(); got != SyncModeStrict {
+		t.Fatalf("sync mode = %q, want %q", got, SyncModeStrict)
 	}
 }
 
@@ -89,9 +92,6 @@ func TestLoadSettingsPreservesExplicitFalseBooleans(t *testing.T) {
 
 	s := LoadSettings()
 
-	if s.VimKeys {
-		t.Fatal("VimKeys explicit false was not preserved")
-	}
 	if s.AutoUpdate {
 		t.Fatal("AutoUpdate explicit false was not preserved")
 	}

@@ -1,7 +1,7 @@
 package update
 
 import (
-	"errors"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,7 +12,6 @@ import (
 	"ssm/internal/cloud"
 	"ssm/internal/config"
 	"ssm/internal/releaseasset"
-	"ssm/internal/synctransaction"
 )
 
 func TestMigrationPreflightInspectsLocalSyncStateWithoutNetwork(t *testing.T) {
@@ -115,11 +114,18 @@ func TestMigrationPreflightFailsForPreservedSyncConflictWithoutNetwork(t *testin
 	if err := cloud.SaveCloud(&cloud.CloudConfig{Server: server.URL, Token: "test-token"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := synctransaction.New(synctransaction.Options{}).PushBlob([]byte("opaque baseline")); err != nil {
-		t.Fatalf("establish cached remote identity: %v", err)
+	if err := config.WritePrivateFile(filepath.Join(config.Dir(), "remote.etag"), []byte("cached-remote\n")); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := synctransaction.New(synctransaction.Options{}).PushBlob([]byte("opaque candidate")); !errors.Is(err, synctransaction.ErrConflict) {
-		t.Fatalf("preserve conflict error = %v, want %v", err, synctransaction.ErrConflict)
+	conflict, err := json.Marshal(map[string]string{
+		"detected_at": "2026-01-01T00:00:00Z", "local_etag": "local",
+		"remote_etag": "remote", "cached_etag": "cached-remote",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := config.WritePrivateFile(filepath.Join(config.Dir(), "sync-conflict.json"), conflict); err != nil {
+		t.Fatal(err)
 	}
 	requests.Store(0)
 

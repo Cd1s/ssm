@@ -457,6 +457,7 @@ func isolatedCompiledCLIEnvironmentWith(home, temp string, overrides map[string]
 		"SSM_REUSE":                  true,
 		"SSM_FORWARD_STDIN":          true,
 		"SSM_RUN_OUTPUT":             true,
+		"SSM_NO_PERMISSION_WARNING":  true,
 		"SSM_TEST_PUBLICATION_FAULT": true,
 		"SSM_OFFLINE":                true,
 	}
@@ -1861,16 +1862,15 @@ func TestCompiledFailedStatusUsesFailureRenderer(t *testing.T) {
 	cli.SaveVault(t, &config.Vault{})
 	const canary = "COMPILED_STATUS_FAILURE_CONFIG_CANARY"
 	settings, err := json.Marshal(config.Settings{
-		PasswordCache: "never",
-		AutoSync:      true,
-		LastPush:      `config="{\"token\":\"` + canary + `\"}"`,
+		AutoSync: true,
+		LastPush: `config="{\"token\":\"` + canary + `\"}"`,
 	})
 	if err != nil {
 		t.Fatalf("marshal failed-status settings: %v", err)
 	}
 	cli.writeConfigFile(t, "settings.json", settings)
 	sync := newCompiledSyncFixture(t)
-	sync.SetRemote(t, []byte("invalid encrypted vault"), "")
+	sync.SetRemote(t, append([]byte{1}, bytes.Repeat([]byte{0x41}, 60)...), "")
 	cli.SaveCloud(t, sync.URL(), "COMPILED_STATUS_FAILURE_TOKEN_CANARY")
 
 	result := cli.Run(t, "sshctl", nil, "--json", "status")
@@ -1908,10 +1908,33 @@ func TestCompiledFailedStatusUsesFailureRenderer(t *testing.T) {
 	if !ok || len(mutations) != 0 {
 		t.Fatalf("failed status pending_mutations=%v, want []", value["pending_mutations"])
 	}
-	lastPull, pullOK := value["last_pull"].(string)
-	lastSync, syncOK := value["last_sync"].(string)
-	if !pullOK || !syncOK || lastPull == "" || lastSync != lastPull {
+	lastPull, _ := value["last_pull"].(string)
+	lastSync, _ := value["last_sync"].(string)
+	if lastPull != "" || lastSync != "" {
 		t.Fatalf("failed status sync timestamps changed: last_pull=%v last_sync=%v", value["last_pull"], value["last_sync"])
+	}
+}
+
+func TestCompiledFailedStatusPreservesSuccessfulSyncHistory(t *testing.T) {
+	cli := newCompiledCLIHarness(t)
+	cli.SaveVault(t, &config.Vault{})
+	const lastPull = "2026-07-01T01:02:03Z"
+	settings, err := json.Marshal(config.Settings{AutoSync: true, LastPull: lastPull})
+	if err != nil {
+		t.Fatalf("marshal historical settings: %v", err)
+	}
+	cli.writeConfigFile(t, "settings.json", settings)
+	sync := newCompiledSyncFixture(t)
+	sync.SetRemote(t, append([]byte{1}, bytes.Repeat([]byte{0x41}, 60)...), "")
+	cli.SaveCloud(t, sync.URL(), "COMPILED_STATUS_HISTORY_TOKEN_CANARY")
+
+	result := cli.Run(t, "sshctl", nil, "--json", "status")
+	if result.ProcessExit != 1 || result.Stderr != "" {
+		t.Fatalf("historical failed status exit=%d stderr=%q output=%s", result.ProcessExit, result.Stderr, compiledOutputIdentity(result))
+	}
+	value := decodeExactlyOneJSONObject(t, result.Stdout)
+	if value["last_pull"] != lastPull || value["last_sync"] != lastPull {
+		t.Fatalf("successful sync history changed: last_pull=%v last_sync=%v", value["last_pull"], value["last_sync"])
 	}
 }
 
@@ -2660,6 +2683,7 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		sync.SetRemote(t, nil, strings.Repeat("a", 64))
 		scopedCloudCanary := "ISSUE17_SCOPED_PUSH_CLOUD_OUTPUT_CANARY"
 		mutationCLI.SaveCloud(t, sync.URL(), scopedCloudCanary)
+		mutationCLI.SaveRemoteETag(t, strings.Repeat("a", 64))
 		pushed := mutationCLI.Run(t, "sshctl", nil, "--json", "push", "--only", betaID)
 		pushedValue := assertCompiledJSONSuccess(t, pushed)
 		assertCompiledStringField(t, pushedValue, "transaction_id", betaID, pushed)
@@ -2697,7 +2721,7 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 			PendingMutations: []config.PendingMutation{{
 				ID: pendingTransactions[0].ID, Alias: pendingTransactions[0].Alias,
 				Operation: pendingTransactions[0].Operation, CreatedAt: pendingTransactions[0].CreatedAt,
-				After: &alphaConnection, KeysBefore: []config.SSHKey{statusKey}, KeysAfter: []config.SSHKey{statusKey},
+				After: &alphaConnection,
 			}},
 		})
 	})
@@ -3999,10 +4023,12 @@ func TestCompiledConfirmedSyncMetadataFailuresRemainSuccessful(t *testing.T) {
 					}},
 				}
 				cli.SaveVault(t, starting)
-				sync.SetRemote(t, nil, strings.Repeat("b", 64))
+				cachedETag := strings.Repeat("b", 64)
+				sync.SetRemote(t, nil, cachedETag)
 				cli.SaveCloud(t, sync.URL(), tokenCanary)
 				configDir := filepath.Join(cli.home, ".config", "ssm")
-				if err := os.Mkdir(filepath.Join(configDir, "remote.etag"), 0o700); err != nil {
+				cli.SaveRemoteETag(t, cachedETag)
+				if err := os.Mkdir(filepath.Join(configDir, "settings.json"), 0o700); err != nil {
 					t.Fatal(err)
 				}
 				cli.writeConfigFile(t, "sync-conflict.json", []byte(

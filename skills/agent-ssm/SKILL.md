@@ -16,6 +16,8 @@ for the supported v1.4.3/v1.4.4 binaries. Read the [version compatibility refere
 [update-provenance runbook](../../docs/update-provenance-runbook.md) before a
 cross-major rollout.
 
+Vault format v2 carries an authenticated generation; upgrade all clients before rollout because older clients cannot read v2 vaults.
+
 Fresh installations use the current GitHub latest Release:
 
 ```bash
@@ -75,7 +77,7 @@ not prove SSH transport failure.
 - Shell syntax or a generated script: use `script_file` with optional `script_args` and `shell`; use preflight where supported.
 - Non-shell script (Python, Perl, Ruby): `sshctl --json run <exact-alias> -f script.py --interpreter python3 -- args...` or request `script_file` plus `interpreter`. The script still travels over stdin and runs as `<interpreter> - args...`. `interpreter` is one program name, an absolute path, or `env <name>`; without it a non-shell shebang returns `invalid_arguments`. `preflight` is shell-only and is rejected with a non-shell interpreter.
 - Secrets: use `secret_files` or credential file options. Values are paths, never secret contents.
-- Host changes: use typed `host.add|host.update|host.upsert|host.remove`; verify first, then publish only a changed result's exact `transaction_id`.
+- Host changes: use typed `host.add|host.update|host.upsert|host.remove`; for a new host, first run `host.upsert` without `--verify`, then `host-key inspect` and `host-key accept --fingerprint ... --yes`, and rerun with `--verify` only after the key is trusted. Use `--verify` and `--push` only for already trusted hosts, and publish only a changed result's exact `transaction_id`.
 - Regular-file upload: use typed `put`; add `resume:"v1"` only when requested and `sha256:true` when integrity verification is required. Auto-created parent directories default to 0755; use `dir_mode` (or `--dir-mode`) to override (an octal mode of at most 0777 that keeps owner write and execute, i.e. includes 0300; 0500 or 0644 are rejected before connecting).
 - Download: v1 uses direct `sshctl get`; v2 may use direct get or request schema v1 `op:"get"` (`sha256`, `timeout`, `transfer` allowed; no `resume`). Direct get accepts `--json`, `--timeout`, `--sha256`, `--sftp` in any position.
 - Target without a POSIX shell (Windows OpenSSH, appliances, SFTP-only accounts): when `put`/`get` return `remote_shell_unsupported`, retry the single file with `--sftp` (or `transfer:"sftp"` in the request; request `shell`/`sftp` override the host setting for that operation, `auto` or omitted keeps it), or set the host once with `host update <alias> --transfer sftp` (`host.transfer` in a host request). Never switch protocol silently; never send directories or `resume` over SFTP.
@@ -116,6 +118,11 @@ local blob: identical local/cached/remote identities return `action:"noop"`,
 while missing or divergent identities return `error:"sync_conflict"` and
 preserve both sides. Follow [guarded empty-ledger recovery](references/import-json.md)
 for pull, reviewed `--merge`, and a new scoped transaction.
+
+Publishing requires a confirmed remote identity when the server already has a
+blob; sync or pull first if the local remote identity cache is missing. New
+servers enforce this with conditional PUTs and older servers use the existing
+HEAD-then-PUT compatibility path.
 
 Sync is local-first by default: read commands use the local inventory, never
 wait for the sync service, and start a detached background sync when one is due.
@@ -290,6 +297,7 @@ Check `sshctl --help` for `--exec-timeout` before relying on these; v2.0.2 and o
 processes. `SSM_FORWARD_STDIN=1|0` controls default stdin forwarding,
 `SSM_RUN_OUTPUT=buffered` restores buffered output, `SSM_CONFIG_DIR` selects
 the config directory, and `SSM_MASTER_PASS_FILE` points to a protected file (same as the global `--master-pass-file <path>`).
+`SSM_NO_PERMISSION_WARNING=1` suppresses the stderr warning for credential input files readable by other users; reading the file still behaves normally.
 `SSM_TRACE=1` is the same as `--trace`/`-v`: the redacted remote command (and
 script digest) is written to stderr before running. `SSM_UPDATE_REPO=<owner/repo>|off`
 chooses the GitHub repository `ssm update` reads releases from (default

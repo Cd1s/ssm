@@ -242,7 +242,7 @@ func Load(masterPass string) (*Vault, error) {
 }
 
 func Save(v *Vault, masterPass string) error {
-	encrypted, err := EncryptVault(v, masterPass)
+	encrypted, err := EncryptVault(v, masterPass, NextVaultGeneration())
 	if err != nil {
 		return err
 	}
@@ -254,13 +254,17 @@ func Save(v *Vault, masterPass string) error {
 	return nil
 }
 
-func EncryptVault(v *Vault, masterPass string) ([]byte, error) {
+func EncryptVault(v *Vault, masterPass string, generations ...uint64) ([]byte, error) {
 	plaintext, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return nil, err
 	}
 
-	encrypted, err := vault.Encrypt(plaintext, masterPass)
+	generation := uint64(0)
+	if len(generations) > 0 {
+		generation = generations[0]
+	}
+	encrypted, err := vault.Encrypt(plaintext, masterPass, generation)
 	if err != nil {
 		return nil, err
 	}
@@ -347,6 +351,13 @@ func LoadMergeReport() MergeReport {
 // ValidVaultBlob reports whether data has the shape of an encrypted vault, so a
 // malformed download never replaces the only local copy.
 func ValidVaultBlob(data []byte) bool { return vault.ValidBlob(data) }
+
+// ValidateVaultBlob authenticates an encrypted vault blob without changing
+// the local vault or parsing its inventory contents.
+func ValidateVaultBlob(data []byte, masterPass string) error {
+	_, err := vault.Decrypt(data, masterPass)
+	return err
+}
 
 var vaultCreateLockWait = 5 * time.Second
 
