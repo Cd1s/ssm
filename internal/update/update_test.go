@@ -145,6 +145,7 @@ func TestSameMajorSelection(t *testing.T) {
 		{TagName: "v3.1.0"},
 		{TagName: "v2.0.0"},
 		{TagName: "v2.1.0"},
+		{TagName: "v2.2.0"},
 		{TagName: "v1.6.0"},
 		{TagName: "v1.5.9"},
 		{TagName: "v1.7.0-rc.1", Prerelease: true},

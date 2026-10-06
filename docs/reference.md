@@ -1,6 +1,6 @@
 # ssm reference
 
-The complete reference for `ssm` and `sshctl` v2.1.0: every command and option, the configuration files, environment variables, error codes, and exit statuses. For a short introduction and the quick start, see the [README](../README.md).
+The complete reference for the prepared `ssm` and `sshctl` v2.2.0 candidate: every command and option, the configuration files, environment variables, error codes, and exit statuses. GitHub latest remains v2.1.0 until published-asset canaries pass and a separate promotion. For a short introduction and the quick start, see the [README](../README.md).
 
 Commands marked **unreleased** are merged on `main` but not part of the latest release.
 
@@ -75,7 +75,7 @@ It installs `ssm` and a `sshctl` symlink to it into the prefix directory, create
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `SSM_RELEASE_TAG` | latest release | Install one exact stable tag such as `v2.1.0`; other forms are rejected. |
+| `SSM_RELEASE_TAG` | latest release | Install one exact stable tag such as `v2.1.0` or the prepared `v2.2.0`; other forms are rejected. |
 | `SSM_PREFIX` | `/usr/local/bin` | Directory that receives `ssm` and the `sshctl` symlink. |
 | `SSM_CONFIG_DIR` | `~/.config/ssm` | Configuration directory the installer prepares. |
 | `SSM_REPO` | `Cd1s/ssm` | GitHub repository the installer downloads from. Provenance still verifies the `Cd1s/ssm` release workflow identity. |
@@ -533,7 +533,7 @@ way to install third-party builds.
 
 ## Updates and rollback
 
-Fresh installs follow GitHub latest, currently v2.1.0. Ordinary updates choose a newer release only within the installed major: the highest stable release of that major, regardless of the GitHub latest flag (a v2.0.2 install updated to v2.1.0 before the latest flag moved):
+Fresh installs follow GitHub latest, currently v2.1.0; the prepared v2.2.0 remains non-latest until published-asset canaries pass and a separate promotion. Ordinary updates choose a newer release only within the installed major: the highest stable release of that major, regardless of the GitHub latest flag (a v2.0.2 install updated to v2.1.0 before the latest flag moved):
 
 ```bash
 ssm update

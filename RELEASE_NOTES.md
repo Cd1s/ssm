@@ -1,12 +1,61 @@
 # Release Notes
 
-These notes are the reviewed contract for the authorized stable v2.1.0
-Release. The official exact-tag workflow published it non-latest first with
-`make_latest=false`; published-asset canaries then passed and the authorized
-promotion made v2.1.0 GitHub latest. See the
+These notes are the reviewed contract for the authorized stable v2.2.0
+Release. The official exact-tag workflow publishes it non-latest first with
+`make_latest=false`; v2.1.0 remains GitHub latest until published-asset
+canaries pass and a separate promotion is made. See the
 [v1→v2 migration guide](docs/migration-v1-to-v2.md) and
 [update-provenance runbook](docs/update-provenance-runbook.md) for operator and
 maintainer gates.
+
+## v2.2.0
+
+This is a v2 minor release containing all fixes from PR #120 (the reviewed
+commits in `6431cae..c77ffdf`). It **changes some default behavior** and has a
+vault-format compatibility requirement. The official exact-tag release
+workflow creates the stable v2.2.0 Release with `make_latest=false`;
+v2.1.0 remains GitHub latest until published-asset canaries pass and a separate
+promotion is made. Ordinary `ssm update` stays within v2.
+
+### Upgrade before saving or publishing (read first)
+
+- **Vault format v2 encryption.** New vaults use an authenticated monotonic
+  generation. Older clients (v2.1.0 and earlier) cannot read a v2-format vault;
+  upgrade all machines to v2.2.0 before any machine saves or publishes one.
+  v2.2.0 continues to read old-format vaults.
+- **Conditional sync publication.** The sync server now checks `If-Match` and
+  `If-None-Match` preconditions on uploads. If two machines upload at once,
+  only one succeeds and the other receives `sync_conflict`. A new client can
+  still push to an old server, but that server cannot provide this protection.
+  If the local `remote.etag` cache is missing while a remote vault exists, push
+  first requires `sync` or `pull`.
+- Deploy the new `internal/syncserver` before relying on the upload checks.
+
+### User-visible changes
+
+- A push whose scope no longer matches an interrupted publication fails as
+  `sync_push_failed` (exit 1), and it does not publish extra inventory.
+- A downloaded vault that fails authentication is rejected and the existing
+  `connections.enc.prev` is retained.
+- A client that has never synchronized reports empty `last_pull` and
+  `last_sync` values.
+- `password_cache` and `vim_keys` settings are ignored; `put` to an existing
+  remote directory fails.
+- If the server returns an older vault (a rollback), the client reports
+  `sync_conflict`; review it and use `pull --adopt-remote` to adopt it.
+- When `HOME` cannot be determined, startup errors and instructs the operator
+  to set `HOME` or `SSM_CONFIG_DIR`.
+- Credential files passed with `--password-file`, `--key-file`, `--secret`, or
+  `--master-pass-file` that are readable by other users produce a warning.
+  Set `SSM_NO_PERMISSION_WARNING=1` to suppress it; Windows does not warn.
+- `get` directory downloads reject device files and remove special permission
+  bits. Cloud clients reject cross-host or downgrade redirects.
+- `status` reuses one unlock and completes faster.
+
+There is no new error code and no request-schema or JSON-field breaking
+change. The checked range has no request-schema file changes
+(`git diff 6431cae..c77ffdf --stat -- skills/agent-ssm/references/*.json` is
+empty); result and request additions remain additive.
 
 ## v2.1.0
 

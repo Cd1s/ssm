@@ -43,6 +43,7 @@ func TestCurrentV2BeginnerDocumentationContract(t *testing.T) {
 	for _, name := range []string{"skills/agent-ssm/SKILL.md", "skills/agent-ssm/README.md"} {
 		document := active[name]
 		for _, required := range []string{
+			"v2.2.0 (supported; not latest until promoted)",
 			"v2.1.0 (current/latest)",
 			"v2.0.1",
 			"v2.0.0",
@@ -148,7 +149,7 @@ func TestBundledAgentSkillProbesVersionBeforeChoosingMajorContract(t *testing.T)
 	for description, required := range map[string]string{
 		"v1 bridge versions":         "v1.4.3 / v1.4.4",
 		"previous v2 patch":          "v2.0.0",
-		"current v2 release version": "v2.1.0",
+		"current v2 release version": "v2.2.0",
 		"unsupported-major stop":     "unsupported major",
 		"fail-closed instruction":    "fail closed",
 		"v1 compatibility branch":    "v1 compatibility branch",
@@ -164,7 +165,7 @@ func TestBundledAgentSkillProbesVersionBeforeChoosingMajorContract(t *testing.T)
 
 	compatibility := readAgentSkillContractFile(t, root, filepath.Join("references", "version-compatibility.md"))
 	for _, required := range []string{
-		"v1.4.3", "v1.4.4", "v2.0.0", "v2.0.1", "v2.0.2", "v2.1.0", "request-v1.schema.json", "op:get",
+		"v1.4.3", "v1.4.4", "v2.0.0", "v2.0.1", "v2.0.2", "v2.1.0", "v2.2.0", "request-v1.schema.json", "op:get",
 		"push --only", "push --all", "--refresh=0", "sync_config_error",
 		"direction", "kind", "unsupported major",
 	} {
@@ -180,8 +181,8 @@ func TestBundledAgentSkillProbesVersionBeforeChoosingMajorContract(t *testing.T)
 		if err := json.Unmarshal([]byte(schema), &parsed); err != nil {
 			t.Errorf("%s request schema is not JSON: %v", name, err)
 		}
-		if !strings.Contains(schema, "https://github.com/Cd1s/ssm/blob/v2.1.0/") {
-			t.Errorf("%s request schema does not bind its active ID to v2.1.0", name)
+		if !strings.Contains(schema, "https://github.com/Cd1s/ssm/blob/v2.2.0/") {
+			t.Errorf("%s request schema does not bind its active ID to v2.2.0", name)
 		}
 	}
 	if strings.Contains(bridgeSchema, `"get"`) {
@@ -255,6 +256,7 @@ func TestLatestDocumentationContract(t *testing.T) {
 		}
 		for _, required := range []string{
 			"v2.1.0",
+			"v2.2.0",
 			"github",
 			"latest",
 			freshInstallAnchor,
@@ -268,6 +270,7 @@ func TestLatestDocumentationContract(t *testing.T) {
 
 	skill := strings.ToLower(contents["agent skill"])
 	for _, required := range []string{
+		"v2.2.0 (supported; not latest until promoted)",
 		"v2.1.0 (current/latest)",
 		"v2.0.1",
 		"v2.0.0",
@@ -283,6 +286,7 @@ func TestLatestDocumentationContract(t *testing.T) {
 
 	compatibility := strings.ToLower(contents["version compatibility"])
 	for _, required := range []string{
+		"v2.2.0 (supported; not latest until promoted)",
 		"v2.1.0 (current/latest)",
 		"v2.0.1",
 		"v2.0.0",
@@ -297,18 +301,16 @@ func TestLatestDocumentationContract(t *testing.T) {
 
 	for _, document := range documents {
 		body := strings.ToLower(contents[document.name])
-		if !strings.Contains(body, "v2.1.0") {
-			t.Errorf("%s does not identify v2.1.0 as the active contract", document.name)
+		if !strings.Contains(body, "v2.2.0") {
+			t.Errorf("%s does not identify v2.2.0 as the prepared contract", document.name)
 		}
 		for _, stale := range []string{
-			"non-latest",
 			"staged v2 release",
 			"staged v2.0.1",
 			"v2.0.1 is staged",
 			"v2 release is staged",
 			"v2.0.0 (current/latest)",
 			"v2.0.2 (current/latest)",
-			"not latest until promoted",
 			"not github latest until",
 			"current github latest v2.0.0",
 			"v1.4.4 remains github latest",
@@ -382,7 +384,7 @@ func TestAgentSkillInstallInstructionsCoverExactTagCodexAndHermes(t *testing.T) 
 	root := repositoryRoot(t)
 	document := readAgentSkillContractFile(t, root, filepath.Join("references", "install-update.md"))
 	for _, required := range []string{
-		"v2.0.0", "v2.0.1", "v2.0.2", "v2.1.0", "exact tag", "CODEX_HOME", "HERMES_HOME", "Codex", "Hermes",
+		"v2.0.0", "v2.0.1", "v2.0.2", "v2.1.0", "v2.2.0", "exact tag", "CODEX_HOME", "HERMES_HOME", "Codex", "Hermes",
 		"install-agent-ssm-skill.sh", "sshctl --json --version", "--replace",
 	} {
 		if !strings.Contains(strings.ToLower(document), strings.ToLower(required)) {
@@ -408,6 +410,7 @@ func TestAgentSkillDeploymentUsesTemporaryCodexAndHermesRoots(t *testing.T) {
 		{platform: "hermes", version: "2.0.1", contract: "v2 compatibility branch"},
 		{platform: "hermes", version: "2.0.2", contract: "v2 compatibility branch"},
 		{platform: "codex", version: "2.1.0", contract: "v2 compatibility branch"},
+		{platform: "hermes", version: "2.2.0", contract: "v2 compatibility branch"},
 	}
 	for _, test := range tests {
 		t.Run(test.platform+"-"+test.version, func(t *testing.T) {

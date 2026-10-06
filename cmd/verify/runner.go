@@ -404,6 +404,24 @@ func validateReleaseNotes(repoRoot, version string) error {
 			}
 		}
 	}
+	if version == "2.2.0" {
+		lower := strings.ToLower(strings.Join(strings.Fields(strings.Join(body, "\n")), " "))
+		for _, required := range []string{
+			"v2 minor release",
+			"changes some default behavior",
+			"vault format",
+			"upgrade all machines",
+			"sync_conflict",
+			"v2.1.0 remains github latest",
+			"make_latest=false",
+			"no request-schema or json-field breaking change",
+			"internal/syncserver",
+		} {
+			if !strings.Contains(lower, required) {
+				return fmt.Errorf("release-note section %q omits v2.2.0 minor contract %q", header, required)
+			}
+		}
+	}
 	if version == "2.0.1" {
 		lower := strings.ToLower(strings.Join(strings.Fields(strings.Join(body, "\n")), " "))
 		for _, stale := range []string{
