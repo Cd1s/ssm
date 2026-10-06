@@ -755,8 +755,8 @@ func TestTrackedV2PublicationMetadataIsExactAndDurable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != "2.1.0" {
-		t.Fatalf("source version = %q, want exact v2.1.0", version)
+	if version != "2.2.0" {
+		t.Fatalf("source version = %q, want exact v2.2.0", version)
 	}
 	if err := validateReleaseNotes(root, version); err != nil {
 		t.Fatal(err)
@@ -785,7 +785,10 @@ func TestTrackedV2PublicationMetadataIsExactAndDurable(t *testing.T) {
 		"no protocol or schema breaking change",
 		"v2 compatibility behavior remains",
 		"make_latest=false",
-		"made v2.1.0 github latest",
+		"v2.1.0 remains github latest",
+		"vault format",
+		"upgrade all machines",
+		"no request-schema or json-field breaking change",
 		"exact-tag release workflow",
 	} {
 		if !strings.Contains(notes, durable) {
