@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -93,7 +94,8 @@ func TestPullValidationInstallsValidVaultAndKeepsPrevious(t *testing.T) {
 	if !bytes.Equal(previous, local) {
 		t.Fatal(".prev does not contain the old vault")
 	}
-	if info, err := os.Stat(config.Path() + ".prev"); err != nil || info.Mode().Perm() != 0600 {
+	// Windows reports 0666 for every file; only POSIX modes are meaningful.
+	if info, err := os.Stat(config.Path() + ".prev"); err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0600) {
 		t.Fatalf(".prev permissions = %v, want 0600", info.Mode().Perm())
 	}
 }
