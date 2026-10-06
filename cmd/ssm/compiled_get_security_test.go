@@ -80,8 +80,15 @@ func TestCompiledDirectoryGetRejectsSpecialEntryBeforePublish(t *testing.T) {
 	if result.ProcessExit != 1 || got["ok"] != false || got["error"] != "local_write_failed" {
 		t.Fatalf("special-entry get = exit %d %v", result.ProcessExit, got)
 	}
-	if !strings.Contains(result.Stdout+result.Stderr, "unsupported special file") {
-		t.Fatalf("special-entry error omitted detail: %s\nstdout=%.600s\nstderr=%.600s", compiledOutputIdentity(result), result.Stdout, result.Stderr)
+	// An unprivileged tar refuses the device node itself ("Cannot mknod"); as
+	// root tar creates it and ssm's own scan must reject it. Either way the
+	// destination must stay unpublished.
+	wantDetail := "Cannot mknod"
+	if os.Geteuid() == 0 {
+		wantDetail = "unsupported special file"
+	}
+	if !strings.Contains(result.Stdout+result.Stderr, wantDetail) {
+		t.Fatalf("special-entry error omitted detail %q: %s", wantDetail, compiledOutputIdentity(result))
 	}
 	assertNoDirectoryGetArtifacts(t, local)
 }
