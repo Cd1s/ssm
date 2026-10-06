@@ -944,7 +944,7 @@ func (s *PublicationSession) Publish(t *Transaction, v *config.Vault, only strin
 		receipt.Action = "noop"
 		return receipt, nil
 	}
-	blob, err := config.EncryptVault(projection.Vault, t.masterPass)
+	blob, err := config.EncryptVault(projection.Vault, t.masterPass, config.NextVaultGeneration())
 	if err != nil {
 		return PublicationReceipt{}, err
 	}

@@ -142,6 +142,8 @@ sshctl run inner --argv hostname                                   # run/map/put
 - 每个位于跳板机后面的目标各自打开一条自己的跳板连接（不共享）。
 - 连接池按整条链缓存；目标连接关闭或被淘汰时，它拥有的跳板机连接一并关闭。request v1 用 `host.proxy_jump`（空字符串清除）。
 
+Vault 加密格式 v2 增加了经过认证的单调代数。上线前请先升级所有客户端；旧客户端无法读取 v2 vault。
+
 ### 检查连接
 
 当你要先确认本地 vault、同步状态和 SSH 是否正常时：

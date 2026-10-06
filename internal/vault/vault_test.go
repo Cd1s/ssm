@@ -22,7 +22,7 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ciphertext, err := Encrypt(tc.plaintext, testPassword)
+			ciphertext, err := Encrypt(tc.plaintext, testPassword, 7)
 			if err != nil {
 				t.Fatalf("Encrypt: %v", err)
 			}
@@ -33,7 +33,35 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 			if !bytes.Equal(plaintext, tc.plaintext) {
 				t.Fatalf("round-trip mismatch: got %d bytes, want %d", len(plaintext), len(tc.plaintext))
 			}
+			if got, ok := Generation(ciphertext); !ok || got != 7 {
+				t.Fatalf("Generation = %d, %v; want 7, true", got, ok)
+			}
 		})
+	}
+}
+
+func TestGenerationAuthenticatesHeader(t *testing.T) {
+	ciphertext, err := Encrypt([]byte("generation"), testPassword, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutated := append([]byte(nil), ciphertext...)
+	mutated[1] ^= 1
+	if _, err := Decrypt(mutated, testPassword); err == nil {
+		t.Fatal("generation mutation decrypted successfully")
+	}
+	if got, ok := Generation(ciphertext); !ok || got != 42 {
+		t.Fatalf("Generation = %d, %v", got, ok)
+	}
+}
+
+func TestGenerationV1IsZero(t *testing.T) {
+	data, err := os.ReadFile("testdata/vault-v1.enc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := Generation(data); !ok || got != 0 {
+		t.Fatalf("Generation(v1) = %d, %v", got, ok)
 	}
 }
 

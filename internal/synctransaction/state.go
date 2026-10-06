@@ -365,7 +365,9 @@ var resetLockWait = 5 * time.Second
 func ResetSyncState() error {
 	if _, err := os.Lstat(syncStatePath()); err != nil {
 		if _, err := os.Lstat(supersededPath()); err != nil {
-			return nil
+			if _, err := os.Lstat(config.GenerationPath()); err != nil {
+				return nil
+			}
 		}
 	}
 	// Lock order everywhere is vault write lock, then state lock. Holding the
@@ -385,6 +387,7 @@ func ResetSyncState() error {
 		return fmt.Errorf("reset sync state: %w", err)
 	}
 	clearSuperseded()
+	config.ResetMaxSeenGeneration()
 	return nil
 }
 

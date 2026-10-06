@@ -526,6 +526,30 @@ func (t *Transaction) applyRemoteIdentity(cfg *cloud.CloudConfig, facts Facts, r
 	if !forcePull && remote != "" && remote == facts.RemoteETag {
 		return facts, nil
 	}
+	// A generation check needs the body because HEAD exposes only its opaque
+	// identity. Fetch once before the decision when this machine has a high
+	// water mark; installFetched checks the body again under the write lock.
+	var fetched []byte
+	var fetchedETag string
+	if mode != pullAdopt && config.MaxSeenGeneration() > 0 {
+		var fetchErr error
+		fetched, fetchedETag, fetchErr = cloud.Fetch(cfg)
+		if fetchErr != nil {
+			return facts, fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, fetchErr)
+		}
+		remote = fetchedETag
+		if generation, ok := config.VaultGeneration(fetched); ok && generation < config.MaxSeenGeneration() {
+			lock, err := t.lockVault("decision", mode)
+			if err != nil {
+				return facts, err
+			}
+			current := identityFacts()
+			current.Configuration = facts.Configuration
+			result, conflictErr := t.supersededError(current, remote)
+			_ = lock.Close()
+			return result, conflictErr
+		}
+	}
 	if (mode != pullAdopt && isSuperseded(remote)) || divergedFor(mode, facts, remote) {
 		// Decide divergence before downloading, under the lock so the
 		// evidence reflects the vault as it is now.
@@ -547,11 +571,14 @@ func (t *Transaction) applyRemoteIdentity(cfg *cloud.CloudConfig, facts Facts, r
 		}
 		_ = lock.Close()
 	}
-	data, etag, err := cloud.Fetch(cfg)
-	if err != nil {
-		return facts, fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err)
+	if fetched == nil {
+		var err error
+		fetched, fetchedETag, err = cloud.Fetch(cfg)
+		if err != nil {
+			return facts, fmt.Errorf("%w: remote refresh did not commit: %w", ErrRefresh, err)
+		}
 	}
-	return t.installFetched(data, etag, mode)
+	return t.installFetched(fetched, fetchedETag, mode)
 }
 
 // installFetched replaces the local vault with an already downloaded blob under
@@ -567,6 +594,11 @@ func (t *Transaction) installFetched(data []byte, etag string, mode pullMode) (F
 	facts.Configuration = ConfigurationConfigured
 	if !config.ValidVaultBlob(data) {
 		return facts, fmt.Errorf("%w: downloaded vault has an invalid format and was not installed", ErrRefresh)
+	}
+	if mode != pullAdopt {
+		if generation, ok := config.VaultGeneration(data); ok && generation < config.MaxSeenGeneration() {
+			return t.supersededError(facts, etag)
+		}
 	}
 	if mode != pullBackground && t.masterPass != "" {
 		if err := config.ValidateVaultBlob(data, t.masterPass); err != nil {
@@ -602,7 +634,12 @@ func (t *Transaction) installFetched(data []byte, etag string, mode pullMode) (F
 	if t.invalidate != nil {
 		t.invalidate()
 	}
-	t.commitSuccess("pull", etag)
+	operation := "pull"
+	if mode == pullAdopt {
+		operation = "adopt"
+	}
+	generation, _ := config.VaultGeneration(data)
+	t.commitSuccess(operation, etag, generation)
 	facts = t.localFacts()
 	facts.Configuration = ConfigurationConfigured
 	facts.Changed = true
@@ -898,7 +935,8 @@ func (t *Transaction) PushBlob(blob []byte) (Facts, error) {
 	if err != nil {
 		return facts, fmt.Errorf("%w: remote push did not commit: %w", ErrRefresh, err)
 	}
-	t.commitSuccess("push", committedIdentity)
+	generation, _ := config.VaultGeneration(blob)
+	t.commitSuccess("push", committedIdentity, generation)
 	facts = t.localFacts()
 	facts.Configuration, facts.Remote = state, RemoteChecked
 	return facts, nil
@@ -972,10 +1010,23 @@ func (t *Transaction) localFacts() Facts {
 // commitSuccess records best-effort metadata only after the remote or local
 // opaque-blob commit has been confirmed. Metadata failures must not make that
 // confirmed operation ambiguous to callers.
-func (t *Transaction) commitSuccess(operation, remoteIdentity string) {
+func (t *Transaction) commitSuccess(operation, remoteIdentity string, generations ...uint64) {
 	failed := remoteIdentity == ""
 	if remoteIdentity != "" {
 		recordSuperseded(cachedRemoteIdentity(), remoteIdentity)
+		generation, haveGeneration := uint64(0), false
+		if len(generations) > 0 {
+			generation, haveGeneration = generations[0], true
+		} else if data, err := os.ReadFile(config.Path()); err == nil {
+			generation, haveGeneration = config.VaultGeneration(data)
+		}
+		if haveGeneration {
+			if operation == "adopt" {
+				config.SetMaxSeenGeneration(generation)
+			} else {
+				config.RecordMaxSeenGeneration(generation)
+			}
+		}
 		if err := config.WritePrivateFile(remoteIdentityPath(), []byte(remoteIdentity+"\n")); err != nil {
 			failed = true
 		}
@@ -986,7 +1037,7 @@ func (t *Transaction) commitSuccess(operation, remoteIdentity string) {
 	settings := config.LoadSettings()
 	timestamp := t.now().Format(time.RFC3339)
 	switch operation {
-	case "pull":
+	case "pull", "adopt":
 		settings.LastPull = timestamp
 	case "push":
 		settings.LastPush = timestamp

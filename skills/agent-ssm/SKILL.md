@@ -16,6 +16,8 @@ for the supported v1.4.3/v1.4.4 binaries. Read the [version compatibility refere
 [update-provenance runbook](../../docs/update-provenance-runbook.md) before a
 cross-major rollout.
 
+Vault format v2 carries an authenticated generation; upgrade all clients before rollout because older clients cannot read v2 vaults.
+
 Fresh installations use the current GitHub latest Release:
 
 ```bash
