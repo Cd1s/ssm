@@ -81,7 +81,7 @@ func TestCompiledDirectoryGetRejectsSpecialEntryBeforePublish(t *testing.T) {
 		t.Fatalf("special-entry get = exit %d %v", result.ProcessExit, got)
 	}
 	if !strings.Contains(result.Stdout+result.Stderr, "unsupported special file") {
-		t.Fatalf("special-entry error omitted detail: %s", compiledOutputIdentity(result))
+		t.Fatalf("special-entry error omitted detail: %s\nstdout=%.600s\nstderr=%.600s", compiledOutputIdentity(result), result.Stdout, result.Stderr)
 	}
 	assertNoDirectoryGetArtifacts(t, local)
 }

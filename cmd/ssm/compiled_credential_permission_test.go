@@ -194,6 +194,11 @@ func assertCredentialPermissionResult(t *testing.T, result compiledCLIResult, wa
 
 func captureCredentialPermissionStderr(t *testing.T, read func()) string {
 	t.Helper()
+	// Inode numbers are reused after a temporary file is removed, so a stale
+	// entry from an earlier subtest could suppress this subtest's warning.
+	warnedCredentialFiles.Lock()
+	warnedCredentialFiles.files = nil
+	warnedCredentialFiles.Unlock()
 	path := filepath.Join(t.TempDir(), "stderr")
 	file, err := os.Create(path) //nolint:gosec // this output capture is confined to the test's temporary directory
 	if err != nil {
