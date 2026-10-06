@@ -142,6 +142,8 @@ sshctl run inner --argv hostname                                   # run/map/put
 - Each target behind a jump host opens its own jump connection (they are not shared).
 - The connection pool is keyed by the whole chain; closing or evicting the target also closes the jump connections it owns. Request v1 uses `host.proxy_jump` (an empty string clears it).
 
+Vault encryption format v2 adds an authenticated monotonic generation. Upgrade every client before rollout; older clients cannot read v2 vaults.
+
 ### Check a connection
 
 Use this before a change when you want to check local vault state, sync freshness, and SSH health:
