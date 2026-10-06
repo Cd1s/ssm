@@ -59,6 +59,16 @@ func PushFailureIsAmbiguous(err error) bool {
 	return errors.As(err, &failure) && failure.ambiguous
 }
 
+// PushFailureIsConflict reports a failed conditional PUT (HTTP 412).
+func PushFailureIsConflict(err error) bool {
+	var failure *pushFailure
+	if !errors.As(err, &failure) {
+		return false
+	}
+	var status *HTTPStatusError
+	return errors.As(failure.err, &status) && status.StatusCode == http.StatusPreconditionFailed
+}
+
 // ErrNoVaultOnServer reports that the account has no published vault yet (for
 // example a freshly registered one). It is not a transport failure.
 var ErrNoVaultOnServer = errors.New("no vault found on server; review pending mutations, then choose sshctl --json push --only <transaction-id> or sshctl --json push --all")
@@ -144,7 +154,7 @@ func Login(server, email, password string) (string, error) {
 // or local transaction metadata; sync metadata commits belong to
 // internal/synctransaction.
 func PushBlob(cfg *CloudConfig, data []byte) (string, error) {
-	etag, observed, err := PushBlobObserved(cfg, data)
+	etag, observed, err := PushBlobObserved(cfg, data, RemoteBlobIdentity{})
 	if err != nil {
 		return "", err
 	}
@@ -156,7 +166,7 @@ func PushBlob(cfg *CloudConfig, data []byte) (string, error) {
 
 // PushBlobObserved publishes opaque bytes and distinguishes a service-provided
 // remote identity from the legacy local-hash fallback used by PushBlob.
-func PushBlobObserved(cfg *CloudConfig, data []byte) (string, bool, error) {
+func PushBlobObserved(cfg *CloudConfig, data []byte, prerequisite RemoteBlobIdentity) (string, bool, error) {
 	if err := requireToken(cfg); err != nil {
 		return "", false, err
 	}
@@ -169,6 +179,11 @@ func PushBlobObserved(cfg *CloudConfig, data []byte) (string, bool, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	req.Header.Set("Content-Type", "application/octet-stream")
+	if prerequisite.Exists {
+		req.Header.Set("If-Match", `"`+strings.Trim(prerequisite.Value, `"`)+`"`)
+	} else {
+		req.Header.Set("If-None-Match", "*")
+	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -183,6 +198,9 @@ func PushBlobObserved(cfg *CloudConfig, data []byte) (string, bool, error) {
 	if resp.StatusCode != 200 {
 		config.Debug("push: server error %d", resp.StatusCode)
 		return "", false, &pushFailure{err: parseError(resp), explicit: true}
+	}
+	if resp.Header.Get("X-Sync-Precondition") != "1" {
+		config.Debug("push: server did not confirm precondition support")
 	}
 	etag := strings.Trim(resp.Header.Get("ETag"), `"`)
 	config.Debug("push: success")

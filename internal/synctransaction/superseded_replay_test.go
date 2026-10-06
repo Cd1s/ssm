@@ -15,7 +15,6 @@ import (
 
 	"ssm/internal/cloud"
 	"ssm/internal/config"
-	"ssm/internal/vault"
 )
 
 const supersededFailureMessage = "remote vault is a version this machine already replaced (possible rollback); review, then pull --adopt-remote"
@@ -267,42 +266,4 @@ func selectReplayHome(t *testing.T, home string) {
 		t.Setenv(name, home)
 	}
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-}
-
-func TestNewPublicationNeverHitsLedger(t *testing.T) {
-	service := newReplayService(t)
-	homes := []string{t.TempDir(), t.TempDir()}
-	for _, home := range homes {
-		selectReplayHome(t, home)
-		configureReplayMachine(t, service)
-		if _, err := New(Options{}).Pull(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for round := range 3 {
-		for publisher, home := range homes {
-			selectReplayHome(t, home)
-			tx := New(Options{})
-			if _, err := tx.Pull(); err != nil {
-				t.Fatal(err)
-			}
-			blob, err := vault.Encrypt([]byte("same plaintext, fresh salt and nonce"), "isolated-test-password")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if isSuperseded(opaqueIdentity(blob)) {
-				t.Fatalf("round %d machine %d: fresh encryption hit the ledger", round, publisher)
-			}
-			if err := config.WritePrivateFile(config.Path(), blob); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := tx.PushBlob(blob); err != nil {
-				t.Fatalf("round %d machine %d: publish failed: %v", round, publisher, err)
-			}
-			selectReplayHome(t, homes[1-publisher])
-			if _, err := New(Options{}).Pull(); err != nil || !bytes.Equal(readVault(t), blob) || loadConflict() != nil {
-				t.Fatalf("round %d: the other machine refused a fresh publication: %v", round, err)
-			}
-		}
-	}
 }

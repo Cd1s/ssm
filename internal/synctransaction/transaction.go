@@ -746,7 +746,7 @@ func (t *Transaction) PreparePublication(blob []byte) (_ PreparedPublication, er
 		if !prerequisite.Exists {
 			return PreparedPublication{}, fmt.Errorf("%w: remote push prerequisite disappeared", ErrRefresh)
 		}
-		if prerequisite.Value != facts.RemoteETag && target != facts.RemoteETag {
+		if prerequisite.Value != facts.RemoteETag {
 			conflict := SyncConflict{
 				DetectedAt: t.now().UTC().Format(time.RFC3339),
 				LocalETag:  target, RemoteETag: prerequisite.Value, CachedETag: facts.RemoteETag,
@@ -756,6 +756,8 @@ func (t *Transaction) PreparePublication(blob []byte) (_ PreparedPublication, er
 			}
 			return PreparedPublication{}, fmt.Errorf("%w: local and remote opaque blobs diverged", ErrConflict)
 		}
+	} else if prerequisite.Exists {
+		return PreparedPublication{}, fmt.Errorf("%w: remote publication exists but cached identity is missing; sync or pull before pushing", ErrRefresh)
 	}
 	return PreparedPublication{Prerequisite: prerequisite, Target: target}, nil
 }
@@ -813,9 +815,19 @@ func (t *Transaction) SendPublication(blob []byte, prepared PreparedPublication)
 	if state != ConfigurationConfigured {
 		return BlobIdentity{}, fmt.Errorf("%w: %v", ErrPushNotSent, ErrUnconfigured)
 	}
-	identity, observed, err := cloud.PushBlobObserved(cfg, blob)
+	identity, observed, err := cloud.PushBlobObserved(cfg, blob, cloud.RemoteBlobIdentity{
+		Exists: prepared.Prerequisite.Exists,
+		Value:  prepared.Prerequisite.Value,
+	})
 	if err != nil {
 		switch {
+		case cloud.PushFailureIsConflict(err):
+			remote, observeErr := t.ObservePublicationIdentity()
+			if observeErr != nil {
+				remote = current
+			}
+			_ = t.preservePublicationConflict(prepared, remote)
+			return remote, fmt.Errorf("%w: remote publication precondition failed", ErrConflict)
 		case cloud.PushFailureIsExplicit(err):
 			return BlobIdentity{}, fmt.Errorf("%w: %w", ErrPushRejected, err)
 		case cloud.PushFailureIsAmbiguous(err):
@@ -858,50 +870,6 @@ func (t *Transaction) preservePublicationConflict(prepared PreparedPublication, 
 func (t *Transaction) ConfirmPublication(target string) {
 	t.commitSuccess("push", target)
 	t.recordExplicitOutcome(nil)
-}
-
-func (t *Transaction) PushBlob(blob []byte) (Facts, error) {
-	facts := t.localFacts()
-	cfg, state, err := t.configuration()
-	facts.Configuration = state
-	facts.Offline = t.offline
-	if err != nil {
-		return facts, err
-	}
-	switch state {
-	case ConfigurationOffline:
-		return markOffline(facts), ErrUnconfigured
-	case ConfigurationUnconfigured:
-		facts.Remote = RemoteNotConfigured
-		return facts, ErrUnconfigured
-	}
-	candidateIdentity := opaqueIdentity(blob)
-	if facts.RemoteETag != "" {
-		remote, headErr := cloud.RemoteETag(cfg)
-		if headErr != nil {
-			return facts, fmt.Errorf("%w: remote push preflight did not complete: %w", ErrRefresh, headErr)
-		}
-		facts.Remote = RemoteChecked
-		if remote != "" && remote != facts.RemoteETag && candidateIdentity != facts.RemoteETag {
-			conflict := SyncConflict{
-				DetectedAt: t.now().UTC().Format(time.RFC3339),
-				LocalETag:  candidateIdentity, RemoteETag: remote, CachedETag: facts.RemoteETag,
-			}
-			if err := preserveConflict(conflict); err != nil {
-				return facts, fmt.Errorf("%w: conflict evidence could not be preserved", ErrRefresh)
-			}
-			facts.Conflict = &conflict
-			return facts, fmt.Errorf("%w: local and remote opaque blobs diverged", ErrConflict)
-		}
-	}
-	committedIdentity, err := cloud.PushBlob(cfg, blob)
-	if err != nil {
-		return facts, fmt.Errorf("%w: remote push did not commit: %w", ErrRefresh, err)
-	}
-	t.commitSuccess("push", committedIdentity)
-	facts = t.localFacts()
-	facts.Configuration, facts.Remote = state, RemoteChecked
-	return facts, nil
 }
 
 func opaqueIdentity(blob []byte) string {

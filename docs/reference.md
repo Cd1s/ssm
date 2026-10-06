@@ -379,6 +379,8 @@ sshctl --json push --only <transaction-id>
 
 Replace `<transaction-id>` with the exact ID returned by the mutation. Do not use bare `push`; use `sshctl --json push --all` only after reviewing every pending change in the invocation-start set.
 
+Publication uses the server's conditional blob precondition when supported. If the local remote identity cache is missing while a remote blob exists, sync or pull first; the publication is refused until that identity is confirmed. Older sync servers remain compatible through the existing HEAD-then-PUT fallback.
+
 ### Explicit publication scope and empty ledgers
 
 `push --only <transaction-id>` publishes one reviewed transaction. `push --all` fixes the invocation-start pending-ID set and publishes only that set. An empty set never overwrites the complete local blob: identical identities return `action:"noop"`, while missing or divergent identities return `error:"sync_conflict"`; follow the guarded [empty-ledger recovery guidance](../skills/agent-ssm/references/import-json.md) for pull, reviewed `--merge`, and a new `push --only <transaction-id>`.

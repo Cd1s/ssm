@@ -2683,6 +2683,7 @@ func TestCompiledCLIContractMatrix(t *testing.T) {
 		sync.SetRemote(t, nil, strings.Repeat("a", 64))
 		scopedCloudCanary := "ISSUE17_SCOPED_PUSH_CLOUD_OUTPUT_CANARY"
 		mutationCLI.SaveCloud(t, sync.URL(), scopedCloudCanary)
+		mutationCLI.SaveRemoteETag(t, strings.Repeat("a", 64))
 		pushed := mutationCLI.Run(t, "sshctl", nil, "--json", "push", "--only", betaID)
 		pushedValue := assertCompiledJSONSuccess(t, pushed)
 		assertCompiledStringField(t, pushedValue, "transaction_id", betaID, pushed)
@@ -4022,10 +4023,12 @@ func TestCompiledConfirmedSyncMetadataFailuresRemainSuccessful(t *testing.T) {
 					}},
 				}
 				cli.SaveVault(t, starting)
-				sync.SetRemote(t, nil, strings.Repeat("b", 64))
+				cachedETag := strings.Repeat("b", 64)
+				sync.SetRemote(t, nil, cachedETag)
 				cli.SaveCloud(t, sync.URL(), tokenCanary)
 				configDir := filepath.Join(cli.home, ".config", "ssm")
-				if err := os.Mkdir(filepath.Join(configDir, "remote.etag"), 0o700); err != nil {
+				cli.SaveRemoteETag(t, cachedETag)
+				if err := os.Mkdir(filepath.Join(configDir, "settings.json"), 0o700); err != nil {
 					t.Fatal(err)
 				}
 				cli.writeConfigFile(t, "sync-conflict.json", []byte(

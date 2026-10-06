@@ -378,6 +378,8 @@ sshctl --json push --only <transaction-id>
 
 把 `<transaction-id>` 替换为刚才命令返回的精确 ID。不要使用裸 `push`；只有在审查了调用开始时的全部 pending 变更后，才使用 `sshctl --json push --all`。
 
+发布在服务器支持时会使用条件 blob 前置校验。本机缺少远端身份缓存但远端已有 blob 时，请先执行 sync 或 pull；身份确认前发布会被拒绝。旧版同步服务器仍通过原有的 HEAD 后 PUT 兼容路径工作。
+
 ### 精确发布范围与空 ledger
 
 `push --only <transaction-id>` 发布一个 reviewed transaction，`push --all` 只固定并发布调用开始时的 pending ID 集合。空集合不会覆盖整个本地 blob：一致时是 `action:"noop"`，缺少或不一致的身份则是 `error:"sync_conflict"`；按[空 ledger 恢复说明](../skills/agent-ssm/references/import-json.md)执行受保护的 pull、reviewed `--merge` 和新的 `push --only <transaction-id>`。

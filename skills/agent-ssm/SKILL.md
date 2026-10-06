@@ -117,6 +117,11 @@ while missing or divergent identities return `error:"sync_conflict"` and
 preserve both sides. Follow [guarded empty-ledger recovery](references/import-json.md)
 for pull, reviewed `--merge`, and a new scoped transaction.
 
+Publishing requires a confirmed remote identity when the server already has a
+blob; sync or pull first if the local remote identity cache is missing. New
+servers enforce this with conditional PUTs and older servers use the existing
+HEAD-then-PUT compatibility path.
+
 Sync is local-first by default: read commands use the local inventory, never
 wait for the sync service, and start a detached background sync when one is due.
 Decide whether the inventory can be trusted from `sshctl --json status`, not
