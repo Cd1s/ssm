@@ -1,12 +1,68 @@
 # Release Notes
 
-These notes are the reviewed contract for the authorized stable v2.2.0
+These notes are the reviewed contract for the authorized stable v2.3.0
 Release. The official exact-tag workflow publishes it non-latest first with
-`make_latest=false`; v2.1.0 remains GitHub latest until published-asset
+`make_latest=false`; v2.2.0 remains GitHub latest until published-asset
 canaries pass and a separate promotion is made. See the
 [v1→v2 migration guide](docs/migration-v1-to-v2.md) and
 [update-provenance runbook](docs/update-provenance-runbook.md) for operator and
 maintainer gates.
+
+## v2.3.0
+
+This is a v2 minor release. The official exact-tag release workflow creates
+the stable v2.3.0 Release with `make_latest=false`; v2.2.0 remains GitHub
+latest until published-asset canaries pass and a separate promotion is made.
+Ordinary `ssm update` stays within v2.
+
+### `sshctl tunnel`
+
+- `sshctl tunnel` provides foreground `-L` local port forwarding and `-D`
+  dynamic forwarding. It reuses the existing connection path, so host-key
+  verification and `proxy_jump` continue to apply.
+- Local listeners bind to loopback by default. A non-loopback bind requires
+  both `--allow-remote-bind` and `--yes`.
+- `--ready-file` writes readiness state, and `--duration` bounds the
+  foreground lifetime. Readiness and termination each produce one JSON line
+  when JSON output is selected.
+- An SSH disconnect exits the tunnel; it does not reconnect automatically.
+- New error codes are `tunnel_invalid_arguments`, `tunnel_bind_failed`, and
+  `tunnel_remote_bind_refused`.
+- This release does not include `-R`, a background daemon, or automatic
+  reconnect.
+
+### Important update fix: Alpine and gcompat
+
+Older `ssm update` versions could write the new version onto the system C
+library on Alpine with gcompat (`/lib/ld-musl-x86_64.so.1`), causing most host
+programs to crash with segmentation faults. The updater now replaces only a
+file named `ssm` or `sshctl`; otherwise it refuses and explains the reason
+without changing any file.
+
+On Alpine, do not use `ssm update` to upgrade from v2.2.0 or earlier: those
+versions contain this defect. Download the matching release asset manually,
+verify its SHA-256, and replace the binary. After upgrading to v2.3.0,
+`ssm update` is safe.
+
+### Sync server token history
+
+Each account now retains 256 login-token hashes instead of 16. With 16
+machines under one account, logging in on one more machine could evict another
+machine's token and make its next sync fail with HTTP 401. Deploy the new
+`internal/syncserver` server for this change to take effect.
+
+There is no request-schema or JSON-field breaking change; no request schema or
+JSON field has a newly added or changed breaking form.
+The checked range has no request-schema file changes; request and result
+additions remain additive. Error codes are additive: these tunnel codes are
+new, and existing codes are unchanged.
+
+### Changes since v2.2.0
+
+- Added foreground SSH tunnel forwarding and its lifecycle/error contracts.
+- Fixed tunnel half-close handling so replies are not truncated.
+- Fixed updater executable lookup and refusal to replace foreign executables.
+- Increased sync-server login-token history from 16 to 256.
 
 ## v2.2.0
 

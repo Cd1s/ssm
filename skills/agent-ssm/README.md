@@ -5,9 +5,9 @@
 [![Agent Skills](https://img.shields.io/badge/Agent%20Skills-agent--ssm-blueviolet)](SKILL.md)
 [![Project](https://img.shields.io/badge/Project-Cd1s%2Fssm-blue)](https://github.com/Cd1s/ssm)
 
-The official skill targets the current GitHub latest `ssm`/`sshctl` v2.1.0
-binary. It also supports the prepared v2.2.0 release, the previous v2.0.2,
-v2.0.1, and v2.0.0 patches and exact
+The official skill targets the current GitHub latest `ssm`/`sshctl` v2.2.0
+binary. It also supports the prepared v2.3.0 release, the previous v2.1.0,
+v2.0.2, v2.0.1, and v2.0.0 patches and exact
 v1.4.3/v1.4.4 binaries through the matching compatibility branches. It probes
 `sshctl --json --version` before state-aware work, then fails closed on an
 unlisted version or unsupported major. Read the
@@ -60,8 +60,9 @@ Always run `sshctl --json --version` first and select one branch:
 
 | Exact version | Branch | Request schema |
 | --- | --- | --- |
-| v2.2.0 (supported; not latest until promoted) | v2 compatibility branch | `references/request-v1.schema.json` |
-| v2.1.0 (current/latest) | v2 compatibility branch | `references/request-v1.schema.json` |
+| v2.3.0 (supported; not latest until promoted) | v2 compatibility branch | `references/request-v1.schema.json` |
+| v2.2.0 (current/latest) | v2 compatibility branch | `references/request-v1.schema.json` |
+| v2.1.0 (supported previous v2 patch) | v2 compatibility branch | `references/request-v1.schema.json` |
 | v2.0.2 (supported previous v2 patch) | v2 compatibility branch | `references/request-v1.schema.json` |
 | v2.0.1 (supported previous v2 patch) | v2 compatibility branch | `references/request-v1.schema.json` |
 | v2.0.0 (supported earlier v2 patch) | v2 compatibility branch | `references/request-v1.schema.json` |
@@ -95,7 +96,7 @@ invocation-start pending-ID set.
 
 ## Updates
 
-The current v2.1.0 is latest; the prepared v2.2.0 remains non-latest until
+The current v2.2.0 is latest; the prepared v2.3.0 remains non-latest until
 published-asset canaries pass and a separate promotion. Ordinary updates remain same-major
 (the highest stable release of the installed major, not the GitHub latest flag). A v1.4.3
 or v1.4.4 installation stays on major 1 for ordinary `ssm update`; review a
@@ -140,7 +141,7 @@ skills/agent-ssm/
 │   ├── import-json.md               # Guarded legacy bulk import and recovery
 │   ├── install-update.md            # Exact-tag Codex/Hermes deployment
 │   ├── request-v1-bridge.schema.json # v1.4.3/v1.4.4 subset
-│   ├── request-v1.schema.json       # v2.0.0 through v2.2.0 typed request schema v1
+│   ├── request-v1.schema.json       # v2.0.0 through v2.3.0 typed request schema v1
 │   └── version-compatibility.md     # Required version branch matrix
 └── test-prompts.json                # Dry-run prompts for skill validation
 ```

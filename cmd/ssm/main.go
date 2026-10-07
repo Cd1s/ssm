@@ -21,7 +21,7 @@ var (
 	unlockedVaultIdentity      vaultFileIdentity
 	unlockedVaultIdentityKnown bool
 	streamMachine              bool
-	version                    = "2.2.0"
+	version                    = "2.3.0"
 )
 
 func isSSHCTLInvocation(path string) bool {
