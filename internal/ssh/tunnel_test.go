@@ -559,7 +559,8 @@ func TestRunTunnelLifecycleReadyDurationAndConnectionLost(t *testing.T) {
 	ready, done, cancel := runTunnel(t, conn, vault, TunnelSpec{Kind: "dynamic", Bind: "127.0.0.1"}, TunnelOptions{ReadyFile: readyFile})
 	address := listenerAddress(t, ready)
 	info, err := os.Stat(readyFile)
-	if err != nil || info.Mode().Perm() != 0o600 {
+	// Windows reports every file as 0666; only POSIX modes are meaningful.
+	if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Fatalf("ready file stat = %v, info=%v", err, info)
 	}
 	cancel()
