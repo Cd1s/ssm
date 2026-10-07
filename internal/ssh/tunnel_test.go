@@ -139,7 +139,13 @@ func startTunnelEcho(t *testing.T) (string, func()) {
 					return
 				}
 			}
-			go func() { defer func() { _ = conn.Close() }(); _, _ = io.Copy(conn, conn) }()
+			go func() {
+				defer func() { _ = conn.Close() }()
+				_, _ = io.Copy(conn, conn)
+				if cw, ok := conn.(*net.TCPConn); ok {
+					_ = cw.CloseWrite()
+				}
+			}()
 		}
 	}()
 	return listener.Addr().String(), func() { close(stop); _ = listener.Close() }
@@ -282,6 +288,51 @@ func socksRequest(t *testing.T, conn net.Conn, cmd, atyp byte, host string, port
 		t.Fatal(err)
 	}
 	return response[1]
+}
+
+// Many clients send a request, half-close their write side, and then read the
+// reply until EOF. The end of the request direction must not cut the reply
+// short: everything the target sends back has to arrive.
+func TestRunTunnelHalfClosedRequestStillGetsCompleteReply(t *testing.T) {
+	_, conn, vault := tunnelServer(t)
+	target, stopTarget := startTunnelEcho(t)
+	defer stopTarget()
+	host, portText, _ := net.SplitHostPort(target)
+	port, _ := strconv.Atoi(portText)
+	ready, done, cancel := runTunnel(t, conn, vault, TunnelSpec{Kind: "local", Bind: "127.0.0.1", Host: host, TargetPort: port}, TunnelOptions{})
+	address := listenerAddress(t, ready)
+	client, err := net.Dial("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := make([]byte, 1<<20)
+	if _, err := rand.Read(data); err != nil {
+		t.Fatal(err)
+	}
+	writeDone := make(chan error, 1)
+	go func() {
+		_, werr := client.Write(data)
+		if cw, ok := client.(*net.TCPConn); ok && werr == nil {
+			werr = cw.CloseWrite()
+		}
+		writeDone <- werr
+	}()
+	_ = client.SetReadDeadline(time.Now().Add(10 * time.Second))
+	got, err := io.ReadAll(client)
+	if err != nil {
+		t.Fatalf("reading until EOF: %v (got %d of %d bytes)", err, len(got), len(data))
+	}
+	if werr := <-writeDone; werr != nil {
+		t.Fatal(werr)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatalf("half-closed request got %d bytes back, want all %d", len(got), len(data))
+	}
+	_ = client.Close()
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestRunTunnelSOCKSConnectIPv4DomainAndFailures(t *testing.T) {

@@ -127,10 +127,29 @@ func (s *jumpTestServer) forward(newChannel gossh.NewChannel) {
 	}
 	go gossh.DiscardRequests(requests)
 	s.forwards.Add(1)
-	var once sync.Once
-	closeBoth := func() { _ = channel.Close(); _ = upstream.Close() }
-	go func() { _, _ = io.Copy(upstream, channel); once.Do(closeBoth) }()
-	go func() { _, _ = io.Copy(channel, upstream); once.Do(closeBoth) }()
+	// Relay like sshd does: the end of one direction only half-closes the
+	// other, so a client that finished its request and shut its write side
+	// still receives the complete reply. Both ends are closed once both
+	// directions are done.
+	var finished sync.WaitGroup
+	finished.Add(2)
+	go func() {
+		defer finished.Done()
+		_, _ = io.Copy(upstream, channel)
+		if tcp, ok := upstream.(*net.TCPConn); ok {
+			_ = tcp.CloseWrite()
+		}
+	}()
+	go func() {
+		defer finished.Done()
+		_, _ = io.Copy(channel, upstream)
+		_ = channel.CloseWrite()
+	}()
+	go func() {
+		finished.Wait()
+		_ = channel.Close()
+		_ = upstream.Close()
+	}()
 }
 
 func (s *jumpTestServer) Targets() []string {

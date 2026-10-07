@@ -348,22 +348,41 @@ func handleLocal(ctx context.Context, local net.Conn, client *gossh.Client, targ
 	copyBoth(ctx, local, remote)
 }
 
+// closeWriter signals "no more data from me" on one direction of a connection
+// while leaving the other direction readable. net.TCPConn and the channel
+// returned by ssh.Client.Dial both support it; anything else falls back to a
+// full close, which is the old behaviour.
+type closeWriter interface{ CloseWrite() error }
+
+// copyBoth relays data in both directions until both have finished. A peer
+// that half-closes (sends everything, then shuts its write side, and keeps
+// reading) must still receive the complete reply, so the end of one direction
+// only half-closes the other side. Cancelling ctx tears both down at once.
 func copyBoth(ctx context.Context, a, b net.Conn) {
-	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(a, b); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(b, a); done <- struct{}{} }()
-	completed := 0
+	var wg sync.WaitGroup
+	relay := func(dst, src net.Conn) {
+		defer wg.Done()
+		_, _ = io.Copy(dst, src)
+		if cw, ok := dst.(closeWriter); ok {
+			_ = cw.CloseWrite()
+			return
+		}
+		_ = dst.Close()
+		_ = src.Close()
+	}
+	wg.Add(2)
+	go relay(a, b)
+	go relay(b, a)
+
+	finished := make(chan struct{})
+	go func() { wg.Wait(); close(finished) }()
 	select {
-	case <-done:
-		completed = 1
+	case <-finished:
 	case <-ctx.Done():
 	}
 	_ = a.Close()
 	_ = b.Close()
-	for completed < 2 {
-		<-done
-		completed++
-	}
+	<-finished
 }
 
 func socksReply(conn net.Conn, code byte) {
