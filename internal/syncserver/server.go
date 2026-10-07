@@ -445,6 +445,11 @@ func quoteETag(value string) string {
 	return `"` + value + `"`
 }
 
+// maxTokenHashes bounds the login history kept per account. Every login mints
+// a new token and an old one stays valid until it falls out of this window, so
+// the bound must comfortably exceed the number of machines sharing one account.
+const maxTokenHashes = 256
+
 func appendTokenHash(tokens []string, tokenHash string) []string {
 	if tokenHash == "" {
 		return tokens
@@ -455,8 +460,8 @@ func appendTokenHash(tokens []string, tokenHash string) []string {
 		}
 	}
 	tokens = append(tokens, tokenHash)
-	if len(tokens) > 16 {
-		tokens = tokens[len(tokens)-16:]
+	if len(tokens) > maxTokenHashes {
+		tokens = tokens[len(tokens)-maxTokenHashes:]
 	}
 	return tokens
 }
