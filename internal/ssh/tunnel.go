@@ -22,6 +22,7 @@ import (
 
 	"ssm/internal/config"
 	"ssm/internal/machinecontract"
+	"ssm/internal/privatepath"
 )
 
 var tunnelMaxConnections = 256
@@ -254,7 +255,13 @@ func RunTunnel(ctx context.Context, c config.Connection, v *config.Vault, specs 
 			closeAll()
 			return TunnelResult{}, tunnelFailure(machinecontract.TunnelBindFailed, "failed to write ready file", err)
 		}
-		_ = os.Chmod(opts.ReadyFile, 0600)
+		// 0600 means nothing on Windows; the shared helper applies a
+		// current-user-only ACL there and mode 0600 elsewhere.
+		if err := privatepath.RestrictFile(opts.ReadyFile); err != nil {
+			_ = os.Remove(opts.ReadyFile)
+			closeAll()
+			return TunnelResult{}, tunnelFailure(machinecontract.TunnelBindFailed, "failed to restrict ready file", err)
+		}
 		defer func() { _ = os.Remove(opts.ReadyFile) }()
 	}
 	if opts.OnReady != nil {
