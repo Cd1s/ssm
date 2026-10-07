@@ -186,7 +186,7 @@ func checkReleaseAsset(release Release) MigrationCheck {
 }
 
 func checkRollbackReadiness() MigrationCheck {
-	executable, err := resolveInstalledExecutable()
+	executable, err := resolveInstalledExecutable("cannot find current binary")
 	if err != nil {
 		return failedCheck("rollback_readiness", "The current executable is not an installed ssm binary.", "Install the release asset manually.")
 	}

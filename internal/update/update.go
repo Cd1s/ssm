@@ -205,7 +205,7 @@ func CleanupPreviousExecutable() error {
 	if runtime.GOOS != "windows" {
 		return nil
 	}
-	exe, err := resolveInstalledExecutable()
+	exe, err := resolveInstalledExecutable("find current executable")
 	if err != nil {
 		return err
 	}
@@ -295,7 +295,7 @@ func DownloadVersionBeforeReplace(version string, verbose bool, beforeReplace fu
 		return fmt.Errorf("%s exceeds %d-byte limit", asset, maxBinary)
 	}
 
-	exe, err := resolveInstalledExecutable()
+	exe, err := resolveInstalledExecutable("cannot find current binary")
 	if err != nil {
 		return err
 	}
@@ -610,10 +610,10 @@ var installedNames = map[string]bool{"ssm": true, "sshctl": true, "ssm.exe": tru
 // library) it reports the loader, so replacing "the current executable" would
 // overwrite the operating system's own library. Taking the path from the
 // command line instead is only accepted when it names ssm or sshctl.
-func resolveInstalledExecutable() (string, error) {
+func resolveInstalledExecutable(findFailure string) (string, error) {
 	exe, err := executablePath()
 	if err != nil {
-		return "", fmt.Errorf("cannot find current binary: %w", err)
+		return "", fmt.Errorf("%s: %w", findFailure, err)
 	}
 	canonical, err := evalSymlinks(exe)
 	if err != nil {

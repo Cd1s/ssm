@@ -37,7 +37,7 @@ func TestResolveInstalledExecutableRefusesLoaderWithoutSSMName(t *testing.T) {
 	evalSymlinks = func(path string) (string, error) { return path, nil }
 	commandLineName = func() string { return "/usr/bin/some-other-tool" }
 
-	got, err := resolveInstalledExecutable()
+	got, err := resolveInstalledExecutable("cannot find current binary")
 	if err == nil || !strings.Contains(err.Error(), "refusing to update") {
 		t.Fatalf("resolve = %q, %v; want a refusal", got, err)
 	}
@@ -57,7 +57,7 @@ func TestResolveInstalledExecutableRecoversSSMThroughCommandLine(t *testing.T) {
 		return installed, nil
 	}
 
-	got, err := resolveInstalledExecutable()
+	got, err := resolveInstalledExecutable("cannot find current binary")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestResolveInstalledExecutableRecoversSshctlSymlink(t *testing.T) {
 	commandLineName = func() string { return "sshctl" }
 	lookPath = func(string) (string, error) { return link, nil }
 
-	got, err := resolveInstalledExecutable()
+	got, err := resolveInstalledExecutable("cannot find current binary")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestResolveInstalledExecutableRefusesWhenCommandLineResolvesToLoader(t *tes
 	}
 	lookPath = func(string) (string, error) { return trap, nil }
 
-	if got, err := resolveInstalledExecutable(); err == nil {
+	if got, err := resolveInstalledExecutable("cannot find current binary"); err == nil {
 		t.Fatalf("resolve = %q, want a refusal because the target is the library", got)
 	}
 	assertExecutableBytes(t, loader, "operating system library")
@@ -116,7 +116,7 @@ func TestResolveInstalledExecutableKeepsOrdinaryInstall(t *testing.T) {
 	commandLineName = func() string { return "/does/not/matter/and/is/ignored" }
 	lookPath = func(string) (string, error) { t.Fatal("LookPath used for an ordinary install"); return "", nil }
 
-	got, err := resolveInstalledExecutable()
+	got, err := resolveInstalledExecutable("cannot find current binary")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestResolveInstalledExecutableRejectsOtherCommandNames(t *testing.T) {
 	commandLineName = func() string { return "backup-helper" }
 	lookPath = func(string) (string, error) { return installed, nil }
 
-	if got, err := resolveInstalledExecutable(); err == nil {
+	if got, err := resolveInstalledExecutable("cannot find current binary"); err == nil {
 		t.Fatalf("resolve = %q, want a refusal for a process not started as ssm or sshctl", got)
 	}
 }
