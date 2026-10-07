@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -349,6 +350,35 @@ func TestRunTunnelSOCKSConnectIPv4DomainAndFailures(t *testing.T) {
 	}
 }
 
+// A long domain name must reach the far end byte for byte. A reader that does
+// not honour the declared length byte (fixed width, off-by-one, truncation at
+// a small limit) would deliver a different name, or desynchronise the stream.
+func TestRunTunnelSOCKSDomainLengthIsHonoured(t *testing.T) {
+	server, conn, vault := tunnelServer(t)
+	ready, done, cancel := runTunnel(t, conn, vault, TunnelSpec{Kind: "dynamic", Bind: "127.0.0.1"}, TunnelOptions{})
+	address := listenerAddress(t, ready)
+	for _, name := range []string{"a.example", "a-fairly-long-host-name.internal.example.org", strings.Repeat("x", 63) + "." + strings.Repeat("y", 63) + ".example", strings.Repeat("z", 255)} {
+		client := socksHandshake(t, address, 0)
+		if code := socksRequest(t, client, 1, 3, name, 4242); code != 0 && code != 5 {
+			t.Fatalf("domain %d bytes: SOCKS code = %d, want success or a refused connection", len(name), code)
+		}
+		_ = client.Close()
+		want := name + ":4242"
+		waitUntil(t, "domain of "+strconv.Itoa(len(name))+" bytes", func() bool {
+			for _, target := range server.Targets() {
+				if target == want {
+					return true
+				}
+			}
+			return false
+		})
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRunTunnelSOCKSMalformedAndHandshakeTimeout(t *testing.T) {
 	old := socksHandshakeTimeout
 	socksHandshakeTimeout = 100 * time.Millisecond
@@ -518,17 +548,54 @@ func TestRunTunnelLifecycleReadyDurationAndConnectionLost(t *testing.T) {
 	waitUntil(t, "tunnel goroutines", func() bool { return runtime.NumGoroutine() <= before+8 })
 }
 
+// runTunnelBounded runs a tunnel that must NOT come up. If host-key
+// verification were bypassed the tunnel would establish and block forever, so
+// the context is cancelled shortly after and "it started" is reported as a
+// failure instead of hanging the test.
+func runTunnelBounded(t *testing.T, conn config.Connection) (started bool, err error) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan struct{}, 1)
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := RunTunnel(ctx, conn, &config.Vault{}, []TunnelSpec{{Kind: "dynamic", Bind: "127.0.0.1", Port: 0}}, TunnelOptions{
+			OnReady: func(TunnelResult) error { ready <- struct{}{}; return nil },
+		})
+		done <- runErr
+	}()
+	select {
+	case <-ready:
+		cancel()
+		<-done
+		return true, nil
+	case runErr := <-done:
+		return false, runErr
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("tunnel neither failed nor came up within 5s")
+		return false, nil
+	}
+}
+
 func TestRunTunnelHostKeyUnknownAndMismatch(t *testing.T) {
 	server := startJumpTestServer(t)
 	conn := connectionFor(t, server.address)
 	setTestHome(t, t.TempDir())
-	_, err := RunTunnel(context.Background(), conn, &config.Vault{}, []TunnelSpec{{Kind: "dynamic", Bind: "127.0.0.1", Port: 0}}, TunnelOptions{})
+	started, err := runTunnelBounded(t, conn)
+	if started {
+		t.Fatal("tunnel came up for an unknown host key: host-key verification was bypassed")
+	}
 	if failure, ok := machinecontract.FailureFromError(err); !ok || failure.Error != machinecontract.CodeHostKeyUnknown {
 		t.Fatalf("unknown host key = %+v, ok=%v, err=%v", failure, ok, err)
 	}
 	setTestHome(t, t.TempDir())
 	writeTestKnownHosts(t, os.Getenv("HOME"), knownLine(server.address, newTestSigner(t, "ed25519")))
-	_, err = RunTunnel(context.Background(), conn, &config.Vault{}, []TunnelSpec{{Kind: "dynamic", Bind: "127.0.0.1", Port: 0}}, TunnelOptions{})
+	started, err = runTunnelBounded(t, conn)
+	if started {
+		t.Fatal("tunnel came up for a mismatched host key: host-key verification was bypassed")
+	}
 	if failure, ok := machinecontract.FailureFromError(err); !ok || failure.Error != machinecontract.CodeHostKey {
 		t.Fatalf("mismatched host key = %+v, ok=%v, err=%v", failure, ok, err)
 	}
