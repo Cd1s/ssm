@@ -32,13 +32,15 @@ func runTunnelArgs(args []string) {
 		}
 		switch arg {
 		case "-L":
-			spec, err := ssh.ParseLocalForward(require())
+			value := require()
+			spec, err := parseTunnelLocalForward(value)
 			if err != nil {
 				os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.TunnelInvalidArguments, machinecontract.Details{Cause: err}))
 			}
 			specs = append(specs, spec)
 		case "-D":
-			spec, err := ssh.ParseDynamicForward(require())
+			value := require()
+			spec, err := parseTunnelDynamicForward(value)
 			if err != nil {
 				os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.TunnelInvalidArguments, machinecontract.Details{Cause: err}))
 			}
@@ -69,6 +71,13 @@ func runTunnelArgs(args []string) {
 	}
 	if len(specs) == 0 {
 		os.Exit(machinecontract.WriteClassified(machineJSON, machinecontract.TunnelInvalidArguments, machinecontract.Details{Message: "tunnel requires at least one -L or -D"}))
+	}
+	if err := ssh.ValidateTunnelSpecs(specs, opts); err != nil {
+		failure, ok := machinecontract.FailureFromError(err)
+		if !ok {
+			failure = machinecontract.Classify(machinecontract.TunnelInvalidArguments, machinecontract.Details{Cause: err})
+		}
+		os.Exit(machinecontract.WriteFailure(machineJSON, failure, failure))
 	}
 	unlock()
 	if opts.ConnectTimeout > 0 {
@@ -130,6 +139,32 @@ func runTunnelArgs(args []string) {
 	} else {
 		fmt.Printf("closed=1 reason=%s\n", result.Reason)
 	}
+}
+
+func parseTunnelLocalForward(value string) (ssh.TunnelSpec, error) {
+	if strings.Contains(value, ":0:") {
+		if spec, err := ssh.ParseLocalForward(strings.Replace(value, ":0:", ":1:", 1)); err == nil {
+			spec.Port = 0
+			return spec, nil
+		}
+	}
+	return ssh.ParseLocalForward(value)
+}
+
+func parseTunnelDynamicForward(value string) (ssh.TunnelSpec, error) {
+	if strings.HasSuffix(value, ":0") || value == "0" {
+		replaced := strings.TrimSuffix(value, ":0")
+		if value == "0" {
+			replaced = "1"
+		} else {
+			replaced += ":1"
+		}
+		if spec, err := ssh.ParseDynamicForward(replaced); err == nil {
+			spec.Port = 0
+			return spec, nil
+		}
+	}
+	return ssh.ParseDynamicForward(value)
 }
 
 func writeMachineValueErr(value any) error {

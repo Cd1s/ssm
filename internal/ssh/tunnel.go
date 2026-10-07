@@ -24,7 +24,8 @@ import (
 	"ssm/internal/machinecontract"
 )
 
-const tunnelMaxConnections = 256
+var tunnelMaxConnections = 256
+var socksHandshakeTimeout = 10 * time.Second
 
 // TunnelSpec describes one local or dynamic listener.
 type TunnelSpec struct {
@@ -189,23 +190,32 @@ func tunnelFailure(kind machinecontract.Kind, message string, cause error) error
 	return machinecontract.NewClassifiedError(machinecontract.Classify(kind, machinecontract.Details{Message: message, Cause: cause}))
 }
 
+// ValidateTunnelSpecs checks every listener before credentials are read or a
+// network socket is opened.
+func ValidateTunnelSpecs(specs []TunnelSpec, opts TunnelOptions) error {
+	if len(specs) == 0 {
+		return tunnelFailure(machinecontract.TunnelInvalidArguments, "tunnel requires at least one -L or -D", nil)
+	}
+	for _, spec := range specs {
+		if spec.Kind != "local" && spec.Kind != "dynamic" {
+			return tunnelFailure(machinecontract.TunnelInvalidArguments, "unknown tunnel listener kind", nil)
+		}
+		if spec.Port < 0 || spec.Port > 65535 || spec.Bind == "" || (spec.Kind == "local" && (spec.Host == "" || spec.TargetPort < 1 || spec.TargetPort > 65535)) {
+			return tunnelFailure(machinecontract.TunnelInvalidArguments, "invalid tunnel listener specification", nil)
+		}
+		if !tunnelBindAllowed(spec.Bind, opts) {
+			return tunnelFailure(machinecontract.TunnelRemoteBindRefused, "non-loopback bind requires --allow-remote-bind --yes", nil)
+		}
+	}
+	return nil
+}
+
 // RunTunnel runs all listeners until ctx is cancelled, Duration expires, or
 // the SSH transport disappears. It returns only after listeners and handlers
 // have stopped, so callers can immediately reuse the ports.
 func RunTunnel(ctx context.Context, c config.Connection, v *config.Vault, specs []TunnelSpec, opts TunnelOptions) (TunnelResult, error) {
-	if len(specs) == 0 {
-		return TunnelResult{}, tunnelFailure(machinecontract.TunnelInvalidArguments, "tunnel requires at least one -L or -D", nil)
-	}
-	for _, spec := range specs {
-		if spec.Kind != "local" && spec.Kind != "dynamic" {
-			return TunnelResult{}, tunnelFailure(machinecontract.TunnelInvalidArguments, "unknown tunnel listener kind", nil)
-		}
-		if spec.Port < 1 || spec.Port > 65535 || spec.Bind == "" || (spec.Kind == "local" && (spec.Host == "" || spec.TargetPort < 1 || spec.TargetPort > 65535)) {
-			return TunnelResult{}, tunnelFailure(machinecontract.TunnelInvalidArguments, "invalid tunnel listener specification", nil)
-		}
-		if !tunnelBindAllowed(spec.Bind, opts) {
-			return TunnelResult{}, tunnelFailure(machinecontract.TunnelRemoteBindRefused, "non-loopback bind requires --allow-remote-bind --yes", nil)
-		}
+	if err := ValidateTunnelSpecs(specs, opts); err != nil {
+		return TunnelResult{}, err
 	}
 	listeners := make([]net.Listener, 0, len(specs))
 	result := TunnelResult{Listeners: make([]TunnelListener, 0, len(specs))}
@@ -214,11 +224,17 @@ func RunTunnel(ctx context.Context, c config.Connection, v *config.Vault, specs 
 			_ = l.Close()
 		}
 	}
+	client, err := dialSSHOpts(c, v, true)
+	if err != nil {
+		return TunnelResult{}, ClassifyError(err, c)
+	}
+	defer func() { _ = client.Close() }()
 	for _, spec := range specs {
 		address := net.JoinHostPort(spec.Bind, strconv.Itoa(spec.Port))
 		l, listenErr := net.Listen("tcp", address)
 		if listenErr != nil {
 			closeAll()
+			_ = client.Close()
 			return TunnelResult{}, tunnelFailure(machinecontract.TunnelBindFailed, "failed to listen on "+address, listenErr)
 		}
 		listeners = append(listeners, l)
@@ -229,12 +245,6 @@ func RunTunnel(ctx context.Context, c config.Connection, v *config.Vault, specs 
 		}
 		result.Listeners = append(result.Listeners, TunnelListener{Kind: spec.Kind, Bind: bound, Target: target})
 	}
-	client, err := dialSSHOpts(c, v, true)
-	if err != nil {
-		closeAll()
-		return TunnelResult{}, ClassifyError(err, c)
-	}
-	defer client.Close()
 	if opts.ReadyFile != "" {
 		data, _ := json.Marshal(struct {
 			Listeners []TunnelListener `json:"listeners"`
@@ -245,7 +255,7 @@ func RunTunnel(ctx context.Context, c config.Connection, v *config.Vault, specs 
 			return TunnelResult{}, tunnelFailure(machinecontract.TunnelBindFailed, "failed to write ready file", err)
 		}
 		_ = os.Chmod(opts.ReadyFile, 0600)
-		defer os.Remove(opts.ReadyFile)
+		defer func() { _ = os.Remove(opts.ReadyFile) }()
 	}
 	if opts.OnReady != nil {
 		if err := opts.OnReady(result); err != nil {
@@ -259,7 +269,10 @@ func RunTunnel(ctx context.Context, c config.Connection, v *config.Vault, specs 
 	var handlers sync.WaitGroup
 	var accepts sync.WaitGroup
 	for i, l := range listeners {
-		spec := specs[i]
+		if i >= len(specs) {
+			break
+		}
+		spec := specs[i] //nolint:gosec // listeners are created from the same validated specs slice
 		accepts.Add(1)
 		go func() {
 			defer accepts.Done()
@@ -326,12 +339,12 @@ func RunTunnel(ctx context.Context, c config.Connection, v *config.Vault, specs 
 }
 
 func handleLocal(ctx context.Context, local net.Conn, client *gossh.Client, target string) {
-	defer local.Close()
+	defer func() { _ = local.Close() }()
 	remote, err := client.Dial("tcp", target)
 	if err != nil {
 		return
 	}
-	defer remote.Close()
+	defer func() { _ = remote.Close() }()
 	copyBoth(ctx, local, remote)
 }
 
@@ -339,14 +352,18 @@ func copyBoth(ctx context.Context, a, b net.Conn) {
 	done := make(chan struct{}, 2)
 	go func() { _, _ = io.Copy(a, b); done <- struct{}{} }()
 	go func() { _, _ = io.Copy(b, a); done <- struct{}{} }()
+	completed := 0
 	select {
 	case <-done:
+		completed = 1
 	case <-ctx.Done():
 	}
 	_ = a.Close()
 	_ = b.Close()
-	<-done
-	<-done
+	for completed < 2 {
+		<-done
+		completed++
+	}
 }
 
 func socksReply(conn net.Conn, code byte) {
@@ -354,8 +371,8 @@ func socksReply(conn net.Conn, code byte) {
 }
 
 func handleSOCKS(ctx context.Context, conn net.Conn, client *gossh.Client) {
-	defer conn.Close()
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetReadDeadline(time.Now().Add(socksHandshakeTimeout))
 	header := []byte{0, 0}
 	if _, err := io.ReadFull(conn, header); err != nil {
 		return
@@ -439,7 +456,7 @@ func handleSOCKS(ctx context.Context, conn net.Conn, client *gossh.Client) {
 		socksReply(conn, 5)
 		return
 	}
-	defer remote.Close()
+	defer func() { _ = remote.Close() }()
 	socksReply(conn, 0)
 	copyBoth(ctx, conn, remote)
 }
