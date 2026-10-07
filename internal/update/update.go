@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -131,6 +132,8 @@ var (
 	downloadBaseURL         = "https://github.com"
 	executablePath          = os.Executable
 	evalSymlinks            = filepath.EvalSymlinks
+	commandLineName         = func() string { return os.Args[0] }
+	lookPath                = exec.LookPath
 	verifyProvenance        = provenance.VerifyPublicGoodBundle
 	unixReplacementTestHook func(phase, staged, install string) error
 )
@@ -202,13 +205,9 @@ func CleanupPreviousExecutable() error {
 	if runtime.GOOS != "windows" {
 		return nil
 	}
-	exe, err := executablePath()
+	exe, err := resolveInstalledExecutable("find current executable")
 	if err != nil {
-		return fmt.Errorf("find current executable: %w", err)
-	}
-	exe, err = evalSymlinks(exe)
-	if err != nil {
-		return fmt.Errorf("resolve current executable: %w", err)
+		return err
 	}
 	return cleanupPreviousExecutable(exe)
 }
@@ -296,11 +295,7 @@ func DownloadVersionBeforeReplace(version string, verbose bool, beforeReplace fu
 		return fmt.Errorf("%s exceeds %d-byte limit", asset, maxBinary)
 	}
 
-	exe, err := executablePath()
-	if err != nil {
-		return fmt.Errorf("cannot find current binary: %w", err)
-	}
-	exe, err = evalSymlinks(exe)
+	exe, err := resolveInstalledExecutable("cannot find current binary")
 	if err != nil {
 		return err
 	}
@@ -602,4 +597,58 @@ func parseVersion(v string) []int {
 		out[i] = n
 	}
 	return out
+}
+
+// installedNames are the only file names an update may replace.
+var installedNames = map[string]bool{"ssm": true, "sshctl": true, "ssm.exe": true, "sshctl.exe": true}
+
+// resolveInstalledExecutable returns the canonical path of the installed ssm
+// binary, and refuses to return anything that is not one.
+//
+// os.Executable is not always the program file. Under a compatibility loader
+// (Alpine with gcompat starts every glibc program through the system C
+// library) it reports the loader, so replacing "the current executable" would
+// overwrite the operating system's own library. Taking the path from the
+// command line instead is only accepted when it names ssm or sshctl.
+func resolveInstalledExecutable(findFailure string) (string, error) {
+	exe, err := executablePath()
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", findFailure, err)
+	}
+	canonical, err := evalSymlinks(exe)
+	if err != nil {
+		return "", fmt.Errorf("resolve current executable: %w", err)
+	}
+	if installedNames[filepath.Base(exe)] || installedNames[filepath.Base(canonical)] {
+		return canonical, nil
+	}
+
+	// A symlink such as sshctl -> ssm resolves to a name we accept above; here
+	// the reported file has some other name. Recover the real program path.
+	argv0 := commandLineName()
+	if !installedNames[filepath.Base(argv0)] {
+		return "", refuseForeignExecutable(exe)
+	}
+	found, err := lookPath(argv0)
+	if err != nil {
+		return "", refuseForeignExecutable(exe)
+	}
+	if !filepath.IsAbs(found) {
+		if found, err = filepath.Abs(found); err != nil {
+			return "", refuseForeignExecutable(exe)
+		}
+	}
+	found, err = evalSymlinks(found)
+	if err != nil || !installedNames[filepath.Base(found)] {
+		return "", refuseForeignExecutable(exe)
+	}
+	info, err := os.Stat(found)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", refuseForeignExecutable(exe)
+	}
+	return found, nil
+}
+
+func refuseForeignExecutable(reported string) error {
+	return fmt.Errorf("refusing to update: the running program is reported as %q, which is not an ssm binary (a compatibility loader can cause this); nothing was changed. Install the release asset manually", reported)
 }

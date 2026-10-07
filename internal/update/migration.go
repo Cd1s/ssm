@@ -186,13 +186,9 @@ func checkReleaseAsset(release Release) MigrationCheck {
 }
 
 func checkRollbackReadiness() MigrationCheck {
-	executable, err := executablePath()
+	executable, err := resolveInstalledExecutable("cannot find current binary")
 	if err != nil {
-		return failedCheck("rollback_readiness", "The current executable path cannot be determined.", "Run from a stable writable installation path.")
-	}
-	executable, err = evalSymlinks(executable)
-	if err != nil {
-		return failedCheck("rollback_readiness", "The current executable symlink cannot be resolved.", "Repair the installation path before migration.")
+		return failedCheck("rollback_readiness", "The current executable is not an installed ssm binary.", "Install the release asset manually.")
 	}
 	info, err := os.Stat(executable)
 	if err != nil || !info.Mode().IsRegular() {
