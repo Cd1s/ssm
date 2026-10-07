@@ -553,6 +553,10 @@ ssm update --major --yes
 
 `--major --yes` does not bypass SHA-256, exact-tag, keyless-provenance, or failure-recovery checks. A failed update preserves the old executable and recovery evidence. See the [migration guide](migration-v1-to-v2.md) and [provenance runbook](update-provenance-runbook.md).
 
+### SSH tunnels
+
+`sshctl tunnel <alias>` runs foreground SSH forwarding with repeatable `-L [bind:]port:host:hostport` and `-D [bind:]port` listeners. Binds default to loopback; non-loopback binds require `--allow-remote-bind --yes`. Use `--ready-file` or the ready JSON line to detect availability, and run it as a background task when an agent needs a long-lived tunnel. Send SIGTERM to close it; `--duration` also performs a clean exit.
+
 ## Troubleshooting
 
 | Symptom (`error`) | What it means | What to do |

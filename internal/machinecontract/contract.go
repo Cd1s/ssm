@@ -67,6 +67,9 @@ const (
 	HandshakeFailed                     Kind = "handshake_failed"
 	ExecTimedOut                        Kind = "exec_timed_out"
 	WaitTimeout                         Kind = "wait_timeout"
+	TunnelInvalidArguments              Kind = "tunnel_invalid_arguments"
+	TunnelBindFailed                    Kind = "tunnel_bind_failed"
+	TunnelRemoteBindRefused             Kind = "tunnel_remote_bind_refused"
 	ScriptSyntaxFailed                  Kind = "script_syntax_failed"
 	HostInvalidArguments                Kind = "host_invalid_arguments"
 	HostApplyInvalidArguments           Kind = "host_apply_invalid_arguments"
@@ -387,6 +390,15 @@ var failurePolicies = map[Kind]failurePolicy{
 	WaitTimeout: {
 		Code: "wait_timeout", Stage: "wait",
 		Hint: "the host did not become reachable in time; check the host or increase --timeout (authentication and host-key failures stop wait immediately instead)", Exit: 1,
+	},
+	TunnelInvalidArguments: {
+		Code: "tunnel_invalid_arguments", Stage: "tunnel", Hint: "provide at least one valid -L or -D forward", Exit: 2,
+	},
+	TunnelBindFailed: {
+		Code: "tunnel_bind_failed", Stage: "tunnel", Hint: "the local port is already in use or permission was denied", Exit: 1,
+	},
+	TunnelRemoteBindRefused: {
+		Code: "tunnel_remote_bind_refused", Stage: "tunnel", Hint: "non-loopback binds require --allow-remote-bind --yes", Exit: 2,
 	},
 	HostKeyUnknown: {
 		Code: CodeHostKeyUnknown, Stage: "dial",
