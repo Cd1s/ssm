@@ -64,7 +64,7 @@ func knownLine(host string, signer gossh.Signer) string {
 func writeTestKnownHosts(t *testing.T, home string, lines ...string) string {
 	t.Helper()
 	dir := filepath.Join(home, ".ssh")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil { //nolint:gosec // test fixture: home is a t.TempDir path
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "known_hosts")
@@ -72,7 +72,7 @@ func writeTestKnownHosts(t *testing.T, home string, lines ...string) string {
 	for _, line := range lines {
 		content += line + "\n"
 	}
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil { //nolint:gosec // test fixture: path is under a t.TempDir home
 		t.Fatal(err)
 	}
 	return path
