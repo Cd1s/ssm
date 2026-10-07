@@ -331,6 +331,7 @@ Other commands:
 - `host add|update|upsert`: `--host`, `--port`, `--user`, `--group`, `--transfer auto|shell|sftp`, `--proxy-jump <alias>`, exactly one of `--key <name>`, `--key-file <path>` (with optional `--key-name <name>`), or `--password-file <path>`, plus `--verify` (verify before saving; a failed verification saves nothing) and `--push` (requires `--verify`). `host search --filter <query>` replaces the positional query; `host remove` needs `--yes` and optionally `--prune-key`.
 - `import-json <path>`: `--merge` or `--replace --yes`, `--manifest <path>` (aliases for entries that have none), `--expect-count <n>` (fail unless the file yields exactly n hosts; 0 disables the check).
 - `wait <alias>`: `--timeout`, `--interval`, `--until ssh|tcp`; see "Choose the smallest safe operation".
+- `tunnel <alias>`: foreground `-L`/`-D` forwarding; supports `--duration`, `--ready-file`, and explicit `--allow-remote-bind --yes`. Agents should run it as a background task, use `--ready-file` or the ready JSON line to detect readiness, and send SIGTERM when finished.
 - Sync service (human-run, not for agents): `ssm login`/`register` take `--server`, `--email`, `--password-file`; `ssm server` takes `--listen` and `--data-dir`.
 
 ## Updates and rollback

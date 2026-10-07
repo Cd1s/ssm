@@ -148,6 +148,21 @@ func TestMachineContractMatrix(t *testing.T) {
 			exit: 1, alias: "w",
 		},
 		{
+			name: "tunnel invalid arguments", kind: TunnelInvalidArguments,
+			details: Details{Message: "bad tunnel"}, code: "tunnel_invalid_arguments", stage: "tunnel",
+			hint: "provide at least one valid -L or -D forward", exit: 2,
+		},
+		{
+			name: "tunnel bind failed", kind: TunnelBindFailed,
+			details: Details{Message: "bind failed"}, code: "tunnel_bind_failed", stage: "tunnel",
+			hint: "the local port is already in use or permission was denied", exit: 1,
+		},
+		{
+			name: "tunnel remote bind refused", kind: TunnelRemoteBindRefused,
+			details: Details{Message: "remote bind"}, code: "tunnel_remote_bind_refused", stage: "tunnel",
+			hint: "non-loopback binds require --allow-remote-bind --yes", exit: 2,
+		},
+		{
 			name: "dial refused", kind: DialRefused,
 			details: Details{Message: "connection refused by 127.0.0.1:22", Alias: "refused"},
 			code:    "dial_refused", stage: "dial", hint: "sshd not listening or wrong port; not an ssm quote bug",

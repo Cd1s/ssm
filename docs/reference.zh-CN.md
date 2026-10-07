@@ -542,6 +542,10 @@ ssm update --major --yes
 
 `--major --yes` 不会跳过 SHA-256、精确 tag、keyless provenance 或失败恢复检查；失败时保留旧可执行文件和恢复证据。详见[迁移指南](migration-v1-to-v2.zh-CN.md)与[来源凭证运行手册](update-provenance-runbook.zh-CN.md)。
 
+### SSH 隧道
+
+`sshctl tunnel <alias>` 在前台运行 SSH 转发，支持可重复的 `-L [bind:]port:host:hostport` 和 `-D [bind:]port`。绑定地址默认是回环地址；非回环绑定必须同时使用 `--allow-remote-bind --yes`。Agent 需要长期隧道时应把命令放入后台任务，用 `--ready-file` 或就绪 JSON 判断可用，结束时发送 SIGTERM；也可用 `--duration` 干净退出。
+
 ## 故障排查
 
 | 现象（`error`） | 含义 | 处理方法 |

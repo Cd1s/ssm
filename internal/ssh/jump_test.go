@@ -22,15 +22,20 @@ import (
 // forwards direct-tcpip channels to any address, like a jump host.
 type jumpTestServer struct {
 	address      string
+	listener     net.Listener
 	signer       gossh.Signer
 	active       atomic.Int64
 	forwards     atomic.Int64
 	authAttempts atomic.Int64
+	targetsMu    sync.Mutex
+	targets      []string
+	connsMu      sync.Mutex
+	conns        map[net.Conn]struct{}
 }
 
 func startJumpTestServer(t *testing.T) *jumpTestServer {
 	t.Helper()
-	server := &jumpTestServer{signer: newTestSigner(t, "ed25519")}
+	server := &jumpTestServer{signer: newTestSigner(t, "ed25519"), conns: make(map[net.Conn]struct{})}
 	cfg := &gossh.ServerConfig{
 		PasswordCallback: func(_ gossh.ConnMetadata, password []byte) (*gossh.Permissions, error) {
 			server.authAttempts.Add(1)
@@ -47,13 +52,18 @@ func startJumpTestServer(t *testing.T) *jumpTestServer {
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 	server.address = listener.Addr().String()
+	server.listener = listener
 	go func() {
 		for {
 			raw, err := listener.Accept()
 			if err != nil {
 				return
 			}
+			server.connsMu.Lock()
+			server.conns[raw] = struct{}{}
+			server.connsMu.Unlock()
 			go func() {
+				defer func() { server.connsMu.Lock(); delete(server.conns, raw); server.connsMu.Unlock() }()
 				serverConn, channels, requests, err := gossh.NewServerConn(raw, cfg)
 				if err != nil {
 					_ = raw.Close()
@@ -82,6 +92,15 @@ func startJumpTestServer(t *testing.T) *jumpTestServer {
 	return server
 }
 
+func (s *jumpTestServer) Close() {
+	_ = s.listener.Close()
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	for conn := range s.conns {
+		_ = conn.Close()
+	}
+}
+
 func (s *jumpTestServer) forward(newChannel gossh.NewChannel) {
 	var request struct {
 		Host       string
@@ -93,6 +112,9 @@ func (s *jumpTestServer) forward(newChannel gossh.NewChannel) {
 		_ = newChannel.Reject(gossh.ConnectionFailed, "bad request")
 		return
 	}
+	s.targetsMu.Lock()
+	s.targets = append(s.targets, request.Host+":"+strconv.Itoa(int(request.Port)))
+	s.targetsMu.Unlock()
 	upstream, err := net.Dial("tcp", net.JoinHostPort(request.Host, strconv.Itoa(int(request.Port))))
 	if err != nil {
 		_ = newChannel.Reject(gossh.ConnectionFailed, err.Error())
@@ -105,10 +127,35 @@ func (s *jumpTestServer) forward(newChannel gossh.NewChannel) {
 	}
 	go gossh.DiscardRequests(requests)
 	s.forwards.Add(1)
-	var once sync.Once
-	closeBoth := func() { _ = channel.Close(); _ = upstream.Close() }
-	go func() { _, _ = io.Copy(upstream, channel); once.Do(closeBoth) }()
-	go func() { _, _ = io.Copy(channel, upstream); once.Do(closeBoth) }()
+	// Relay like sshd does: the end of one direction only half-closes the
+	// other, so a client that finished its request and shut its write side
+	// still receives the complete reply. Both ends are closed once both
+	// directions are done.
+	var finished sync.WaitGroup
+	finished.Add(2)
+	go func() {
+		defer finished.Done()
+		_, _ = io.Copy(upstream, channel)
+		if tcp, ok := upstream.(*net.TCPConn); ok {
+			_ = tcp.CloseWrite()
+		}
+	}()
+	go func() {
+		defer finished.Done()
+		_, _ = io.Copy(channel, upstream)
+		_ = channel.CloseWrite()
+	}()
+	go func() {
+		finished.Wait()
+		_ = channel.Close()
+		_ = upstream.Close()
+	}()
+}
+
+func (s *jumpTestServer) Targets() []string {
+	s.targetsMu.Lock()
+	defer s.targetsMu.Unlock()
+	return append([]string(nil), s.targets...)
 }
 
 func waitUntil(t *testing.T, what string, condition func() bool) {

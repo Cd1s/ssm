@@ -12,7 +12,7 @@ var (
 		"pull", "push", "list", "host", "hosts", "run", "exec", "plan", "map", "check", "doctor",
 		"put", "get", "redirect", "alias-link",
 	}
-	sshctlOnlyCommands = []string{"request", "sync", "host-key", "known-hosts", "shell", "status", "wait", "cp"}
+	sshctlOnlyCommands = []string{"request", "sync", "host-key", "known-hosts", "shell", "status", "wait", "tunnel", "cp"}
 	ssmOnlyCommands    = []string{
 		"update", "remove", "keys", "ls", "import-json", "server", "register", "login", "logout",
 		"pull-if-changed", "remote-hash",
@@ -133,6 +133,8 @@ func sshctlCommandUsage(command string, args []string) {
 		fmt.Print("Usage: sshctl [--json] status [--offline]\nIn the default local_first sync mode it reports the recorded sync outcome (remote_state, last_sync_error, next_sync_attempt, cache_age_seconds, inventory_stale, inventory_unsynced) without contacting the server and never fails because of sync; with sync_mode strict it refreshes online first. --offline (or SSM_OFFLINE=1) is deprecated for reads: accepted for compatibility; reads are local by default and it now only suppresses background sync (with sync_mode strict it still skips the online refresh and uses cached local state). Offline output reports pending transaction state and remote_state:not_checked.\n")
 	case "wait":
 		fmt.Print("Usage: sshctl [--json] wait <alias> [--timeout 5m] [--interval 5s] [--until ssh|tcp]\nWaits for an exact host alias to become reachable, for example after a reboot. --interval is at least 1s; attempts back off exponentially with jitter (capped at 30s) and each attempt is bounded so the deadline is not overshot. The default --until ssh makes one real SSH connection per attempt (never a separate banner-only connection, which sshd logs as a pre-auth failure); it stops immediately with the real error on auth_failed, host_key_*, missing credentials or alias errors (it never retries authentication or host-key failures, which would trip fail2ban). Only dial_* failures and handshake failures before the server's host key arrives keep it waiting; a drop or timeout after that point (possibly mid-authentication) is reported, not retried. --until tcp checks TCP reachability only (not supported for proxy_jump aliases). Through a proxy_jump alias a failure before the failing hop's own host key arrives (for example the target behind the jump is down) keeps waiting; anything after a hop's host key, and any auth failure, stops. A timeout returns error=wait_timeout with the last observed cause. --until cmd:<...> is not implemented.\n")
+	case "tunnel":
+		fmt.Print("Usage: sshctl tunnel <alias> -L [bind:]port:host:hostport [-L ...] [-D [bind:]port] [--connect-timeout 15s] [--duration 30m] [--ready-file PATH] [--allow-remote-bind --yes] [--json]\nRuns foreground SSH local and SOCKS5 dynamic forwards.\n")
 	case "sync", "pull":
 		fmt.Printf("Usage: sshctl [--json] %[1]s [--adopt-remote <remote-sha256> --yes]\nExplicit and strict: failure is failure, with no silent offline fallback. Refuses to overwrite a local vault that diverged from the remote (conflict evidence is preserved), and fails with \"vault is busy\" if another ssm process holds the short vault write lock (retry).\nReviewed recovery: %[1]s --adopt-remote <remote-sha256> --yes replaces the local vault only after reviewing the exact remote identity, and is refused if the local vault changed after the conflict evidence was recorded (re-check with sshctl --offline --json doctor).\n", command)
 	case "redirect", "alias-link":

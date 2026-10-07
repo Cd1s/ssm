@@ -162,6 +162,9 @@ func runSSHCTLParsed(args []string) {
 		machineJSON = machineJSON || commandHasJSONFlag(true, args[0], args[1:])
 		unlock()
 		runWait(args[1:])
+	case "tunnel":
+		machineJSON = machineJSON || commandHasJSONFlag(true, args[0], args[1:])
+		runTunnelArgs(args[1:])
 	case "--version", "-v":
 		if len(args) != 1 {
 			sshctlUsageExit()
@@ -498,6 +501,7 @@ func sshctlUsage() {
 	  sshctl host-key accept <alias> --fingerprint SHA256:... --yes [--json]
   sshctl status [--offline]
   sshctl wait <alias> [--timeout 5m] [--interval 5s] [--until ssh|tcp]  # never retries auth/host-key failures
+  sshctl tunnel <alias> -L [bind:]port:host:hostport [-D [bind:]port] [--duration 30m] [--ready-file PATH]
   sshctl check <alias> [--json]
 	  sshctl doctor [alias] [--deep] [--json]
 	  sshctl request [--file <request.json>|-]
