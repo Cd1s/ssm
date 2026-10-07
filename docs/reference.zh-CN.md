@@ -1,6 +1,6 @@
 # ssm 参考手册
 
-这是准备审查的 `ssm` 与 `sshctl` v2.2.0 candidate 的完整参考：所有命令和选项、配置文件、环境变量、错误码和退出状态。 GitHub latest 在发布包 canary 通过并单独 promotion 前仍是 v2.1.0。简短介绍和快速开始见 [README](../README.zh-CN.md)。
+这是准备审查的 `ssm` 与 `sshctl` v2.3.0 candidate 的完整参考：所有命令和选项、配置文件、环境变量、错误码和退出状态。 GitHub latest 在发布包 canary 通过并单独 promotion 前仍是 v2.2.0。简短介绍和快速开始见 [README](../README.zh-CN.md)。
 
 标注 **未发布** 的内容已合入 `main`，但还不在最新发布版里。
 
@@ -75,7 +75,7 @@
 
 | 变量 | 默认值 | 含义 |
 | --- | --- | --- |
-| `SSM_RELEASE_TAG` | 最新发布版 | 安装某一个确切的稳定 tag，例如 `v2.1.0` 或准备中的 `v2.2.0`；其他写法会被拒绝。 |
+| `SSM_RELEASE_TAG` | 最新发布版 | 安装某一个确切的稳定 tag，例如 `v2.2.0` 或准备中的 `v2.3.0`；其他写法会被拒绝。 |
 | `SSM_PREFIX` | `/usr/local/bin` | 接收 `ssm` 和 `sshctl` 符号链接的目录。 |
 | `SSM_CONFIG_DIR` | `~/.config/ssm` | 安装脚本准备的配置目录。 |
 | `SSM_REPO` | `Cd1s/ssm` | 安装脚本下载发布包的 GitHub 仓库。来源证明仍然验证 `Cd1s/ssm` 的发布工作流身份。 |
@@ -388,7 +388,7 @@ sshctl --json push --only <transaction-id>
 
 ## 自动化与 AI Agent
 
-先读[官方 Agent Skill](../skills/agent-ssm/SKILL.md)和[版本兼容矩阵](../skills/agent-ssm/references/version-compatibility.md)。它们定义了 v1.4.3/v1.4.4 兼容分支，以及受支持的 v2.0.0 与当前 v2.1.0 共用的 v2 兼容分支各自可以使用的 schema 和字段。
+先读[官方 Agent Skill](../skills/agent-ssm/SKILL.md)和[版本兼容矩阵](../skills/agent-ssm/references/version-compatibility.md)。它们定义了 v1.4.3/v1.4.4 兼容分支，以及受支持的 v2.0.0 与当前 v2.2.0 共用的 v2 兼容分支各自可以使用的 schema 和字段。
 
 ### 结构化输出与 request
 
@@ -522,7 +522,7 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 
 ## 更新与回滚
 
-全新安装跟随 GitHub latest，目前是 v2.1.0；准备中的 v2.2.0 在发布包 canary 通过并单独 promotion 前保持非 latest。普通更新只在已安装的 major 内选择更高版本（已安装 major 内最高的 stable release，不看 GitHub latest 标记；v2.0.2 曾在 latest 标记移动之前就更新到了 v2.1.0）：
+全新安装跟随 GitHub latest，目前是 v2.2.0；准备中的 v2.3.0 在发布包 canary 通过并单独 promotion 前保持非 latest。普通更新只在已安装的 major 内选择更高版本（已安装 major 内最高的 stable release，不看 GitHub latest 标记；v2.0.2 曾在 latest 标记移动之前就更新到了 v2.2.0）：
 
 ```bash
 ssm update

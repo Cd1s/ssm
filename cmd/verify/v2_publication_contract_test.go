@@ -26,7 +26,7 @@ func TestV2ReleaseWorkflowCannotPromoteGitHubLatest(t *testing.T) {
 		"no concurrent cancellation": "  cancel-in-progress: false\n",
 		"exact section extraction":   "            found && /^## / { exit }\n",
 		"create-only helper":         "./scripts/release-create-only.sh",
-		"reviewed previous latest":   "            v2.1.0 \\\n",
+		"reviewed previous latest":   "            v2.2.0 \\\n",
 	} {
 		if !strings.Contains(workflow, required) {
 			t.Errorf("v2 release workflow lacks %s %q", description, required)
@@ -755,8 +755,8 @@ func TestTrackedV2PublicationMetadataIsExactAndDurable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != "2.2.0" {
-		t.Fatalf("source version = %q, want exact v2.2.0", version)
+	if version != "2.3.0" {
+		t.Fatalf("source version = %q, want exact v2.3.0", version)
 	}
 	if err := validateReleaseNotes(root, version); err != nil {
 		t.Fatal(err)
@@ -778,17 +778,14 @@ func TestTrackedV2PublicationMetadataIsExactAndDurable(t *testing.T) {
 		}
 	}
 	for _, durable := range []string{
-		"backward-compatible patch release",
-		"github cli 2.92.0",
-		"private `mktemp` directory",
-		"attestation.json",
-		"no protocol or schema breaking change",
-		"v2 compatibility behavior remains",
+		"v2 minor release",
+		"sshctl tunnel",
+		"alpine",
+		"gcompat",
+		"v2.2.0 remains github latest",
 		"make_latest=false",
-		"v2.1.0 remains github latest",
-		"vault format",
-		"upgrade all machines",
 		"no request-schema or json-field breaking change",
+		"internal/syncserver",
 		"exact-tag release workflow",
 	} {
 		if !strings.Contains(notes, durable) {
