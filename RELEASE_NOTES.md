@@ -1,12 +1,66 @@
 # Release Notes
 
-These notes are the reviewed contract for the authorized stable v2.3.0
-Release. The official exact-tag workflow published it non-latest first with
-`make_latest=false`; published-asset canaries then passed and the authorized
-latest-promotion step made v2.3.0 GitHub latest. See the
+These notes are the reviewed contract for the authorized stable v2.3.1
+Release. The official exact-tag workflow publishes it non-latest first with
+`make_latest=false`; v2.3.0 remains GitHub latest until published-asset
+canaries pass and a separate promotion is made. See the
 [v1→v2 migration guide](docs/migration-v1-to-v2.md) and
 [update-provenance runbook](docs/update-provenance-runbook.md) for operator and
 maintainer gates.
+
+## v2.3.1
+
+This is a v2 patch release with a security-driven toolchain and dependency
+update plus small fixes. It adds no new feature. The official exact-tag release
+workflow creates the stable v2.3.1 Release with `make_latest=false`; v2.3.0
+remains GitHub latest until published-asset canaries pass and a separate
+promotion is made. Ordinary `ssm update` stays within v2.
+
+### Security: toolchain and dependencies
+
+- The build toolchain moves from Go 1.26.8 to Go 1.26.9.
+- `golang.org/x/net` moves to v0.60.0, which fixes GO-2026-6603,
+  GO-2026-6610, GO-2026-6611, GO-2026-6612, and GO-2026-6617 reported by
+  `govulncheck`. `golang.org/x/crypto`, `golang.org/x/sys`,
+  `golang.org/x/term`, and the other `golang.org/x` modules are updated with it.
+
+### Static release binaries
+
+All official release binaries are now built with `CGO_ENABLED=0`. The
+linux-amd64 binary was previously dynamically linked against glibc and is now
+statically linked, which benefits hosts with an older glibc and Alpine. This is
+a user-visible change in how the binary is built; command behavior does not
+change.
+
+### `sshctl tunnel` port parsing
+
+- `-L 0:host:port` and `-L [bind:]0:host:port` now correctly listen on port 0,
+  so the operating system assigns the listening port.
+- A remote IPv6 target that contains a `:0:` segment is no longer altered.
+- Ports accept plain decimal digits only. `+80` and `-0` are now rejected; this
+  tightens input that was previously accepted.
+- Remote target port 0 is still rejected.
+
+### Development script
+
+`scripts/ssh_matrix_test.sh` now works with PAM public-key authentication when
+run as root. It is a development and CI script only and is not part of the
+release binaries.
+
+There is no request-schema or JSON-field breaking change. No request or result
+field and no error code is added or removed. The request schema structure is
+unchanged; only its version-bound `$id` and title are updated to v2.3.1.
+
+### Changes since v2.3.0
+
+- Updated the build toolchain to Go 1.26.9 and `golang.org/x/net` to v0.60.0,
+  clearing five `govulncheck` findings.
+- Built all official release binaries with `CGO_ENABLED=0`, so linux-amd64 is
+  now statically linked.
+- Fixed `sshctl tunnel` listener port 0 handling and remote IPv6 targets
+  containing `:0:`; ports now accept plain decimal digits only.
+- Fixed `scripts/ssh_matrix_test.sh` PAM public-key authentication when run as
+  root.
 
 ## v2.3.0
 

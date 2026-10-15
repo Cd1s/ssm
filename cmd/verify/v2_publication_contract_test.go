@@ -755,8 +755,8 @@ func TestTrackedV2PublicationMetadataIsExactAndDurable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != "2.3.0" {
-		t.Fatalf("source version = %q, want exact v2.3.0", version)
+	if version != "2.3.1" {
+		t.Fatalf("source version = %q, want exact v2.3.1", version)
 	}
 	if err := validateReleaseNotes(root, version); err != nil {
 		t.Fatal(err)
@@ -779,10 +779,13 @@ func TestTrackedV2PublicationMetadataIsExactAndDurable(t *testing.T) {
 	}
 	for _, durable := range []string{
 		"v2 minor release",
+		"v2 patch release",
 		"sshctl tunnel",
 		"alpine",
 		"gcompat",
 		"made v2.3.0 github latest",
+		"v2.3.0 remains github latest",
+		"cgo_enabled=0",
 		"make_latest=false",
 		"no request-schema or json-field breaking change",
 		"internal/syncserver",
