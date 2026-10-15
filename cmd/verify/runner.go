@@ -417,7 +417,7 @@ func validateReleaseNotes(repoRoot, version string) error {
 			"go-2026-6617",
 			"cgo_enabled=0",
 			"sshctl tunnel",
-			"v2.3.0 remains github latest",
+			"made v2.3.1 github latest",
 			"make_latest=false",
 			"exact-tag release workflow",
 			"no request-schema or json-field breaking change",

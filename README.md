@@ -39,15 +39,11 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 ssm --version
 ```
 
-A fresh install gets the GitHub latest release, currently **v2.3.0**. To pin a
-version, run the same command with `SSM_RELEASE_TAG=v2.3.0` set for `sh`:
-
-The prepared v2.3.1 release is available from its exact tag for review;
-v2.3.0 remains GitHub latest until its published-asset canaries pass and a
-separate promotion is made.
+A fresh install gets the GitHub latest release, currently **v2.3.1**. To pin a
+version, run the same command with `SSM_RELEASE_TAG=v2.3.1` set for `sh`:
 
 ```bash
-curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | SSM_RELEASE_TAG=v2.3.0 sh
+curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | SSM_RELEASE_TAG=v2.3.1 sh
 ```
 
 The installer puts `ssm` and a `sshctl` link next to it in `/usr/local/bin`

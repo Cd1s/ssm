@@ -784,7 +784,7 @@ func TestTrackedV2PublicationMetadataIsExactAndDurable(t *testing.T) {
 		"alpine",
 		"gcompat",
 		"made v2.3.0 github latest",
-		"v2.3.0 remains github latest",
+		"made v2.3.1 github latest",
 		"cgo_enabled=0",
 		"make_latest=false",
 		"no request-schema or json-field breaking change",
