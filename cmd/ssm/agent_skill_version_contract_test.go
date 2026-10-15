@@ -20,9 +20,9 @@ func TestCurrentV2BeginnerDocumentationContract(t *testing.T) {
 		document := active[name]
 		for _, required := range []string{
 			"https://github.com/Cd1s/ssm/releases/latest/download/install.sh",
-			"v2.3.0",
+			"v2.3.1",
 			"latest",
-			"SSM_RELEASE_TAG=v2.3.0",
+			"SSM_RELEASE_TAG=v2.3.1",
 			"docs/reference",
 		} {
 			if !strings.Contains(strings.ToLower(document), strings.ToLower(required)) {
@@ -35,16 +35,16 @@ func TestCurrentV2BeginnerDocumentationContract(t *testing.T) {
 	// The exhaustive documents carry the current-release identity too, so they
 	// cannot drift from the landing page.
 	for _, name := range []string{"docs/reference.md", "docs/reference.zh-CN.md"} {
-		if !strings.Contains(active[name], "v2.3.0") {
-			t.Errorf("%s does not identify v2.3.0 as the current release", name)
+		if !strings.Contains(active[name], "v2.3.1") {
+			t.Errorf("%s does not identify v2.3.1 as the current release", name)
 		}
 	}
 
 	for _, name := range []string{"skills/agent-ssm/SKILL.md", "skills/agent-ssm/README.md"} {
 		document := active[name]
 		for _, required := range []string{
-			"v2.3.1 (supported; not latest until promoted)",
-			"v2.3.0 (current/latest)",
+			"v2.3.1 (current/latest)",
+			"v2.3.0 (supported previous release)",
 			"v2.2.0 (supported previous release)",
 			"v2.0.1",
 			"v2.0.0",
@@ -150,7 +150,7 @@ func TestBundledAgentSkillProbesVersionBeforeChoosingMajorContract(t *testing.T)
 	for description, required := range map[string]string{
 		"v1 bridge versions":         "v1.4.3 / v1.4.4",
 		"previous v2 patch":          "v2.0.0",
-		"current v2 release version": "v2.3.0",
+		"current v2 release version": "v2.3.1",
 		"unsupported-major stop":     "unsupported major",
 		"fail-closed instruction":    "fail closed",
 		"v1 compatibility branch":    "v1 compatibility branch",
@@ -256,7 +256,6 @@ func TestLatestDocumentationContract(t *testing.T) {
 			freshInstallAnchor = "全新安装"
 		}
 		for _, required := range []string{
-			"v2.3.0",
 			"v2.3.1",
 			"github",
 			"latest",
@@ -271,8 +270,8 @@ func TestLatestDocumentationContract(t *testing.T) {
 
 	skill := strings.ToLower(contents["agent skill"])
 	for _, required := range []string{
-		"v2.3.1 (supported; not latest until promoted)",
-		"v2.3.0 (current/latest)",
+		"v2.3.1 (current/latest)",
+		"v2.3.0 (supported previous release)",
 		"v2.2.0 (supported previous release)",
 		"v2.0.1",
 		"v2.0.0",
@@ -288,8 +287,8 @@ func TestLatestDocumentationContract(t *testing.T) {
 
 	compatibility := strings.ToLower(contents["version compatibility"])
 	for _, required := range []string{
-		"v2.3.1 (supported; not latest until promoted)",
-		"v2.3.0 (current/latest)",
+		"v2.3.1 (current/latest)",
+		"v2.3.0 (supported previous release)",
 		"v2.2.0 (supported previous release)",
 		"v2.0.1",
 		"v2.0.0",
@@ -305,7 +304,7 @@ func TestLatestDocumentationContract(t *testing.T) {
 	for _, document := range documents {
 		body := strings.ToLower(contents[document.name])
 		if !strings.Contains(body, "v2.3.1") {
-			t.Errorf("%s does not identify v2.3.1 as the prepared contract", document.name)
+			t.Errorf("%s does not identify v2.3.1 as the active contract", document.name)
 		}
 		for _, stale := range []string{
 			"staged v2 release",
@@ -314,6 +313,9 @@ func TestLatestDocumentationContract(t *testing.T) {
 			"v2 release is staged",
 			"v2.0.0 (current/latest)",
 			"v2.0.2 (current/latest)",
+			"v2.3.0 (current/latest)",
+			"v2.3.1 (supported; not latest until promoted)",
+			"not latest until promoted",
 			"not github latest until",
 			"current github latest v2.0.0",
 			"v1.4.4 remains github latest",
