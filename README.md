@@ -39,15 +39,15 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 ssm --version
 ```
 
-A fresh install gets the GitHub latest release, currently **v2.2.0**. To pin a
-version, run the same command with `SSM_RELEASE_TAG=v2.2.0` set for `sh`:
+A fresh install gets the GitHub latest release, currently **v2.3.0**. To pin a
+version, run the same command with `SSM_RELEASE_TAG=v2.3.0` set for `sh`:
 
-The prepared v2.3.0 release is available from its exact tag for review;
-v2.2.0 remains GitHub latest until its published-asset canaries pass and a
-separate promotion is made.
+The v2.3.0 release passed its published-asset canaries and the authorized
+latest-promotion step made v2.3.0 GitHub latest.
+The previous v2.2.0 release remains available by exact tag.
 
 ```bash
-curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | SSM_RELEASE_TAG=v2.2.0 sh
+curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | SSM_RELEASE_TAG=v2.3.0 sh
 ```
 
 The installer puts `ssm` and a `sshctl` link next to it in `/usr/local/bin`
@@ -156,7 +156,7 @@ run `ssm update --major --yes`.
 
 ## Development
 
-Use Go 1.26.8. Run `go test ./...` for everyday checks and
+Use Go 1.26.9. Run `go test ./...` for everyday checks and
 `go run ./cmd/verify fast` before sending changes. Open pull requests against
 `main`; see [AGENTS.md](AGENTS.md) and the
 [development notes](docs/reference.md#development-and-verification).

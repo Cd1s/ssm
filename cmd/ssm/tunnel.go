@@ -142,28 +142,10 @@ func runTunnelArgs(args []string) {
 }
 
 func parseTunnelLocalForward(value string) (ssh.TunnelSpec, error) {
-	if strings.Contains(value, ":0:") {
-		if spec, err := ssh.ParseLocalForward(strings.Replace(value, ":0:", ":1:", 1)); err == nil {
-			spec.Port = 0
-			return spec, nil
-		}
-	}
 	return ssh.ParseLocalForward(value)
 }
 
 func parseTunnelDynamicForward(value string) (ssh.TunnelSpec, error) {
-	if strings.HasSuffix(value, ":0") || value == "0" {
-		replaced := strings.TrimSuffix(value, ":0")
-		if value == "0" {
-			replaced = "1"
-		} else {
-			replaced += ":1"
-		}
-		if spec, err := ssh.ParseDynamicForward(replaced); err == nil {
-			spec.Port = 0
-			return spec, nil
-		}
-	}
 	return ssh.ParseDynamicForward(value)
 }
 

@@ -54,7 +54,7 @@
             {
               "kind": "tool",
               "name": "gofmt",
-              "version": "go1.26.8"
+              "version": "go1.26.9"
             }
           ]
         },
@@ -76,7 +76,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -104,7 +104,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -161,7 +161,7 @@
             {
               "kind": "tool",
               "name": "gofmt",
-              "version": "go1.26.8"
+              "version": "go1.26.9"
             }
           ]
         },
@@ -228,7 +228,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -256,7 +256,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -291,7 +291,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -319,7 +319,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -352,7 +352,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -497,7 +497,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -696,7 +696,7 @@
             {
               "kind": "tool",
               "name": "gofmt",
-              "version": "go1.26.8"
+              "version": "go1.26.9"
             }
           ]
         },
@@ -763,7 +763,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -791,7 +791,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -826,7 +826,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -854,7 +854,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -887,7 +887,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -1032,7 +1032,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -1216,6 +1216,7 @@
                 "./cmd/ssm"
               ],
               "env": [
+                "CGO_ENABLED=0",
                 "GOOS=linux",
                 "GOARCH=amd64"
               ]
@@ -1225,7 +1226,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -1251,6 +1252,7 @@
                 "./cmd/ssm"
               ],
               "env": [
+                "CGO_ENABLED=0",
                 "GOOS=linux",
                 "GOARCH=arm64"
               ]
@@ -1260,7 +1262,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -1286,6 +1288,7 @@
                 "./cmd/ssm"
               ],
               "env": [
+                "CGO_ENABLED=0",
                 "GOOS=darwin",
                 "GOARCH=amd64"
               ]
@@ -1295,7 +1298,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -1321,6 +1324,7 @@
                 "./cmd/ssm"
               ],
               "env": [
+                "CGO_ENABLED=0",
                 "GOOS=darwin",
                 "GOARCH=arm64"
               ]
@@ -1330,7 +1334,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -1356,6 +1360,7 @@
                 "./cmd/ssm"
               ],
               "env": [
+                "CGO_ENABLED=0",
                 "GOOS=windows",
                 "GOARCH=amd64"
               ]
@@ -1365,7 +1370,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -1391,6 +1396,7 @@
                 "./cmd/ssm"
               ],
               "env": [
+                "CGO_ENABLED=0",
                 "GOOS=windows",
                 "GOARCH=arm64"
               ]
@@ -1400,7 +1406,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -1430,7 +1436,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -1529,7 +1535,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -1559,7 +1565,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -1589,7 +1595,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -1620,7 +1626,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -1650,7 +1656,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -1680,7 +1686,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -1710,7 +1716,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",
@@ -1766,7 +1772,7 @@
             {
               "kind": "tool",
               "name": "go",
-              "version": "1.26.8"
+              "version": "1.26.9"
             },
             {
               "kind": "capability",

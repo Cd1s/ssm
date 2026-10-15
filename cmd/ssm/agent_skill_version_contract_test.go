@@ -20,9 +20,9 @@ func TestCurrentV2BeginnerDocumentationContract(t *testing.T) {
 		document := active[name]
 		for _, required := range []string{
 			"https://github.com/Cd1s/ssm/releases/latest/download/install.sh",
-			"v2.2.0",
+			"v2.3.0",
 			"latest",
-			"SSM_RELEASE_TAG=v2.2.0",
+			"SSM_RELEASE_TAG=v2.3.0",
 			"docs/reference",
 		} {
 			if !strings.Contains(strings.ToLower(document), strings.ToLower(required)) {
@@ -35,16 +35,16 @@ func TestCurrentV2BeginnerDocumentationContract(t *testing.T) {
 	// The exhaustive documents carry the current-release identity too, so they
 	// cannot drift from the landing page.
 	for _, name := range []string{"docs/reference.md", "docs/reference.zh-CN.md"} {
-		if !strings.Contains(active[name], "v2.2.0") {
-			t.Errorf("%s does not identify v2.2.0 as the current release", name)
+		if !strings.Contains(active[name], "v2.3.0") {
+			t.Errorf("%s does not identify v2.3.0 as the current release", name)
 		}
 	}
 
 	for _, name := range []string{"skills/agent-ssm/SKILL.md", "skills/agent-ssm/README.md"} {
 		document := active[name]
 		for _, required := range []string{
-			"v2.3.0 (supported; not latest until promoted)",
-			"v2.2.0 (current/latest)",
+			"v2.3.0 (current/latest)",
+			"v2.2.0 (supported previous release)",
 			"v2.0.1",
 			"v2.0.0",
 			"v1.4.3/v1.4.4",
@@ -255,8 +255,8 @@ func TestLatestDocumentationContract(t *testing.T) {
 			freshInstallAnchor = "全新安装"
 		}
 		for _, required := range []string{
-			"v2.2.0",
 			"v2.3.0",
+			"v2.2.0",
 			"github",
 			"latest",
 			freshInstallAnchor,
@@ -270,8 +270,8 @@ func TestLatestDocumentationContract(t *testing.T) {
 
 	skill := strings.ToLower(contents["agent skill"])
 	for _, required := range []string{
-		"v2.3.0 (supported; not latest until promoted)",
-		"v2.2.0 (current/latest)",
+		"v2.3.0 (current/latest)",
+		"v2.2.0 (supported previous release)",
 		"v2.0.1",
 		"v2.0.0",
 		"v1.4.3/v1.4.4",
@@ -286,8 +286,8 @@ func TestLatestDocumentationContract(t *testing.T) {
 
 	compatibility := strings.ToLower(contents["version compatibility"])
 	for _, required := range []string{
-		"v2.3.0 (supported; not latest until promoted)",
-		"v2.2.0 (current/latest)",
+		"v2.3.0 (current/latest)",
+		"v2.2.0 (supported previous release)",
 		"v2.0.1",
 		"v2.0.0",
 		"v1.4.3 / v1.4.4",

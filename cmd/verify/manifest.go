@@ -15,7 +15,7 @@ const (
 
 	// Single source for the reviewed toolchain pins. go.mod, the workflow
 	// setup-go inputs and the workflow goldens are checked against these by tests.
-	pinnedGoVersion            = "1.26.8"
+	pinnedGoVersion            = "1.26.9"
 	pinnedGolangciLintVersion  = "2.11.4"
 	pinnedGovulncheckVersion   = "v1.6.0"
 	govulncheckModuleName      = "golang.org/x/vuln"
@@ -560,7 +560,7 @@ func assetCheck(goos, goarch string) Check {
 		Action: commandAction("go", []string{
 			"build", "-buildvcs=false", "-ldflags=-s -w -X main.version={version}",
 			"-o", "{temp}/" + name, "./cmd/ssm",
-		}, []string{"GOOS=" + goos, "GOARCH=" + goarch}, ""),
+		}, []string{"CGO_ENABLED=0", "GOOS=" + goos, "GOARCH=" + goarch}, ""),
 		Prerequisites: goPrerequisites(),
 	}
 }

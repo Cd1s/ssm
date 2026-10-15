@@ -186,7 +186,7 @@ func TestPrerequisitesReportAvailabilityAndVersion(t *testing.T) {
 		},
 		{
 			name:         "pinned Go",
-			prerequisite: Prerequisite{Kind: "tool", Name: "go", Version: "1.26.8"},
+			prerequisite: Prerequisite{Kind: "tool", Name: "go", Version: "1.26.9"},
 			want:         true,
 			hostPinned:   true,
 		},
@@ -248,7 +248,7 @@ func TestPrerequisitesReportAvailabilityAndVersion(t *testing.T) {
 		state := checkPrerequisite(
 			context.Background(),
 			repo,
-			Prerequisite{Kind: "tool", Name: "gofmt", Version: "go1.26.8"},
+			Prerequisite{Kind: "tool", Name: "gofmt", Version: "go1.26.9"},
 			newTestProcessEnvironment(t),
 		)
 		skipUnlessHostPinned(t, state)
@@ -275,7 +275,7 @@ func skipUnlessHostPinned(t *testing.T, state prerequisiteState) {
 	if os.Getenv("SSM_VERIFY_REQUIRE_PINNED") == "1" {
 		t.Fatalf("SSM_VERIFY_REQUIRE_PINNED=1 but the host toolchain is not the pinned one: %s", state.detail)
 	}
-	t.Skipf("host toolchain is not the pinned one (%s); set GOTOOLCHAIN=go1.26.8 or SSM_VERIFY_REQUIRE_PINNED=1 to enforce", state.detail)
+	t.Skipf("host toolchain is not the pinned one (%s); set GOTOOLCHAIN=go1.26.9 or SSM_VERIFY_REQUIRE_PINNED=1 to enforce", state.detail)
 }
 
 func TestSSHMatrixIsRequiredInOfficialLinuxCI(t *testing.T) {
@@ -873,7 +873,7 @@ func TestReleaseWorkflowUsesCredentialFreeVerifierPreflightAndManifestParity(t *
 		"read-only preflight job":    "  preflight:\n    permissions:\n      contents: read\n",
 		"credential-free checkout":   "          persist-credentials: false\n",
 		"complete history":           "          fetch-depth: 0\n",
-		"pinned Go toolchain":        "          go-version: \"1.26.8\"\n",
+		"pinned Go toolchain":        "          go-version: \"1.26.9\"\n",
 		"actual release preflight":   "        run: go run ./cmd/verify release\n",
 		"build preflight dependency": "  build:\n    needs: preflight\n",
 		"isolated publication job":   "  publish:\n    permissions:\n      contents: write\n    needs: [preflight, build]\n",
@@ -2097,7 +2097,7 @@ func TestRepositoryModulePrerequisitePopulatesCacheForOfflineReuse(t *testing.T)
 	writeTestFile(
 		t,
 		filepath.Join(versionRoot, moduleVersion+".mod"),
-		"module "+modulePath+"\n\ngo 1.26.8\n",
+		"module "+modulePath+"\n\ngo 1.26.9\n",
 	)
 	writeTestFile(
 		t,
@@ -2110,7 +2110,7 @@ func TestRepositoryModulePrerequisitePopulatesCacheForOfflineReuse(t *testing.T)
 	}
 	zipWriter := zip.NewWriter(archive)
 	for name, contents := range map[string]string{
-		modulePath + "@" + moduleVersion + "/go.mod":        "module " + modulePath + "\n\ngo 1.26.8\n",
+		modulePath + "@" + moduleVersion + "/go.mod":        "module " + modulePath + "\n\ngo 1.26.9\n",
 		modulePath + "@" + moduleVersion + "/dependency.go": "package dependency\n\nconst Value = 18\n",
 	} {
 		entry, err := zipWriter.Create(name)
@@ -2132,7 +2132,7 @@ func TestRepositoryModulePrerequisitePopulatesCacheForOfflineReuse(t *testing.T)
 	writeTestFile(
 		t,
 		filepath.Join(repo, "go.mod"),
-		"module example.invalid/root\n\ngo 1.26.8\n\nrequire "+modulePath+" "+moduleVersion+"\n",
+		"module example.invalid/root\n\ngo 1.26.9\n\nrequire "+modulePath+" "+moduleVersion+"\n",
 	)
 	writeTestFile(
 		t,
@@ -3071,7 +3071,7 @@ func TestV2ReadinessReportRecordsFinalEvidence(t *testing.T) {
 		"## Recorded final candidate results",
 		"| `go run ./cmd/verify release` | `preflight_passed` |",
 		"## Observed final-gate tool versions",
-		"| Go | `1.26.8` |",
+		"| Go | `1.26.9` |",
 		"| golangci-lint | `2.11.4` |",
 		"## Explicit rehearsal outcomes",
 		"| rollback rehearsal | `passed` |",
@@ -3112,7 +3112,7 @@ func newCleanTestRepository(t *testing.T) string {
 func newGoTestRepository(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
-	writeTestFile(t, filepath.Join(repo, "go.mod"), "module example.invalid/verifyfixture\n\ngo 1.26.8\n")
+	writeTestFile(t, filepath.Join(repo, "go.mod"), "module example.invalid/verifyfixture\n\ngo 1.26.9\n")
 	writeTestFile(t, filepath.Join(repo, "fixture.go"), "package verifyfixture\n\nfunc Value() int { return 18 }\n")
 	writeTestFile(
 		t,
@@ -3139,7 +3139,7 @@ func newRepresentativeProfileRepository(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	writeTestFile(t, filepath.Join(repo, "go.mod"), "module example.invalid/verifyfixture\n\ngo 1.26.8\n")
+	writeTestFile(t, filepath.Join(repo, "go.mod"), "module example.invalid/verifyfixture\n\ngo 1.26.9\n")
 	writeTestFile(
 		t,
 		filepath.Join(repo, "cmd", "ssm", "main.go"),

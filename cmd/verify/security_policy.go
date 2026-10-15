@@ -84,7 +84,7 @@ func reviewedActionPolicy() map[string]Action {
 				"build", "-buildvcs=false", "-ldflags=-s -w -X main.version={version}",
 				"-o", "{temp}/ssm-linux-amd64", "./cmd/ssm",
 			},
-			[]string{"GOOS=linux", "GOARCH=amd64"},
+			[]string{"CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64"},
 			"",
 		),
 		"asset-linux-arm64": reviewedCommand(
@@ -93,7 +93,7 @@ func reviewedActionPolicy() map[string]Action {
 				"build", "-buildvcs=false", "-ldflags=-s -w -X main.version={version}",
 				"-o", "{temp}/ssm-linux-arm64", "./cmd/ssm",
 			},
-			[]string{"GOOS=linux", "GOARCH=arm64"},
+			[]string{"CGO_ENABLED=0", "GOOS=linux", "GOARCH=arm64"},
 			"",
 		),
 		"asset-darwin-amd64": reviewedCommand(
@@ -102,7 +102,7 @@ func reviewedActionPolicy() map[string]Action {
 				"build", "-buildvcs=false", "-ldflags=-s -w -X main.version={version}",
 				"-o", "{temp}/ssm-darwin-amd64", "./cmd/ssm",
 			},
-			[]string{"GOOS=darwin", "GOARCH=amd64"},
+			[]string{"CGO_ENABLED=0", "GOOS=darwin", "GOARCH=amd64"},
 			"",
 		),
 		"asset-darwin-arm64": reviewedCommand(
@@ -111,7 +111,7 @@ func reviewedActionPolicy() map[string]Action {
 				"build", "-buildvcs=false", "-ldflags=-s -w -X main.version={version}",
 				"-o", "{temp}/ssm-darwin-arm64", "./cmd/ssm",
 			},
-			[]string{"GOOS=darwin", "GOARCH=arm64"},
+			[]string{"CGO_ENABLED=0", "GOOS=darwin", "GOARCH=arm64"},
 			"",
 		),
 		"asset-windows-amd64": reviewedCommand(
@@ -120,7 +120,7 @@ func reviewedActionPolicy() map[string]Action {
 				"build", "-buildvcs=false", "-ldflags=-s -w -X main.version={version}",
 				"-o", "{temp}/ssm-windows-amd64.exe", "./cmd/ssm",
 			},
-			[]string{"GOOS=windows", "GOARCH=amd64"},
+			[]string{"CGO_ENABLED=0", "GOOS=windows", "GOARCH=amd64"},
 			"",
 		),
 		"asset-windows-arm64": reviewedCommand(
@@ -129,7 +129,7 @@ func reviewedActionPolicy() map[string]Action {
 				"build", "-buildvcs=false", "-ldflags=-s -w -X main.version={version}",
 				"-o", "{temp}/ssm-windows-arm64.exe", "./cmd/ssm",
 			},
-			[]string{"GOOS=windows", "GOARCH=arm64"},
+			[]string{"CGO_ENABLED=0", "GOOS=windows", "GOARCH=arm64"},
 			"",
 		),
 		"updater-selection": reviewedCommand(
