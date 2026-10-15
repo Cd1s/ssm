@@ -9,8 +9,8 @@ metadata:
 # Agent SSM
 
 This is the official skill for the current GitHub latest `ssm`/`sshctl` v2.3.0
-binary. It also supports the previous v2.2.0, v2.1.0,
-v2.0.2, v2.0.1, and v2.0.0 patches in the v2
+binary. It also supports the prepared v2.3.1 release and the previous v2.2.0,
+v2.1.0, v2.0.2, v2.0.1, and v2.0.0 patches in the v2
 compatibility branch and contains a deliberately separate compatibility branch
 for the supported v1.4.3/v1.4.4 binaries. Read the [version compatibility reference](references/version-compatibility.md),
 [v1→v2 migration guide](../../docs/migration-v1-to-v2.md), and
@@ -42,6 +42,7 @@ one branch:
 
 | Exact version | Skill branch | Request schema |
 | --- | --- | --- |
+| v2.3.1 (supported; not latest until promoted) | v2 compatibility branch | `references/request-v1.schema.json` |
 | **v2.3.0 (current/latest)** | v2 compatibility branch | `references/request-v1.schema.json` |
 | v2.2.0 (supported previous release) | v2 compatibility branch | `references/request-v1.schema.json` |
 | v2.1.0 (supported previous v2 patch) | v2 compatibility branch | `references/request-v1.schema.json` |
@@ -337,10 +338,10 @@ Other commands:
 
 ## Updates and rollback
 
-The current v2.3.0 is GitHub latest after its published-asset canaries passed
-and the authorized latest-promotion step. Same-major automatic/manual updates remain
+The current v2.3.0 is GitHub latest; the prepared v2.3.1 remains non-latest until
+published-asset canaries pass and a separate promotion. Same-major automatic/manual updates remain
 the default. A v1.4.3/v1.4.4 ordinary update remains in major 1 even though
-v2.3.0 is current/latest; review the exact v2.3.0 release with:
+v2.3.0 is current/latest; review the exact v2.3.1 candidate with:
 
 ```bash
 ssm update --major
@@ -355,7 +356,7 @@ ssm update --major --yes
 
 The authorization flag never bypasses pinned digest or keyless provenance
 verification. Rerun `sshctl --json --version` after replacement and enter the
-v2 branch only on exact `2.0.0`, `2.0.1`, `2.0.2`, `2.1.0`, or `2.2.0`, or `2.3.0`. Preserve the old executable, encrypted vault,
+v2 branch only on exact `2.0.0`, `2.0.1`, `2.0.2`, `2.1.0`, `2.2.0`, `2.3.0`, or `2.3.1`. Preserve the old executable, encrypted vault,
 pending ledger, `publishing-intent.json`, and recovery evidence until exact
 identities are reconciled.
 
