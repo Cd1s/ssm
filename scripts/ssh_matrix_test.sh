@@ -116,6 +116,10 @@ chmod 700 "$TMP/throttle-bin/cat"
 
 write_sshd_config() {
   local port=$1
+  local use_pam=no
+  if [ "$(id -u)" -eq 0 ]; then
+    use_pam=yes
+  fi
   cat > "$TMP/sshd_config" <<EOF
 Port $port
 ListenAddress 127.0.0.1
@@ -123,9 +127,11 @@ HostKey $TMP/host_key
 PidFile $TMP/sshd.pid
 AuthorizedKeysFile $TMP/authorized_keys
 PasswordAuthentication no
+KbdInteractiveAuthentication no
+AuthenticationMethods publickey
 PubkeyAuthentication yes
 PermitRootLogin yes
-UsePAM no
+UsePAM ${use_pam}
 StrictModes no
 LogLevel ERROR
 PrintMotd no

@@ -411,7 +411,7 @@ func validateReleaseNotes(repoRoot, version string) error {
 			"sshctl tunnel",
 			"alpine",
 			"gcompat",
-			"v2.2.0 remains github latest",
+			"made v2.3.0 github latest",
 			"make_latest=false",
 			"no request-schema or json-field breaking change",
 			"internal/syncserver",
@@ -547,6 +547,10 @@ func validateManifestActionEnvironment(action Action) error {
 		}
 		seen[normalized] = struct{}{}
 		switch normalized {
+		case "CGO_ENABLED":
+			if value != "0" {
+				return fmt.Errorf("unreviewed CGO_ENABLED value %q", value)
+			}
 		case "GOOS":
 			if value != "linux" && value != "darwin" && value != "windows" {
 				return fmt.Errorf("unreviewed GOOS value %q", value)

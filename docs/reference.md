@@ -1,6 +1,6 @@
 # ssm reference
 
-The complete reference for the prepared `ssm` and `sshctl` v2.3.0 candidate: every command and option, the configuration files, environment variables, error codes, and exit statuses. GitHub latest remains v2.2.0 until published-asset canaries pass and a separate promotion. For a short introduction and the quick start, see the [README](../README.md).
+The complete reference for the current `ssm` and `sshctl` v2.3.0 release: every command and option, the configuration files, environment variables, error codes, and exit statuses. v2.3.0 passed its published-asset canaries and the authorized latest-promotion step made it GitHub latest. For a short introduction and the quick start, see the [README](../README.md).
 
 Commands marked **unreleased** are merged on `main` but not part of the latest release.
 
@@ -75,7 +75,7 @@ It installs `ssm` and a `sshctl` symlink to it into the prefix directory, create
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `SSM_RELEASE_TAG` | latest release | Install one exact stable tag such as `v2.2.0` or the prepared `v2.3.0`; other forms are rejected. |
+| `SSM_RELEASE_TAG` | latest release | Install one exact stable tag such as `v2.2.0` or `v2.3.0`; other forms are rejected. |
 | `SSM_PREFIX` | `/usr/local/bin` | Directory that receives `ssm` and the `sshctl` symlink. |
 | `SSM_CONFIG_DIR` | `~/.config/ssm` | Configuration directory the installer prepares. |
 | `SSM_REPO` | `Cd1s/ssm` | GitHub repository the installer downloads from. Provenance still verifies the `Cd1s/ssm` release workflow identity. |
@@ -90,7 +90,7 @@ Download `ssm-windows-amd64.exe` (or `ssm-windows-arm64.exe`) and its `.sigstore
 go build ./cmd/ssm
 ```
 
-Use Go 1.26.8. Source builds are for development; release binaries are built and attested by the release workflow.
+Use Go 1.26.9. Source builds are for development; release binaries are built and attested by the release workflow.
 
 ## Hosts and host keys
 
@@ -533,7 +533,7 @@ way to install third-party builds.
 
 ## Updates and rollback
 
-Fresh installs follow GitHub latest, currently v2.2.0; the prepared v2.3.0 remains non-latest until published-asset canaries pass and a separate promotion. Ordinary updates choose a newer release only within the installed major: the highest stable release of that major, regardless of the GitHub latest flag (a v2.0.2 install updated to v2.1.0 before the latest flag moved):
+Fresh installs follow GitHub latest, currently v2.3.0. It passed its published-asset canaries and the authorized latest-promotion step made it GitHub latest. Ordinary updates choose a newer release only within the installed major: the highest stable release of that major, regardless of the GitHub latest flag (a v2.0.2 install updated to v2.1.0 before the latest flag moved):
 
 ```bash
 ssm update
@@ -593,13 +593,13 @@ metadata is missing or unreadable. Login, logout, and registration reset the led
 
 For everyday development run `go test ./...` with any recent Go. When the host is not the pinned toolchain, the `cmd/verify` subtests that assert the host is the pinned version report SKIP with the reason instead of failing. Set `SSM_VERIFY_REQUIRE_PINNED=1` (official CI does) to enforce them.
 
-The formal gate is `go run ./cmd/verify ci`, which needs the exact pinned tools: Go 1.26.8 and golangci-lint 2.11.4. When one is missing or the wrong version, verify prints the acquisition command in its message:
+The formal gate is `go run ./cmd/verify ci`, which needs the exact pinned tools: Go 1.26.9 and golangci-lint 2.11.4. When one is missing or the wrong version, verify prints the acquisition command in its message:
 
 ```bash
 # Pinned Go toolchain (downloaded by Go itself)
-GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
+GOTOOLCHAIN=go1.26.9 go run ./cmd/verify ci
 
 # Pinned golangci-lint
 GOBIN=<dir> go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
-PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
+PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.9 go run ./cmd/verify ci
 ```

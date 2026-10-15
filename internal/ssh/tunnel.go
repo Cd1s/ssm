@@ -62,9 +62,33 @@ type TunnelOptions struct {
 }
 
 func parsePort(value string) (int, error) {
-	p, err := strconv.Atoi(value)
-	if err != nil || p < 1 || p > 65535 {
+	p, err := parsePortValue(value, 1)
+	if err != nil {
 		return 0, fmt.Errorf("invalid port %q", value)
+	}
+	return p, nil
+}
+
+func parseListenerPort(value string) (int, error) {
+	p, err := parsePortValue(value, 0)
+	if err != nil {
+		return 0, fmt.Errorf("invalid port %q", value)
+	}
+	return p, nil
+}
+
+func parsePortValue(value string, minimum int) (int, error) {
+	if value == "" {
+		return 0, errors.New("empty port")
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return 0, fmt.Errorf("port contains non-decimal character")
+		}
+	}
+	p, err := strconv.Atoi(value)
+	if err != nil || p < minimum || p > 65535 {
+		return 0, fmt.Errorf("port outside range")
 	}
 	return p, nil
 }
@@ -79,14 +103,14 @@ func parseBindPort(value string) (string, int, error) {
 		if i < 0 || strings.Contains(value[i+2:], ":") {
 			return "", 0, fmt.Errorf("invalid bind %q", value)
 		}
-		port, err := parsePort(value[i+2:])
+		port, err := parseListenerPort(value[i+2:])
 		return value[1:i], port, err
 	}
 	parts := strings.Split(value, ":")
 	if len(parts) != 2 || parts[0] == "" {
 		return "", 0, fmt.Errorf("invalid bind %q", value)
 	}
-	port, err := parsePort(parts[1])
+	port, err := parseListenerPort(parts[1])
 	return parts[0], port, err
 }
 
@@ -135,7 +159,7 @@ func ParseLocalForward(value string) (TunnelSpec, error) {
 	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
 		host = host[1 : len(host)-1]
 	}
-	port, err := parsePort(portValue)
+	port, err := parseListenerPort(portValue)
 	if err != nil {
 		return TunnelSpec{}, err
 	}
@@ -164,11 +188,11 @@ func ParseDynamicForward(value string) (TunnelSpec, error) {
 			if i < 0 {
 				return "", 0, fmt.Errorf("invalid dynamic forward %q", value)
 			}
-			p, e := parsePort(value[i+2:])
+			p, e := parseListenerPort(value[i+2:])
 			return value[1:i], p, e
 		}
 		if !strings.Contains(value, ":") {
-			p, e := parsePort(value)
+			p, e := parseListenerPort(value)
 			return "127.0.0.1", p, e
 		}
 		return parseBindPort(value)

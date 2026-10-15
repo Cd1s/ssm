@@ -22,13 +22,39 @@ import (
 )
 
 func TestParseLocalForward(t *testing.T) {
-	valid := []string{"15037:127.0.0.1:5037", "127.0.0.1:15037:target:5037", "[::1]:15037:[::1]:5037"}
-	for _, in := range valid {
-		if _, err := ParseLocalForward(in); err != nil {
-			t.Errorf("ParseLocalForward(%q): %v", in, err)
+	tests := []struct {
+		input      string
+		port       int
+		bind       string
+		host       string
+		targetPort int
+		kind       string
+	}{
+		{"15037:127.0.0.1:5037", 15037, "127.0.0.1", "127.0.0.1", 5037, "local"},
+		{"127.0.0.1:15037:target:5037", 15037, "127.0.0.1", "target", 5037, "local"},
+		{"[::1]:15037:[::1]:5037", 15037, "::1", "::1", 5037, "local"},
+		{"0:127.0.0.1:8080", 0, "127.0.0.1", "127.0.0.1", 8080, "local"},
+		{"127.0.0.1:0:127.0.0.1:8080", 0, "127.0.0.1", "127.0.0.1", 8080, "local"},
+		{"[::1]:0:[::1]:8080", 0, "::1", "::1", 8080, "local"},
+		{"8080:[2001:db8::0:1]:80", 8080, "127.0.0.1", "2001:db8::0:1", 80, "local"},
+		{"0:[2001:db8::0:1]:80", 0, "127.0.0.1", "2001:db8::0:1", 80, "local"},
+	}
+	for _, test := range tests {
+		spec, err := ParseLocalForward(test.input)
+		if err != nil {
+			t.Errorf("ParseLocalForward(%q): %v", test.input, err)
+			continue
+		}
+		if spec.Port != test.port || spec.Bind != test.bind || spec.Host != test.host || spec.TargetPort != test.targetPort || spec.Kind != test.kind {
+			t.Errorf("ParseLocalForward(%q) = %+v, want port=%d bind=%q host=%q targetPort=%d kind=%q", test.input, spec, test.port, test.bind, test.host, test.targetPort, test.kind)
 		}
 	}
-	invalid := []string{"", "15037", ":target:5037", "127.0.0.1:0:target:1", "127.0.0.1:65536:target:1", "127.0.0.1:1::1", "127.0.0.1:1:target:65536", "a:b:c:d:e"}
+	invalid := []string{"", "15037", ":target:5037", "127.0.0.1:65536:target:1", "127.0.0.1:1::1", "127.0.0.1:1:target:0", "127.0.0.1:1:target:65536", "127.0.0.1:1:target:+0", "127.0.0.1:1:target:-0", "127.0.0.1:-1:target:1", "a:b:c:d:e"}
+	for _, in := range []string{"8080:127.0.0.1:0", "0:127.0.0.1:0"} {
+		if _, err := ParseLocalForward(in); err == nil {
+			t.Errorf("ParseLocalForward(%q) unexpectedly succeeded", in)
+		}
+	}
 	for _, in := range invalid {
 		if _, err := ParseLocalForward(in); err == nil {
 			t.Errorf("ParseLocalForward(%q) unexpectedly succeeded", in)
@@ -37,15 +63,28 @@ func TestParseLocalForward(t *testing.T) {
 }
 
 func TestParseDynamicForward(t *testing.T) {
-	for _, in := range []string{"15037", "127.0.0.1:15037", "[::1]:15037"} {
-		if _, err := ParseDynamicForward(in); err != nil {
-			t.Errorf("ParseDynamicForward(%q): %v", in, err)
+	for _, test := range []struct {
+		input string
+		port  int
+	}{
+		{"15037", 15037}, {"127.0.0.1:15037", 15037}, {"[::1]:15037", 15037}, {"0", 0}, {"127.0.0.1:0", 0}, {"[::1]:0", 0},
+	} {
+		spec, err := ParseDynamicForward(test.input)
+		if err != nil || spec.Port != test.port {
+			t.Errorf("ParseDynamicForward(%q) = %+v, err=%v, want port=%d", test.input, spec, err, test.port)
 		}
 	}
-	for _, in := range []string{"", "0", "65536", "host:1:2"} {
+	for _, in := range []string{"", "65536", "host:1:2", "+0", "-0", "-1"} {
 		if _, err := ParseDynamicForward(in); err == nil {
 			t.Errorf("ParseDynamicForward(%q) unexpectedly succeeded", in)
 		}
+	}
+}
+
+func TestValidateTunnelSpecsRejectsZeroTargetPort(t *testing.T) {
+	err := ValidateTunnelSpecs([]TunnelSpec{{Kind: "local", Bind: "127.0.0.1", Port: 0, Host: "127.0.0.1", TargetPort: 0}}, TunnelOptions{})
+	if err == nil {
+		t.Fatal("ValidateTunnelSpecs accepted zero target port")
 	}
 }
 

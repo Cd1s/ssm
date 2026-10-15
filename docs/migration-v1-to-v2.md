@@ -1,8 +1,8 @@
 # SSM v1 to v2 migration contract
 
 This guide is the operator and machine-consumer contract for the current
-GitHub latest v2.2.0. The prepared v2.3.0 candidate is documented here for
-review, while fresh installs select v2.2.0; v1 clients remain on major
+GitHub latest v2.3.0. The v2.3.0 release passed its published-asset canaries
+and was promoted; v1 clients remain on major
 1 for ordinary updates and select v2 only through an explicit reviewed major
 migration.
 
@@ -16,7 +16,7 @@ migration.
 
 Before changing a client, identify its current executable, config directory,
 sync endpoint, operating system, architecture, and all automation that parses
-SSM output. The release gate requires Go 1.26.8, `jq`, `bash`, the official
+SSM output. The release gate requires Go 1.26.9, `jq`, `bash`, the official
 golangci-lint 2.11.4 binary, the `v1.2.0` lint baseline, and the other tools
 reported by `go run ./cmd/verify list`.
 

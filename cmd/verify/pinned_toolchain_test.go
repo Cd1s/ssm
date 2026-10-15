@@ -25,8 +25,8 @@ func TestMissingPinnedToolPrerequisitesShowCopyableAcquisitionCommands(t *testin
 		t.Fatal("ci profile not found")
 	}
 	want := map[string]string{
-		"go":            "GOTOOLCHAIN=go1.26.8",
-		"gofmt":         "GOTOOLCHAIN=go1.26.8",
+		"go":            "GOTOOLCHAIN=go1.26.9",
+		"gofmt":         "GOTOOLCHAIN=go1.26.9",
 		"golangci-lint": "GOBIN=<dir> go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4",
 	}
 	seen := map[string]bool{}
@@ -61,7 +61,7 @@ func TestMissingPinnedToolPrerequisitesShowCopyableAcquisitionCommands(t *testin
 		t.Errorf("unrelated tool message %q carries a Go acquisition hint", got)
 	}
 	if got := unavailablePrerequisites(
-		[]Prerequisite{{Kind: "tool", Name: "go", Version: "1.26.8"}},
+		[]Prerequisite{{Kind: "tool", Name: "go", Version: "1.26.9"}},
 		func(Prerequisite) prerequisiteState { return prerequisiteState{available: true} },
 	); len(got) != 0 {
 		t.Errorf("available prerequisite reported as missing: %v", got)

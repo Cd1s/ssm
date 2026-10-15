@@ -1,7 +1,7 @@
 # SSM v1 到 v2 的迁移契约
 
-本指南是当前 GitHub latest SSM v2.2.0 的运维者和机器消费者契约，也记录准备审查的
-v2.3.0 candidate。全新安装选择 v2.2.0；
+本指南是当前 GitHub latest SSM v2.3.0 的运维者和机器消费者契约。v2.3.0
+已通过发布包 canary 并完成授权 promotion；全新安装选择 v2.3.0；
 v1 客户端普通更新仍留在 major 1，只有经过审查并显式授权的 major 迁移才能选择 v2。
 
 [English](migration-v1-to-v2.md) | [来源证明运行手册](update-provenance-runbook.zh-CN.md)
@@ -13,7 +13,7 @@ v1 客户端普通更新仍留在 major 1，只有经过审查并显式授权的
 ## 前置条件和保留的基线
 
 更改客户端之前，确定其当前可执行文件、配置目录、同步端点、操作系统、架构，以及所有
-解析 SSM 输出的自动化程序。发布门禁要求 Go 1.26.8、`jq`、`bash`、官方 golangci-lint 2.11.4
+解析 SSM 输出的自动化程序。发布门禁要求 Go 1.26.9、`jq`、`bash`、官方 golangci-lint 2.11.4
 二进制文件、`v1.2.0` lint 基线，以及 `go run ./cmd/verify list` 报告的其他工具。
 
 [#2](https://github.com/Cd1s/ssm/issues/2) 至 [#11](https://github.com/Cd1s/ssm/issues/11)

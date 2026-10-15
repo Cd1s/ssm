@@ -25,7 +25,7 @@ for goos in linux darwin windows; do
 		if [ "$goos" = windows ]; then
 			asset+=".exe"
 		fi
-		GOOS="$goos" GOARCH="$goarch" go build \
+		CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build \
 			-buildvcs=false \
 			-ldflags="-s -w -X main.version=$version" \
 			-o "$asset_dir/$asset" ./cmd/ssm

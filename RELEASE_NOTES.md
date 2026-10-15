@@ -1,18 +1,18 @@
 # Release Notes
 
 These notes are the reviewed contract for the authorized stable v2.3.0
-Release. The official exact-tag workflow publishes it non-latest first with
-`make_latest=false`; v2.2.0 remains GitHub latest until published-asset
-canaries pass and a separate promotion is made. See the
+Release. The official exact-tag workflow published it non-latest first with
+`make_latest=false`; published-asset canaries then passed and the authorized
+latest-promotion step made v2.3.0 GitHub latest. See the
 [v1→v2 migration guide](docs/migration-v1-to-v2.md) and
 [update-provenance runbook](docs/update-provenance-runbook.md) for operator and
 maintainer gates.
 
 ## v2.3.0
 
-This is a v2 minor release. The official exact-tag release workflow creates
-the stable v2.3.0 Release with `make_latest=false`; v2.2.0 remains GitHub
-latest until published-asset canaries pass and a separate promotion is made.
+This is a v2 minor release. The official exact-tag release workflow created
+the stable v2.3.0 Release with `make_latest=false`; after the published-asset
+canaries passed, the authorized latest-promotion step made v2.3.0 GitHub latest.
 Ordinary `ssm update` stays within v2.
 
 ### `sshctl tunnel`

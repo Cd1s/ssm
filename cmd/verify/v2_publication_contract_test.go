@@ -26,7 +26,7 @@ func TestV2ReleaseWorkflowCannotPromoteGitHubLatest(t *testing.T) {
 		"no concurrent cancellation": "  cancel-in-progress: false\n",
 		"exact section extraction":   "            found && /^## / { exit }\n",
 		"create-only helper":         "./scripts/release-create-only.sh",
-		"reviewed previous latest":   "            v2.2.0 \\\n",
+		"reviewed previous latest":   "            v2.3.0 \\\n",
 	} {
 		if !strings.Contains(workflow, required) {
 			t.Errorf("v2 release workflow lacks %s %q", description, required)
@@ -782,7 +782,7 @@ func TestTrackedV2PublicationMetadataIsExactAndDurable(t *testing.T) {
 		"sshctl tunnel",
 		"alpine",
 		"gcompat",
-		"v2.2.0 remains github latest",
+		"made v2.3.0 github latest",
 		"make_latest=false",
 		"no request-schema or json-field breaking change",
 		"internal/syncserver",

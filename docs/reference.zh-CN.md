@@ -1,6 +1,6 @@
 # ssm 参考手册
 
-这是准备审查的 `ssm` 与 `sshctl` v2.3.0 candidate 的完整参考：所有命令和选项、配置文件、环境变量、错误码和退出状态。 GitHub latest 在发布包 canary 通过并单独 promotion 前仍是 v2.2.0。简短介绍和快速开始见 [README](../README.zh-CN.md)。
+这是当前 `ssm` 与 `sshctl` v2.3.0 release 的完整参考：所有命令和选项、配置文件、环境变量、错误码和退出状态。v2.3.0 已通过发布包 canary，授权的 latest-promotion 步骤已将它设为 GitHub latest。简短介绍和快速开始见 [README](../README.zh-CN.md)。
 
 标注 **未发布** 的内容已合入 `main`，但还不在最新发布版里。
 
@@ -75,7 +75,7 @@
 
 | 变量 | 默认值 | 含义 |
 | --- | --- | --- |
-| `SSM_RELEASE_TAG` | 最新发布版 | 安装某一个确切的稳定 tag，例如 `v2.2.0` 或准备中的 `v2.3.0`；其他写法会被拒绝。 |
+| `SSM_RELEASE_TAG` | 最新发布版 | 安装某一个确切的稳定 tag，例如 `v2.2.0` 或 `v2.3.0`；其他写法会被拒绝。 |
 | `SSM_PREFIX` | `/usr/local/bin` | 接收 `ssm` 和 `sshctl` 符号链接的目录。 |
 | `SSM_CONFIG_DIR` | `~/.config/ssm` | 安装脚本准备的配置目录。 |
 | `SSM_REPO` | `Cd1s/ssm` | 安装脚本下载发布包的 GitHub 仓库。来源证明仍然验证 `Cd1s/ssm` 的发布工作流身份。 |
@@ -90,7 +90,7 @@
 go build ./cmd/ssm
 ```
 
-使用 Go 1.26.8。源码构建用于开发；发布的二进制由发布工作流构建并附带来源证明。
+使用 Go 1.26.9。源码构建用于开发；发布的二进制由发布工作流构建并附带来源证明。
 
 ## 主机与主机密钥
 
@@ -522,7 +522,7 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 
 ## 更新与回滚
 
-全新安装跟随 GitHub latest，目前是 v2.2.0；准备中的 v2.3.0 在发布包 canary 通过并单独 promotion 前保持非 latest。普通更新只在已安装的 major 内选择更高版本（已安装 major 内最高的 stable release，不看 GitHub latest 标记；v2.0.2 曾在 latest 标记移动之前就更新到了 v2.2.0）：
+全新安装跟随 GitHub latest，目前是 v2.3.0。v2.3.0 已通过发布包 canary，授权的 latest-promotion 步骤已将它设为 GitHub latest。普通更新只在已安装的 major 内选择更高版本（已安装 major 内最高的 stable release，不看 GitHub latest 标记；v2.0.2 曾在 latest 标记移动之前就更新到了 v2.2.0）：
 
 ```bash
 ssm update
@@ -580,13 +580,13 @@ ssm update --major --yes
 
 日常开发直接运行 `go test ./...`，任何较新的 Go 都可以；宿主机不是固定工具链时，`cmd/verify` 里检查“宿主机就是固定版本”的子测试会显示 SKIP 并写明原因，而不是失败。设置 `SSM_VERIFY_REQUIRE_PINNED=1`（官方 CI 已设置）会强制执行这些检查。
 
-正式 gate 是 `go run ./cmd/verify ci`，需要精确的固定工具：Go 1.26.8 和 golangci-lint 2.11.4。缺少或版本不符时，verify 会在提示里给出获取命令：
+正式 gate 是 `go run ./cmd/verify ci`，需要精确的固定工具：Go 1.26.9 和 golangci-lint 2.11.4。缺少或版本不符时，verify 会在提示里给出获取命令：
 
 ```bash
 # 固定 Go 工具链（由 Go 自动下载）
-GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
+GOTOOLCHAIN=go1.26.9 go run ./cmd/verify ci
 
 # 固定 golangci-lint
 GOBIN=<dir> go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
-PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.8 go run ./cmd/verify ci
+PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.9 go run ./cmd/verify ci
 ```

@@ -30,7 +30,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.8"
+          go-version: "1.26.9"
 
       - name: Install verification prerequisites
         run: |
@@ -160,12 +160,12 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.8"
+          go-version: "1.26.9"
 
       - name: Build verified release asset
         run: |
           VERSION="${{ needs.preflight.outputs.version }}"
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -buildvcs=false -ldflags="-s -w -X main.version=$VERSION" -o "${{ matrix.asset }}" ./cmd/ssm
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -buildvcs=false -ldflags="-s -w -X main.version=$VERSION" -o "${{ matrix.asset }}" ./cmd/ssm
 
       - id: provenance
         name: Attest exact release asset
@@ -223,7 +223,7 @@ jobs:
             "${{ needs.preflight.outputs.tag }}" \
             "${{ github.sha }}" \
             release-body.md \
-            v2.2.0 \
+            v2.3.0 \
             ssm-linux-amd64 \
             ssm-linux-arm64 \
             ssm-darwin-amd64 \
