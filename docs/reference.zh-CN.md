@@ -90,7 +90,7 @@
 go build ./cmd/ssm
 ```
 
-使用 Go 1.26.9。源码构建用于开发；发布的二进制由发布工作流构建并附带来源证明。
+使用 Go 1.26.10。源码构建用于开发；发布的二进制由发布工作流构建并附带来源证明。
 
 ## 主机与主机密钥
 
@@ -580,13 +580,13 @@ ssm update --major --yes
 
 日常开发直接运行 `go test ./...`，任何较新的 Go 都可以；宿主机不是固定工具链时，`cmd/verify` 里检查“宿主机就是固定版本”的子测试会显示 SKIP 并写明原因，而不是失败。设置 `SSM_VERIFY_REQUIRE_PINNED=1`（官方 CI 已设置）会强制执行这些检查。
 
-正式 gate 是 `go run ./cmd/verify ci`，需要精确的固定工具：Go 1.26.9 和 golangci-lint 2.11.4。缺少或版本不符时，verify 会在提示里给出获取命令：
+正式 gate 是 `go run ./cmd/verify ci`，需要精确的固定工具：Go 1.26.10 和 golangci-lint 2.11.4。缺少或版本不符时，verify 会在提示里给出获取命令：
 
 ```bash
 # 固定 Go 工具链（由 Go 自动下载）
-GOTOOLCHAIN=go1.26.9 go run ./cmd/verify ci
+GOTOOLCHAIN=go1.26.10 go run ./cmd/verify ci
 
 # 固定 golangci-lint
 GOBIN=<dir> go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
-PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.9 go run ./cmd/verify ci
+PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.10 go run ./cmd/verify ci
 ```

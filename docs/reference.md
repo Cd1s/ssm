@@ -90,7 +90,7 @@ Download `ssm-windows-amd64.exe` (or `ssm-windows-arm64.exe`) and its `.sigstore
 go build ./cmd/ssm
 ```
 
-Use Go 1.26.9. Source builds are for development; release binaries are built and attested by the release workflow.
+Use Go 1.26.10. Source builds are for development; release binaries are built and attested by the release workflow.
 
 ## Hosts and host keys
 
@@ -593,13 +593,13 @@ metadata is missing or unreadable. Login, logout, and registration reset the led
 
 For everyday development run `go test ./...` with any recent Go. When the host is not the pinned toolchain, the `cmd/verify` subtests that assert the host is the pinned version report SKIP with the reason instead of failing. Set `SSM_VERIFY_REQUIRE_PINNED=1` (official CI does) to enforce them.
 
-The formal gate is `go run ./cmd/verify ci`, which needs the exact pinned tools: Go 1.26.9 and golangci-lint 2.11.4. When one is missing or the wrong version, verify prints the acquisition command in its message:
+The formal gate is `go run ./cmd/verify ci`, which needs the exact pinned tools: Go 1.26.10 and golangci-lint 2.11.4. When one is missing or the wrong version, verify prints the acquisition command in its message:
 
 ```bash
 # Pinned Go toolchain (downloaded by Go itself)
-GOTOOLCHAIN=go1.26.9 go run ./cmd/verify ci
+GOTOOLCHAIN=go1.26.10 go run ./cmd/verify ci
 
 # Pinned golangci-lint
 GOBIN=<dir> go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
-PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.9 go run ./cmd/verify ci
+PATH=<dir>:$PATH GOTOOLCHAIN=go1.26.10 go run ./cmd/verify ci
 ```

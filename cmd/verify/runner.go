@@ -408,7 +408,7 @@ func validateReleaseNotes(repoRoot, version string) error {
 		lower := strings.ToLower(strings.Join(strings.Fields(strings.Join(body, "\n")), " "))
 		for _, required := range []string{
 			"v2 patch release",
-			"go 1.26.9",
+			"go 1.26.10",
 			"v0.60.0",
 			"go-2026-6603",
 			"go-2026-6610",
