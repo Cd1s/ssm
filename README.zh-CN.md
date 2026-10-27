@@ -37,15 +37,15 @@ curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | sh
 ssm --version
 ```
 
-全新安装会得到 GitHub 当前的 latest 发布版，目前是 **v2.3.1**。要固定某个版本，
-运行同一条命令，并给 `sh` 设置 `SSM_RELEASE_TAG=v2.3.1`：
-
-准备中的 v2.3.2 发布后可从确切 tag 获取以供审查；在发布包审计和 canary 通过并
-单独完成 promotion 之前，v2.3.1 仍是 GitHub latest。
+全新安装会得到 GitHub 当前的 latest 发布版，目前是 **v2.3.2**。要固定某个版本，
+运行同一条命令，并给 `sh` 设置 `SSM_RELEASE_TAG=v2.3.2`：
 
 ```bash
-curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | SSM_RELEASE_TAG=v2.3.1 sh
+curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | SSM_RELEASE_TAG=v2.3.2 sh
 ```
+
+v2.3.2 已通过发布包审计和 canary，授权的 latest-promotion 步骤已把 v2.3.2
+设为 GitHub latest；之前的 v2.3.1 仍可通过确切 tag 获取。
 
 安装脚本会把 `ssm` 和指向它的 `sshctl` 链接放进 `/usr/local/bin`
 （用 `SSM_PREFIX` 修改），并把数据放在 `~/.config/ssm`（用 `SSM_CONFIG_DIR` 修改）。

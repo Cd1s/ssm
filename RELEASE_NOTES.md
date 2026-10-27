@@ -1,9 +1,10 @@
 # Release Notes
 
-These notes are the reviewed contract for the prepared stable v2.3.2
-Release. The official exact-tag release workflow publishes it non-latest first
-with `make_latest=false`; v2.3.1 remains GitHub latest until the published-asset
-audit and canaries pass and a separate promotion is made. See the
+These notes are the reviewed contract for the authorized stable v2.3.2
+Release. The official exact-tag release workflow published it non-latest first
+with `make_latest=false`; the published-asset audit and canaries then passed,
+and the authorized latest-promotion step made v2.3.2 GitHub latest. The previous
+v2.3.1 release remains available from its exact tag. See the
 [v1→v2 migration guide](docs/migration-v1-to-v2.md) and
 [update-provenance runbook](docs/update-provenance-runbook.md) for operator and
 maintainer gates.
@@ -12,9 +13,9 @@ maintainer gates.
 
 This is a v2 patch release with a security-driven toolchain update from
 PR #130. It adds no new feature and changes no command behavior. The official
-exact-tag release workflow creates the stable v2.3.2 Release with
-`make_latest=false`; v2.3.1 remains GitHub latest until the published-asset
-audit and canaries pass and a separate promotion is made. Ordinary `ssm update`
+exact-tag release workflow created the stable v2.3.2 Release with
+`make_latest=false`; after the published-asset audit and canaries passed, the
+authorized latest-promotion step made v2.3.2 GitHub latest. Ordinary `ssm update`
 stays within v2.
 
 ### Security: toolchain

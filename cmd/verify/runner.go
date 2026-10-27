@@ -410,7 +410,7 @@ func validateReleaseNotes(repoRoot, version string) error {
 			"v2 patch release",
 			"go 1.26.10",
 			"go-2026-6809",
-			"v2.3.1 remains github latest",
+			"made v2.3.2 github latest",
 			"make_latest=false",
 			"exact-tag release workflow",
 			"no request-schema or json-field breaking change",

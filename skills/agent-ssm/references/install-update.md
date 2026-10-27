@@ -2,8 +2,8 @@
 
 Use the one official `agent-ssm` skill name. Obtain the bundle only from the
 same reviewed exact tag as the binary contract being deployed. The current
-GitHub latest v2 release is exact tag `v2.3.1`; the prepared v2.3.2 release will
-be available from its exact tag and remain non-latest until promotion. Do not copy from a moving
+GitHub latest v2 release is exact tag `v2.3.2`; the previous v2.3.1 release
+remains available from its exact tag. Do not copy from a moving
 default branch or from an unreviewed working tree.
 
 Before deployment, run the target binary's read-only version probe:

@@ -785,7 +785,7 @@ func TestTrackedV2PublicationMetadataIsExactAndDurable(t *testing.T) {
 		"gcompat",
 		"made v2.3.0 github latest",
 		"made v2.3.1 github latest",
-		"v2.3.1 remains github latest",
+		"made v2.3.2 github latest",
 		"go 1.26.10",
 		"go-2026-6809",
 		"cgo_enabled=0",

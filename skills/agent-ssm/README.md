@@ -5,8 +5,8 @@
 [![Agent Skills](https://img.shields.io/badge/Agent%20Skills-agent--ssm-blueviolet)](SKILL.md)
 [![Project](https://img.shields.io/badge/Project-Cd1s%2Fssm-blue)](https://github.com/Cd1s/ssm)
 
-The official skill targets the current GitHub latest `ssm`/`sshctl` v2.3.1
-binary. It also supports the prepared v2.3.2 release and the previous v2.3.0, v2.2.0,
+The official skill targets the current GitHub latest `ssm`/`sshctl` v2.3.2
+binary. It also supports the previous v2.3.1, v2.3.0, v2.2.0,
 v2.1.0, v2.0.2, v2.0.1, and v2.0.0 patches and exact
 v1.4.3/v1.4.4 binaries through the matching compatibility branches. It probes
 `sshctl --json --version` before state-aware work, then fails closed on an
@@ -60,8 +60,8 @@ Always run `sshctl --json --version` first and select one branch:
 
 | Exact version | Branch | Request schema |
 | --- | --- | --- |
-| v2.3.2 (supported; not latest until promoted) | v2 compatibility branch | `references/request-v1.schema.json` |
-| **v2.3.1 (current/latest)** | v2 compatibility branch | `references/request-v1.schema.json` |
+| **v2.3.2 (current/latest)** | v2 compatibility branch | `references/request-v1.schema.json` |
+| v2.3.1 (supported previous release) | v2 compatibility branch | `references/request-v1.schema.json` |
 | v2.3.0 (supported previous release) | v2 compatibility branch | `references/request-v1.schema.json` |
 | v2.2.0 (supported previous release) | v2 compatibility branch | `references/request-v1.schema.json` |
 | v2.1.0 (supported previous v2 patch) | v2 compatibility branch | `references/request-v1.schema.json` |
@@ -98,8 +98,7 @@ invocation-start pending-ID set.
 
 ## Updates
 
-The current v2.3.1 is latest; the prepared v2.3.2 remains non-latest until
-the published-asset audit and canaries pass and a separate promotion is made. Ordinary updates remain same-major
+The current v2.3.2 is latest. Ordinary updates remain same-major
 (the highest stable release of the installed major, not the GitHub latest flag). A v1.4.3
 or v1.4.4 installation stays on major 1 for ordinary `ssm update`; review a
 cross-major candidate with:
