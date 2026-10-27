@@ -27,7 +27,7 @@ Use this skill when an agent needs to:
 ## What it protects
 
 - SSH credentials stay in the local encrypted vault; the sync server receives encrypted blobs only.
-- Agents use exact aliases instead of guessing from suggestions.
+- Agents resolve a slightly misremembered name to the one clearly closest alias (and say which one they used); they ask only when several aliases are equally plausible or none is close.
 - State-changing host operations verify candidates first and return scoped transaction IDs.
 - A no-op returns `changed:false`, `action:"unchanged"`, and omits `transaction_id`; do not publish it.
 - Fixed literals use direct argv; dynamic input uses a typed JSON request; scripts use paths and optional syntax preflight.
@@ -50,8 +50,10 @@ sshctl --json host list
 sshctl --json run my-server --argv hostname
 ```
 
-Replace `my-server` with one exact alias from the host list. Search returns
-candidates only; it never selects or connects automatically. If the alias is
+Replace `my-server` with one exact alias from the host list. `sshctl` itself only
+takes exact aliases and search returns candidates only; the agent maps a
+slightly different name to the single closest alias and passes that exact alias
+on. If the alias is
 new, host key verification is required before accepting it.
 
 ## Version-aware workflow
