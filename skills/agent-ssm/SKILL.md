@@ -67,8 +67,17 @@ sshctl --json status
 sshctl --json host list
 ```
 
-Use exact aliases. Search and suggestions return candidates only; never select
-one automatically. Normal `--json` commands emit one JSON value, while explicit
+`sshctl` itself only accepts exact aliases, but the user's wording need not be
+exact: people misremember names by a character or two (`greencloud-lax` for
+`greencloud-la`). Resolve it yourself with `sshctl --json host list` or
+`host search --filter <query>`, comparing case-insensitively and ignoring
+`-`/`_`/spaces, and allowing a one-character difference, a prefix, or a
+substring. If exactly one alias is clearly the closest, use it without asking
+and say which alias you used (`greencloud-lax → greencloud-la`). Ask only when
+several aliases are equally plausible or none is close. For a destructive or
+irreversible operation (reboot, reinstall/DD, `host remove`, deleting data) on a
+non-exact match, confirm the alias first. Always pass the resolved exact alias to
+`sshctl`. Normal `--json` commands emit one JSON value, while explicit
 `run --stream` emits one NDJSON value per input line. Classify results with
 `ok`, `error`, and `stage`; a remote program may exit 255, so `exit` alone does
 not prove SSH transport failure.
@@ -282,7 +291,7 @@ Check `sshctl --help` for `--exec-timeout` before relying on these; v2.0.2 and o
 
 ## Failure rules
 
-- `alias_not_found`: list/search and ask for an exact alias if needed; never execute a suggestion.
+- `alias_not_found`: resolve the name as described under "Start here" (one clearly closest alias: use it and say so; several or none: ask). Run only an exact alias, never a raw suggestion string.
 - `unknown_command` (exit 2): the first word is not a sshctl subcommand or existing alias; follow the `hint` (for example an ssm-only command such as `keys`, or a near-miss like `stauts` -> `status`) and never treat the word as an alias.
 - `invalid_arguments` from `run|exec|plan|map` with an unknown option: the `hint` suggests the real option (`--script-file` -> `-f`, `--fetch` -> `get`); fix the option, do not guess more.
 - `sync_push_failed`: preserve the verified pending mutation and retry the same scoped transaction ID.
@@ -365,6 +374,6 @@ identities are reconciled.
 - Never print or read aloud `master.pass`, `cloud.json`, private keys, tokens, passwords, decrypted vault data, or secret-file contents.
 - Never put credentials in argv, JSON values, logs, Issues, or commits; only protected file paths may be referenced.
 - Never use bare `ssh`/`sshpass`, a TUI, an interactive shell, or terminal prompts for normal remote administration.
-- Never guess aliases, repair host keys automatically, silently go offline, or publish unrelated transactions.
+- Never choose between several equally plausible aliases, repair host keys automatically, silently go offline, or publish unrelated transactions.
 - Never continue on an unparseable version, an unlisted version, or an unsupported major; fail closed before state-aware commands.
 - Do not claim success without checking the structured result and the requested postcondition.
