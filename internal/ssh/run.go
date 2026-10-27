@@ -389,6 +389,10 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 		session.Stdout = output.Stdout()
 		session.Stderr = output.Stderr()
 	}
+	// startStdin begins forwarding a piped stdin. It runs only once the exec
+	// request was accepted: dropbear closes a session whose stdin reaches EOF
+	// before the command starts, so an early EOF would fail the exec request.
+	var startStdin func()
 	if opts.Input != "" {
 		session.Stdin = strings.NewReader(opts.Input)
 	} else {
@@ -417,7 +421,7 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 			if stdinPlan.Source == stdinFromFile {
 				source = stdinFileHandle
 			}
-			go forwardStdin(stdin, source)
+			startStdin = func() { go forwardStdin(stdin, source) }
 		}
 	}
 
@@ -426,7 +430,13 @@ func Run(c config.Connection, v *config.Vault, opts RunOptions) RunResult {
 		interrupt = watchRunInterrupt(session)
 	}
 	execDeadline := watchExecTimeout(session, opts.ExecTimeout)
-	err = session.Run(full)
+	err = session.Start(full)
+	if err == nil {
+		if startStdin != nil {
+			startStdin()
+		}
+		err = session.Wait()
+	}
 	execDeadline.complete()
 	execDeadline.stop()
 	if interrupt != nil {

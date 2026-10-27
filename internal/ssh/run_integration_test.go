@@ -36,6 +36,13 @@ func startTrackedRunTestSSHServer(t *testing.T) (config.Connection, *config.Vaul
 // chooses among them by its HostKeyAlgorithms preference, like a real sshd.
 func startRunTestSSHServerWithHostKeys(t *testing.T, hostSigners ...gossh.Signer) (config.Connection, *config.Vault, *runTestServerStats) {
 	t.Helper()
+	return startRunTestSSHServerWithSessionHandler(t, serveRunTestSession, hostSigners...)
+}
+
+// startRunTestSSHServerWithSessionHandler serves every session channel with
+// handler, so a test can mimic a particular server's session semantics.
+func startRunTestSSHServerWithSessionHandler(t *testing.T, handler func(gossh.Channel, <-chan *gossh.Request), hostSigners ...gossh.Signer) (config.Connection, *config.Vault, *runTestServerStats) {
+	t.Helper()
 	_, clientPrivate, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +69,7 @@ func startRunTestSSHServerWithHostKeys(t *testing.T, hostSigners ...gossh.Signer
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 	stats := &runTestServerStats{}
-	go serveRunTestSSH(listener, serverConfig, stats)
+	go serveRunTestSSH(listener, serverConfig, stats, handler)
 
 	_, portText, err := net.SplitHostPort(listener.Addr().String())
 	if err != nil {
@@ -92,7 +99,7 @@ func trustRunTestHost(t *testing.T, connection config.Connection) {
 	}
 }
 
-func serveRunTestSSH(listener net.Listener, cfg *gossh.ServerConfig, stats *runTestServerStats) {
+func serveRunTestSSH(listener net.Listener, cfg *gossh.ServerConfig, stats *runTestServerStats, handler func(gossh.Channel, <-chan *gossh.Request)) {
 	for {
 		raw, err := listener.Accept()
 		if err != nil {
@@ -117,7 +124,7 @@ func serveRunTestSSH(listener net.Listener, cfg *gossh.ServerConfig, stats *runT
 					continue
 				}
 				stats.sessions.Add(1)
-				go serveRunTestSession(channel, channelRequests)
+				go handler(channel, channelRequests)
 			}
 		}()
 	}
