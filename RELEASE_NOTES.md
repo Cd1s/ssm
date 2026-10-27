@@ -23,7 +23,8 @@ stays within v2.
   reported by `govulncheck`.
 - The `crypto/x509` fix stops trusting compromised intermediate certificates.
   SSM is affected because release provenance verification in
-  `internal/provenance` calls `x509.Certificate.Verify`.
+  `internal/provenance` reaches `x509.Certificate.Verify` through Sigstore
+  bundle verification.
 
 There is no request-schema or JSON-field breaking change. No request or result
 field and no error code is added or removed. The request schema structure is
