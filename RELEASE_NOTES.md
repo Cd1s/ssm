@@ -1,12 +1,39 @@
 # Release Notes
 
-These notes are the reviewed contract for the authorized stable v2.3.1
-Release. The official exact-tag workflow published it non-latest first with
-`make_latest=false`; the published-asset audit then passed and the authorized
-promotion made v2.3.1 GitHub latest. See the
+These notes are the reviewed contract for the prepared stable v2.3.2
+Release. The official exact-tag release workflow publishes it non-latest first
+with `make_latest=false`; v2.3.1 remains GitHub latest until the published-asset
+audit and canaries pass and a separate promotion is made. See the
 [v1→v2 migration guide](docs/migration-v1-to-v2.md) and
 [update-provenance runbook](docs/update-provenance-runbook.md) for operator and
 maintainer gates.
+
+## v2.3.2
+
+This is a v2 patch release with a security-driven toolchain update from
+PR #130. It adds no new feature and changes no command behavior. The official
+exact-tag release workflow creates the stable v2.3.2 Release with
+`make_latest=false`; v2.3.1 remains GitHub latest until the published-asset
+audit and canaries pass and a separate promotion is made. Ordinary `ssm update`
+stays within v2.
+
+### Security: toolchain
+
+- The build toolchain moves from Go 1.26.9 to Go 1.26.10, fixing GO-2026-6809
+  reported by `govulncheck`.
+- The `crypto/x509` fix stops trusting compromised intermediate certificates.
+  SSM is affected because release provenance verification in
+  `internal/provenance` reaches `x509.Certificate.Verify` through Sigstore
+  bundle verification.
+
+There is no request-schema or JSON-field breaking change. No request or result
+field and no error code is added or removed. The request schema structure is
+unchanged; only its version-bound `$id` and title are updated to v2.3.2.
+
+### Changes since v2.3.1
+
+- Updated the build toolchain from Go 1.26.9 to Go 1.26.10 to fix
+  GO-2026-6809 in `crypto/x509` (PR #130).
 
 ## v2.3.1
 
