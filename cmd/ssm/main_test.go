@@ -18,8 +18,8 @@ import (
 )
 
 func TestCanonicalRuntimeVersion(t *testing.T) {
-	if version != "2.3.1" {
-		t.Fatalf("runtime version = %q, want 2.3.1", version)
+	if version != "2.3.2" {
+		t.Fatalf("runtime version = %q, want 2.3.2", version)
 	}
 }
 

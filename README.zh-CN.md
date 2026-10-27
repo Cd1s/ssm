@@ -40,6 +40,9 @@ ssm --version
 全新安装会得到 GitHub 当前的 latest 发布版，目前是 **v2.3.1**。要固定某个版本，
 运行同一条命令，并给 `sh` 设置 `SSM_RELEASE_TAG=v2.3.1`：
 
+准备中的 v2.3.2 发布后可从确切 tag 获取以供审查；在发布包审计和 canary 通过并
+单独完成 promotion 之前，v2.3.1 仍是 GitHub latest。
+
 ```bash
 curl -fsSL https://github.com/Cd1s/ssm/releases/latest/download/install.sh | SSM_RELEASE_TAG=v2.3.1 sh
 ```

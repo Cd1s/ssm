@@ -404,6 +404,22 @@ func validateReleaseNotes(repoRoot, version string) error {
 			}
 		}
 	}
+	if version == "2.3.2" {
+		lower := strings.ToLower(strings.Join(strings.Fields(strings.Join(body, "\n")), " "))
+		for _, required := range []string{
+			"v2 patch release",
+			"go 1.26.10",
+			"go-2026-6809",
+			"v2.3.1 remains github latest",
+			"make_latest=false",
+			"exact-tag release workflow",
+			"no request-schema or json-field breaking change",
+		} {
+			if !strings.Contains(lower, required) {
+				return fmt.Errorf("release-note section %q omits v2.3.2 patch contract %q", header, required)
+			}
+		}
+	}
 	if version == "2.3.1" {
 		lower := strings.ToLower(strings.Join(strings.Fields(strings.Join(body, "\n")), " "))
 		for _, required := range []string{

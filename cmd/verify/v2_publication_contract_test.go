@@ -755,8 +755,8 @@ func TestTrackedV2PublicationMetadataIsExactAndDurable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != "2.3.1" {
-		t.Fatalf("source version = %q, want exact v2.3.1", version)
+	if version != "2.3.2" {
+		t.Fatalf("source version = %q, want exact v2.3.2", version)
 	}
 	if err := validateReleaseNotes(root, version); err != nil {
 		t.Fatal(err)
@@ -785,6 +785,9 @@ func TestTrackedV2PublicationMetadataIsExactAndDurable(t *testing.T) {
 		"gcompat",
 		"made v2.3.0 github latest",
 		"made v2.3.1 github latest",
+		"v2.3.1 remains github latest",
+		"go 1.26.10",
+		"go-2026-6809",
 		"cgo_enabled=0",
 		"make_latest=false",
 		"no request-schema or json-field breaking change",
