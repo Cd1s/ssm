@@ -13,12 +13,11 @@ We will respond within 48 hours and work on a fix as quickly as possible.
 ## Release Verification
 
 The authorized stable v2 update-trust contract introduced in v2.0.0 and
-carried unchanged through v2.0.1, v2.0.2, v2.1.0, v2.2.0, v2.3.0, v2.3.1, and the prepared v2.3.2 is
+carried unchanged through v2.0.1, v2.0.2, v2.1.0, v2.2.0, v2.3.0, v2.3.1, and v2.3.2 is
 detailed in the [update-provenance runbook](docs/update-provenance-runbook.md).
 It includes a reviewed identity rotation overlap and recovery procedure.
-v2.3.1 is the current GitHub latest Release for fresh installs; v2.3.2 is
-prepared but stays non-latest until the published-asset audit and canaries pass
-and a separate promotion; v1.4.3/v1.4.4 clients still
+v2.3.2 is the current GitHub latest Release for fresh installs;
+v1.4.3/v1.4.4 clients still
 require an explicit reviewed major migration to select it.
 
 Official release replacements require the selected SHA-256 digest and

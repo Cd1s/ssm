@@ -8,8 +8,8 @@ metadata:
 
 # Agent SSM
 
-This is the official skill for the current GitHub latest `ssm`/`sshctl` v2.3.1
-binary. It also supports the prepared v2.3.2 release and the previous v2.3.0, v2.2.0,
+This is the official skill for the current GitHub latest `ssm`/`sshctl` v2.3.2
+binary. It also supports the previous v2.3.1, v2.3.0, v2.2.0,
 v2.1.0, v2.0.2, v2.0.1, and v2.0.0 patches in the v2
 compatibility branch and contains a deliberately separate compatibility branch
 for the supported v1.4.3/v1.4.4 binaries. Read the [version compatibility reference](references/version-compatibility.md),
@@ -42,8 +42,8 @@ one branch:
 
 | Exact version | Skill branch | Request schema |
 | --- | --- | --- |
-| v2.3.2 (supported; not latest until promoted) | v2 compatibility branch | `references/request-v1.schema.json` |
-| **v2.3.1 (current/latest)** | v2 compatibility branch | `references/request-v1.schema.json` |
+| **v2.3.2 (current/latest)** | v2 compatibility branch | `references/request-v1.schema.json` |
+| v2.3.1 (supported previous release) | v2 compatibility branch | `references/request-v1.schema.json` |
 | v2.3.0 (supported previous release) | v2 compatibility branch | `references/request-v1.schema.json` |
 | v2.2.0 (supported previous release) | v2 compatibility branch | `references/request-v1.schema.json` |
 | v2.1.0 (supported previous v2 patch) | v2 compatibility branch | `references/request-v1.schema.json` |
@@ -339,10 +339,9 @@ Other commands:
 
 ## Updates and rollback
 
-The current v2.3.1 is GitHub latest; the prepared v2.3.2 remains non-latest until
-the published-asset audit and canaries pass and a separate promotion is made. Same-major automatic/manual updates remain
+The current v2.3.2 is GitHub latest. Same-major automatic/manual updates remain
 the default. A v1.4.3/v1.4.4 ordinary update remains in major 1 even though
-v2.3.1 is current/latest; review the exact v2.3.2 candidate with:
+v2.3.2 is current/latest; review the cross-major candidate with:
 
 ```bash
 ssm update --major
