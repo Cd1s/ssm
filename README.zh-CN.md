@@ -139,6 +139,6 @@ ssm update
 
 ## 开发
 
-使用 Go 1.26.9。日常检查运行 `go test ./...`，提交改动前运行 `go run ./cmd/verify fast`。
+使用 Go 1.26.10。日常检查运行 `go test ./...`，提交改动前运行 `go run ./cmd/verify fast`。
 请向 `main` 分支提交 Pull Request，详见 [AGENTS.md](AGENTS.md) 和
 [开发说明](docs/reference.zh-CN.md#开发与验证)。

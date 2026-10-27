@@ -1,6 +1,6 @@
 module ssm
 
-go 1.26.9
+go 1.26.10
 
 require (
 	github.com/pkg/sftp v1.13.11

@@ -152,7 +152,7 @@ run `ssm update --major --yes`.
 
 ## Development
 
-Use Go 1.26.9. Run `go test ./...` for everyday checks and
+Use Go 1.26.10. Run `go test ./...` for everyday checks and
 `go run ./cmd/verify fast` before sending changes. Open pull requests against
 `main`; see [AGENTS.md](AGENTS.md) and the
 [development notes](docs/reference.md#development-and-verification).

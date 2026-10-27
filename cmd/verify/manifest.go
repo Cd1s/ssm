@@ -15,7 +15,7 @@ const (
 
 	// Single source for the reviewed toolchain pins. go.mod, the workflow
 	// setup-go inputs and the workflow goldens are checked against these by tests.
-	pinnedGoVersion            = "1.26.9"
+	pinnedGoVersion            = "1.26.10"
 	pinnedGolangciLintVersion  = "2.11.4"
 	pinnedGovulncheckVersion   = "v1.6.0"
 	govulncheckModuleName      = "golang.org/x/vuln"
